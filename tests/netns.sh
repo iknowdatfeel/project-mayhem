@@ -375,6 +375,15 @@ if start_mayhem "$WORK/fakedns.json"; then
 	esac
 	expect "fake address, excluded real IP -> xray direct" 45.0.0.1 --resolve "site.test:8080:$fake" http://site.test:8080/
 	expect "real excluded IP -> kernel direct" 192.168.1.2 http://45.0.0.7:8080/
+
+	# dnsmasq asks xray for the router's own lookups too (curl, apk, opkg).
+	rfake="$(dns router 127.0.0.1 12753 own.test)"
+	got="$(ip netns exec router curl -s -m 4 --resolve "own.test:8080:$rfake" http://own.test:8080/ 2>/dev/null)" || got="failed"
+	if [ "$got" = 45.0.0.1 ]; then
+		ok "router's own connection to a fake address -> xray"
+	else
+		bad "router's own connection to fake address $rfake: expected 45.0.0.1, got $got"
+	fi
 fi
 stop_mayhem
 

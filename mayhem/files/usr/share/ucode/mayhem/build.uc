@@ -131,7 +131,7 @@ function tun_mark(idx) {
 	return sprintf('0x%x', C.TUN_MARK | idx);
 }
 
-function build_nft(S, v6, sets, tunnels, dns_redirect) {
+function build_nft(S, v6, sets, tunnels, dns_redirect, fake_pool) {
 	const ifaces = map(length(sets.ifaces) ? sets.ifaces : [ 'br-lan' ], (i) => sprintf('%J', i));
 	const mark = sprintf('0x%x', C.FWMARK);
 	const keep = sprintf('0x%x', 0xffffffff & ~C.TUN_MASK);
@@ -157,6 +157,12 @@ function build_nft(S, v6, sets, tunnels, dns_redirect) {
 
 	s += '\n\tchain prerouting {\n';
 	s += '\t\ttype filter hook prerouting priority mangle; policy accept;\n';
+
+	// The router's own connections to FakeDNS addresses (chain output) come
+	// back through lo with the mark.
+	if (fake_pool)
+		s += `\t\tiifname "lo" meta mark & ${mark} == ${mark} ip daddr ${fake_pool} meta l4proto { tcp, udp } tproxy ip to 127.0.0.1:${C.TPROXY_PORT} counter accept\n`;
+
 	s += '\t\tiifname != @ifaces return\n';
 	s += '\t\tfib daddr type { local, broadcast, multicast } return\n';
 	s += '\t\tip daddr @local4 return\n';
@@ -189,6 +195,16 @@ function build_nft(S, v6, sets, tunnels, dns_redirect) {
 		s += `\t\tmeta nfproto ipv6 meta l4proto { tcp, udp } meta mark set meta mark | ${mark} tproxy ip6 to [::1]:${C.TPROXY_PORT} counter accept\n`;
 
 	s += '\t}\n';
+
+	// dnsmasq asks xray for the router's own lookups too, so with FakeDNS the
+	// router gets fake addresses as well (curl, package updates): send those
+	// connections to xray, which knows the domain behind them.
+	if (fake_pool) {
+		s += '\n\tchain output {\n';
+		s += '\t\ttype route hook output priority mangle; policy accept;\n';
+		s += `\t\tip daddr ${fake_pool} meta l4proto { tcp, udp } meta mark set meta mark | ${mark} counter\n`;
+		s += '\t}\n';
+	}
 
 	if (dns_redirect) {
 		s += '\n\tchain dstnat {\n';
@@ -1192,7 +1208,7 @@ export function build(model) {
 			ifaces: entries(S.interface),
 			block4: sets.block4.items, block6: sets.block6.items,
 			direct4: sets.direct4.items, direct6: sets.direct6.items
-		}, tunnels, dns_redirect),
+		}, tunnels, dns_redirect, fakedns ? C.FAKEDNS_POOL : null),
 		dnsmasq: `server=127.0.0.1#${C.DNS_PORT}\nno-resolv\n` +
 			(nftset ? join('', map(tunnels, (t) => nftset_lines(t))) : ''),
 		// "section device mark table v6" per tunnel section; mark and table are
