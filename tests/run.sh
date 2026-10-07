@@ -18,9 +18,9 @@ bad() { printf 'FAIL %s\n' "$1"; fail=1; }
 
 # constants must match between shell and ucode
 for k in TPROXY_PORT DNS_PORT FWMARK RT_TABLE NFT_TABLE RUN_DIR; do
-	sh_v="$(sed -n "s/^MAYHEM_$k=//p" "$FILES/usr/share/mayhem/const.sh" | tr -d '"')"
+	sh_v="$(sed -n "s/^MAYHEM_$k=//p" "$FILES/usr/share/mayhem/const.sh" | tr -d '"' | sed 's/^\${[A-Z_]*:-\(.*\)}$/\1/')"
 	uc_v="$(sed -n "s/^export const $k = \(.*\);/\1/p" "$FILES/usr/share/ucode/mayhem/const.uc" | tr -d "'")"
-	[ "$sh_v" = "$uc_v" ] && ok "const $k" || bad "const $k: sh=$sh_v uc=$uc_v"
+	if [ "$sh_v" = "$uc_v" ]; then ok "const $k"; else bad "const $k: sh=$sh_v uc=$uc_v"; fi
 done
 
 uc "$ROOT/tests/links.uc" && ok "links" || bad "links"
