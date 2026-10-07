@@ -45,21 +45,5 @@
 			"type": "view",
 			"path": "mayhem/settings"
 		}
-	},
-	"admin/services/mayhem/diagnostics": {
-		"title": "Diagnostics",
-		"order": 35,
-		"action": {
-			"type": "view",
-			"path": "mayhem/diagnostics"
-		}
-	},
-	"admin/services/mayhem/logs": {
-		"title": "Logs",
-		"order": 40,
-		"action": {
-			"type": "view",
-			"path": "mayhem/logs"
-		}
 	}
 }

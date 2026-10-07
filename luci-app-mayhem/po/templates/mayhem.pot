@@ -49,11 +49,11 @@ msgstr ""
 msgid "10 minutes"
 msgstr ""
 
-#: htdocs/luci-static/resources/view/mayhem/logs.js
+#: htdocs/luci-static/resources/mayhem/diag.js
 msgid "100 lines"
 msgstr ""
 
-#: htdocs/luci-static/resources/view/mayhem/logs.js
+#: htdocs/luci-static/resources/mayhem/diag.js
 msgid "1000 lines"
 msgstr ""
 
@@ -77,7 +77,7 @@ msgstr ""
 msgid "30 minutes"
 msgstr ""
 
-#: htdocs/luci-static/resources/view/mayhem/logs.js
+#: htdocs/luci-static/resources/mayhem/diag.js
 msgid "300 lines"
 msgstr ""
 
@@ -105,7 +105,7 @@ msgstr ""
 msgid "A tunnel section sends its traffic into a network interface: AmneziaWG, WireGuard, OpenVPN or any other."
 msgstr ""
 
-#: htdocs/luci-static/resources/view/mayhem/diagnostics.js
+#: htdocs/luci-static/resources/mayhem/diag.js
 msgid "Actions"
 msgstr ""
 
@@ -125,7 +125,7 @@ msgstr ""
 msgid "Address for the external IP check"
 msgstr ""
 
-#: htdocs/luci-static/resources/view/mayhem/diagnostics.js
+#: htdocs/luci-static/resources/mayhem/diag.js
 msgid "All checks passed"
 msgstr ""
 
@@ -185,15 +185,19 @@ msgstr ""
 msgid "Categories appear in the list after the first geo data download."
 msgstr ""
 
+#: htdocs/luci-static/resources/view/mayhem/dashboard.js
+msgid "Check method"
+msgstr ""
+
 #: htdocs/luci-static/resources/view/mayhem/settings.js
 msgid "Check servers every"
 msgstr ""
 
-#: htdocs/luci-static/resources/view/mayhem/diagnostics.js
+#: htdocs/luci-static/resources/mayhem/diag.js
 msgid "Checking…"
 msgstr ""
 
-#: htdocs/luci-static/resources/view/mayhem/diagnostics.js
+#: htdocs/luci-static/resources/mayhem/diag.js
 msgid "Checks every part of the traffic path. External addresses are requested through each section, so you can see where the traffic really leaves."
 msgstr ""
 
@@ -205,11 +209,11 @@ msgstr ""
 msgid "Client (User-Agent)"
 msgstr ""
 
-#: htdocs/luci-static/resources/view/mayhem/diagnostics.js
+#: htdocs/luci-static/resources/mayhem/diag.js
 msgid "Clock"
 msgstr ""
 
-#: htdocs/luci-static/resources/view/mayhem/diagnostics.js
+#: htdocs/luci-static/resources/mayhem/diag.js
 msgid "Close"
 msgstr ""
 
@@ -217,15 +221,15 @@ msgstr ""
 msgid "Config or key"
 msgstr ""
 
-#: htdocs/luci-static/resources/view/mayhem/diagnostics.js
+#: htdocs/luci-static/resources/mayhem/diag.js
 msgid "Configuration"
 msgstr ""
 
-#: htdocs/luci-static/resources/view/mayhem/diagnostics.js
+#: htdocs/luci-static/resources/mayhem/diag.js
 msgid "Copy report"
 msgstr ""
 
-#: htdocs/luci-static/resources/view/mayhem/diagnostics.js
+#: htdocs/luci-static/resources/mayhem/diag.js
 msgid "Copy the report and attach it to a question or a bug report. It holds no keys or passwords, but it does show your external addresses."
 msgstr ""
 
@@ -233,7 +237,7 @@ msgstr ""
 msgid "Create a section"
 msgstr ""
 
-#: htdocs/luci-static/resources/view/mayhem/diagnostics.js
+#: htdocs/luci-static/resources/mayhem/diag.js
 msgid "DNS"
 msgstr ""
 
@@ -249,7 +253,7 @@ msgstr ""
 msgid "Detect"
 msgstr ""
 
-#: htdocs/luci-static/resources/view/mayhem/diagnostics.js
+#: htdocs/luci-static/resources/mayhem/diag.js
 msgid "Device"
 msgstr ""
 
@@ -277,7 +281,7 @@ msgstr ""
 msgid "Diagnostics"
 msgstr ""
 
-#: htdocs/luci-static/resources/view/mayhem/diagnostics.js
+#: htdocs/luci-static/resources/mayhem/diag.js
 msgid "Diagnostics report"
 msgstr ""
 
@@ -285,7 +289,7 @@ msgstr ""
 msgid "Diagnostics request it directly and through every section; it must answer with the IP address as plain text."
 msgstr ""
 
-#: htdocs/luci-static/resources/view/mayhem/dashboard.js
+#: htdocs/luci-static/resources/mayhem/diag.js
 msgid "Direct"
 msgstr ""
 
@@ -309,7 +313,7 @@ msgstr ""
 msgid "Disabled"
 msgstr ""
 
-#: htdocs/luci-static/resources/view/mayhem/diagnostics.js
+#: htdocs/luci-static/resources/mayhem/diag.js
 msgid "Domain outside the lists (openwrt.org)"
 msgstr ""
 
@@ -369,11 +373,11 @@ msgstr ""
 msgid "Enabled"
 msgstr ""
 
-#: htdocs/luci-static/resources/view/mayhem/diagnostics.js
+#: htdocs/luci-static/resources/mayhem/diag.js
 msgid "Error"
 msgstr ""
 
-#: htdocs/luci-static/resources/view/mayhem/logs.js
+#: htdocs/luci-static/resources/mayhem/diag.js
 msgid "Everything"
 msgstr ""
 
@@ -405,7 +409,7 @@ msgstr ""
 msgid "Expected an http(s):// address or a file path"
 msgstr ""
 
-#: htdocs/luci-static/resources/view/mayhem/diagnostics.js
+#: htdocs/luci-static/resources/mayhem/diag.js
 msgid "External address"
 msgstr ""
 
@@ -441,7 +445,7 @@ msgstr ""
 msgid "Generate a new HWID"
 msgstr ""
 
-#: htdocs/luci-static/resources/view/mayhem/diagnostics.js
+#: htdocs/luci-static/resources/mayhem/diag.js
 msgid "Geo data, lists and subscriptions"
 msgstr ""
 
@@ -455,6 +459,10 @@ msgstr ""
 
 #: htdocs/luci-static/resources/view/mayhem/subscriptions.js
 msgid "How the router presents itself to subscription servers. The headers match the Happ client: x-hwid, x-device-os, x-ver-os, x-device-model, x-device-locale."
+msgstr ""
+
+#: htdocs/luci-static/resources/view/mayhem/dashboard.js
+msgid "ICMP ping"
 msgstr ""
 
 #: htdocs/luci-static/resources/view/mayhem/sections.js
@@ -549,7 +557,7 @@ msgstr ""
 msgid "JSON outbound"
 msgstr ""
 
-#: htdocs/luci-static/resources/view/mayhem/diagnostics.js
+#: htdocs/luci-static/resources/mayhem/diag.js
 msgid "Kernel"
 msgstr ""
 
@@ -593,19 +601,19 @@ msgstr ""
 msgid "Lists from files"
 msgstr ""
 
+#: htdocs/luci-static/resources/mayhem/diag.js
+msgid "Loading…"
+msgstr ""
+
 #: htdocs/luci-static/resources/view/mayhem/sections.js
 msgid "Local proxy port"
 msgstr ""
 
-#: htdocs/luci-static/resources/view/mayhem/logs.js
+#: htdocs/luci-static/resources/mayhem/diag.js
 msgid "Log level"
 msgstr ""
 
-#: htdocs/luci-static/resources/view/mayhem/logs.js
-msgid "Log level is now %s; xray restarts with it."
-msgstr ""
-
-#: htdocs/luci-static/resources/view/mayhem/logs.js
+#: htdocs/luci-static/resources/mayhem/diag.js
 msgid "Logs"
 msgstr ""
 
@@ -617,7 +625,7 @@ msgstr ""
 msgid "Manual choice"
 msgstr ""
 
-#: htdocs/luci-static/resources/view/mayhem/dashboard.js
+#: root/usr/share/luci/menu.d/luci-app-mayhem.json
 msgid "Mayhem"
 msgstr ""
 
@@ -629,11 +637,11 @@ msgstr ""
 msgid "Mayhem is turned off"
 msgstr ""
 
-#: htdocs/luci-static/resources/view/mayhem/diagnostics.js
+#: htdocs/luci-static/resources/mayhem/diag.js
 msgid "Memory"
 msgstr ""
 
-#: htdocs/luci-static/resources/view/mayhem/logs.js
+#: htdocs/luci-static/resources/mayhem/diag.js
 msgid "Messages of Mayhem, xray and dnsmasq from the system log. At the debug level xray logs every connection and DNS query: turn it back down when you are done."
 msgstr ""
 
@@ -669,7 +677,7 @@ msgstr ""
 msgid "Nightly update at"
 msgstr ""
 
-#: htdocs/luci-static/resources/view/mayhem/logs.js
+#: htdocs/luci-static/resources/mayhem/diag.js
 msgid "No messages yet."
 msgstr ""
 
@@ -677,15 +685,11 @@ msgstr ""
 msgid "No subscriptions yet: add them on the Subscriptions page."
 msgstr ""
 
-#: htdocs/luci-static/resources/view/mayhem/diagnostics.js
-msgid "Not checked yet"
-msgstr ""
-
 #: htdocs/luci-static/resources/view/mayhem/dashboard.js
 msgid "Not running"
 msgstr ""
 
-#: htdocs/luci-static/resources/view/mayhem/diagnostics.js
+#: htdocs/luci-static/resources/mayhem/diag.js
 msgid "Nothing to check"
 msgstr ""
 
@@ -717,7 +721,7 @@ msgstr ""
 msgid "Only matched lists: sections get what matches their rules, everything else goes direct. Everything through proxy: all traffic goes to the default section, except direct sections."
 msgstr ""
 
-#: htdocs/luci-static/resources/view/mayhem/diagnostics.js
+#: htdocs/luci-static/resources/mayhem/diag.js
 msgid "Other proxy clients"
 msgstr ""
 
@@ -733,11 +737,11 @@ msgstr ""
 msgid "Paste a WireGuard or AmneziaWG config (.conf) or an AmneziaVPN key (vpn://), or pick a .conf file. The tunnel is created without a default route: only traffic of Mayhem sections goes into it."
 msgstr ""
 
-#: htdocs/luci-static/resources/view/mayhem/diagnostics.js
+#: htdocs/luci-static/resources/mayhem/diag.js
 msgid "Policy routing"
 msgstr ""
 
-#: htdocs/luci-static/resources/view/mayhem/diagnostics.js
+#: htdocs/luci-static/resources/mayhem/diag.js
 msgid "Ports"
 msgstr ""
 
@@ -749,7 +753,7 @@ msgstr ""
 msgid "Prefer IPv6"
 msgstr ""
 
-#: htdocs/luci-static/resources/view/mayhem/diagnostics.js
+#: htdocs/luci-static/resources/mayhem/diag.js
 msgid "Problems found"
 msgstr ""
 
@@ -773,15 +777,11 @@ msgstr ""
 msgid "Proxy: through a server. Tunnel: into a network interface (AmneziaWG, WireGuard…). Direct: bypass the proxy. Block: drop the traffic."
 msgstr ""
 
-#: htdocs/luci-static/resources/view/mayhem/diagnostics.js
+#: htdocs/luci-static/resources/mayhem/diag.js
 msgid "Redirect to xray"
 msgstr ""
 
-#: htdocs/luci-static/resources/view/mayhem/logs.js
-msgid "Refresh"
-msgstr ""
-
-#: htdocs/luci-static/resources/view/mayhem/logs.js
+#: htdocs/luci-static/resources/mayhem/diag.js
 msgid "Refresh every 5 seconds"
 msgstr ""
 
@@ -805,7 +805,7 @@ msgstr ""
 msgid "Remote DNS through proxy"
 msgstr ""
 
-#: htdocs/luci-static/resources/view/mayhem/diagnostics.js
+#: htdocs/luci-static/resources/mayhem/diag.js
 msgid "Restart Mayhem"
 msgstr ""
 
@@ -817,7 +817,7 @@ msgstr ""
 msgid "Restarts xray when it holds too much memory for 3 minutes in a row, and dnsmasq when it is gone."
 msgstr ""
 
-#: htdocs/luci-static/resources/view/mayhem/diagnostics.js
+#: htdocs/luci-static/resources/mayhem/diag.js
 msgid "Routing"
 msgstr ""
 
@@ -825,7 +825,7 @@ msgstr ""
 msgid "Rules"
 msgstr ""
 
-#: htdocs/luci-static/resources/view/mayhem/diagnostics.js
+#: htdocs/luci-static/resources/mayhem/diag.js
 msgid "Run diagnostics"
 msgstr ""
 
@@ -881,7 +881,7 @@ msgstr ""
 msgid "Servers of these subscriptions are added to the section."
 msgstr ""
 
-#: htdocs/luci-static/resources/view/mayhem/diagnostics.js
+#: htdocs/luci-static/resources/mayhem/diag.js
 msgid "Service"
 msgstr ""
 
@@ -889,7 +889,7 @@ msgstr ""
 msgid "Services"
 msgstr ""
 
-#: htdocs/luci-static/resources/view/mayhem/settings.js
+#: root/usr/share/luci/menu.d/luci-app-mayhem.json
 msgid "Settings"
 msgstr ""
 
@@ -909,7 +909,7 @@ msgstr ""
 msgid "Speed"
 msgstr ""
 
-#: htdocs/luci-static/resources/view/mayhem/diagnostics.js
+#: htdocs/luci-static/resources/mayhem/diag.js
 msgid "Start Mayhem"
 msgstr ""
 
@@ -921,7 +921,7 @@ msgstr ""
 msgid "State"
 msgstr ""
 
-#: htdocs/luci-static/resources/view/mayhem/diagnostics.js
+#: htdocs/luci-static/resources/mayhem/diag.js
 msgid "Stop until restart"
 msgstr ""
 
@@ -934,7 +934,7 @@ msgid "Subscription %s: %s"
 msgstr ""
 
 #: htdocs/luci-static/resources/view/mayhem/subscriptions.js
-msgid "Subscription servers are added to sections on the Sections page. Downloads repeat by the interval the provider sets, or every 12 hours."
+msgid "Subscription servers are added to sections on the Routing page. Downloads repeat by the interval the provider sets, or every 12 hours."
 msgstr ""
 
 #: htdocs/luci-static/resources/view/mayhem/sections.js
@@ -945,12 +945,16 @@ msgstr ""
 msgid "Subscriptions without a section"
 msgstr ""
 
-#: htdocs/luci-static/resources/view/mayhem/dashboard.js
+#: htdocs/luci-static/resources/mayhem/diag.js
 msgid "System"
 msgstr ""
 
-#: htdocs/luci-static/resources/view/mayhem/diagnostics.js
+#: htdocs/luci-static/resources/mayhem/diag.js
 msgid "System information"
+msgstr ""
+
+#: htdocs/luci-static/resources/view/mayhem/dashboard.js
+msgid "TCP ping"
 msgstr ""
 
 #: htdocs/luci-static/resources/view/mayhem/sections.js
@@ -1029,10 +1033,6 @@ msgstr ""
 msgid "Through xray — more flexible. All rules work. To group the tunnel with VLESS and other servers and switch between them automatically, add it as a server of a proxy section instead. Speed is limited by xray."
 msgstr ""
 
-#: htdocs/luci-static/resources/view/mayhem/dashboard.js
-msgid "Traffic"
-msgstr ""
-
 #: htdocs/luci-static/resources/view/mayhem/settings.js
 msgid "Traffic coming from these interfaces is routed. The router itself always goes direct."
 msgstr ""
@@ -1045,7 +1045,7 @@ msgstr ""
 msgid "Tunnel sections in kernel mode need dnsmasq-full: until it is installed their domains go through xray."
 msgstr ""
 
-#: htdocs/luci-static/resources/view/mayhem/diagnostics.js
+#: htdocs/luci-static/resources/mayhem/diag.js
 msgid "Tunnels"
 msgstr ""
 
@@ -1053,11 +1053,11 @@ msgstr ""
 msgid "Tunnels as servers"
 msgstr ""
 
-#: htdocs/luci-static/resources/view/mayhem/diagnostics.js
+#: htdocs/luci-static/resources/mayhem/diag.js
 msgid "Turn Mayhem off"
 msgstr ""
 
-#: htdocs/luci-static/resources/view/mayhem/diagnostics.js
+#: htdocs/luci-static/resources/mayhem/diag.js
 msgid "Turn Mayhem on"
 msgstr ""
 
@@ -1075,6 +1075,10 @@ msgstr ""
 
 #: htdocs/luci-static/resources/view/mayhem/sections.js
 msgid "URL or file"
+msgstr ""
+
+#: htdocs/luci-static/resources/view/mayhem/dashboard.js
+msgid "URL test"
 msgstr ""
 
 #: htdocs/luci-static/resources/view/mayhem/dashboard.js
@@ -1105,19 +1109,15 @@ msgstr ""
 msgid "Upload a .dat file"
 msgstr ""
 
-#: htdocs/luci-static/resources/view/mayhem/diagnostics.js
+#: htdocs/luci-static/resources/mayhem/diag.js
 msgid "Version"
 msgstr ""
 
-#: htdocs/luci-static/resources/view/mayhem/diagnostics.js
-msgid "View logs"
-msgstr ""
-
-#: htdocs/luci-static/resources/view/mayhem/diagnostics.js
+#: htdocs/luci-static/resources/mayhem/diag.js
 msgid "Warning"
 msgstr ""
 
-#: htdocs/luci-static/resources/view/mayhem/diagnostics.js
+#: htdocs/luci-static/resources/mayhem/diag.js
 msgid "Watchdog"
 msgstr ""
 
@@ -1137,7 +1137,7 @@ msgstr ""
 msgid "Works"
 msgstr ""
 
-#: htdocs/luci-static/resources/view/mayhem/diagnostics.js
+#: htdocs/luci-static/resources/mayhem/diag.js
 msgid "Works, with warnings"
 msgstr ""
 
@@ -1213,7 +1213,7 @@ msgstr ""
 msgid "never"
 msgstr ""
 
-#: htdocs/luci-static/resources/view/mayhem/diagnostics.js
+#: htdocs/luci-static/resources/mayhem/diag.js
 msgid "nftables and routing"
 msgstr ""
 

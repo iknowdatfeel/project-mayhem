@@ -16,7 +16,7 @@ return view.extend({
 			.filter((s) => (s.type || 'proxy') === 'proxy')
 			.map((s) => s['.name']);
 
-		const m = new form.Map('mayhem', _('Settings'));
+		const m = new form.Map('mayhem');
 		let s, o;
 
 		s = m.section(form.NamedSection, 'settings', 'settings', _('General'));
