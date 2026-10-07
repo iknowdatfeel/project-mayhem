@@ -8,7 +8,7 @@
 . "${MAYHEM_LIB_DIR:-/usr/share/mayhem}/lib.sh"
 
 [ -f "$MAYHEM_RUN_DIR/env" ] && . "$MAYHEM_RUN_DIR/env"
-export GOMEMLIMIT
+export GOMEMLIMIT XRAY_LOCATION_ASSET
 
 xray_pid=""
 stopping=0
@@ -49,7 +49,7 @@ if [ "$ready" = 1 ]; then
 	# Saved server choices go in before any traffic does.
 	mayhem_apply_overrides
 
-	if mayhem_net_up && mayhem_dns_up; then
+	if mayhem_net_up && mayhem_tunnels_up && mayhem_dns_up; then
 		touch "$MAYHEM_RUN_DIR/active"
 		mayhem_log "started, traffic is redirected to xray (pid $xray_pid)"
 	else
@@ -68,7 +68,7 @@ while kill -0 "$xray_pid" 2>/dev/null; do
 	rc=$?
 done
 
-rm -f "$MAYHEM_RUN_DIR/active" "$MAYHEM_RUN_DIR/xray.pid"
+rm -f "$MAYHEM_RUN_DIR/active" "$MAYHEM_RUN_DIR/xray.pid" "$MAYHEM_RUN_DIR/watchdog.mem"
 mayhem_net_down
 mayhem_dns_down
 

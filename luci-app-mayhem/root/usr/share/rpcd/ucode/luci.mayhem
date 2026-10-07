@@ -6,6 +6,8 @@
 
 import * as fs from 'fs';
 import { parse_link } from 'mayhem.links';
+import { list_key, entries } from 'mayhem.rules';
+import { parse_conf, is_amnezia, uci_sections } from 'mayhem.awg';
 import * as C from 'mayhem.const';
 
 const XRAY = getenv('MAYHEM_XRAY_BIN') ?? '/usr/libexec/mayhem/xray';
@@ -133,6 +135,100 @@ function subscriptions() {
 	return out;
 }
 
+function update_running() {
+	const pid = trim(fs.readfile(`${RUN}/update.lock/pid`) ?? '');
+
+	return pid != '' && fs.access(`/proc/${pid}`) == true;
+}
+
+// Geo sources and rule lists: what was downloaded, when, and errors.
+// With `full`, also every category of every source with its size.
+function data_status(full) {
+	const c = uci_cursor();
+	const state = read_json(`${RUN}/data-state.json`) ?? {};
+	const res = { running: update_running(), sources: [], lists: [] };
+
+	if (full)
+		res.categories = { geosite: [], geoip: [] };
+
+	c.foreach('mayhem', 'geo_source', (s) => {
+		const idx = read_json(`${C.GEO_DIR}/${s['.name']}.json`);
+		const st = state.geo?.[s['.name']] ?? {};
+		const kind = s.kind == 'geoip' ? 'geoip' : 'geosite';
+
+		push(res.sources, {
+			name: s['.name'],
+			kind: kind,
+			enabled: (s.enabled ?? '1') == '1',
+			updated: max(st.last_ok ?? 0, idx?.updated ?? 0) || null,
+			size: idx?.size,
+			categories: idx ? length(keys(idx.categories ?? {})) : null,
+			copied: idx?.copied ?? [],
+			error: st.error,
+			via: st.via
+		});
+
+		if (full && idx && (s.enabled ?? '1') == '1')
+			for (let cat in sort(keys(idx.categories ?? {})))
+				push(res.categories[kind], { name: cat, count: idx.categories[cat], source: s['.name'] });
+	});
+
+	const seen = {};
+
+	c.foreach('mayhem', 'section', (s) => {
+		for (let u in entries(s.list_url)) {
+			if (seen[u])
+				continue;
+
+			seen[u] = true;
+
+			const st = state.lists?.[u] ?? {};
+			const f = fs.stat(`${C.LISTS_DIR}/${list_key(u)}.lst`);
+
+			push(res.lists, {
+				url: u, section: s['.name'],
+				updated: max(st.last_ok ?? 0, f?.mtime ?? 0) || null,
+				bytes: f?.size, error: st.error
+			});
+		}
+	});
+
+	return res;
+}
+
+function install_running() {
+	const pid = trim(fs.readfile(`${RUN}/install.pid`) ?? '');
+
+	return pid != '' && fs.access(`/proc/${pid}`) == true;
+}
+
+function has_awg() {
+	return fs.access('/lib/netifd/proto/amneziawg.sh') == true && fs.access('/usr/bin/awg') == true;
+}
+
+function has_wireguard() {
+	return fs.access('/lib/netifd/proto/wireguard.sh') == true;
+}
+
+// Tunnel sections: state from the watchdog and the latest handshake.
+function tunnel_state(name, device) {
+	const st = trim(fs.readfile(`${RUN}/tunnel.${name}`) ?? '');
+	let hs = null;
+
+	if (match(device ?? '', /^[A-Za-z0-9_.-]+$/)) {
+		const out = run(`(awg show ${device} latest-handshakes || wg show ${device} latest-handshakes) 2>/dev/null`) ?? '';
+
+		for (let line in split(out, '\n')) {
+			const m = match(line, /[[:space:]]([0-9]+)$/);
+
+			if (m && int(m[1]) > (hs ?? 0))
+				hs = int(m[1]);
+		}
+	}
+
+	return { state: st != '' ? st : null, handshake: hs };
+}
+
 function find_node(state, tag) {
 	for (let sn in keys(state?.sections ?? {}))
 		for (let n in state.sections[sn].nodes ?? [])
@@ -146,9 +242,282 @@ const ACTIONS = {
 	start: '/etc/init.d/mayhem start',
 	stop: '/etc/init.d/mayhem stop',
 	restart: '/etc/init.d/mayhem restart',
+	reload: '/etc/init.d/mayhem reload',
 	enable: '/usr/bin/mayhem enable',
 	disable: '/usr/bin/mayhem disable'
 };
+
+const IP_CHECK_URL = 'https://api.ipify.org';
+const LIB = getenv('MAYHEM_LIB_DIR') ?? '/usr/share/mayhem';
+
+// --- diagnostics ------------------------------------------------------------------
+// Each check: { group, name, status: ok | warn | fail | info, detail }.
+
+function check(list, group, name, status, detail) {
+	push(list, { group: group, name: name, status: status, detail: detail ?? '' });
+}
+
+function lines_of(text) {
+	return filter(split(text ?? '', '\n'), (l) => trim(l) != '');
+}
+
+function listening(ports) {
+	const out = run(`sh -c '. ${LIB}/lib.sh; for p in ${join(' ', ports)}; do mayhem_port_listening $p && echo $p; done' 2>/dev/null`) ?? '';
+
+	return map(lines_of(out), (l) => int(l));
+}
+
+function diag_local() {
+	const res = [];
+	const c = uci_cursor();
+	const enabled = c.get('mayhem', 'settings', 'enabled') == '1';
+	const pid = xray_pid();
+	const active = pid != null && fs.access(`${RUN}/active`) == true;
+	const st = read_json(`${RUN}/status.json`) ?? {};
+	const state = read_json(`${RUN}/nodes.json`) ?? { sections: {} };
+
+	// Service
+	if (!enabled)
+		check(res, 'service', 'Routing', 'warn', 'disabled in the settings');
+	else if (active)
+		check(res, 'service', 'Routing', 'ok', 'traffic is redirected to xray');
+	else if (pid)
+		check(res, 'service', 'Routing', 'fail', 'xray runs, but traffic is not redirected');
+	else
+		check(res, 'service', 'Routing', 'fail', 'xray is not running');
+
+	let mstatus = null;
+
+	try {
+		mstatus = json(run('/usr/bin/mayhem status 2>/dev/null') ?? '');
+	}
+	catch (e) {
+		mstatus = null;
+	}
+
+	if (mstatus?.conflicts)
+		check(res, 'service', 'Other proxy clients', 'fail', `running: ${mstatus.conflicts}`);
+	else
+		check(res, 'service', 'Other proxy clients', 'ok', 'none running');
+
+	// Configuration
+	for (let e in st.errors ?? [])
+		check(res, 'config', 'Error', 'fail', e);
+
+	for (let w in st.warnings ?? [])
+		check(res, 'config', 'Warning', 'warn', w);
+
+	if (!length(st.errors ?? []) && !length(st.warnings ?? []))
+		check(res, 'config', 'Configuration', 'ok', 'no errors or warnings');
+
+	// xray
+	const ver = trim(fs.readfile(`${RUN}/xray.version`) ?? '');
+
+	check(res, 'xray', 'Version', ver != '' ? 'ok' : (fs.access(XRAY) ? 'info' : 'fail'),
+		ver != '' ? ver : (fs.access(XRAY) ? 'installed' : 'not installed: mayhem xray-install'));
+
+	if (pid) {
+		const rss = rss_kb(pid);
+		const limit = (st.memlimit_mib ?? 0) * 1024;
+
+		check(res, 'xray', 'Memory', (limit && rss > limit) ? 'warn' : 'ok',
+			sprintf('%d MiB in use, soft limit %d MiB', int((rss ?? 0) / 1024), st.memlimit_mib ?? 0));
+
+		const want = [ C.TPROXY_PORT, C.DNS_PORT, C.API_PORT ];
+		const got = listening(want);
+		const missing = filter(want, (p) => index(got, p) < 0);
+
+		check(res, 'xray', 'Ports', length(missing) ? 'fail' : 'ok',
+			length(missing) ? `not listening: ${join(', ', missing)}` : `listening: ${join(', ', want)}`);
+	}
+
+	// Kernel side
+	const chain = run(`nft list chain inet ${C.NFT_TABLE} prerouting 2>/dev/null`) ?? '';
+
+	if (chain == '') {
+		check(res, 'kernel', 'nftables', active ? 'fail' : 'info', 'no Mayhem table');
+	}
+	else {
+		let packets = 0;
+
+		for (let l in lines_of(chain)) {
+			const m = match(l, /tproxy .*counter packets ([0-9]+)/);
+
+			if (m)
+				packets += int(m[1]);
+		}
+
+		check(res, 'kernel', 'nftables', 'ok', `table loaded, ${packets} packets sent to xray`);
+	}
+
+	const rules = run('ip rule 2>/dev/null') ?? '';
+
+	check(res, 'kernel', 'Policy routing', index(rules, `lookup ${C.RT_TABLE}`) >= 0 ? 'ok' : (active ? 'fail' : 'info'),
+		index(rules, `lookup ${C.RT_TABLE}`) >= 0 ? `rule for table ${C.RT_TABLE} is in place` : 'no rule');
+
+	// DNS
+	const dnsmasq_pid = trim(run('pidof dnsmasq 2>/dev/null') ?? '');
+
+	check(res, 'dns', 'dnsmasq', dnsmasq_pid != '' ? 'ok' : 'fail', dnsmasq_pid != '' ? 'running' : 'not running');
+
+	const conf_dirs = lines_of(run(`sh -c '. ${LIB}/lib.sh; mayhem_dnsmasq_dirs' 2>/dev/null`));
+	const has_conf = length(filter(conf_dirs, (d) => fs.access(`${d}/mayhem.conf`))) > 0;
+
+	check(res, 'dns', 'Redirect to xray', has_conf ? 'ok' : (active ? 'fail' : 'info'),
+		has_conf ? 'dnsmasq forwards queries to xray' : 'dnsmasq does not use xray');
+
+	// Tunnels
+	for (let sn in keys(state.sections ?? {})) {
+		const s = state.sections[sn];
+
+		if (s.type != 'interface')
+			continue;
+
+		const t = tunnel_state(sn, s.device);
+		const age = t.handshake ? time() - t.handshake : null;
+
+		check(res, 'tunnels', `${sn} (${s.interface})`, t.state == 'up' ? 'ok' : (t.state == 'down' ? 'fail' : 'info'),
+			(t.state ?? 'unknown') + (age != null ? sprintf(', last handshake %d s ago', age) : ''));
+	}
+
+	// Data
+	const data = data_status(false);
+
+	for (let x in data.sources)
+		if (x.enabled && x.error)
+			check(res, 'data', `Geo source ${x.name}`, 'warn', x.error);
+
+	for (let l in data.lists)
+		if (l.error)
+			check(res, 'data', `List ${l.url}`, 'warn', l.error);
+
+	for (let sub in subscriptions())
+		if (sub.error)
+			check(res, 'data', `Subscription ${sub.name}`, 'warn', sub.error);
+		else if (sub.info?.hwid?.limit)
+			check(res, 'data', `Subscription ${sub.name}`, 'fail', 'device limit reached');
+
+	// System
+	const year = localtime(time()).year;
+
+	check(res, 'system', 'Clock', year >= 2025 ? 'ok' : 'fail',
+		year >= 2025 ? 'set' : 'the clock is wrong: TLS connections will fail');
+
+	for (let l in lines_of(fs.readfile(`${RUN}/watchdog.log`)))
+		check(res, 'system', 'Watchdog', 'warn', l);
+
+	const targets = [ { id: 'direct', name: 'Direct' } ];
+
+	for (let sn in keys(state.sections ?? {})) {
+		const s = state.sections[sn];
+
+		if (s.type == 'proxy' || s.type == 'interface')
+			push(targets, { id: sn, name: sn, type: s.type });
+	}
+
+	return { checks: res, targets: targets, active: active };
+}
+
+// Resolves a domain through dnsmasq: [ addresses ] or null.
+function lookup(domain) {
+	const out = run(`nslookup ${q(domain)} 127.0.0.1 2>/dev/null`) ?? '';
+	const ips = [];
+	let answer = false;
+
+	for (let l in lines_of(out)) {
+		if (match(l, /^Name:/))
+			answer = true;
+
+		const m = answer ? match(l, /^Address( [0-9]+)?:[[:space:]]*([0-9a-fA-F:.]+)$/) : null;
+
+		if (m)
+			push(ips, m[2]);
+	}
+
+	return length(ips) ? ips : null;
+}
+
+function first_domain(sec) {
+	for (let d in entries(sec.domain)) {
+		const m = match(d, /^(domain:|full:)?([a-z0-9-]+(\.[a-z0-9-]+)+)$/);
+
+		if (m)
+			return m[2];
+	}
+
+	return null;
+}
+
+function diag_dns() {
+	const res = [];
+	const c = uci_cursor();
+	const fake = c.get('mayhem', 'dns', 'fakedns') == '1';
+	const direct = lookup('openwrt.org');
+
+	check(res, 'dns', 'Domain outside the lists (openwrt.org)', direct ? 'ok' : 'fail',
+		direct ? join(', ', direct) : 'no answer');
+
+	c.foreach('mayhem', 'section', (s) => {
+		if ((s.enabled ?? '1') != '1' || index([ 'proxy', 'interface' ], s.type ?? 'proxy') < 0)
+			return;
+
+		const d = first_domain(s);
+
+		if (!d)
+			return;
+
+		const ips = lookup(d);
+		let status = ips ? 'ok' : 'fail';
+		let detail = ips ? join(', ', ips) : 'no answer';
+
+		if (ips && fake && (s.type ?? 'proxy') == 'proxy' && !match(ips[0], /^198\.(18|19)\./)) {
+			status = 'warn';
+			detail += ' (FakeDNS is on, a 198.18.x.x address was expected: the device may use another DNS)';
+		}
+
+		check(res, 'dns', `${s['.name']}: ${d}`, status, detail);
+	});
+
+	return { checks: res };
+}
+
+// External address and response time through a section (or direct).
+function diag_exit(target) {
+	const res = [];
+	const state = read_json(`${RUN}/nodes.json`) ?? { sections: {} };
+	const url = uci_cursor().get('mayhem', 'settings', 'ip_check_url') ?? IP_CHECK_URL;
+	let via = '';
+
+	if (target != 'direct') {
+		const s = state.sections?.[target];
+
+		if (!s)
+			return { checks: [ { group: 'exit', name: target, status: 'fail', detail: 'unknown section' } ] };
+
+		if (s.type == 'interface') {
+			if (!match(s.device ?? '', /^[A-Za-z0-9_.-]+$/))
+				return { checks: [ { group: 'exit', name: target, status: 'fail', detail: 'no device' } ] };
+
+			via = `--interface ${q(s.device)}`;
+		}
+		else {
+			if (!xray_pid())
+				return { checks: [ { group: 'exit', name: target, status: 'fail', detail: 'xray is not running' } ] };
+
+			via = `-x ${q(`socks5h://sec-${target}:${C.HELPER_PASS}@127.0.0.1:${C.HELPER_PORT}`)}`;
+		}
+	}
+
+	const out = trim(run(`curl -s -m 10 ${via} -w ' %{http_code} %{time_total}' ${q(url)} 2>/dev/null`) ?? '');
+	const m = match(out, /^([0-9a-fA-F:.]+) ([0-9]+) ([0-9.]+)$/);
+
+	if (m && int(m[2]) == 200)
+		check(res, 'exit', target == 'direct' ? 'Direct' : target, 'ok', sprintf('%s, %d ms', m[1], int(m[3] * 1000)));
+	else
+		check(res, 'exit', target == 'direct' ? 'Direct' : target, 'fail', `no answer from ${url}`);
+
+	return { checks: res };
+}
 
 const methods = {
 	status: {
@@ -191,11 +560,19 @@ const methods = {
 					});
 				}
 
-				push(sections, {
+				const sec = {
 					name: sn, type: s.type, mode: s.mode, balancer: s.balancer,
 					active: s.type == 'proxy' ? active_tag(s, m.observatory) : null,
 					pinned: s.override ?? null, nodes: nodes, traffic: traffic
-				});
+				};
+
+				if (s.type == 'interface') {
+					sec.interface = s.interface;
+					sec.device = s.device;
+					sec.tunnel = tunnel_state(sn, s.device);
+				}
+
+				push(sections, sec);
 			}
 
 			for (let tag in keys(m.stats)) {
@@ -216,12 +593,14 @@ const methods = {
 				active: pid != null && fs.access(`${RUN}/active`) == true,
 				xray: trim(fs.readfile(`${RUN}/xray.version`) ?? '') || null,
 				rss_kb: pid ? rss_kb(pid) : null,
+				dnsmasq: trim(run('pidof dnsmasq 2>/dev/null') ?? '') != '',
 				status: read_json(`${RUN}/status.json`),
 				mode: state.mode,
 				probe_url: state.probe_url,
 				sections: sections,
 				totals: totals,
-				subscriptions: subscriptions()
+				subscriptions: subscriptions(),
+				data: data_status(false)
 			};
 		}
 	},
@@ -287,7 +666,7 @@ const methods = {
 			const n = f.node;
 			const addr = n.address ?? '';
 
-			if (!match(addr, /^[A-Za-z0-9.:_-]+$/))
+			if (req.args?.method != 'url' && !match(addr, /^[A-Za-z0-9.:_-]+$/))
 				return { error: 'no address' };
 
 			let out, m;
@@ -354,6 +733,296 @@ const methods = {
 				}
 
 			return { error: 'update failed' };
+		}
+	},
+
+	geo: {
+		call: function() {
+			return data_status(true);
+		}
+	},
+
+	// Geo downloads take minutes: they run in the background and the page
+	// polls the state.
+	data_update: {
+		args: { what: 'geo', name: '' },
+		call: function(req) {
+			const what = req.args?.what;
+			const name = req.args?.name ?? '';
+
+			if (what != 'geo' && what != 'lists')
+				return { error: 'unknown data' };
+
+			if (name != '' && !match(name, /^[A-Za-z0-9_]+$/))
+				return { error: 'invalid name' };
+
+			if (update_running())
+				return { busy: true };
+
+			const cmd = what == 'geo' ? `geo-update ${name != '' ? q(name) : ''}` : 'lists-update';
+
+			system(`/usr/bin/mayhem ${cmd} >/dev/null 2>&1 &`);
+
+			return { started: true };
+		}
+	},
+
+	// A .dat file uploaded through LuCI becomes a geo source. Unlike downloads it
+	// is kept whole on flash, so big files are refused.
+	geo_import: {
+		args: { name: '', kind: 'geosite' },
+		call: function(req) {
+			const name = req.args?.name ?? '';
+			const kind = req.args?.kind == 'geoip' ? 'geoip' : 'geosite';
+			const up = '/tmp/mayhem-upload.dat';
+			const st = fs.stat(up);
+
+			if (!match(name, /^[A-Za-z0-9_]+$/))
+				return { error: 'invalid name' };
+
+			if (!st)
+				return { error: 'no uploaded file' };
+
+			if (st.size > 8 * 1024 * 1024) {
+				fs.unlink(up);
+				return { error: 'the file is larger than 8 MB: add it by URL instead' };
+			}
+
+			const c = uci_cursor();
+
+			if (c.get('mayhem', name) != null && c.get('mayhem', name) != 'geo_source') {
+				fs.unlink(up);
+				return { error: 'this name is taken by another section' };
+			}
+
+			const dir = `${C.GEO_DIR}/upload`;
+			const path = `${dir}/${name}.dat`;
+			const data = fs.readfile(up);
+
+			fs.unlink(up);
+			fs.mkdir(C.GEO_DIR, 0755);
+			fs.mkdir(dir, 0755);
+
+			if (fs.writefile(`${path}.tmp`, data) == null || !fs.rename(`${path}.tmp`, path))
+				return { error: `cannot save the file: ${fs.error()}` };
+
+			c.set('mayhem', name, 'geo_source');
+			c.set('mayhem', name, 'kind', kind);
+			c.set('mayhem', name, 'url', path);
+			c.set('mayhem', name, 'enabled', '1');
+			c.commit('mayhem');
+
+			system(`/usr/bin/mayhem geo-update ${q(name)} >/dev/null 2>&1 &`);
+
+			return { ok: true, path: path };
+		}
+	},
+
+	tunnel_info: {
+		call: function() {
+			const out = run('ubus call network.interface dump 2>/dev/null') ?? '';
+			let dump = null;
+
+			try {
+				dump = json(out);
+			}
+			catch (e) {
+				dump = null;
+			}
+
+			return {
+				awg: has_awg(),
+				wireguard: has_wireguard(),
+				nftset: index(run('dnsmasq --version 2>/dev/null') ?? '', 'nftset') >= 0,
+				install: {
+					running: install_running(),
+					what: trim(fs.readfile(`${RUN}/install.what`) ?? '') || null,
+					rc: trim(fs.readfile(`${RUN}/install.rc`) ?? '') || null,
+					log: fs.readfile(`${RUN}/install.log`)
+				},
+				interfaces: map(dump?.interface ?? [], (i) => ({
+					name: i.interface, proto: i.proto, up: i.up, device: i.l3_device ?? i.device
+				}))
+			};
+		}
+	},
+
+	// Package changes take a while and restart services: they run in the
+	// background, tunnel_info reports progress.
+	system_install: {
+		args: { what: '' },
+		call: function(req) {
+			const cmds = { awg: 'awg-install', dnsmasq: 'dnsmasq-full' };
+			const cmd = cmds[req.args?.what];
+
+			if (!cmd)
+				return { error: 'unknown package' };
+
+			if (install_running())
+				return { busy: true };
+
+			fs.writefile(`${RUN}/install.what`, req.args.what);
+			fs.unlink(`${RUN}/install.rc`);
+			system(`sh -c 'echo $$ > ${RUN}/install.pid; /usr/bin/mayhem ${cmd} > ${RUN}/install.log 2>&1; echo $? > ${RUN}/install.rc; rm -f ${RUN}/install.pid' >/dev/null 2>&1 &`);
+
+			return { started: true };
+		}
+	},
+
+	// Creates a network interface (and optionally a Mayhem section) from a
+	// WireGuard/AmneziaWG .conf. vpn:// keys are decoded in the browser.
+	awg_import: {
+		args: { name: '', conf: '', section: true },
+		call: function(req) {
+			const name = req.args?.name ?? '';
+
+			if (!match(name, /^[a-z][a-z0-9_]{0,14}$/))
+				return { error: 'the name must start with a letter and have at most 15 lower-case letters, digits or _' };
+
+			let conf, cfg;
+
+			try {
+				conf = parse_conf(req.args?.conf);
+			}
+			catch (e) {
+				return { error: e.message };
+			}
+
+			const amnezia = is_amnezia(conf);
+			let proto;
+
+			if (has_awg())
+				proto = 'amneziawg';
+			else if (!amnezia && has_wireguard())
+				proto = 'wireguard';
+			else
+				return { error: amnezia ? 'install AmneziaWG first' : 'install AmneziaWG or WireGuard first' };
+
+			try {
+				cfg = uci_sections(conf, proto);
+			}
+			catch (e) {
+				return { error: e.message };
+			}
+
+			const c = require('uci').cursor(C.UCI_DIR);
+
+			c.load('network');
+			c.load('firewall');
+			c.load('mayhem');
+
+			if (c.get('network', name) != null)
+				return { error: `network interface ${name} already exists` };
+
+			c.set('network', name, 'interface');
+
+			for (let k in keys(cfg.iface))
+				c.set('network', name, k, cfg.iface[k]);
+
+			for (let p in cfg.peers) {
+				const sid = c.add('network', `${proto}_${name}`);
+
+				for (let k in keys(p))
+					c.set('network', sid, k, p[k]);
+			}
+
+			// One firewall zone for all Mayhem tunnels: LAN traffic leaves through
+			// them with masquerade, nothing comes in.
+			let zone = null;
+
+			c.foreach('firewall', 'zone', (z) => {
+				if (z.name == 'mayhem')
+					zone = z['.name'];
+			});
+
+			if (!zone) {
+				zone = c.add('firewall', 'zone');
+				c.set('firewall', zone, 'name', 'mayhem');
+				c.set('firewall', zone, 'input', 'REJECT');
+				c.set('firewall', zone, 'output', 'ACCEPT');
+				c.set('firewall', zone, 'forward', 'REJECT');
+				c.set('firewall', zone, 'masq', '1');
+				c.set('firewall', zone, 'mtu_fix', '1');
+
+				const fwd = c.add('firewall', 'forwarding');
+
+				c.set('firewall', fwd, 'src', 'lan');
+				c.set('firewall', fwd, 'dest', 'mayhem');
+			}
+
+			const nets = c.get('firewall', zone, 'network') ?? [];
+
+			c.set('firewall', zone, 'network', [ ...(type(nets) == 'array' ? nets : [ nets ]), name ]);
+
+			let section = null;
+
+			if (req.args?.section !== false) {
+				section = name;
+
+				for (let i = 2; c.get('mayhem', section) != null; i++)
+					section = `${name}_${i}`;
+
+				c.set('mayhem', section, 'section');
+				c.set('mayhem', section, 'enabled', '1');
+				c.set('mayhem', section, 'type', 'interface');
+				c.set('mayhem', section, 'interface', name);
+				c.set('mayhem', section, 'route_mode', 'kernel');
+				c.commit('mayhem');
+			}
+
+			c.commit('network');
+			c.commit('firewall');
+
+			system(`(/etc/init.d/network reload; /etc/init.d/firewall reload) >/dev/null 2>&1 &`);
+
+			return { ok: true, interface: name, proto: proto, section: section, v6: cfg.v6 };
+		}
+	},
+
+	diagnose: {
+		args: { part: 'local', target: '' },
+		call: function(req) {
+			switch (req.args?.part) {
+			case 'local': return diag_local();
+			case 'dns': return diag_dns();
+			case 'exit': return diag_exit(req.args?.target ?? 'direct');
+			default: return { error: 'unknown part' };
+			}
+		}
+	},
+
+	logs: {
+		args: { component: 'all', lines: 300 },
+		call: function(req) {
+			const n = int(req.args?.lines ?? 300);
+			const pats = {
+				all: /mayhem|xray|dnsmasq/i,
+				mayhem: /mayhem/i,
+				xray: /xray/i,
+				dnsmasq: /dnsmasq/i
+			};
+			const re = pats[req.args?.component] ?? pats.all;
+			const out = filter(lines_of(run('logread 2>/dev/null')), (l) => match(l, re));
+
+			return { lines: slice(out, -(n > 0 && n <= 2000 ? n : 300)) };
+		}
+	},
+
+	set_log_level: {
+		args: { level: 'warning' },
+		call: function(req) {
+			const level = req.args?.level;
+
+			if (index([ 'debug', 'info', 'warning', 'error', 'none' ], level) < 0)
+				return { error: 'unknown level' };
+
+			const c = uci_cursor();
+
+			c.set('mayhem', 'settings', 'log_level', level);
+			c.commit('mayhem');
+			system('/etc/init.d/mayhem reload >/dev/null 2>&1 &');
+
+			return { ok: true };
 		}
 	},
 

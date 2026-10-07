@@ -17,6 +17,10 @@ config settings 'settings'
 	option mux_concurrency '8'
 	option mux_xudp_concurrency '16'
 	option mux_xudp_udp443 'reject'
+	# watchdog: restart xray when it uses more than watchdog_mem % of RAM
+	# for 3 minutes; restart dnsmasq when it is gone
+	option watchdog '1'
+	option watchdog_mem '40'
 	# automatic server choice: how often and with which URL servers are checked
 	option probe_url 'https://www.gstatic.com/generate_204'
 	option probe_interval '3m'
@@ -31,6 +35,27 @@ config dns 'dns'
 	option proxy_section ''
 	option fakedns '0'
 	option hijack '1'
+
+# Geo data: geosite/geoip files are read on the router as they download and
+# only the categories that sections use are kept in /etc/mayhem/geo.
+config geo 'geo'
+	# hour of the nightly update (router time)
+	option update_hour '4'
+	# auto (direct, then through a section) | direct | section
+	option update_via 'auto'
+	option update_section ''
+	# rule lists from URLs are refreshed every N hours
+	option lists_interval '24'
+
+config geo_source 'rf_geosite'
+	option enabled '1'
+	option kind 'geosite'
+	option url 'https://github.com/runetfreedom/russia-v2ray-rules-dat/releases/latest/download/geosite.dat'
+
+config geo_source 'rf_geoip'
+	option enabled '1'
+	option kind 'geoip'
+	option url 'https://github.com/runetfreedom/russia-v2ray-rules-dat/releases/latest/download/geoip.dat'
 
 # How subscription requests present the router (Happ-compatible headers).
 # hwid and model are filled in on install.
@@ -57,6 +82,12 @@ config section 'main'
 	# one link per entry; servers of subscriptions can be added too
 	# list link 'vless://...'
 	# list subscription 'mysub'
+	# rules: example.com, full:, keyword:, regexp:, geosite:youtube, geosite:SOURCE:CATEGORY
+	# list domain 'geosite:youtube'
+	# list ip 'geoip:telegram'
+	# lists with one rule per line, from URLs (refreshed) or files on the router
+	# list list_url 'https://example.com/list.lst'
+	# list list_file '/etc/mayhem/my.lst'
 	# option filter 'NL|DE'         # take only servers whose names match
 	# option exclude ''
 	# auto: fastest by URL test, manual: the one chosen on the dashboard

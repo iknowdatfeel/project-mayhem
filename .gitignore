@@ -3,3 +3,4 @@ sdk/
 *.ipk
 *.apk
 *.tmp
+__pycache__/

@@ -17,5 +17,23 @@ fi
 [ -n "$(uci -q get mayhem.device.os_version)" ] || uci set mayhem.device.os_version='14'
 [ -n "$(uci -q get mayhem.device.locale)" ] || uci set mayhem.device.locale='ru'
 
+# Geo sources for installs that predate geo support.
+if ! uci -q get mayhem.geo >/dev/null; then
+	uci set mayhem.geo=geo
+	uci set mayhem.geo.update_hour='4'
+	uci set mayhem.geo.update_via='auto'
+	uci set mayhem.geo.lists_interval='24'
+fi
+
+if ! uci -q show mayhem | grep -q '=geo_source$'; then
+	base='https://github.com/runetfreedom/russia-v2ray-rules-dat/releases/latest/download'
+	uci set mayhem.rf_geosite=geo_source
+	uci set mayhem.rf_geosite.kind='geosite'
+	uci set mayhem.rf_geosite.url="$base/geosite.dat"
+	uci set mayhem.rf_geoip=geo_source
+	uci set mayhem.rf_geoip.kind='geoip'
+	uci set mayhem.rf_geoip.url="$base/geoip.dat"
+fi
+
 uci commit mayhem
 exit 0

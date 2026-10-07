@@ -1,0 +1,54 @@
+config settings 'settings'
+	option enabled '1'
+	option mode 'lists'
+	list interface 'br-lan'
+	option log_level 'warning'
+	option watchdog '1'
+
+config dns 'dns'
+	list remote 'https://1.1.1.1/dns-query'
+	option hijack '1'
+
+config geo 'geo'
+	option update_via 'direct'
+
+config geo_source 'site'
+	option kind 'geosite'
+	option url '@FIX@/dat/geosite.dat'
+
+config geo_source 'ip'
+	option kind 'geoip'
+	option url '@FIX@/dat/geoip.dat'
+
+config device 'device'
+	option hwid 'TESTHWID12345678'
+	option user_agent 'Happ/3.13.0'
+
+config subscription 'mysub'
+	option url 'http://example.invalid/sub'
+
+config section 'main'
+	option type 'proxy'
+	list link 'trojan://pw@de.example:443?sni=de.example#DE'
+	list subscription 'mysub'
+	list iface_node 'awg0'
+	option select 'auto'
+	list domain 'youtube.test'
+	list domain 'geosite:youtube'
+	list ip 'geoip:telegram'
+	option local_port '1080'
+
+config section 'awg'
+	option type 'interface'
+	option interface 'awg0'
+	option route_mode 'kernel'
+	list domain 'tunnel.test'
+
+config section 'ru'
+	option type 'exclusion'
+	list ip 'geoip:ru'
+	list list_url 'http://example.invalid/list.lst'
+
+config section 'ads'
+	option type 'block'
+	list domain 'ads.test'

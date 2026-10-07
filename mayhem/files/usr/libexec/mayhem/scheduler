@@ -1,20 +1,33 @@
 #!/bin/sh
-# Mayhem: background jobs. Checks subscriptions every minute and downloads
-# the ones that are due; reloads the service when their servers changed.
-# A reload only restarts xray when its generated config really changed.
+# Mayhem: background jobs. Every minute downloads what is due: subscriptions,
+# geo data (missing categories at once, the rest nightly) and rule lists;
+# reloads the service when something changed. A reload only restarts xray
+# when its generated config or the geo files it uses really changed.
+# Then checks the tunnels and runs the watchdog (xray memory, dnsmasq).
 
 . "${MAYHEM_LIB_DIR:-/usr/share/mayhem}/lib.sh"
 
 sleep 10
 
 while :; do
-	ucode "$MAYHEM_SUB" update >/dev/null 2>&1
-	rc=$?
+	reload=0
 
-	if [ "$rc" = 3 ]; then
+	ucode "$MAYHEM_SUB" update >/dev/null 2>&1
+	if [ "$?" = 3 ]; then
 		mayhem_log "subscriptions changed, applying the new servers"
-		/etc/init.d/mayhem reload
+		reload=1
 	fi
+
+	ucode "$MAYHEM_UPDATE" due >/dev/null 2>&1
+	if [ "$?" = 3 ]; then
+		mayhem_log "geo data or rule lists changed, applying them"
+		reload=1
+	fi
+
+	[ "$reload" = 1 ] && /etc/init.d/mayhem reload
+
+	mayhem_tunnels_check
+	mayhem_watchdog
 
 	sleep 60
 done

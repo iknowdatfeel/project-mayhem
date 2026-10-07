@@ -12,7 +12,7 @@
 
 import * as fs from 'fs';
 import { build } from 'mayhem.build';
-import { RUN_DIR } from 'mayhem.const';
+import { RUN_DIR, GEO_DIR } from 'mayhem.const';
 
 const opts = { out: RUN_DIR, model: null, check: false, print: false };
 
@@ -48,6 +48,8 @@ const status = {
 	mode: res.mode,
 	ipv6: res.ipv6,
 	memlimit_mib: res.memlimit_mib,
+	geo_pending: res.state?.geo_pending,
+	lists_missing: res.state?.lists_missing,
 	...res.status
 };
 
@@ -85,9 +87,22 @@ if (!res.ok) {
 put('xray.json', sprintf('%.J\n', res.xray));
 put('nft.conf', res.nft);
 put('dnsmasq.conf', res.dnsmasq);
-put('env', `GOMEMLIMIT=${res.memlimit_mib}MiB\nMAYHEM_IPV6=${res.ipv6 ? 1 : 0}\n`);
+put('env', `GOMEMLIMIT=${res.memlimit_mib}MiB\nMAYHEM_IPV6=${res.ipv6 ? 1 : 0}\nXRAY_LOCATION_ASSET=${GEO_DIR}\n`);
+
+// xray reads geo files only at start: procd watches this stamp to restart it
+// when a file it uses was updated.
+let stamp = '';
+
+for (let f in sort(res.geo_files ?? [])) {
+	const st = fs.stat(`${GEO_DIR}/${f}`);
+
+	stamp += `${f} ${st?.size ?? 0} ${st?.mtime ?? 0}\n`;
+}
+
+put('geo.stamp', stamp);
 put('nodes.json', sprintf('%J\n', res.state));
 put('overrides', length(res.overrides) ? join('\n', res.overrides) + '\n' : '');
+put('tunnels', res.tunnels ?? '');
 
 for (let w in res.status.warnings)
 	warn(`mayhem: warning: ${w}\n`);

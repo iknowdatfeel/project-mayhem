@@ -6,11 +6,14 @@
 			"type": "firstchild"
 		},
 		"depends": {
-			"acl": [ "luci-app-mayhem" ],
-			"uci": { "mayhem": true }
+			"acl": [
+				"luci-app-mayhem"
+			],
+			"uci": {
+				"mayhem": true
+			}
 		}
 	},
-
 	"admin/services/mayhem/dashboard": {
 		"title": "Dashboard",
 		"order": 10,
@@ -19,7 +22,6 @@
 			"path": "mayhem/dashboard"
 		}
 	},
-
 	"admin/services/mayhem/sections": {
 		"title": "Sections",
 		"order": 20,
@@ -28,7 +30,6 @@
 			"path": "mayhem/sections"
 		}
 	},
-
 	"admin/services/mayhem/subscriptions": {
 		"title": "Subscriptions",
 		"order": 25,
@@ -37,13 +38,28 @@
 			"path": "mayhem/subscriptions"
 		}
 	},
-
 	"admin/services/mayhem/settings": {
 		"title": "Settings",
 		"order": 30,
 		"action": {
 			"type": "view",
 			"path": "mayhem/settings"
+		}
+	},
+	"admin/services/mayhem/diagnostics": {
+		"title": "Diagnostics",
+		"order": 35,
+		"action": {
+			"type": "view",
+			"path": "mayhem/diagnostics"
+		}
+	},
+	"admin/services/mayhem/logs": {
+		"title": "Logs",
+		"order": 40,
+		"action": {
+			"type": "view",
+			"path": "mayhem/logs"
 		}
 	}
 }

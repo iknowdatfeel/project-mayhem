@@ -23,8 +23,13 @@ fail=0
 
 export MAYHEM_LIB_DIR="$FILES/usr/share/mayhem"
 export MAYHEM_RUN_DIR="$WORK/run"
-export MAYHEM_DNSMASQ_INIT=true
+# A real dnsmasq runs in the router namespace (tunnel sections need its nftset).
+export MAYHEM_DNSMASQ_INIT="$WORK/dnsmasq-init"
+export MAYHEM_DNSMASQ_DIRS="$WORK/dnsmasq.d"
 export MAYHEM_XRAY_BIN="$XRAY"
+export MAYHEM_GEO_DIR="$WORK/geo-store"
+export MAYHEM_LISTS_DIR="$WORK/lists"
+export MAYHEM_TMP_DIR="$WORK"
 
 SS_KEY='AAECAwQFBgcICQoLDA0ODw=='
 SS_LINK='ss://2022-blake3-aes-128-gcm:AAECAwQFBgcICQoLDA0ODw%3D%3D@45.0.0.3:8443#srv'
@@ -46,7 +51,7 @@ expect() {
 	local what="$1" want="$2" got
 	shift 2
 	got="$(ip netns exec client curl -s -m 4 "$@" 2>/dev/null)" || got="failed"
-	[ "$got" = "$want" ] && ok "$what" || bad "$what: expected $want, got $got"
+	if [ "$got" = "$want" ]; then ok "$what"; else bad "$what: expected $want, got $got"; fi
 }
 
 dns() {
@@ -89,12 +94,12 @@ rpc() {
 expect_dns() {
 	local got
 	got="$(dns "$2" "$3" "$4" "$5")"
-	[ "$got" = "$6" ] && ok "$1" || bad "$1: expected $6, got $got"
+	if [ "$got" = "$6" ]; then ok "$1"; else bad "$1: expected $6, got $got"; fi
 }
 
 cleanup() {
 	local n p
-	for n in client router wan; do
+	for n in client router wan tunnel; do
 		for p in $(ip netns pids "$n" 2>/dev/null); do kill "$p" 2>/dev/null; done
 		ip netns del "$n" 2>/dev/null
 	done
@@ -149,8 +154,11 @@ cleanup 2>/dev/null
 WORK="$(mktemp -d)"
 mkdir -p "$MAYHEM_RUN_DIR"
 
-for n in client router wan; do
-	ip netns add "$n" && ip -n "$n" link set lo up || { echo "cannot create namespaces"; exit 1; }
+for n in client router wan tunnel; do
+	if ! ip netns add "$n" || ! ip -n "$n" link set lo up; then
+		echo "cannot create namespaces"
+		exit 1
+	fi
 done
 
 ip link add c0 netns client type veth peer name br-lan netns router
@@ -168,6 +176,44 @@ ip -n wan link set w0 up
 ip -n wan route add 192.168.1.0/24 via 45.0.0.1
 ip netns exec router sysctl -qw net.ipv4.ip_forward=1
 
+# A stand-in for a VPN tunnel: router tun0 <-> tunnel namespace, which
+# masquerades to the wan as 45.0.1.1. proxy_arp makes "dev tun0" routes work
+# on the veth the way they do on a point-to-point WireGuard device.
+ip link add tun0 netns router type veth peer name t0 netns tunnel
+ip link add tw0 netns tunnel type veth peer name w1 netns wan
+ip -n router addr add 10.99.0.1/24 dev tun0
+ip -n router link set tun0 up
+ip -n tunnel addr add 10.99.0.2/24 dev t0
+ip -n tunnel link set t0 up
+ip -n tunnel addr add 45.0.1.1/24 dev tw0
+ip -n tunnel link set tw0 up
+ip -n wan addr add 45.0.1.2/24 dev w1
+ip -n wan link set w1 up
+ip -n tunnel route add default via 45.0.1.2
+ip -n tunnel route add 192.168.1.0/24 via 10.99.0.1
+ip netns exec tunnel sysctl -qw net.ipv4.ip_forward=1
+ip netns exec tunnel sysctl -qw net.ipv4.conf.t0.proxy_arp=1
+ip netns exec tunnel nft -f - <<'NFT'
+table ip nat {
+	chain post {
+		type nat hook postrouting priority srcnat; policy accept;
+		oifname "tw0" masquerade
+	}
+}
+NFT
+
+mkdir -p "$MAYHEM_DNSMASQ_DIRS"
+cat > "$MAYHEM_DNSMASQ_INIT" <<EOF
+#!/bin/sh
+# runs inside the router namespace, like the real init script would
+[ "\$1" = enabled ] && exit 1
+[ -f "$WORK/dnsmasq.pid" ] && kill "\$(cat "$WORK/dnsmasq.pid")" 2>/dev/null
+sleep 0.3
+exec dnsmasq --conf-file=/dev/null --conf-dir="$MAYHEM_DNSMASQ_DIRS" --listen-address=192.168.1.1,127.0.0.1 \
+	--bind-interfaces --port=53 --pid-file="$WORK/dnsmasq.pid" --user=root --no-hosts
+EOF
+chmod +x "$MAYHEM_DNSMASQ_INIT"
+
 cat > "$WORK/web.py" <<'PY'
 import http.server, sys
 WORK = sys.argv[1]
@@ -175,7 +221,15 @@ class H(http.server.BaseHTTPRequestHandler):
     def do_GET(self):
         if self.path == '/204':
             self.send_response(204); self.end_headers(); return
-        if self.path == '/sub':
+        if self.path.startswith('/files/'):
+            try:
+                b = open(WORK + '/files/' + self.path[7:].replace('/', ''), 'rb').read()
+            except OSError:
+                self.send_response(404); self.end_headers(); return
+            with open(WORK + '/files.log', 'a') as f:
+                f.write('%s %s\n' % (self.client_address[0], self.path))
+            self.send_response(200)
+        elif self.path == '/sub':
             with open(WORK + '/sub.log', 'a') as f:
                 f.write('source: %s\n' % self.client_address[0])
                 for k, v in self.headers.items():
@@ -264,8 +318,11 @@ if start_mayhem "$WORK/lists.json"; then
 
 	kill -9 "$(proc_in router xray)" 2>/dev/null
 	sleep 2
-	ip netns exec router nft list table inet mayhem >/dev/null 2>&1 &&
-		bad "rules removed after xray crash" || ok "rules removed after xray crash"
+	if ip netns exec router nft list table inet mayhem >/dev/null 2>&1; then
+		bad "rules removed after xray crash"
+	else
+		ok "rules removed after xray crash"
+	fi
 	expect "traffic goes direct while xray is down" 192.168.1.2 http://45.0.0.2:8080/
 fi
 stop_mayhem
@@ -403,9 +460,12 @@ fi
 stop_mayhem
 
 write_uci "	option select 'manual'
-	option selected 'B'" direct
+	option selected 'B'
+	option local_port '1080'" direct
 if start_mayhem uci; then
 	expect "manual choice is applied at start" 45.0.0.8 -H 'Host: youtube.test' http://45.0.0.2:8080/
+	expect "local SOCKS port of the section" 45.0.0.8 -x socks5h://192.168.1.1:1080 http://45.0.0.2:8080/
+	expect "local HTTP proxy port of the section" 45.0.0.8 -x http://192.168.1.1:1080 http://45.0.0.2:8080/
 
 	write_uci "	option select 'manual'
 	option selected 'B'" section
@@ -423,10 +483,206 @@ if start_mayhem uci; then
 fi
 stop_mayhem
 
-ip netns exec router nft list table inet mayhem >/dev/null 2>&1 &&
-	bad "rules removed on stop" || ok "rules removed on stop"
-ip netns exec router ip rule | grep -q 'lookup 109' &&
-	bad "policy rule removed on stop" || ok "policy rule removed on stop"
+# --- geo data and rule lists --------------------------------------------------------
+
+echo "== geo data and lists"
+mkdir -p "$WORK/files"
+python3 "$ROOT/tests/geo/mkdat.py" "$WORK/files"
+printf '# test list\nlisted.test\n' > "$WORK/files/my.lst"
+
+cat > "$MAYHEM_UCI_DIR/mayhem" <<EOF
+config settings 'settings'
+	option enabled '1'
+	option mode 'lists'
+	list interface 'br-lan'
+	option ip_family 'ipv4_only'
+
+config dns 'dns'
+	list domestic '45.0.0.2'
+	list remote '45.0.0.4'
+
+config geo 'geo'
+	option update_via 'direct'
+
+config geo_source 'site'
+	option kind 'geosite'
+	option url 'http://45.0.0.2:8080/files/geosite.dat'
+
+config geo_source 'ip'
+	option kind 'geoip'
+	option url 'http://45.0.0.2:8080/files/geoip.dat'
+
+config section 'main'
+	option type 'proxy'
+	list link '$SS_LINK_A'
+	list domain 'geosite:youtube'
+	list list_url 'http://45.0.0.2:8080/files/my.lst'
+
+config section 'ru'
+	option type 'exclusion'
+	list ip 'geoip:ru'
+EOF
+
+if start_mayhem uci; then
+	expect "category not downloaded yet -> direct" 45.0.0.1 -H 'Host: youtube.test' http://45.0.0.2:8080/
+fi
+stop_mayhem
+
+out="$(ip netns exec router "$UCODE" -L "$FILES/usr/share/ucode/*.uc" ${UCODE_LIB:+-L "$UCODE_LIB"} \
+	"$FILES/usr/share/mayhem/update.uc" due 2>&1)"
+rc=$?
+case "$rc:$out" in
+	3:*'"copied": [ "youtube" ]'*'"copied": [ "ru" ]'*) ok "geo data and the list downloaded" ;;
+	*) bad "geo download: exit code $rc: $out" ;;
+esac
+
+if [ "$(stat -c %s "$MAYHEM_GEO_DIR/site.dat")" -lt 1000 ]; then
+	ok "only the used category is kept"
+else
+	bad "trimmed geosite file is $(stat -c %s "$MAYHEM_GEO_DIR/site.dat") bytes"
+fi
+
+if start_mayhem uci; then
+	expect "geosite domain -> proxy" 45.0.0.3 -H 'Host: youtube.test' http://45.0.0.2:8080/
+	expect "geosite full: -> proxy" 45.0.0.3 -H 'Host: www.yt.test' http://45.0.0.2:8080/
+	expect "geosite keyword: -> proxy" 45.0.0.3 -H 'Host: mytubekw.example' http://45.0.0.2:8080/
+	expect "domain from a list URL -> proxy" 45.0.0.3 -H 'Host: listed.test' http://45.0.0.2:8080/
+	expect "other domain -> xray direct" 45.0.0.1 -H 'Host: other.test' http://45.0.0.2:8080/
+	expect "geoip exclusion -> kernel direct" 192.168.1.2 http://45.0.0.6:8080/
+	expect_dns "geosite domain -> remote DNS" router 127.0.0.1 12753 youtube.test 45.0.0.7
+fi
+stop_mayhem
+
+# --- tunnel sections ------------------------------------------------------------------
+
+echo "== tunnel sections"
+
+tunnels_check() {
+	ip netns exec router sh -c ". '$FILES/usr/share/mayhem/lib.sh'; mayhem_tunnels_check"
+}
+
+cat > "$MAYHEM_UCI_DIR/mayhem" <<EOF
+config settings 'settings'
+	option enabled '1'
+	option mode 'lists'
+	list interface 'br-lan'
+	option ip_family 'ipv4_only'
+	option ip_check_url 'http://45.0.0.2:8080/'
+
+config dns 'dns'
+	list domestic '45.0.0.2'
+	list remote '45.0.0.4'
+	option hijack '1'
+
+config section 'awg'
+	option type 'interface'
+	option interface 'tun0'
+	option route_mode 'kernel'
+	list domain 'tunnel.test'
+	list domain 'backup.test'
+	list ip '45.0.0.6/32'
+
+config section 'vpn'
+	option type 'interface'
+	option interface 'tun0'
+	option route_mode 'xray'
+	list domain 'viaxray.test'
+
+config section 'mix'
+	option type 'proxy'
+	list link '$SS_LINK_A'
+	list iface_node 'tun0'
+	option select 'manual'
+	option selected 'tun0'
+	list domain 'mixed.test'
+EOF
+
+if start_mayhem uci; then
+	if grep -q 'nftset=/tunnel.test/backup.test/' "$MAYHEM_DNSMASQ_DIRS/mayhem.conf"; then
+		ok "dnsmasq gets the tunnel domains"
+	else
+		bad "dnsmasq config: $(cat "$MAYHEM_DNSMASQ_DIRS/mayhem.conf")"
+	fi
+
+	expect "subnet of a kernel tunnel section -> tunnel" 45.0.1.1 http://45.0.0.6:8080/
+	expect_dns "client DNS goes through dnsmasq" client 192.168.1.1 53 tunnel.test 45.0.0.7
+	expect "resolved domain of a kernel tunnel section -> tunnel" 45.0.1.1 http://45.0.0.7:8080/
+	expect_dns "port 53 is redirected to dnsmasq" client 8.8.8.8 53 something.test 45.0.0.2
+	expect "domain missed by DNS -> xray backup -> tunnel" 45.0.1.1 -H 'Host: backup.test' http://45.0.0.2:8080/
+	expect "tunnel section through xray" 45.0.1.1 -H 'Host: viaxray.test' http://45.0.0.2:8080/
+	expect "tunnel as a server of a proxy section" 45.0.1.1 -H 'Host: mixed.test' http://45.0.0.2:8080/
+
+	out="$(rpc diagnose '{"part":"local"}')"
+	case "$out" in
+		*'traffic is redirected to xray'*'"name": "Ports", "status": "ok"'*) ok "diagnostics: service checks" ;;
+		*) bad "diagnostics local: $out" ;;
+	esac
+	case "$(rpc diagnose '{"part":"exit","target":"mix"}')" in
+		*'"status": "ok", "detail": "45.0.1.1, '*) ok "diagnostics: external address through a section" ;;
+		*) bad "diagnostics exit through mix: $(rpc diagnose '{"part":"exit","target":"mix"}')" ;;
+	esac
+	case "$(rpc diagnose '{"part":"exit","target":"direct"}')" in
+		*'"detail": "45.0.0.1, '*) ok "diagnostics: direct external address" ;;
+		*) bad "diagnostics direct: $(rpc diagnose '{"part":"exit","target":"direct"}')" ;;
+	esac
+
+	tunnels_check
+	if [ "$(cat "$MAYHEM_RUN_DIR/tunnel.awg" 2>/dev/null)" = up ]; then ok "watchdog sees the tunnel working"; else bad "tunnel state: $(cat "$MAYHEM_RUN_DIR/tunnel.awg" 2>/dev/null)"; fi
+
+	ip -n router link set tun0 down
+	tunnels_check
+	if [ "$(cat "$MAYHEM_RUN_DIR/tunnel.awg" 2>/dev/null)" = down ]; then ok "watchdog sees the tunnel down"; else bad "tunnel state after link down"; fi
+	expect "tunnel down: kernel section goes direct" 192.168.1.2 http://45.0.0.6:8080/
+	expect "tunnel down: xray backup goes direct" 45.0.0.1 -H 'Host: backup.test' http://45.0.0.2:8080/
+	expect "tunnel down: xray mode goes direct" 45.0.0.1 -H 'Host: viaxray.test' http://45.0.0.2:8080/
+
+	ip -n router link set tun0 up
+	ip -n router addr add 10.99.0.1/24 dev tun0 2>/dev/null
+	sleep 1
+	tunnels_check
+	expect "tunnel back: kernel section uses it again" 45.0.1.1 http://45.0.0.6:8080/
+	expect "tunnel back: xray mode uses it again" 45.0.1.1 -H 'Host: viaxray.test' http://45.0.0.2:8080/
+fi
+stop_mayhem
+
+if ip netns exec router ip rule | grep -q 'lookup 111'; then
+	bad "tunnel rules removed on stop"
+else
+	ok "tunnel rules removed on stop"
+fi
+
+echo "== watchdog"
+if start_mayhem uci; then
+	for i in 1 2; do
+		ip netns exec router sh -c ". '$FILES/usr/share/mayhem/lib.sh'; MAYHEM_WATCHDOG=1 MAYHEM_WATCHDOG_MEM=0 mayhem_watchdog"
+	done
+
+	if [ -n "$(proc_in router xray)" ]; then ok "two checks over the memory limit are tolerated"; else bad "xray restarted too early"; fi
+
+	ip netns exec router sh -c ". '$FILES/usr/share/mayhem/lib.sh'; MAYHEM_WATCHDOG=1 MAYHEM_WATCHDOG_MEM=0 mayhem_watchdog"
+	sleep 2
+
+	if [ -z "$(proc_in router xray)" ] && ! ip netns exec router nft list table inet mayhem >/dev/null 2>&1; then
+		ok "third check restarts xray, traffic goes direct meanwhile"
+	else
+		bad "watchdog did not restart xray"
+	fi
+
+	if grep -q 'xray restarted' "$MAYHEM_RUN_DIR/watchdog.log"; then ok "watchdog notes the restart"; else bad "no watchdog note"; fi
+fi
+stop_mayhem
+
+if ip netns exec router nft list table inet mayhem >/dev/null 2>&1; then
+	bad "rules removed on stop"
+else
+	ok "rules removed on stop"
+fi
+
+if ip netns exec router ip rule | grep -q 'lookup 109'; then
+	bad "policy rule removed on stop"
+else
+	ok "policy rule removed on stop"
+fi
 
 [ "$fail" = 0 ] && echo "netns: all tests passed" || echo "netns: some tests failed"
 exit "$fail"

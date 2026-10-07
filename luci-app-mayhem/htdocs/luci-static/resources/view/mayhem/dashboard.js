@@ -9,6 +9,7 @@ const callAction = rpc.declare({ object: 'luci.mayhem', method: 'action', params
 const callSelect = rpc.declare({ object: 'luci.mayhem', method: 'select_node', params: [ 'section', 'tag' ], expect: { '': {} } });
 const callProbe = rpc.declare({ object: 'luci.mayhem', method: 'probe', params: [ 'tag', 'method' ], expect: { '': {} } });
 const callSubUpdate = rpc.declare({ object: 'luci.mayhem', method: 'sub_update', params: [ 'name' ], expect: { '': {} } });
+const callDataUpdate = rpc.declare({ object: 'luci.mayhem', method: 'data_update', params: [ 'what', 'name' ], expect: { '': {} } });
 
 const COLORS = { ok: '#2e7d32', warn: '#ef6c00', bad: '#c62828', off: '#9e9e9e' };
 const PROBE_PARALLEL = 4;
@@ -185,7 +186,8 @@ return view.extend({
 			[ _('State'), state ],
 			[ _('Mode'), d.mode === 'global' ? _('Everything through proxy, except exclusions') : _('Only matched lists') ],
 			[ _('xray'), d.xray || E('em', _('not installed — run "mayhem xray-install"')) ],
-			[ _('xray memory'), d.rss_kb ? '%s (%s %d MiB)'.format(bytes(d.rss_kb * 1024), _('soft limit'), st.memlimit_mib || 0) : '—' ]
+			[ _('xray memory'), d.rss_kb ? '%s (%s %d MiB)'.format(bytes(d.rss_kb * 1024), _('soft limit'), st.memlimit_mib || 0) : '—' ],
+			[ 'dnsmasq', d.dnsmasq ? badge(COLORS.ok, _('Working')) : badge(COLORS.bad, _('Not running')) ]
 		];
 
 		if (this.speed)
@@ -212,7 +214,28 @@ return view.extend({
 		]);
 	},
 
+	renderTunnel(s, now) {
+		const t = s.tunnel || {};
+		const state = t.state === 'up' ? badge(COLORS.ok, _('Works'))
+			: t.state === 'down' ? badge(COLORS.bad, _('Down, traffic goes direct'))
+			: badge(COLORS.off, _('Unknown'));
+		const hs = t.handshake ? _('last handshake %s').format(ago(t.handshake, now)) : '';
+
+		return E('div', { 'class': 'cbi-section' }, [
+			E('h3', '%s — %s'.format(s.name, _('Tunnel'))),
+			E('div', { 'class': 'cbi-section-descr' }, [
+				state, ' ',
+				'%s %s · %s'.format(_('interface'), s.interface || '?', s.mode === 'xray' ? _('through xray') : _('kernel mode')),
+				hs ? ' · ' + hs : '',
+				' · %s ↓ %s ↑ %s'.format(s.mode === 'xray' ? _('traffic') : _('through xray'), bytes(s.traffic.down), bytes(s.traffic.up))
+			])
+		]);
+	},
+
 	renderSection(s) {
+		if (s.type === 'interface')
+			return this.renderTunnel(s, this.data.time);
+
 		if (s.type !== 'proxy')
 			return E('div', { 'class': 'cbi-section' }, [
 				E('h3', '%s — %s'.format(s.name, s.type === 'block' ? _('Block') : _('Direct')))
@@ -251,8 +274,8 @@ return view.extend({
 					n.source && n.source !== 'link' ? [ n.name, E('small', { 'style': 'color:#888' }, ' · ' + n.source) ] : n.name),
 				E('td', { 'class': 'td' }, n.protocol),
 				E('td', { 'class': 'td' }, typeof url === 'string' ? E('span', { 'style': 'color:' + COLORS.bad }, url) : ms(url)),
-				E('td', { 'class': 'td' }, ms(p.tcp)),
-				E('td', { 'class': 'td' }, ms(p.icmp)),
+				E('td', { 'class': 'td' }, n.protocol === 'interface' ? '—' : ms(p.tcp)),
+				E('td', { 'class': 'td' }, n.protocol === 'interface' ? '—' : ms(p.icmp)),
 				E('td', { 'class': 'td' }, '↓ %s ↑ %s'.format(bytes(n.down), bytes(n.up))),
 				E('td', { 'class': 'td' }, (s.balancer && !active)
 					? E('button', { 'class': 'btn cbi-button cbi-button-apply', 'click': ui.createHandlerFn(this, 'select', s.name, n.tag) }, _('Use'))
@@ -328,10 +351,68 @@ return view.extend({
 		]);
 	},
 
+	updateData(what) {
+		return callDataUpdate(what, '').then((r) => {
+			if (r.busy)
+				ui.addNotification(null, E('p', _('An update is already running')), 'info');
+			else if (r.error)
+				ui.addNotification(null, E('p', r.error), 'error');
+
+			return this.refresh();
+		});
+	},
+
+	renderData(d) {
+		const data = d.data || {};
+		const sources = data.sources || [];
+		const lists = data.lists || [];
+
+		if (!sources.length && !lists.length)
+			return '';
+
+		const head = E('tr', { 'class': 'tr table-titles' }, [
+			E('th', { 'class': 'th' }, _('Source')),
+			E('th', { 'class': 'th' }, _('Categories in use')),
+			E('th', { 'class': 'th' }, _('Updated'))
+		]);
+
+		const rows = sources.filter((s) => s.enabled).map((s) => E('tr', { 'class': 'tr' }, [
+			E('td', { 'class': 'td' }, [ E('strong', s.name), E('small', { 'style': 'color:#888' }, ' · ' + s.kind) ]
+				.concat(s.error ? [ E('div', { 'style': 'color:' + COLORS.bad }, s.error) ] : [])),
+			E('td', { 'class': 'td' }, s.copied.length ? s.copied.join(', ') : '—'),
+			E('td', { 'class': 'td' }, ago(s.updated, d.time))
+		]));
+
+		for (const l of lists)
+			rows.push(E('tr', { 'class': 'tr' }, [
+				E('td', { 'class': 'td', 'style': 'word-break:break-all' }, [ l.url, E('small', { 'style': 'color:#888' }, ' · ' + l.section) ]
+					.concat(l.error ? [ E('div', { 'style': 'color:' + COLORS.bad }, l.error) ] : [])),
+				E('td', { 'class': 'td' }, l.bytes != null ? bytes(l.bytes) : '—'),
+				E('td', { 'class': 'td' }, ago(l.updated, d.time))
+			]));
+
+		const running = data.running;
+
+		return E('div', { 'class': 'cbi-section' }, [
+			E('h3', _('Geo data and lists')),
+			E('div', { 'style': 'margin:6px 0' }, [
+				E('button', {
+					'class': 'btn cbi-button', 'disabled': running ? '' : null,
+					'click': ui.createHandlerFn(this, 'updateData', 'geo')
+				}, running ? _('Updating…') : _('Update geo data')), ' ',
+				E('button', {
+					'class': 'btn cbi-button', 'disabled': (running || !lists.length) ? '' : null,
+					'click': ui.createHandlerFn(this, 'updateData', 'lists')
+				}, _('Update lists'))
+			]),
+			E('table', { 'class': 'table' }, [ head ].concat(rows))
+		]);
+	},
+
 	renderBody(d) {
 		return [ this.renderSummary(d) ]
 			.concat((d.sections || []).map((s) => this.renderSection(s)))
-			.concat([ this.renderSubscriptions(d) ]);
+			.concat([ this.renderSubscriptions(d), this.renderData(d) ]);
 	},
 
 	render(d) {

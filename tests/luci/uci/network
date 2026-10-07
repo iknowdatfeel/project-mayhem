@@ -1,0 +1,27 @@
+config interface 'loopback'
+	option device 'lo'
+	option proto 'static'
+	option ipaddr '127.0.0.1'
+	option netmask '255.0.0.0'
+
+config interface 'lan'
+	option device 'br-lan'
+	option proto 'static'
+	option ipaddr '192.168.1.1'
+	option netmask '255.255.255.0'
+
+config interface 'wan'
+	option device 'eth1'
+	option proto 'dhcp'
+
+config interface 'awg0'
+	option proto 'amneziawg'
+	option private_key 'cGFzc3Bhc3NwYXNzcGFzc3Bhc3NwYXNzcGFzc3Bhc3M='
+	list addresses '10.8.1.2/32'
+
+config amneziawg_awg0
+	option public_key 'Zm9vYmFyZm9vYmFyZm9vYmFyZm9vYmFyZm9vYmFyMTI='
+	list allowed_ips '0.0.0.0/0'
+	option endpoint_host '203.0.113.10'
+	option endpoint_port '51820'
+	option route_allowed_ips '0'

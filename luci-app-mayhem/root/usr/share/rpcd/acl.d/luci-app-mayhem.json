@@ -3,13 +3,16 @@
 		"description": "Grant access to Mayhem",
 		"read": {
 			"ubus": {
-				"luci.mayhem": [ "status", "dashboard", "check", "parse_link" ]
+				"luci.mayhem": [ "status", "dashboard", "check", "parse_link", "geo", "tunnel_info", "logs" ]
 			},
-			"uci": [ "mayhem" ]
+			"uci": [ "mayhem", "network", "firewall" ]
 		},
 		"write": {
 			"ubus": {
-				"luci.mayhem": [ "action", "select_node", "probe", "sub_update" ]
+				"luci.mayhem": [ "action", "select_node", "probe", "sub_update", "data_update", "geo_import", "system_install", "awg_import", "diagnose", "set_log_level" ]
+			},
+			"file": {
+				"/tmp/mayhem-upload.dat": [ "write" ]
 			},
 			"uci": [ "mayhem" ]
 		}

@@ -5,7 +5,8 @@
 'use strict';
 
 import { parse_link, outbound_host, outbound_port, outbound_udp } from 'mayhem.links';
-import { is_true, entries, norm_domain, norm_ip, is_ip, dns_server } from 'mayhem.rules';
+import { is_true, entries, norm_domain, norm_ip, is_ip, dns_server, split_list } from 'mayhem.rules';
+import { resolve, HEAVY } from 'mayhem.geo';
 import * as C from 'mayhem.const';
 
 const LOG_LEVELS = [ 'debug', 'info', 'warning', 'error', 'none' ];
@@ -31,6 +32,26 @@ function int_opt(v, def, min, max) {
 function uniq_push(arr, v) {
 	if (index(arr, v) < 0)
 		push(arr, v);
+}
+
+// Append-only list without duplicates; lists from geo data and downloaded
+// rule lists hold tens of thousands of entries, so lookups go through a map.
+function uset() {
+	return {
+		items: [], seen: {},
+
+		add(v) {
+			if (!this.seen[v]) {
+				this.seen[v] = true;
+				push(this.items, v);
+			}
+		},
+
+		add_all(arr) {
+			for (let v in arr)
+				this.add(v);
+		}
+	};
 }
 
 // User-supplied outbound JSON: a single outbound object, an array of them,
@@ -63,6 +84,11 @@ function apply_sockopt(ob, strategy) {
 	if (ob.protocol == 'wireguard')
 		return;
 
+	if (ob.streamSettings?.sockopt?.interface && ob.streamSettings.sockopt.domainStrategy == null) {
+		ob.streamSettings.sockopt.domainStrategy = strategy;
+		return;
+	}
+
 	ob.streamSettings ??= {};
 	ob.streamSettings.sockopt ??= {};
 	ob.streamSettings.sockopt.domainStrategy ??= strategy;
@@ -86,15 +112,29 @@ function apply_mux(ob, S) {
 function nft_set(name, ftype, elems) {
 	let s = `\tset ${name} {\n\t\ttype ${ftype}\n\t\tflags interval\n\t\tauto-merge\n`;
 
-	if (length(elems))
-		s += `\t\telements = { ${join(', ', elems)} }\n`;
+	if (length(elems)) {
+		s += '\t\telements = {';
+
+		// geoip sets have thousands of subnets: a few per line keeps lines short.
+		for (let i = 0; i < length(elems); i += 8)
+			s += `${i ? ',' : ''}\n\t\t\t${join(', ', slice(elems, i, i + 8))}`;
+
+		s += '\n\t\t}\n';
+	}
 
 	return s + '\t}\n';
 }
 
-function build_nft(S, v6, sets) {
+// Marks for tunnel sections in kernel mode: TUN_MARK | index, matched with
+// TUN_MASK, so other users of the mark (fw4, mwan3) keep their bits.
+function tun_mark(idx) {
+	return sprintf('0x%x', C.TUN_MARK | idx);
+}
+
+function build_nft(S, v6, sets, tunnels, dns_redirect) {
 	const ifaces = map(length(sets.ifaces) ? sets.ifaces : [ 'br-lan' ], (i) => sprintf('%J', i));
 	const mark = sprintf('0x%x', C.FWMARK);
+	const keep = sprintf('0x%x', 0xffffffff & ~C.TUN_MASK);
 	let s = `table inet ${C.NFT_TABLE}\ndelete table inet ${C.NFT_TABLE}\n\n`;
 
 	s += `table inet ${C.NFT_TABLE} {\n`;
@@ -105,15 +145,42 @@ function build_nft(S, v6, sets) {
 	s += nft_set('block6', 'ipv6_addr', sets.block6);
 	s += nft_set('direct4', 'ipv4_addr', sets.direct4);
 	s += nft_set('direct6', 'ipv6_addr', sets.direct6);
+
+	// Tunnel sections in kernel mode: subnets from the rules, plus addresses
+	// that dnsmasq adds while it resolves the section's domains.
+	for (let t in tunnels) {
+		s += nft_set(`tun_${t.name}_4`, 'ipv4_addr', t.ip4);
+		s += nft_set(`tun_${t.name}_6`, 'ipv6_addr', t.ip6);
+		s += `\tset tun_${t.name}_d4 {\n\t\ttype ipv4_addr\n\t}\n`;
+		s += `\tset tun_${t.name}_d6 {\n\t\ttype ipv6_addr\n\t}\n`;
+	}
+
 	s += '\n\tchain prerouting {\n';
 	s += '\t\ttype filter hook prerouting priority mangle; policy accept;\n';
 	s += '\t\tiifname != @ifaces return\n';
-	s += '\t\tmeta l4proto != { tcp, udp } return\n';
 	s += '\t\tfib daddr type { local, broadcast, multicast } return\n';
 	s += '\t\tip daddr @local4 return\n';
 	s += '\t\tip6 daddr @local6 return\n';
 	s += '\t\tip daddr @block4 counter drop\n';
 	s += '\t\tip6 daddr @block6 counter drop\n';
+
+	// Kernel tunnels go before everything else: the mark selects their
+	// routing table, and the packet never reaches xray.
+	for (let t in tunnels) {
+		const m = `meta mark set meta mark & ${keep} | ${tun_mark(t.index)}`;
+
+		s += `\t\tip daddr @tun_${t.name}_4 ${m} counter return\n`;
+		s += `\t\tip daddr @tun_${t.name}_d4 ${m} counter return\n`;
+		s += `\t\tip6 daddr @tun_${t.name}_6 ${m} counter return\n`;
+		s += `\t\tip6 daddr @tun_${t.name}_d6 ${m} counter return\n`;
+	}
+
+	s += '\t\tmeta l4proto != { tcp, udp } return\n';
+
+	// DNS goes to dnsmasq (chain dstnat) so that it fills the tunnel sets.
+	if (dns_redirect)
+		s += '\t\tth dport 53 return\n';
+
 	s += '\t\tip daddr @direct4 counter return\n';
 	s += '\t\tip6 daddr @direct6 counter return\n';
 	s += `\t\tmeta nfproto ipv4 meta l4proto { tcp, udp } meta mark set meta mark | ${mark} tproxy ip to 127.0.0.1:${C.TPROXY_PORT} counter accept\n`;
@@ -121,9 +188,37 @@ function build_nft(S, v6, sets) {
 	if (v6)
 		s += `\t\tmeta nfproto ipv6 meta l4proto { tcp, udp } meta mark set meta mark | ${mark} tproxy ip6 to [::1]:${C.TPROXY_PORT} counter accept\n`;
 
-	s += '\t}\n}\n';
+	s += '\t}\n';
 
-	return s;
+	if (dns_redirect) {
+		s += '\n\tchain dstnat {\n';
+		s += '\t\ttype nat hook prerouting priority dstnat; policy accept;\n';
+		s += '\t\tiifname @ifaces meta l4proto { tcp, udp } th dport 53 fib daddr type != local counter redirect to :53\n';
+		s += '\t}\n';
+	}
+
+	return s + '}\n';
+}
+
+// dnsmasq lines that put the addresses of a tunnel section's domains into its
+// nftables sets. dnsmasq matches a domain together with its subdomains.
+function nftset_lines(t) {
+	const sets = `4#inet#${C.NFT_TABLE}#tun_${t.name}_d4,6#inet#${C.NFT_TABLE}#tun_${t.name}_d6`;
+	let out = '', line = '';
+
+	for (let d in t.domains) {
+		if (length(line) + length(d) > 900) {
+			out += `nftset=/${line}/${sets}\n`;
+			line = '';
+		}
+
+		line += (line != '' ? '/' : '') + d;
+	}
+
+	if (line != '')
+		out += `nftset=/${line}/${sets}\n`;
+
+	return out;
 }
 
 // Links are one per line; commas and spaces may appear inside a link.
@@ -158,6 +253,27 @@ function copy(v) {
 	return json(sprintf('%J', v));
 }
 
+// Runtime facts about a network interface used by a tunnel section.
+function iface_info(model, iface) {
+	const r = model.runtime?.ifaces?.[iface];
+
+	return {
+		device: r?.device ?? iface,
+		up: r ? r.up !== false : true,
+		v6: r?.v6 === true
+	};
+}
+
+// Outbound that sends traffic into a network interface.
+function iface_outbound(tag, dev, strategy) {
+	return {
+		tag: tag,
+		protocol: 'freedom',
+		settings: {},
+		streamSettings: { sockopt: { interface: dev, domainStrategy: strategy } }
+	};
+}
+
 // All servers of a proxy section: its own links, then nodes of its
 // subscriptions that pass the name filters. Returns [{ name, outbound, source }].
 function collect_nodes(sec, model, warn) {
@@ -185,6 +301,14 @@ function collect_nodes(sec, model, warn) {
 		catch (e) {
 			warn(`section "${name}": link ${n}: ${e.message}; skipped`);
 		}
+	}
+
+	// Network interfaces (WireGuard, AmneziaWG, OpenVPN...) as servers of the
+	// group: xray sends the traffic straight into the interface.
+	for (let iface in entries(sec.iface_node)) {
+		const inf = iface_info(model, iface);
+
+		push(nodes, { name: iface, outbound: iface_outbound(null, inf.device, inf.v6 ? null : 'ForceIPv4'), source: 'interface', iface: iface });
 	}
 
 	const inc = name_regexp(sec.filter, `section "${name}" filter`, warn);
@@ -231,6 +355,166 @@ function collect_nodes(sec, model, warn) {
 	return nodes;
 }
 
+// Rules of a section from its own entries, geo categories and rule lists.
+// G collects what the data updater still has to download.
+// Returns { domains, ip4, ip6, geoip (ext: refs for xray), geo4, geo6 (subnets of
+// geoip categories for nftables) }.
+function collect_rules(sec, model, warn, G) {
+	const name = sec['.name'];
+	const sources = model.geo?.sources ?? [];
+	const domains = uset(), ip4 = uset(), ip6 = uset(), geoip = uset();
+	const geo4 = [], geo6 = [], sites = [];
+
+	const geo = (g, text) => {
+		const x = resolve(sources, g);
+
+		if (x.error) {
+			warn(`section "${name}": ${text}: ${x.error}; skipped`);
+			return;
+		}
+
+		if (x.state != 'ready') {
+			G.pending[x.source] ??= [];
+			uniq_push(G.pending[x.source], x.cat);
+			warn(`section "${name}": ${text} is not downloaded yet, it starts working after the next geo update`);
+			return;
+		}
+
+		if (x.count > HEAVY)
+			warn(`section "${name}": ${text} has ${x.count} rules, xray may need a lot of memory for it`);
+
+		uniq_push(G.files, x.file);
+
+		if (g.kind == 'geosite') {
+			domains.add(`ext:${x.file}:${x.cat}${g.attr}`);
+			push(sites, { key: `${x.source}:${x.cat}`, attr: g.attr, text: text });
+			return;
+		}
+
+		geoip.add(`ext:${x.file}:${g.neg ? '!' : ''}${x.cat}`);
+
+		const c = model.geo?.cidrs?.[`${x.source}:${x.cat}`];
+
+		if (c && !g.neg && !c.reverse) {
+			for (let v in c.v4) push(geo4, v);
+			for (let v in c.v6) push(geo6, v);
+		}
+	};
+
+	const add_domain = (d) => {
+		const r = norm_domain(d);
+
+		if (r.geo)
+			geo(r.geo, d);
+		else if (!r.error)
+			domains.add(r.value);
+
+		return r.error;
+	};
+
+	const add_ip = (i) => {
+		const r = norm_ip(i);
+
+		if (r.geo)
+			geo(r.geo, i);
+		else if (!r.error)
+			(r.family == 4 ? ip4 : ip6).add(r.cidr);
+
+		return r.error;
+	};
+
+	for (let d in entries(sec.domain)) {
+		const e = add_domain(d);
+
+		if (e)
+			warn(`section "${name}": ${e}, skipped`);
+	}
+
+	for (let i in entries(sec.ip)) {
+		const e = add_ip(i);
+
+		if (e)
+			warn(`section "${name}": ${e}, skipped`);
+	}
+
+	for (let src in [ ...entries(sec.list_url), ...entries(sec.list_file) ]) {
+		const text = model.lists?.[src];
+
+		if (text == null) {
+			if (match(src, /^https?:\/\//)) {
+				uniq_push(G.lists_missing, src);
+				warn(`section "${name}": list ${src} is not downloaded yet`);
+			}
+			else {
+				warn(`section "${name}": cannot read list ${src}`);
+			}
+
+			continue;
+		}
+
+		const L = split_list(text);
+		let bad = L.bad;
+
+		for (let d in L.domains)
+			if (add_domain(d))
+				bad++;
+
+		for (let i in L.ips)
+			if (add_ip(i))
+				bad++;
+
+		if (bad)
+			warn(`section "${name}": list ${src}: skipped ${bad} lines that are not rules`);
+
+		if (length(L.domains) > HEAVY)
+			warn(`section "${name}": list ${src} has ${length(L.domains)} domains, xray may need a lot of memory for it`);
+	}
+
+	return {
+		domains: domains.items, ip4: ip4.items, ip6: ip6.items,
+		geoip: geoip.items, geo4: geo4, geo6: geo6, sites: sites
+	};
+}
+
+// Domains of a kernel-mode tunnel section in the form dnsmasq understands:
+// domain: and full: rules and geosite categories (full: matches subdomains as
+// well there). keyword: and regexp: only work through xray.
+function kernel_domains(name, RL, model, warn) {
+	const out = uset();
+	let skipped = 0;
+
+	const take = (d) => {
+		const m = match(d, /^(domain|full):(.+)$/);
+
+		if (m)
+			out.add(m[2]);
+		else
+			skipped++;
+	};
+
+	for (let d in RL.domains)
+		if (substr(d, 0, 4) != 'ext:')
+			take(d);
+
+	for (let g in RL.sites) {
+		const list = model.geo?.domains?.[g.key];
+
+		if (g.attr != '' || list == null) {
+			warn(`section "${name}": ${g.text} works through xray only`);
+			continue;
+		}
+
+		for (let d in list)
+			take(d);
+	}
+
+	if (skipped)
+		warn(`section "${name}": ${skipped} keyword/regexp rules work through xray only`);
+
+	return out.items;
+}
+
+
 function memlimit_mib(S, R) {
 	const v = int_opt(S.memlimit, 0, 16, 4096);
 
@@ -264,13 +548,63 @@ export function build(model) {
 		{ tag: 'block', protocol: 'blackhole', settings: {} }
 	];
 
-	const nftsets = {
-		ifaces: entries(S.interface),
-		block4: [], block6: [], direct4: [], direct6: []
-	};
+	const sets = { block4: uset(), block6: uset(), direct4: uset(), direct6: uset() };
+	const geo_pending = {};
+	const geo_files = [];
+	const lists_missing = [];
 
-	const proxy_domains = [];
-	const excl_domains = [];
+	const proxy_domains = uset();
+	const excl_domains = uset();
+	const tun_domains4 = uset();		// tunnel sections without IPv6: no AAAA answers
+	const tun_domains = uset();
+	const tunnels = [];			// kernel-mode tunnel sections
+	const tun_all = [];			// every tunnel section, for the watchdog
+	const tun_rules = [];
+	let tun_index = 0;
+
+	// Local SOCKS/HTTP ports that lead into a section.
+	const local_inbounds = [];
+	const local_rules = [];
+	const local_ports = {};
+	const RESERVED_PORTS = [ C.TPROXY_PORT, C.DNS_PORT, C.API_PORT, C.METRICS_PORT, C.HELPER_PORT ];
+
+	const add_local = (sec, target) => {
+		const sn = sec['.name'];
+
+		if (sec.local_port == null || sec.local_port == '')
+			return;
+
+		const port = int_opt(sec.local_port, 0, 1024, 65535);
+
+		if (!port || index(RESERVED_PORTS, port) >= 0) {
+			warn(`section "${sn}": local port ${sec.local_port} cannot be used (1024-65535, not Mayhem's own ports)`);
+			return;
+		}
+
+		if (local_ports[port]) {
+			warn(`section "${sn}": local port ${port} is already used by section "${local_ports[port]}"`);
+			return;
+		}
+
+		local_ports[port] = sn;
+
+		const ib = {
+			tag: `local-${sn}`,
+			listen: v6 ? '::' : '0.0.0.0',
+			port: port,
+			protocol: 'mixed',
+			settings: { auth: 'noauth', udp: true },
+			sniffing: { enabled: true, destOverride: [ 'http', 'tls', 'quic' ], routeOnly: true }
+		};
+
+		if (sec.local_user && sec.local_pass) {
+			ib.settings.auth = 'password';
+			ib.settings.accounts = [ { user: sec.local_user, pass: sec.local_pass } ];
+		}
+
+		push(local_inbounds, ib);
+		push(local_rules, { inboundTag: [ ib.tag ], ...target });
+	};
 	const server_hosts = [];
 	const block_rules = [];
 	const section_rules = [];
@@ -299,33 +633,8 @@ export function build(model) {
 			continue;
 		}
 
-		const domains = [], ips4 = [], ips6 = [];
-		let geo = false;
-
-		for (let d in entries(sec.domain)) {
-			const r = norm_domain(d);
-
-			if (r.error)
-				warn(`section "${name}": ${r.error}, skipped`);
-			else if (r.geo)
-				geo = true;
-			else
-				uniq_push(domains, r.value);
-		}
-
-		for (let i in entries(sec.ip)) {
-			const r = norm_ip(i);
-
-			if (r.error)
-				warn(`section "${name}": ${r.error}, skipped`);
-			else if (r.geo)
-				geo = true;
-			else
-				uniq_push(r.family == 4 ? ips4 : ips6, r.cidr);
-		}
-
-		if (geo)
-			warn(`section "${name}": geosite/geoip rules need geo data, which is not available yet; skipped`);
+		const RL = collect_rules(sec, model, warn, { pending: geo_pending, files: geo_files, lists_missing: lists_missing });
+		const domains = RL.domains, ips4 = RL.ip4, ips6 = RL.ip6;
 
 		let target;
 
@@ -372,11 +681,12 @@ export function build(model) {
 				push(sinfo.nodes, {
 					tag: ob.tag,
 					name: nodes[i].name,
-					protocol: ob.protocol,
+					protocol: nodes[i].iface ? 'interface' : ob.protocol,
 					address: host,
 					port: outbound_port(ob),
 					udp: outbound_udp(ob),
-					source: nodes[i].source
+					source: nodes[i].source,
+					iface: nodes[i].iface
 				});
 			}
 
@@ -435,40 +745,106 @@ export function build(model) {
 			state.sections[name] = sinfo;
 			proxy_targets[name] = target;
 			first_proxy ??= name;
+			add_local(sec, target);
 
-			for (let d in domains)
-				uniq_push(proxy_domains, d);
+			proxy_domains.add_all(domains);
 			break;
 
 		case 'exclusion':
 			target = { outboundTag: 'direct' };
 			state.sections[name] = { type: 'exclusion' };
 
-			for (let d in domains)
-				uniq_push(excl_domains, d);
+			excl_domains.add_all(domains);
 
-			for (let c in ips4)
-				uniq_push(nftsets.direct4, c);
-
-			for (let c in ips6)
-				uniq_push(nftsets.direct6, c);
+			sets.direct4.add_all(ips4);
+			sets.direct4.add_all(RL.geo4);
+			sets.direct6.add_all(ips6);
+			sets.direct6.add_all(RL.geo6);
 			break;
 
 		case 'block':
 			target = { outboundTag: 'block' };
 			state.sections[name] = { type: 'block' };
 
-			for (let c in ips4)
-				uniq_push(nftsets.block4, c);
-
-			for (let c in ips6)
-				uniq_push(nftsets.block6, c);
+			sets.block4.add_all(ips4);
+			sets.block4.add_all(RL.geo4);
+			sets.block6.add_all(ips6);
+			sets.block6.add_all(RL.geo6);
 			break;
 
 		case 'interface':
-			info.error = 'interface sections are not supported yet';
-			warn(`section "${name}": interface sections arrive with AWG support, skipped`);
-			continue;
+			const iface = sec.interface;
+
+			if (!match(iface ?? '', /^[A-Za-z0-9_.-]+$/)) {
+				info.error = 'no interface';
+				warn(`section "${name}": no network interface chosen, skipped`);
+				continue;
+			}
+
+			const inf = iface_info(model, iface);
+			const kernel = (sec.route_mode ?? 'kernel') != 'xray';
+			const tag = `i-${name}-0`;
+			const bal = `bal-${name}`;
+			const tv6 = v6 && inf.v6;
+
+			// The balancer has one member; the tunnel watchdog points it at
+			// "direct" while the tunnel is down.
+			push(outbounds, iface_outbound(tag, inf.device, tv6 ? F.sockopt : 'ForceIPv4'));
+			push(balancers, { tag: bal, selector: [ `i-${name}-` ], strategy: { type: 'random' } });
+			target = { balancerTag: bal };
+
+			const tinfo = {
+				type: 'interface', mode: kernel ? 'kernel' : 'xray', interface: iface, device: inf.device,
+				balancer: bal, v6: tv6, nodes: [ { tag: tag, name: iface, protocol: 'interface' } ]
+			};
+
+			if (!inf.up)
+				warn(`section "${name}": interface ${iface} is down, its traffic goes direct until it is up`);
+
+			const tline = { name: name, device: inf.device, mark: '-', table: '-', v6: tv6 };
+
+			push(tun_all, tline);
+
+			(tv6 ? tun_domains : tun_domains4).add_all(domains);
+
+			if (kernel) {
+				if (++tun_index > C.TUN_MAX) {
+					info.error = 'too many tunnel sections';
+					warn(`section "${name}": at most ${C.TUN_MAX} tunnel sections can work in kernel mode, skipped`);
+					continue;
+				}
+
+				const t = {
+					name: name, index: tun_index, device: inf.device, v6: tv6,
+					ip4: [ ...ips4, ...RL.geo4 ], ip6: tv6 ? [ ...ips6, ...RL.geo6 ] : [],
+					domains: kernel_domains(name, RL, model, warn)
+				};
+
+				push(tunnels, t);
+				tinfo.mark = tline.mark = tun_mark(t.index);
+				tinfo.table = tline.table = C.TUN_TABLE + t.index;
+
+				// Kernel sections come first: same order in xray, which
+				// catches what the DNS path missed (by SNI).
+				if (length(domains))
+					push(tun_rules, { domain: domains, ...target });
+
+				const tips = [ ...ips4, ...ips6, ...RL.geoip ];
+
+				if (length(tips))
+					push(tun_rules, { ip: tips, ...target });
+
+				state.sections[name] = tinfo;
+				info.node = `${iface} (kernel)`;
+				info.ok = true;
+				add_local(sec, target);
+				continue;
+			}
+
+			state.sections[name] = tinfo;
+			info.node = `${iface} (xray)`;
+			add_local(sec, target);
+			break;
 
 		default:
 			info.error = `unknown type "${info.type}"`;
@@ -481,7 +857,7 @@ export function build(model) {
 		if (length(domains))
 			push(list, { domain: domains, ...target });
 
-		const ips = [ ...ips4, ...ips6 ];
+		const ips = [ ...ips4, ...ips6, ...RL.geoip ];
 
 		if (length(ips))
 			push(list, { ip: ips, ...target });
@@ -574,21 +950,35 @@ export function build(model) {
 			push(servers, ns(d, { domains: server_hosts, skipFallback: true }));
 
 	if (mode == 'lists') {
-		if (length(proxy_domains)) {
+		if (length(proxy_domains.items)) {
 			if (fakedns)
-				push(servers, { address: 'fakedns', domains: proxy_domains, skipFallback: true });
+				push(servers, { address: 'fakedns', domains: proxy_domains.items, skipFallback: true });
 
 			for (let r in remote)
-				push(servers, ns(r, { domains: proxy_domains, skipFallback: true }));
+				push(servers, ns(r, { domains: proxy_domains.items, skipFallback: true }));
 		}
+
+		// Tunnel sections: real addresses (dnsmasq puts them into the
+		// kernel sets), no IPv6 answers when the tunnel has no IPv6.
+		if (length(tun_domains4.items))
+			for (let r in remote)
+				push(servers, ns(r, { domains: tun_domains4.items, skipFallback: true, queryStrategy: 'UseIPv4' }));
+
+		if (length(tun_domains.items))
+			for (let r in remote)
+				push(servers, ns(r, { domains: tun_domains.items, skipFallback: true }));
 
 		for (let d in domestic)
 			push(servers, ns(d));
 	}
 	else {
-		if (length(excl_domains))
+		if (length(excl_domains.items))
 			for (let d in domestic)
-				push(servers, ns(d, { domains: excl_domains, skipFallback: true }));
+				push(servers, ns(d, { domains: excl_domains.items, skipFallback: true }));
+
+		if (length(tun_domains4.items))
+			for (let r in remote)
+				push(servers, ns(r, { domains: tun_domains4.items, skipFallback: true, queryStrategy: 'UseIPv4' }));
 
 		if (fakedns)
 			push(servers, { address: 'fakedns' });
@@ -673,7 +1063,13 @@ export function build(model) {
 
 	push(rules, { inboundTag: [ 'dns-module' ], outboundTag: 'direct' });
 
+	for (let r in local_rules)
+		push(rules, r);
+
 	for (let r in block_rules)
+		push(rules, r);
+
+	for (let r in tun_rules)
 		push(rules, r);
 
 	for (let r in section_rules)
@@ -735,6 +1131,9 @@ export function build(model) {
 			settings: { auth: 'password', accounts: helper_accounts, udp: false }
 		});
 
+	for (let ib in local_inbounds)
+		push(xray.inbounds, ib);
+
 	if (length(observe)) {
 		const iv = match(S.probe_interval ?? '', /^[0-9]+[smh]$/) ? S.probe_interval : C.DEFAULT_PROBE_INTERVAL;
 		const url = match(S.probe_url ?? '', /^https?:\/\//) ? S.probe_url : C.DEFAULT_PROBE_URL;
@@ -745,6 +1144,16 @@ export function build(model) {
 	if (fakedns)
 		xray.fakedns = [ { ipPool: C.FAKEDNS_POOL, poolSize: C.FAKEDNS_POOL_SIZE } ];
 
+	// Without nftset support in dnsmasq, kernel sections only get the
+	// subnets from their rules; domains go through xray.
+	const nftset = length(tunnels) && R.dnsmasq_nftset !== false;
+	const dns_redirect = nftset && is_true(D.hijack ?? '1');
+
+	if (length(tunnels) && !nftset)
+		warn('kernel mode needs dnsmasq-full (nftset support): domains of tunnel sections go through xray until it is installed');
+
+	state.geo_pending = geo_pending;
+	state.lists_missing = lists_missing;
 	state.generated = R.now ?? time();
 	state.mode = mode;
 	state.probe_url = xray.observatory?.probeURL ?? (match(S.probe_url ?? '', /^https?:\/\//) ? S.probe_url : C.DEFAULT_PROBE_URL);
@@ -753,12 +1162,21 @@ export function build(model) {
 		ok: !length(st.errors),
 		mode: mode,
 		xray: xray,
-		nft: build_nft(S, v6, nftsets),
-		dnsmasq: `server=127.0.0.1#${C.DNS_PORT}\nno-resolv\n`,
+		nft: build_nft(S, v6, {
+			ifaces: entries(S.interface),
+			block4: sets.block4.items, block6: sets.block6.items,
+			direct4: sets.direct4.items, direct6: sets.direct6.items
+		}, tunnels, dns_redirect),
+		dnsmasq: `server=127.0.0.1#${C.DNS_PORT}\nno-resolv\n` +
+			(nftset ? join('', map(tunnels, (t) => nftset_lines(t))) : ''),
+		// "section device mark table v6" per tunnel section; mark and table are
+		// "-" in xray mode.
+		tunnels: join('', map(tun_all, (t) => `${t.name} ${t.device} ${t.mark} ${t.table} ${t.v6 ? 1 : 0}\n`)),
 		memlimit_mib: memlimit_mib(S, R),
 		ipv6: v6,
 		state: state,
 		overrides: overrides,
+		geo_files: geo_files,
 		status: st
 	};
 }

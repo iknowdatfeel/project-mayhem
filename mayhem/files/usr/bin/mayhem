@@ -15,7 +15,13 @@ Usage: mayhem <command>
   check                      validate the configuration without applying it
   show-config                print the generated xray config
   sub-update [NAME]          download subscriptions now (all or one)
+  geo-update [SOURCE]        download geo data now (all sources or one)
+  lists-update               download rule lists now
   xray-install [VERSION]     download the official xray build (default $MAYHEM_XRAY_VERSION)
+  awg-install                install AmneziaWG (kernel module, tools, LuCI protocol)
+                             from the awg-openwrt builds for this firmware
+  dnsmasq-full               replace dnsmasq with dnsmasq-full (needed for tunnel
+                             sections in kernel mode); rolls back on failure
   version                    print versions
 EOF
 }
@@ -130,6 +136,185 @@ cmd_xray_install() {
 	return 0
 }
 
+# --- packages ------------------------------------------------------------------
+
+PM=opkg
+PM_EXT=ipk
+command -v apk >/dev/null 2>&1 && { PM=apk; PM_EXT=apk; }
+
+pkg_has() {
+	if [ "$PM" = apk ]; then
+		apk info -e "$1" >/dev/null 2>&1
+	else
+		opkg list-installed 2>/dev/null | grep -q "^$1 - "
+	fi
+}
+
+pkg_add_file() {
+	if [ "$PM" = apk ]; then
+		apk add --allow-untrusted "$1"
+	else
+		opkg install "$1"
+	fi
+}
+
+AWG_RELEASES="https://github.com/Slava-Shchipunov/awg-openwrt/releases/download"
+
+cmd_awg_install() {
+	local board arch target ver postfix dir="/tmp/mayhem-awg" p file got
+
+	if pkg_has kmod-amneziawg && pkg_has amneziawg-tools; then
+		echo "AmneziaWG is already installed"
+		return 0
+	fi
+
+	board="$(ubus call system board 2>/dev/null)"
+	arch="$(echo "$board" | jsonfilter -e '@.release.arch' 2>/dev/null)"
+	target="$(echo "$board" | jsonfilter -e '@.release.target' 2>/dev/null)"
+	ver="$(echo "$board" | jsonfilter -e '@.release.version' 2>/dev/null)"
+
+	if [ -z "$arch" ] || [ -z "$target" ] || [ -z "$ver" ]; then
+		echo "Cannot read the firmware version and target" >&2
+		return 1
+	fi
+
+	case "$ver" in
+		*SNAPSHOT*|*-rc*)
+			echo "AmneziaWG builds exist only for stable releases, this is $ver" >&2
+			return 1
+			;;
+	esac
+
+	# Packages are built per release and target: the kernel module must match.
+	postfix="_v${ver}_${arch}_${target%%/*}_${target#*/}"
+	rm -rf "$dir"
+	mkdir -p "$dir" || return 1
+
+	for p in kmod-amneziawg amneziawg-tools luci-proto-amneziawg; do
+		got=""
+
+		for file in "$p$postfix.$PM_EXT" "$p$postfix.ipk" "$p$postfix.apk"; do
+			echo "Downloading $file..."
+			if fetch "$AWG_RELEASES/v$ver/$file" "$dir/$file" && [ -s "$dir/$file" ]; then
+				got="$dir/$file"
+				break
+			fi
+			rm -f "$dir/$file"
+		done
+
+		if [ -z "$got" ]; then
+			# The LuCI page for the protocol is a convenience, not a requirement.
+			[ "$p" = luci-proto-amneziawg ] && continue
+			echo "No $p build for OpenWrt $ver ($target, $arch)" >&2
+			rm -rf "$dir"
+			return 1
+		fi
+
+		if ! pkg_add_file "$got"; then
+			echo "Installing $p failed. If the firmware is a custom build, its kernel may not match the official one." >&2
+			rm -rf "$dir"
+			return 1
+		fi
+	done
+
+	rm -rf "$dir"
+	modprobe amneziawg >/dev/null 2>&1
+
+	if [ ! -e /sys/module/amneziawg ]; then
+		echo "The amneziawg kernel module does not load" >&2
+		return 1
+	fi
+
+	# netifd learns the new protocol on restart.
+	/etc/init.d/network reload >/dev/null 2>&1
+	echo "AmneziaWG is installed"
+}
+
+first_file() {
+	local f
+
+	for f in "$@"; do
+		[ -f "$f" ] && { echo "$f"; return 0; }
+	done
+}
+
+dnsmasq_nftset() {
+	dnsmasq --version 2>/dev/null | grep -q nftset
+}
+
+# Swaps dnsmasq for dnsmasq-full. Both packages are downloaded before anything
+# is removed, and the old one is put back if the new one does not install or
+# does not start: the router must never be left without DNS and DHCP.
+cmd_dnsmasq_full() {
+	local dir="/tmp/mayhem-dnsmasq" full old
+
+	if dnsmasq_nftset; then
+		echo "dnsmasq already supports nftset"
+		return 0
+	fi
+
+	rm -rf "$dir"
+	mkdir -p "$dir" || return 1
+	cp /etc/config/dhcp "$dir/dhcp" 2>/dev/null
+
+	echo "Downloading dnsmasq-full..."
+
+	if [ "$PM" = apk ]; then
+		apk update >/dev/null 2>&1
+		apk fetch -o "$dir" dnsmasq-full dnsmasq >/dev/null 2>&1
+		full="$(first_file "$dir"/dnsmasq-full-*.apk)"
+		old="$(first_file "$dir"/dnsmasq-[0-9]*.apk)"
+	else
+		opkg update >/dev/null 2>&1
+		(cd "$dir" && opkg download dnsmasq-full >/dev/null 2>&1 && opkg download dnsmasq >/dev/null 2>&1)
+		full="$(first_file "$dir"/dnsmasq-full_*.ipk)"
+		old="$(first_file "$dir"/dnsmasq_*.ipk)"
+	fi
+
+	if [ -z "$full" ] || [ -z "$old" ]; then
+		echo "Cannot download dnsmasq-full and dnsmasq from the package feeds, nothing was changed" >&2
+		rm -rf "$dir"
+		return 1
+	fi
+
+	echo "Replacing dnsmasq..."
+
+	if [ "$PM" = apk ]; then
+		apk del dnsmasq >/dev/null 2>&1
+		apk add "$full"
+	else
+		opkg remove dnsmasq >/dev/null 2>&1 || opkg remove --force-depends dnsmasq >/dev/null 2>&1
+		opkg install "$full"
+	fi
+
+	[ -f "$dir/dhcp" ] && cp "$dir/dhcp" /etc/config/dhcp
+	/etc/init.d/dnsmasq enable >/dev/null 2>&1
+	/etc/init.d/dnsmasq restart >/dev/null 2>&1
+	sleep 2
+
+	if dnsmasq_nftset && pidof dnsmasq >/dev/null 2>&1; then
+		rm -rf "$dir"
+		echo "dnsmasq-full is installed"
+		return 0
+	fi
+
+	echo "dnsmasq-full did not work, putting dnsmasq back" >&2
+
+	if [ "$PM" = apk ]; then
+		apk del dnsmasq-full >/dev/null 2>&1
+		apk add "$old"
+	else
+		opkg remove dnsmasq-full >/dev/null 2>&1
+		opkg install "$old"
+	fi
+
+	[ -f "$dir/dhcp" ] && cp "$dir/dhcp" /etc/config/dhcp
+	/etc/init.d/dnsmasq enable >/dev/null 2>&1
+	/etc/init.d/dnsmasq restart >/dev/null 2>&1
+	rm -rf "$dir"
+	return 1
+}
+
 case "$1" in
 	start|stop|restart|reload)
 		/etc/init.d/mayhem "$1"
@@ -158,8 +343,27 @@ case "$1" in
 		fi
 		exit "$rc"
 		;;
+	geo-update|lists-update)
+		if [ "$1" = geo-update ]; then
+			ucode "$MAYHEM_UPDATE" geo ${2:+"$2"} --force
+		else
+			ucode "$MAYHEM_UPDATE" lists --force
+		fi
+		rc=$?
+		if [ "$rc" = 3 ]; then
+			/etc/init.d/mayhem running >/dev/null 2>&1 && /etc/init.d/mayhem reload
+			rc=0
+		fi
+		exit "$rc"
+		;;
 	xray-install)
 		cmd_xray_install "$2"
+		;;
+	awg-install)
+		cmd_awg_install
+		;;
+	dnsmasq-full)
+		cmd_dnsmasq_full
 		;;
 	version)
 		echo "mayhem $MAYHEM_VERSION"

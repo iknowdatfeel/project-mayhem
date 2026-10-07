@@ -42,6 +42,8 @@ mayhem_net_down() {
 	local mark="$MAYHEM_FWMARK/$MAYHEM_FWMARK"
 	local i
 
+	mayhem_tunnels_down
+
 	nft delete table inet "$MAYHEM_NFT_TABLE" 2>/dev/null
 
 	for i in 1 2 3; do
@@ -57,12 +59,192 @@ mayhem_net_down() {
 	return 0
 }
 
+# --- tunnel sections ---------------------------------------------------------
+# $MAYHEM_RUN_DIR/tunnels: "section device mark table v6" per line. In kernel
+# mode, marked packets use the section's routing table, which holds a default
+# route into the device only while the tunnel works: otherwise the lookup
+# falls through to the main table and the traffic goes direct. The xray path
+# of every tunnel section is a balancer that is pointed at "direct" meanwhile.
+
+mayhem_tunnels_up() {
+	local name dev mark table v6
+
+	[ -s "$MAYHEM_RUN_DIR/tunnels" ] || return 0
+
+	while read -r name dev mark table v6; do
+		[ "$mark" = - ] && continue
+		ip rule add fwmark "$mark/$MAYHEM_TUN_MASK" table "$table" priority "$MAYHEM_TUN_RULE_PRIO"
+		[ "$v6" = 1 ] && ip -6 rule add fwmark "$mark/$MAYHEM_TUN_MASK" table "$table" priority "$MAYHEM_TUN_RULE_PRIO"
+	done < "$MAYHEM_RUN_DIR/tunnels"
+
+	rm -f "$MAYHEM_RUN_DIR"/tunnel.*
+	mayhem_tunnels_check force
+	return 0
+}
+
+mayhem_tunnels_down() {
+	local i=0
+
+	while ip rule del priority "$MAYHEM_TUN_RULE_PRIO" 2>/dev/null && [ "$i" -lt 64 ]; do i=$((i + 1)); done
+	i=0
+	while ip -6 rule del priority "$MAYHEM_TUN_RULE_PRIO" 2>/dev/null && [ "$i" -lt 64 ]; do i=$((i + 1)); done
+
+	i=1
+	while [ "$i" -le 32 ]; do
+		ip route flush table $((110 + i)) 2>/dev/null
+		ip -6 route flush table $((110 + i)) 2>/dev/null
+		i=$((i + 1))
+	done
+
+	rm -f "$MAYHEM_RUN_DIR"/tunnel.*
+	return 0
+}
+
+# Seconds since the newest WireGuard/AmneziaWG handshake of device $1; empty
+# for other kinds of devices (they count as working while the link is up).
+mayhem_handshake_age() {
+	local out now newest
+
+	out="$(awg show "$1" latest-handshakes 2>/dev/null)" || out="$(wg show "$1" latest-handshakes 2>/dev/null)" || return 0
+	newest="$(printf '%s\n' "$out" | awk '$2 > m { m = $2 } END { print m + 0 }')"
+	now="$(date +%s)"
+
+	if [ "$newest" -gt 0 ]; then
+		echo $((now - newest))
+	else
+		echo 999999
+	fi
+}
+
+mayhem_tunnel_ok() {
+	local dev="$1" age
+
+	[ -d "/sys/class/net/$dev" ] || return 1
+	[ "$(cat "/sys/class/net/$dev/operstate" 2>/dev/null)" = down ] && return 1
+
+	age="$(mayhem_handshake_age "$dev")"
+	[ -z "$age" ] && return 0
+	[ "$age" -le 180 ] && return 0
+
+	# An idle tunnel does not handshake: send something through it and look again.
+	ping -c 1 -W 2 -I "$dev" 1.1.1.1 >/dev/null 2>&1
+	sleep 3
+	age="$(mayhem_handshake_age "$dev")"
+	[ -n "$age" ] && [ "$age" -le 180 ]
+}
+
+# Brings each tunnel section's routes and xray balancer in line with the
+# state of its tunnel. Runs every minute from the scheduler.
+mayhem_tunnels_check() {
+	local name dev mark table v6 state was
+
+	[ -s "$MAYHEM_RUN_DIR/tunnels" ] || return 0
+	[ -f "$MAYHEM_RUN_DIR/active" ] || [ "$1" = force ] || [ -f "$MAYHEM_RUN_DIR/xray.pid" ] || return 0
+
+	while read -r name dev mark table v6; do
+		was="$(cat "$MAYHEM_RUN_DIR/tunnel.$name" 2>/dev/null)"
+
+		if mayhem_tunnel_ok "$dev"; then
+			state=up
+
+			if [ "$table" != - ]; then
+				ip route replace default dev "$dev" table "$table" 2>/dev/null
+				[ "$v6" = 1 ] && ip -6 route replace default dev "$dev" table "$table" 2>/dev/null
+			fi
+
+			if [ "$was" != up ]; then
+				mayhem_select "bal-$name" ""
+				[ -n "$was" ] && mayhem_log "tunnel $dev of section $name works again"
+			fi
+		else
+			state=down
+
+			if [ "$table" != - ]; then
+				ip route flush table "$table" 2>/dev/null
+				ip -6 route flush table "$table" 2>/dev/null
+			fi
+
+			# Repeated while down: xray may have restarted meanwhile.
+			mayhem_select "bal-$name" direct
+			[ "$was" != down ] && mayhem_log "tunnel $dev of section $name does not work, its traffic goes direct" warn
+		fi
+
+		echo "$state" > "$MAYHEM_RUN_DIR/tunnel.$name"
+	done < "$MAYHEM_RUN_DIR/tunnels"
+}
+
+# --- watchdog ------------------------------------------------------------------
+# Runs every minute from the scheduler. xray restarts when its memory stays
+# above a share of the RAM for 3 checks in a row; dnsmasq is restarted when
+# it is gone, and Mayhem's DNS settings are dropped if it will not start with
+# them (the router keeps working DNS either way).
+
+mayhem_watchdog_note() {
+	echo "$(date +%s) $1" >> "$MAYHEM_RUN_DIR/watchdog.log"
+	tail -n 20 "$MAYHEM_RUN_DIR/watchdog.log" > "$MAYHEM_RUN_DIR/watchdog.log.tmp" &&
+		mv "$MAYHEM_RUN_DIR/watchdog.log.tmp" "$MAYHEM_RUN_DIR/watchdog.log"
+}
+
+mayhem_watchdog() {
+	local pid rss total pct limit n
+
+	[ "${MAYHEM_WATCHDOG:-$(uci -q get mayhem.settings.watchdog)}" = 0 ] && return 0
+
+	pid="$(cat "$MAYHEM_RUN_DIR/xray.pid" 2>/dev/null)"
+
+	if [ -n "$pid" ] && [ -d "/proc/$pid" ]; then
+		rss="$(awk '/^VmRSS:/ { print $2 }' "/proc/$pid/status" 2>/dev/null)"
+		total="$(awk '/^MemTotal:/ { print $2 }' /proc/meminfo)"
+		pct="${MAYHEM_WATCHDOG_MEM:-$(uci -q get mayhem.settings.watchdog_mem)}"
+		limit=$(( ${total:-0} * ${pct:-40} / 100 ))
+
+		if [ "${rss:-0}" -gt "$limit" ]; then
+			n=$(( $(cat "$MAYHEM_RUN_DIR/watchdog.mem" 2>/dev/null || echo 0) + 1 ))
+
+			if [ "$n" -ge 3 ]; then
+				mayhem_log "xray has used ${rss} KiB for 3 minutes (limit ${limit} KiB), restarting it" warn
+				mayhem_watchdog_note "xray restarted: ${rss} KiB of memory"
+				n=0
+				kill -TERM "$pid"
+			fi
+
+			echo "$n" > "$MAYHEM_RUN_DIR/watchdog.mem"
+		else
+			echo 0 > "$MAYHEM_RUN_DIR/watchdog.mem"
+		fi
+	fi
+
+	# Only when dnsmasq is the router's DNS (not replaced by something else).
+	[ -f "$MAYHEM_RUN_DIR/active" ] || return 0
+	"$MAYHEM_DNSMASQ_INIT" enabled >/dev/null 2>&1 || return 0
+	pidof dnsmasq >/dev/null 2>&1 && { rm -f "$MAYHEM_RUN_DIR/watchdog.dns"; return 0; }
+
+	n=$(( $(cat "$MAYHEM_RUN_DIR/watchdog.dns" 2>/dev/null || echo 0) + 1 ))
+	echo "$n" > "$MAYHEM_RUN_DIR/watchdog.dns"
+
+	if [ "$n" -le 2 ]; then
+		mayhem_log "dnsmasq is not running, restarting it" warn
+		mayhem_watchdog_note "dnsmasq restarted"
+		"$MAYHEM_DNSMASQ_INIT" restart >/dev/null 2>&1
+	elif [ "$n" = 3 ]; then
+		mayhem_log "dnsmasq does not start with Mayhem's DNS settings, removing them until Mayhem restarts" err
+		mayhem_watchdog_note "dnsmasq does not start with Mayhem's settings: they were removed"
+		mayhem_dns_down
+		"$MAYHEM_DNSMASQ_INIT" restart >/dev/null 2>&1
+	fi
+}
+
 # --- dnsmasq -----------------------------------------------------------------
 # The redirect lives only in dnsmasq's conf-dir under /tmp: nothing is written
 # to flash, and a reboot or a crash cleanup always returns plain DNS.
 
 mayhem_dnsmasq_dirs() {
 	local dirs
+
+	if [ -n "$MAYHEM_DNSMASQ_DIRS" ]; then
+		echo "$MAYHEM_DNSMASQ_DIRS"
+		return
+	fi
 
 	dirs="$(sed -n 's/^conf-dir=\([^,]*\).*/\1/p' /var/etc/dnsmasq.conf.* 2>/dev/null | sort -u)"
 	[ -n "$dirs" ] || dirs="/tmp/dnsmasq.d"

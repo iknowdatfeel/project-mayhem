@@ -12,6 +12,9 @@ XRAY="${XRAY:-xray}"
 OUT="$(mktemp -d)"
 fail=0
 
+# Generated and downloaded files of the tests stay in OUT.
+export MAYHEM_RUN_DIR="$OUT/run" MAYHEM_GEO_DIR="$OUT/geo-store" MAYHEM_LISTS_DIR="$OUT/lists" MAYHEM_TMP_DIR="$OUT"
+
 uc() { "$UCODE" -L "$FILES/usr/share/ucode/*.uc" ${UCODE_LIB:+-L "$UCODE_LIB"} "$@"; }
 ok() { printf 'ok   %s\n' "$1"; }
 bad() {
@@ -24,7 +27,7 @@ bad() {
 }
 
 # constants must match between shell and ucode
-for k in TPROXY_PORT DNS_PORT API_PORT METRICS_PORT HELPER_PORT FWMARK RT_TABLE NFT_TABLE RUN_DIR SUBS_DIR; do
+for k in TPROXY_PORT DNS_PORT API_PORT METRICS_PORT HELPER_PORT FWMARK RT_TABLE TUN_MASK TUN_RULE_PRIO NFT_TABLE RUN_DIR SUBS_DIR GEO_DIR LISTS_DIR; do
 	sh_v="$(sed -n "s/^MAYHEM_$k=//p" "$FILES/usr/share/mayhem/const.sh" | tr -d '"' | sed 's/^\${[A-Z_]*:-\(.*\)}$/\1/')"
 	uc_v="$(sed -n "s/^export const $k = \(.*\);/\1/p" "$FILES/usr/share/ucode/mayhem/const.uc" | sed 's/.*?? //' | tr -d "'")"
 	if [ "$sh_v" = "$uc_v" ]; then ok "const $k"; else bad "const $k: sh=$sh_v uc=$uc_v"; fi
@@ -74,6 +77,106 @@ else
 	ok "config from UCI with a subscription"
 fi
 
+# WireGuard/AmneziaWG configs and AmneziaVPN keys
+if out="$(uc "$ROOT/tests/awg.uc" "$ROOT/tests/awg/client.conf" 2>&1)"; then
+	printf '%s\n' "$out"
+	ok "awg"
+else
+	bad "awg: $out"
+fi
+
+if command -v node >/dev/null 2>&1; then
+	if out="$(node "$ROOT/tests/vpnkey.js" 2>&1)"; then
+		ok "vpn:// keys"
+	else
+		bad "vpn:// keys: $out"
+	fi
+fi
+
+# geo data: parser, trimmed files, and a configuration that uses categories
+python3 "$ROOT/tests/geo/mkdat.py" "$OUT/geo"
+head -c 5000 "$OUT/geo/geosite.dat" > "$OUT/geo/broken.dat"
+
+if out="$(uc "$ROOT/tests/geo.uc" "$OUT/geo" 2>&1)"; then
+	printf '%s\n' "$out"
+	ok "geo"
+else
+	bad "geo: $out"
+fi
+
+mkdir -p "$OUT/geo-uci" "$OUT/geo-run"
+cat > "$OUT/geo-uci/mayhem" <<EOF
+config settings 'settings'
+	option mode 'lists'
+	list interface 'br-lan'
+
+config geo 'geo'
+	option update_via 'direct'
+
+config geo_source 'site'
+	option kind 'geosite'
+	option url 'file://$OUT/geo/geosite.dat'
+
+config geo_source 'ip'
+	option kind 'geoip'
+	option url '$OUT/geo/geoip.dat'
+
+config section 'main'
+	option type 'proxy'
+	list link 'trojan://pw@de.example:443?sni=de.example#DE'
+	list domain 'geosite:youtube'
+	list ip 'geoip:telegram'
+	list list_file '$OUT/geo/my.lst'
+
+config section 'ru'
+	option type 'exclusion'
+	list domain 'geosite:site:gov'
+	list ip 'geoip:ru'
+
+config section 'nope'
+	option type 'block'
+	list domain 'geosite:no-such-category'
+EOF
+printf 'listed.test\n10.20.30.0/24\n' > "$OUT/geo/my.lst"
+
+geo_uc() { MAYHEM_UCI_DIR="$OUT/geo-uci" uc "$@"; }
+
+out="$(geo_uc "$FILES/usr/share/mayhem/update.uc" due 2>&1)"
+rc=$?
+if [ "$rc" = 3 ]; then
+	ok "geo download from files"
+else
+	bad "geo download from files: exit code $rc: $out"
+fi
+
+if ! out="$(geo_uc "$FILES/usr/share/mayhem/gen.uc" --out "$OUT/geo-run" 2>&1)"; then
+	bad "config with geo categories: $out"
+elif ! grep -q '"ext:site.dat:youtube"' "$OUT/geo-run/xray.json" || ! grep -q '"ext:ip.dat:telegram"' "$OUT/geo-run/xray.json"; then
+	bad "config with geo categories: no ext: rules in the xray config"
+elif ! grep -q 'domain:listed.test' "$OUT/geo-run/xray.json"; then
+	bad "config with geo categories: the list file was not used"
+elif ! grep -q '45.0.0.6/32' "$OUT/geo-run/nft.conf"; then
+	bad "config with geo categories: geoip:ru is not in the kernel bypass"
+elif ! grep -q 'no-such-category' "$OUT/geo-run/status.json"; then
+	bad "config with geo categories: no warning for an unknown category"
+elif ! out="$(XRAY_LOCATION_ASSET="$MAYHEM_GEO_DIR" "$XRAY" run -test -c "$OUT/geo-run/xray.json" 2>&1)"; then
+	bad "config with geo categories: $(printf '%s' "$out" | tail -n 3)"
+elif command -v nft >/dev/null 2>&1 && ! out="$(nft -c -f "$OUT/geo-run/nft.conf" 2>&1)"; then
+	bad "config with geo categories: nftables: $out"
+else
+	ok "config with geo categories"
+fi
+
+ls -l "$MAYHEM_GEO_DIR/site.dat" > "$OUT/before"
+geo_uc "$FILES/usr/share/mayhem/update.uc" due >/dev/null 2>&1
+rc=$?
+ls -l "$MAYHEM_GEO_DIR/site.dat" > "$OUT/after"
+if [ "$rc" = 0 ] && cmp -s "$OUT/before" "$OUT/after"; then
+	ok "geo update is not repeated when nothing is due"
+else
+	bad "geo update repeated: exit code $rc"
+fi
+
 for m in "$ROOT"/tests/models/*.json; do
 	name="$(basename "$m" .json)"
 	expect="$(sed -n 's/.*"_expect": *"\([a-z]*\)".*/\1/p' "$m")"
@@ -104,7 +207,7 @@ done
 if command -v shellcheck >/dev/null 2>&1; then
 	if out="$(shellcheck -s sh -f gcc -e SC1091,SC2034,SC3043,SC2086,SC2046,SC2317,SC2329 \
 		"$FILES/usr/bin/mayhem" "$FILES/usr/libexec/mayhem/xray-run" "$FILES/usr/libexec/mayhem/scheduler" \
-		"$FILES/etc/uci-defaults/90-mayhem" \
+		"$FILES/etc/uci-defaults/90-mayhem" "$ROOT/tests/netns.sh" \
 		"$FILES/usr/share/mayhem/lib.sh" "$FILES/usr/share/mayhem/const.sh" "$ROOT/install.sh" 2>&1)"; then
 		ok "shellcheck"
 	else
@@ -113,7 +216,7 @@ if command -v shellcheck >/dev/null 2>&1; then
 fi
 
 if command -v node >/dev/null 2>&1; then
-	for f in "$ROOT"/luci-app-mayhem/htdocs/luci-static/resources/view/mayhem/*.js; do
+	for f in "$ROOT"/luci-app-mayhem/htdocs/luci-static/resources/view/mayhem/*.js "$ROOT"/luci-app-mayhem/htdocs/luci-static/resources/mayhem/*.js; do
 		{ echo '(function(){'; cat "$f"; echo '})'; } > "$OUT/check.js"
 		if out="$(node --check "$OUT/check.js" 2>&1)"; then
 			ok "syntax $(basename "$f")"
@@ -121,6 +224,21 @@ if command -v node >/dev/null 2>&1; then
 			bad "syntax $(basename "$f"): $out"
 		fi
 	done
+fi
+
+# every string of the LuCI app has a Russian translation, the template is current
+if out="$(python3 "$ROOT/tools/i18n.py" check 2>&1)"; then
+	ok "Russian translation is complete"
+else
+	bad "Russian translation: $out"
+fi
+
+cp "$ROOT/luci-app-mayhem/po/templates/mayhem.pot" "$OUT/mayhem.pot"
+python3 "$ROOT/tools/i18n.py" pot >/dev/null
+if cmp -s "$OUT/mayhem.pot" "$ROOT/luci-app-mayhem/po/templates/mayhem.pot"; then
+	ok "translation template is current"
+else
+	bad "translation template was outdated: run tools/i18n.py pot and commit it"
 fi
 
 if out="$(uc -e "loadfile('$ROOT/luci-app-mayhem/root/usr/share/rpcd/ucode/luci.mayhem')" 2>&1 >/dev/null)"; then
