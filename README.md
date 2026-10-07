@@ -14,7 +14,7 @@
 ## Установка
 
 ```sh
-sh <(wget -O - https://raw.githubusercontent.com/OWNER/project-mayhem/main/install.sh)
+sh <(wget -O - https://raw.githubusercontent.com/iknowdatfeel/project-mayhem/main/install.sh)
 ```
 
 Установщик проверяет версию OpenWrt и свободное место, ставит пакеты `mayhem` и `luci-app-mayhem`, скачивает официальный xray нужной архитектуры (с проверкой SHA-256) и оставляет Mayhem выключенным. Повторный запуск обновляет установленную версию.

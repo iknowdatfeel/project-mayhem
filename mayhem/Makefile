@@ -14,7 +14,7 @@ define Package/mayhem
   SECTION:=net
   CATEGORY:=Network
   TITLE:=Xray-based traffic routing
-  URL:=https://github.com/$(if $(MAYHEM_REPO),$(MAYHEM_REPO),OWNER/project-mayhem)
+  URL:=https://github.com/$(if $(MAYHEM_REPO),$(MAYHEM_REPO),iknowdatfeel/project-mayhem)
   DEPENDS:=+ucode +ucode-mod-fs +ucode-mod-uci +kmod-nft-tproxy +ca-bundle +unzip +curl
   PKGARCH:=all
 endef

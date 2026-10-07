@@ -1,11 +1,11 @@
 #!/bin/sh
 # Project Mayhem installer / updater for OpenWrt 24.10 (opkg) and 25.12+ (apk).
 #
-#   sh <(wget -O - https://raw.githubusercontent.com/OWNER/project-mayhem/main/install.sh)
+#   sh <(wget -O - https://raw.githubusercontent.com/iknowdatfeel/project-mayhem/main/install.sh)
 #
 # Set MAYHEM_REPO=owner/repo to install from a fork.
 
-REPO="${MAYHEM_REPO:-OWNER/project-mayhem}"
+REPO="${MAYHEM_REPO:-iknowdatfeel/project-mayhem}"
 API="https://api.github.com/repos/$REPO/releases/latest"
 TMP="/tmp/mayhem-install"
 TRIES=3
@@ -109,10 +109,6 @@ check_system() {
 		24|25|26|27) ;;
 		SNAPSHOT) warn "SNAPSHOT builds are not tested." ;;
 		*) die "OpenWrt $release is not supported, 24.10 or newer is required." ;;
-	esac
-
-	case "$REPO" in
-		OWNER/*) die "The installer has no repository set. Run it from the project page link or set MAYHEM_REPO." ;;
 	esac
 
 	avail_tmp="$(df -k /tmp | awk 'NR == 2 { print $4 }')"
