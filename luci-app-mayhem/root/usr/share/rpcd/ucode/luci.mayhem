@@ -244,7 +244,10 @@ const ACTIONS = {
 	restart: '/etc/init.d/mayhem restart',
 	reload: '/etc/init.d/mayhem reload',
 	enable: '/usr/bin/mayhem enable',
-	disable: '/usr/bin/mayhem disable'
+	disable: '/usr/bin/mayhem disable',
+	// start on boot or not; the service keeps its current state
+	autostart_on: '/etc/init.d/mayhem enable',
+	autostart_off: '/etc/init.d/mayhem disable'
 };
 
 const IP_CHECK_URL = 'https://api.ipify.org';
@@ -589,6 +592,7 @@ const methods = {
 				time: time(),
 				version: mayhem_version(),
 				enabled: c.get('mayhem', 'settings', 'enabled') == '1',
+				autostart: length(fs.glob('/etc/rc.d/S[0-9][0-9]mayhem') ?? []) > 0,
 				running: pid != null,
 				active: pid != null && fs.access(`${RUN}/active`) == true,
 				xray: trim(fs.readfile(`${RUN}/xray.version`) ?? '') || null,

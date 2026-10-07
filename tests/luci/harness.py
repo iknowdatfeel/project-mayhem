@@ -334,7 +334,7 @@ def main():
             close_modal(pg)
 
         def run_diag(pg):
-            pg.click('#mayhem-tools button >> nth=0')
+            pg.click('#mayhem-body .mh-side button >> nth=-5')
             pg.wait_for_selector('.modal .mh-drow', timeout=5000)
             pg.wait_for_timeout(500)
             pg.wait_for_function('!document.querySelector(".modal .mh-spin")', timeout=90000)
@@ -344,7 +344,7 @@ def main():
             close_modal(pg)
 
         def logs_modal(pg):
-            pg.click('#mayhem-tools button >> nth=1')
+            pg.click('#mayhem-body .mh-side button >> nth=-4')
             pg.wait_for_selector('.modal .mh-log', timeout=5000)
             pg.wait_for_timeout(500)
             shot(pg, 'dashboard_logs')
@@ -374,7 +374,7 @@ def main():
             if not pg.query_selector('#mayhem-body .mh-ghead .mh-bar'):
                 raise RuntimeError('no subscription traffic on the dashboard')
             if not DEMO:  # a screenshot shows the demo delays, not failed checks
-                pg.click('#mayhem-body .mh-section .mh-head button >> nth=-1')
+                pg.click('#mayhem-body .mh-side button >> nth=0')
                 pg.wait_for_timeout(1500)
             else:
                 pg.wait_for_timeout(4500)  # two polls: the speed widget has numbers
