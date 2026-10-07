@@ -1,0 +1,80 @@
+// Mayhem: rpcd backend for the LuCI app (ubus object "luci.mayhem").
+
+'use strict';
+
+import { popen } from 'fs';
+import { parse_link } from 'mayhem.links';
+
+function run(cmd) {
+	const p = popen(cmd, 'r');
+
+	if (!p)
+		return null;
+
+	const out = p.read('all');
+
+	p.close();
+
+	return out;
+}
+
+function run_json(cmd) {
+	try {
+		return json(run(cmd) ?? '');
+	}
+	catch (e) {
+		return null;
+	}
+}
+
+const ACTIONS = {
+	start: '/etc/init.d/mayhem start',
+	stop: '/etc/init.d/mayhem stop',
+	restart: '/etc/init.d/mayhem restart',
+	enable: '/usr/bin/mayhem enable',
+	disable: '/usr/bin/mayhem disable'
+};
+
+const methods = {
+	status: {
+		call: function() {
+			return run_json('/usr/bin/mayhem status 2>/dev/null') ?? { error: 'mayhem status failed' };
+		}
+	},
+
+	check: {
+		call: function() {
+			return run_json('/usr/bin/mayhem check 2>/dev/null') ?? { ok: false, errors: [ 'check failed' ] };
+		}
+	},
+
+	action: {
+		args: { name: 'restart' },
+		call: function(req) {
+			const cmd = ACTIONS[req.args?.name];
+
+			if (!cmd)
+				return { error: 'unknown action' };
+
+			run(`${cmd} >/dev/null 2>&1`);
+
+			return { result: true };
+		}
+	},
+
+	parse_link: {
+		args: { link: '' },
+		call: function(req) {
+			try {
+				const r = parse_link(req.args?.link);
+
+				return { ok: true, name: r.name, protocol: r.outbound.protocol, warnings: r.warnings };
+			}
+			catch (e) {
+				return { ok: false, error: e.message };
+			}
+		}
+	}
+};
+
+return { 'luci.mayhem': methods };

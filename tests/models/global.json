@@ -1,0 +1,11 @@
+{
+  "settings": { "enabled": "1", "mode": "global", "default_section": "main", "interface": "br-lan br-guest", "ip_family": "ipv4_only", "log_level": "debug" },
+  "dns": { "domestic": ["77.88.8.8", "udp://77.88.8.1:53"], "remote": ["https://1.1.1.1/dns-query"], "fakedns": "1", "hijack": "0" },
+  "sections": [
+    { ".name": "main", "type": "proxy", "enabled": "1", "link": "trojan://pw@tr.example:443?type=ws&path=%2Fws&host=tr.example#tr" },
+    { ".name": "ss", "type": "proxy", "enabled": "1", "link": "ss://2022-blake3-aes-128-gcm:AAECAwQFBgcICQoLDA0ODw%3D%3D@5.6.7.8:8388#ss22", "domain": ["telegram.org"] },
+    { ".name": "wg", "type": "proxy", "enabled": "1", "link": "wireguard://cGFzc3Bhc3NwYXNzcGFzc3Bhc3NwYXNzcGFzc3Bhc3M%3D@wg.example:51820?publickey=Zm9vYmFyZm9vYmFyZm9vYmFyZm9vYmFyZm9vYmFyMTI%3D&address=10.0.0.2%2F32&mtu=1280", "domain": ["wg.test"] },
+    { ".name": "direct", "type": "exclusion", "enabled": "1", "domain": ["yandex.ru", "vk.com"], "ip": ["77.88.0.0/18"] }
+  ],
+  "runtime": { "wan_dns": [], "ipv6": true, "mem_total_kb": 131072 }
+}

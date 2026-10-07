@@ -1,0 +1,161 @@
+#!/bin/sh
+# Mayhem command line.
+
+. /usr/share/mayhem/lib.sh
+
+usage() {
+	cat <<EOF
+Mayhem $MAYHEM_VERSION - xray-based traffic routing for OpenWrt
+
+Usage: mayhem <command>
+
+  start | stop | restart     control the service
+  enable | disable           turn routing on/off (saved in /etc/config/mayhem)
+  status                     service state as JSON
+  check                      validate the configuration without applying it
+  show-config                print the generated xray config
+  xray-install [VERSION]     download the official xray build (default $MAYHEM_XRAY_VERSION)
+  version                    print versions
+EOF
+}
+
+json_str() {
+	# minimal JSON string escaping for status output
+	printf '"%s"' "$(printf '%s' "$1" | sed 's/\\/\\\\/g; s/"/\\"/g')"
+}
+
+cmd_status() {
+	local enabled running=false nft=false xver gen
+
+	enabled="$(uci -q get mayhem.settings.enabled)"
+	/etc/init.d/mayhem running >/dev/null 2>&1 && running=true
+	nft list table inet "$MAYHEM_NFT_TABLE" >/dev/null 2>&1 && nft=true
+	xver="$(mayhem_xray_version)"
+	gen="$(cat "$MAYHEM_RUN_DIR/status.json" 2>/dev/null)"
+
+	printf '{"version":%s,"enabled":%s,"running":%s,"intercepting":%s,"xray":%s,"conflicts":%s,"config":%s}\n' \
+		"$(json_str "$MAYHEM_VERSION")" \
+		"$([ "$enabled" = 1 ] && echo true || echo false)" \
+		"$running" "$nft" \
+		"$([ -n "$xver" ] && json_str "$xver" || echo null)" \
+		"$(json_str "$(mayhem_conflicts)")" \
+		"${gen:-null}"
+}
+
+xray_asset() {
+	local arch
+
+	arch="$(. /etc/openwrt_release 2>/dev/null; echo "$DISTRIB_ARCH")"
+	[ -n "$arch" ] || arch="$(uname -m)"
+
+	case "$arch" in
+		aarch64*)                     echo "linux-arm64-v8a xray" ;;
+		arm_cortex-a*)                echo "linux-arm32-v7a xray" ;;
+		arm_arm1176*|arm_mpcore*)     echo "linux-arm32-v6 xray" ;;
+		arm_*)                        echo "linux-arm32-v5 xray" ;;
+		mipsel_*|mipsle*)             echo "linux-mips32le xray_softfloat" ;;
+		mips64el_*)                   echo "linux-mips64le xray" ;;
+		mips64_*)                     echo "linux-mips64 xray" ;;
+		mips_*|mips)                  echo "linux-mips32 xray_softfloat" ;;
+		x86_64)                       echo "linux-64 xray" ;;
+		i386_*|i686|i386)             echo "linux-32 xray" ;;
+		riscv64*)                     echo "linux-riscv64 xray" ;;
+		*) return 1 ;;
+	esac
+}
+
+fetch() {
+	# $1 url, $2 output file
+	if command -v curl >/dev/null 2>&1; then
+		curl -fsSL --retry 2 -o "$2" "$1"
+	else
+		wget -q -O "$2" "$1"
+	fi
+}
+
+cmd_xray_install() {
+	local ver="${1:-$MAYHEM_XRAY_VERSION}" asset bin url tmp="/tmp/mayhem-xray" sum want new
+
+	ver="${ver#v}"
+	set -- $(xray_asset) || { echo "Unsupported architecture" >&2; return 1; }
+	asset="$1"
+	bin="$2"
+	url="https://github.com/XTLS/Xray-core/releases/download/v$ver/Xray-$asset.zip"
+
+	rm -rf "$tmp"
+	mkdir -p "$tmp" || return 1
+
+	echo "Downloading xray $ver ($asset)..."
+	if ! fetch "$url" "$tmp/xray.zip" || ! fetch "$url.dgst" "$tmp/xray.dgst"; then
+		echo "Download failed: $url" >&2
+		rm -rf "$tmp"
+		return 1
+	fi
+
+	want="$(awk -F'= ' 'tolower($1) ~ /sha2-256|sha256/ { print tolower($2); exit }' "$tmp/xray.dgst")"
+	sum="$(sha256sum "$tmp/xray.zip" | awk '{ print $1 }')"
+
+	if [ -z "$want" ] || [ "$sum" != "$want" ]; then
+		echo "Checksum mismatch, refusing to install" >&2
+		rm -rf "$tmp"
+		return 1
+	fi
+
+	new="$MAYHEM_XRAY_BIN.new"
+	mkdir -p "$(dirname "$MAYHEM_XRAY_BIN")"
+
+	# Extract only the binary; the bundled geo files are not used.
+	if ! unzip -p "$tmp/xray.zip" "$bin" > "$new" || [ ! -s "$new" ]; then
+		echo "Not enough flash space or a broken archive" >&2
+		rm -f "$new"
+		rm -rf "$tmp"
+		return 1
+	fi
+
+	rm -rf "$tmp"
+	chmod 0755 "$new"
+
+	if ! "$new" version >/dev/null 2>&1; then
+		echo "Downloaded xray does not run on this router" >&2
+		rm -f "$new"
+		return 1
+	fi
+
+	mv -f "$new" "$MAYHEM_XRAY_BIN"
+	echo "Installed: $("$MAYHEM_XRAY_BIN" version | head -n 1)"
+
+	/etc/init.d/mayhem running >/dev/null 2>&1 && /etc/init.d/mayhem restart
+	return 0
+}
+
+case "$1" in
+	start|stop|restart|reload)
+		/etc/init.d/mayhem "$1"
+		;;
+	enable|disable)
+		uci set mayhem.settings.enabled="$([ "$1" = enable ] && echo 1 || echo 0)"
+		uci commit mayhem
+		[ "$1" = enable ] && /etc/init.d/mayhem enable
+		/etc/init.d/mayhem restart
+		;;
+	status)
+		cmd_status
+		;;
+	check)
+		ucode "$MAYHEM_GEN" --check
+		;;
+	show-config)
+		ucode "$MAYHEM_GEN" --print
+		;;
+	xray-install)
+		cmd_xray_install "$2"
+		;;
+	version)
+		echo "mayhem $MAYHEM_VERSION"
+		echo "xray $(mayhem_xray_version || echo 'not installed') (pinned $MAYHEM_XRAY_VERSION)"
+		;;
+	*)
+		usage
+		[ -n "$1" ] && exit 1
+		;;
+esac

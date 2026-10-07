@@ -1,0 +1,36 @@
+
+config settings 'settings'
+	option enabled '0'
+	# lists: only matched traffic goes to sections, the rest goes direct
+	# global: everything goes to default_section except exclusions
+	option mode 'lists'
+	option default_section ''
+	list interface 'br-lan'
+	# prefer_ipv4 | prefer_ipv6 | ipv4_only | ipv6_only
+	option ip_family 'prefer_ipv4'
+	# debug | info | warning | error | none
+	option log_level 'warning'
+	# xray soft memory limit in MiB, empty = 1/4 of RAM
+	option memlimit ''
+	# Mux for every VLESS node (Vision nodes only multiplex UDP)
+	option mux '0'
+	option mux_concurrency '8'
+	option mux_xudp_concurrency '16'
+	option mux_xudp_udp443 'reject'
+
+config dns 'dns'
+	# empty = DNS servers received from the provider on WAN
+	# list domestic '77.88.8.8'
+	# the first server is the main one, the rest are fallbacks
+	list remote 'https://1.1.1.1/dns-query'
+	list remote 'https://8.8.8.8/dns-query'
+	option via_proxy '0'
+	option proxy_section ''
+	option fakedns '0'
+	option hijack '1'
+
+config section 'main'
+	option enabled '1'
+	option type 'proxy'
+	option proxy_type 'link'
+	option link ''

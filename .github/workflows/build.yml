@@ -1,0 +1,93 @@
+name: Build packages
+
+on:
+  push:
+    branches: [ main ]
+    tags: [ 'v*' ]
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install test tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y cmake libjson-c-dev nftables shellcheck unzip
+      - name: Build ucode
+        run: |
+          git clone --depth 1 https://github.com/jow-/ucode.git /tmp/ucode
+          cmake -S /tmp/ucode -B /tmp/ucode/build -DUBUS_SUPPORT=OFF -DUCI_SUPPORT=OFF -DULOOP_SUPPORT=OFF \
+            -DRTNL_SUPPORT=OFF -DNL80211_SUPPORT=OFF -DLOG_SUPPORT=OFF
+          sudo cmake --build /tmp/ucode/build --target install -j4
+          sudo ldconfig
+      - name: Get xray
+        run: |
+          v=$(sed -n 's/^MAYHEM_XRAY_VERSION="\(.*\)"/\1/p' mayhem/files/usr/share/mayhem/const.sh)
+          curl -fsSL -o /tmp/xray.zip "https://github.com/XTLS/Xray-core/releases/download/v$v/Xray-linux-64.zip"
+          unzip -o /tmp/xray.zip xray -d /tmp/xray
+      - name: Unit tests
+        run: sudo env UCODE=ucode XRAY=/tmp/xray/xray tests/run.sh
+      - name: End-to-end test in network namespaces
+        run: sudo env UCODE=ucode XRAY=/tmp/xray/xray tests/netns.sh
+
+  build:
+    needs: test
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        release: [ '24.10.4', '25.12.2' ]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Version
+        id: ver
+        run: |
+          if [[ "$GITHUB_REF" == refs/tags/v* ]]; then v="${GITHUB_REF#refs/tags/v}"; else v="0.0.$GITHUB_RUN_NUMBER"; fi
+          echo "version=$v" >> "$GITHUB_OUTPUT"
+
+      - name: Fetch OpenWrt SDK
+        run: |
+          base="https://downloads.openwrt.org/releases/${{ matrix.release }}/targets/x86/64"
+          sdk=$(curl -fsSL "$base/" | grep -o 'openwrt-sdk-[^"]*\.tar\.\(xz\|zst\)' | head -n1)
+          curl -fsSL -o "/tmp/$sdk" "$base/$sdk"
+          mkdir sdk
+          case "$sdk" in
+            *.zst) tar --zstd -xf "/tmp/$sdk" -C sdk --strip-components=1 ;;
+            *) tar -xf "/tmp/$sdk" -C sdk --strip-components=1 ;;
+          esac
+
+      - name: Build
+        working-directory: sdk
+        run: |
+          ./scripts/feeds update base luci
+          ./scripts/feeds install luci-base
+          cp -r ../mayhem ../luci-app-mayhem package/
+          make defconfig
+          make package/mayhem/compile package/luci-app-mayhem/compile -j"$(nproc)" V=s \
+            MAYHEM_VERSION=${{ steps.ver.outputs.version }} MAYHEM_REPO=${{ github.repository }}
+          mkdir -p ../dist
+          find bin/packages -type f \( -name '*mayhem*.ipk' -o -name '*mayhem*.apk' \) -exec cp {} ../dist/ \;
+          ls -l ../dist
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: packages-${{ matrix.release }}
+          path: dist/*
+
+  release:
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: build
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: dist/*

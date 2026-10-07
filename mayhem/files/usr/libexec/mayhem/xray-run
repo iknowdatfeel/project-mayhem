@@ -1,0 +1,73 @@
+#!/bin/sh
+# Mayhem: runs xray under procd and owns the traffic redirection.
+#
+# Interception (nftables + policy routing) and the dnsmasq redirect are set up
+# only after xray listens, and are removed as soon as xray exits for any
+# reason. While xray is down - crash or restart - traffic goes direct.
+
+. "${MAYHEM_LIB_DIR:-/usr/share/mayhem}/lib.sh"
+
+[ -f "$MAYHEM_RUN_DIR/env" ] && . "$MAYHEM_RUN_DIR/env"
+export GOMEMLIMIT
+
+xray_pid=""
+stopping=0
+
+on_term() {
+	stopping=1
+	[ -n "$xray_pid" ] && kill -TERM "$xray_pid" 2>/dev/null
+}
+
+trap on_term TERM INT
+
+if [ ! -x "$MAYHEM_XRAY_BIN" ]; then
+	mayhem_log "xray is not installed, run: mayhem xray-install" err
+	exit 1
+fi
+
+"$MAYHEM_XRAY_BIN" run -c "$MAYHEM_RUN_DIR/xray.json" &
+xray_pid=$!
+
+ready=0
+i=0
+while [ "$i" -lt 40 ] && [ "$stopping" = 0 ]; do
+	kill -0 "$xray_pid" 2>/dev/null || break
+
+	if mayhem_port_listening "$MAYHEM_TPROXY_PORT" && mayhem_port_listening "$MAYHEM_DNS_PORT"; then
+		ready=1
+		break
+	fi
+
+	sleep 1
+	i=$((i + 1))
+done
+
+if [ "$ready" = 1 ]; then
+	if mayhem_net_up && mayhem_dns_up; then
+		mayhem_log "started, traffic is redirected to xray (pid $xray_pid)"
+	else
+		mayhem_log "could not set up traffic redirection, stopping" err
+		kill -TERM "$xray_pid" 2>/dev/null
+	fi
+elif [ "$stopping" = 0 ]; then
+	mayhem_log "xray did not start listening, see the log above" err
+	kill -TERM "$xray_pid" 2>/dev/null
+fi
+
+# `wait` returns early when a trapped signal arrives, so loop until xray is gone.
+rc=0
+while kill -0 "$xray_pid" 2>/dev/null; do
+	wait "$xray_pid"
+	rc=$?
+done
+
+mayhem_net_down
+mayhem_dns_down
+
+if [ "$stopping" = 1 ]; then
+	mayhem_log "stopped, traffic goes direct"
+	exit 0
+fi
+
+mayhem_log "xray exited (code $rc), traffic goes direct until it is restarted" err
+exit 1

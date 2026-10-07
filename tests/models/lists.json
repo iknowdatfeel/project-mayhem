@@ -1,0 +1,20 @@
+{
+  "settings": { "enabled": "1", "mode": "lists", "interface": ["br-lan"], "ip_family": "prefer_ipv4", "log_level": "warning", "mux": "1" },
+  "dns": { "remote": ["https://1.1.1.1/dns-query", "https://dns.google/dns-query"], "via_proxy": "1", "proxy_section": "main", "hijack": "1" },
+  "sections": [
+    { ".name": "main", "type": "proxy", "enabled": "1",
+      "link": "vless://11111111-2222-3333-4444-555555555555@nl.example.com:443?type=tcp&security=reality&sni=www.microsoft.com&fp=chrome&pbk=SbVKOEMjK0sIlbwg4akyBg5mL5KZwwB-ed4eEE7YnRc&sid=6ba85179e30d4fc2&flow=xtls-rprx-vision#NL",
+      "domain": ["youtube.com", "googlevideo.com", "keyword:instagram", "full:chatgpt.com", "geosite:google"],
+      "ip": ["91.108.4.0/22", "2001:67c:4e8::/48"] },
+    { ".name": "games", "type": "proxy", "enabled": "1", "proxy_type": "json",
+      "outbound_json": "{\"protocol\":\"vless\",\"settings\":{\"address\":\"1.2.3.4\",\"port\":443,\"id\":\"11111111-2222-3333-4444-555555555555\",\"encryption\":\"none\"},\"streamSettings\":{\"network\":\"xhttp\",\"security\":\"tls\",\"tlsSettings\":{\"serverName\":\"g.example\"},\"xhttpSettings\":{\"path\":\"/x\"}}}",
+      "domain": "epicgames.com fortnite.com" },
+    { ".name": "hy", "type": "proxy", "enabled": "1",
+      "link": "hy2://pass@hy.example:443?sni=hy.example&obfs=salamander&obfs-password=xyz#hy", "domain": ["x.com"] },
+    { ".name": "ru", "type": "exclusion", "enabled": "1", "domain": ["gosuslugi.ru"], "ip": ["5.255.255.0/24"] },
+    { ".name": "ads", "type": "block", "enabled": "1", "domain": ["doubleclick.net"], "ip": ["203.0.114.7"] },
+    { ".name": "broken", "type": "proxy", "enabled": "1", "link": "vless://id@h:443?type=h2" },
+    { ".name": "off", "type": "proxy", "enabled": "0", "link": "garbage" }
+  ],
+  "runtime": { "wan_dns": ["192.168.100.1", "127.0.0.1"], "ipv6": true, "mem_total_kb": 245760 }
+}

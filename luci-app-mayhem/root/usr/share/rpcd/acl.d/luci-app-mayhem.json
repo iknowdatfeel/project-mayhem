@@ -1,0 +1,17 @@
+{
+	"luci-app-mayhem": {
+		"description": "Grant access to Mayhem",
+		"read": {
+			"ubus": {
+				"luci.mayhem": [ "status", "check", "parse_link" ]
+			},
+			"uci": [ "mayhem" ]
+		},
+		"write": {
+			"ubus": {
+				"luci.mayhem": [ "action" ]
+			},
+			"uci": [ "mayhem" ]
+		}
+	}
+}

@@ -1,0 +1,40 @@
+{
+	"admin/services/mayhem": {
+		"title": "Mayhem",
+		"order": 40,
+		"action": {
+			"type": "firstchild"
+		},
+		"depends": {
+			"acl": [ "luci-app-mayhem" ],
+			"uci": { "mayhem": true }
+		}
+	},
+
+	"admin/services/mayhem/status": {
+		"title": "Status",
+		"order": 10,
+		"action": {
+			"type": "view",
+			"path": "mayhem/status"
+		}
+	},
+
+	"admin/services/mayhem/sections": {
+		"title": "Sections",
+		"order": 20,
+		"action": {
+			"type": "view",
+			"path": "mayhem/sections"
+		}
+	},
+
+	"admin/services/mayhem/settings": {
+		"title": "Settings",
+		"order": 30,
+		"action": {
+			"type": "view",
+			"path": "mayhem/settings"
+		}
+	}
+}
