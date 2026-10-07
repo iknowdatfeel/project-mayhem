@@ -2,8 +2,8 @@ name: Build packages
 
 on:
   push:
-    branches: [ main ]
-    tags: [ 'v*' ]
+    branches: [main]
+    tags: ["v*"]
   pull_request:
 
 jobs:
@@ -14,7 +14,7 @@ jobs:
       - name: Install test tools
         run: |
           sudo apt-get update
-          sudo apt-get install -y cmake libjson-c-dev nftables shellcheck unzip
+          sudo apt-get install -y cmake libjson-c-dev nftables shellcheck unzip dnsmasq-base
       - name: Build ucode with the uci module
         run: |
           git clone --depth 1 https://github.com/openwrt/libubox.git /tmp/libubox
@@ -37,6 +37,13 @@ jobs:
         run: sudo env GITHUB_ACTIONS="$GITHUB_ACTIONS" UCODE=ucode XRAY=/tmp/xray/xray tests/run.sh
       - name: End-to-end test in network namespaces
         run: sudo env GITHUB_ACTIONS="$GITHUB_ACTIONS" UCODE=ucode XRAY=/tmp/xray/xray tests/netns.sh
+      - name: LuCI pages in a browser
+        run: |
+          pip install --break-system-packages playwright
+          python3 -m playwright install --with-deps chromium
+          git clone --depth 1 --filter=blob:none --sparse -b openwrt-24.10 https://github.com/openwrt/luci.git /tmp/luci
+          git -C /tmp/luci sparse-checkout set modules/luci-base/htdocs themes/luci-theme-bootstrap/htdocs
+          UCODE=ucode sh tests/luci/run.sh /tmp/luci
 
   build:
     needs: test
@@ -44,7 +51,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        release: [ '24.10.4', '25.12.2' ]
+        release: ["24.10.4", "25.12.2"]
     steps:
       - uses: actions/checkout@v5
 
@@ -71,6 +78,7 @@ jobs:
           ./scripts/feeds update base luci
           ./scripts/feeds install luci-base
           cp -r ../mayhem ../luci-app-mayhem package/
+          echo 'CONFIG_LUCI_LANG_ru=y' >> .config
           make defconfig
           make package/mayhem/compile package/luci-app-mayhem/compile -j"$(nproc)" V=s \
             MAYHEM_VERSION=${{ steps.ver.outputs.version }} MAYHEM_REPO=${{ github.repository }}
