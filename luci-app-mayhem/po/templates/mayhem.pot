@@ -105,10 +105,6 @@ msgstr ""
 msgid "A tunnel section sends its traffic into a network interface: AmneziaWG, WireGuard, OpenVPN or any other."
 msgstr ""
 
-#: htdocs/luci-static/resources/mayhem/diag.js
-msgid "Actions"
-msgstr ""
-
 #: htdocs/luci-static/resources/view/mayhem/sections.js
 msgid "Add section"
 msgstr ""
@@ -167,6 +163,10 @@ msgstr ""
 
 #: htdocs/luci-static/resources/view/mayhem/dashboard.js
 msgid "Automatic: the fastest by URL test"
+msgstr ""
+
+#: htdocs/luci-static/resources/mayhem/diag.js
+msgid "Back"
 msgstr ""
 
 #: htdocs/luci-static/resources/view/mayhem/dashboard.js
@@ -253,10 +253,6 @@ msgstr ""
 msgid "Detect"
 msgstr ""
 
-#: htdocs/luci-static/resources/mayhem/diag.js
-msgid "Device"
-msgstr ""
-
 #: htdocs/luci-static/resources/view/mayhem/subscriptions.js
 msgid "Device data"
 msgstr ""
@@ -277,7 +273,7 @@ msgstr ""
 msgid "Devices that use their own DNS server (8.8.8.8 and so on) are answered by Mayhem as well."
 msgstr ""
 
-#: htdocs/luci-static/resources/view/mayhem/dashboard.js
+#: htdocs/luci-static/resources/mayhem/diag.js
 msgid "Diagnostics"
 msgstr ""
 
@@ -557,10 +553,6 @@ msgstr ""
 msgid "JSON outbound"
 msgstr ""
 
-#: htdocs/luci-static/resources/mayhem/diag.js
-msgid "Kernel"
-msgstr ""
-
 #: htdocs/luci-static/resources/view/mayhem/sections.js
 msgid "Kernel (fastest)"
 msgstr ""
@@ -806,7 +798,7 @@ msgid "Remote DNS through proxy"
 msgstr ""
 
 #: htdocs/luci-static/resources/mayhem/diag.js
-msgid "Restart Mayhem"
+msgid "Restart"
 msgstr ""
 
 #: htdocs/luci-static/resources/view/mayhem/settings.js
@@ -826,7 +818,7 @@ msgid "Rules"
 msgstr ""
 
 #: htdocs/luci-static/resources/mayhem/diag.js
-msgid "Run diagnostics"
+msgid "Run again"
 msgstr ""
 
 #: htdocs/luci-static/resources/view/mayhem/sections.js
@@ -947,10 +939,6 @@ msgstr ""
 
 #: htdocs/luci-static/resources/mayhem/diag.js
 msgid "System"
-msgstr ""
-
-#: htdocs/luci-static/resources/mayhem/diag.js
-msgid "System information"
 msgstr ""
 
 #: htdocs/luci-static/resources/view/mayhem/dashboard.js

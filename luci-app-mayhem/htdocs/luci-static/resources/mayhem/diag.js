@@ -51,16 +51,16 @@ const NAMES = {
 };
 
 const CSS = `
-.mh-diag { display:grid; grid-template-columns:2fr 1fr; grid-column-gap:10px; align-items:start; }
-@media (max-width: 800px) { .mh-diag { grid-template-columns:1fr; grid-row-gap:10px; } }
-.mh-run button, .mh-actions button { width:100%; }
-.mh-check { display:grid; grid-template-columns:24px 1fr; grid-column-gap:10px; align-items:center; }
-.mh-check > span > .mh-icon { width:24px; height:24px; }
-.mh-check-items { grid-column:2; margin-top:8px; display:grid; grid-row-gap:3px; }
+.mh-toolbar { display:flex; flex-wrap:wrap; align-items:center; gap:8px; }
+.mh-toolbar .mh-grow { flex:1 1 auto; }
+.mh-drow { border-bottom:1px solid var(--background-color-low, lightgray); }
+.mh-drow > summary { display:flex; align-items:center; gap:8px; padding:7px 2px; cursor:pointer; list-style:none; }
+.mh-drow > summary::-webkit-details-marker { display:none; }
+.mh-drow > summary > b { flex:1 1 auto; }
+.mh-drow-items { display:grid; grid-row-gap:3px; padding:0 0 8px 28px; }
 .mh-item { display:grid; grid-template-columns:16px auto 1fr; grid-column-gap:8px; align-items:start; }
 .mh-item > b { white-space:nowrap; }
 .mh-item > div { word-break:break-word; }
-.mh-info-row { display:grid; grid-template-columns:auto 1fr; grid-column-gap:8px; }
 .mh-log { height:60vh; overflow:auto; white-space:pre-wrap; font-size:12px; }
 .mh-log-tools { display:flex; flex-wrap:wrap; gap:8px; align-items:center; margin:8px 0; }
 .mh-log-tools select { width:auto; }
@@ -73,17 +73,15 @@ return baseclass.extend({
 	acting: null,
 	sys: {},
 	node: null,
+	list: null,
 
-	// opts.state(): the dashboard data (enabled, running); opts.refresh(): reload it.
+	// A row of buttons under the sections: diagnostics and logs open in
+	// dialogs. opts.state(): the dashboard data; opts.refresh(): reload it.
 	render(opts) {
 		this.opts = opts;
-		this.node = E('div', { 'class': 'mh-diag', 'id': 'mayhem-diag' });
+		this.node = E('div', { 'class': 'mh-box mh-toolbar', 'id': 'mayhem-tools' });
 
-		L.resolveDefault(callSysinfo(), {}).then((s) => {
-			this.sys = s;
-			this.draw();
-		});
-
+		L.resolveDefault(callSysinfo(), {}).then((s) => { this.sys = s; });
 		window.requestAnimationFrame(() => this.draw());
 
 		return E('div', [ E('style', CSS), this.node ]);
@@ -95,7 +93,7 @@ return baseclass.extend({
 		else if (r && r.error)
 			this.checks.push({ group: 'system', name: 'Error', status: 'fail', detail: r.error });
 
-		this.draw();
+		this.drawList();
 	},
 
 	run() {
@@ -105,7 +103,7 @@ return baseclass.extend({
 		this.running = true;
 		this.checks = [];
 		this.done = {};
-		this.draw();
+		this.drawList();
 
 		return callDiagnose('local', '').then((r) => {
 			this.done.local = true;
@@ -126,7 +124,7 @@ return baseclass.extend({
 		}).finally(() => {
 			this.running = false;
 			this.done = { local: true, dns: true, exit: true };
-			this.draw();
+			this.drawList();
 		});
 	},
 
@@ -166,10 +164,107 @@ return baseclass.extend({
 		ui.showModal(_('Diagnostics report'), [
 			E('p', _('Copy the report and attach it to a question or a bug report. It holds no keys or passwords, but it does show your external addresses.')),
 			area,
-			E('div', { 'class': 'right' }, E('button', { 'class': 'btn', 'click': ui.hideModal }, _('Close')))
+			E('div', { 'class': 'right' }, [
+				E('button', { 'class': 'btn', 'click': ui.createHandlerFn(this, 'diagnostics', false) }, _('Back')), ' ',
+				E('button', { 'class': 'btn', 'click': ui.hideModal }, _('Close'))
+			])
 		]);
 
 		area.select();
+	},
+
+	// --- diagnostics dialog ---------------------------------------------------------
+
+	// Opens the dialog; a new run starts unless `fresh` is false.
+	diagnostics(fresh) {
+		const s = this.sys;
+		const versions = [ 'Mayhem ' + (s.mayhem || '?'), 'xray ' + (s.xray || '?') ];
+
+		if (s.openwrt)
+			versions.push(s.openwrt);
+
+		if (s.model)
+			versions.push(s.model);
+
+		this.list = E('div');
+
+		ui.showModal(_('Diagnostics'), [
+			E('div', { 'class': 'mh-small mh-muted' }, _('Checks every part of the traffic path. External addresses are requested through each section, so you can see where the traffic really leaves.')),
+			this.list,
+			E('div', { 'class': 'mh-small mh-muted', 'style': 'margin-top:8px' }, versions.join(' · ')),
+			E('div', { 'class': 'right', 'style': 'margin-top:8px' }, [
+				E('button', { 'class': 'btn cbi-button-action', 'click': ui.createHandlerFn(this, 'run') }, _('Run again')), ' ',
+				E('button', { 'class': 'btn', 'click': ui.createHandlerFn(this, 'copy') }, _('Copy report')), ' ',
+				E('button', { 'class': 'btn', 'click': ui.hideModal }, _('Close'))
+			])
+		], 'mh-diag-modal');
+
+		if (fresh !== false || !this.checks.length)
+			return this.run();
+
+		this.drawList();
+	},
+
+	// One line per part of the traffic path; the ones with problems are open.
+	group(group, title, part) {
+		const items = this.checks.filter((c) => c.group === group);
+		const count = (st) => items.filter((c) => c.status === st).length;
+		let state, desc;
+
+		if (!this.done[part]) {
+			state = 'busy';
+			desc = _('Checking…');
+		}
+		else if (!items.length) {
+			state = 'idle';
+			desc = _('Nothing to check');
+		}
+		else if (count('fail')) {
+			state = 'fail';
+			desc = _('Problems found');
+		}
+		else if (count('warn')) {
+			state = 'warn';
+			desc = _('Works, with warnings');
+		}
+		else {
+			state = 'ok';
+			desc = _('All checks passed');
+		}
+
+		const icon = { idle: 'circle-idle', busy: 'loader', fail: 'circle-x', warn: 'circle-alert', ok: 'circle-check' }[state];
+		const color = { idle: 'mh-muted', busy: 'mh-busy', fail: 'mh-fail', warn: 'mh-warn', ok: 'mh-ok' }[state];
+
+		return E('details', { 'class': 'mh-drow', 'data-state': state, 'open': (state === 'fail' || state === 'warn') ? '' : null }, [
+			E('summary', [
+				E('span', { 'class': color }, mh.icon(icon)),
+				E('b', title),
+				E('span', { 'class': 'mh-small ' + color }, desc)
+			]),
+			E('div', { 'class': 'mh-drow-items mh-small' }, items.map((c) => E('div', {
+				'class': 'mh-item ' + ({ ok: 'mh-ok', warn: 'mh-warn', fail: 'mh-fail' }[c.status] || 'mh-muted')
+			}, [ mh.icon(ITEM_ICON[c.status] || 'circle-idle', true), E('b', NAMES[c.name] || c.name), E('div', c.detail) ])))
+		]);
+	},
+
+	drawList() {
+		if (!this.list || !document.contains(this.list))
+			return;
+
+		// A line the user opened or closed by hand stays so while its result
+		// is the same.
+		const before = {};
+
+		this.list.querySelectorAll('details').forEach((d, i) => { before[i] = [ d.dataset.state, d.open ]; });
+
+		this.list.replaceChildren(...GROUPS.map((g, i) => {
+			const el = this.group(g[0], g[1], g[2]);
+
+			if (before[i] && before[i][0] === el.dataset.state)
+				el.open = before[i][1];
+
+			return el;
+		}));
 	},
 
 	// --- logs dialog -------------------------------------------------------------
@@ -230,50 +325,12 @@ return baseclass.extend({
 		});
 	},
 
-	// --- drawing -------------------------------------------------------------------
+	// --- toolbar ---------------------------------------------------------------------
 
-	checkBox(group, title, part) {
-		const items = this.checks.filter((c) => c.group === group);
-		let state, desc;
+	draw() {
+		if (!this.node)
+			return;
 
-		if (!this.done[part]) {
-			state = 'busy';
-			desc = _('Checking…');
-		}
-		else if (!items.length) {
-			state = 'idle';
-			desc = _('Nothing to check');
-		}
-		else if (items.some((c) => c.status === 'fail')) {
-			state = 'fail';
-			desc = _('Problems found');
-		}
-		else if (items.some((c) => c.status === 'warn')) {
-			state = 'warn';
-			desc = _('Works, with warnings');
-		}
-		else {
-			state = 'ok';
-			desc = _('All checks passed');
-		}
-
-		const icon = { idle: 'circle-idle', busy: 'loader', fail: 'circle-x', warn: 'circle-alert', ok: 'circle-check' }[state];
-		const color = { idle: 'mh-muted', busy: 'mh-busy', fail: 'mh-fail', warn: 'mh-warn', ok: 'mh-ok' }[state];
-
-		const box = E('div', { 'class': 'mh-box mh-check ' + (state === 'idle' ? '' : 'mh-box--' + state) }, [
-			E('span', { 'class': color }, mh.icon(icon)),
-			E('div', [ E('b', { 'class': color }, title), E('div', { 'class': 'mh-small mh-muted' }, desc) ])
-		]);
-
-		if (items.length)
-			box.appendChild(E('div', { 'class': 'mh-check-items mh-small' }, items.map((c) => E('div', {
-				'class': 'mh-item ' + ({ ok: 'mh-ok', warn: 'mh-warn', fail: 'mh-fail' }[c.status] || 'mh-muted')
-			}, [ mh.icon(ITEM_ICON[c.status] || 'circle-idle', true), E('b', NAMES[c.name] || c.name), E('div', c.detail) ]))));
-
-		return box;
-	},
-
-	actions() {
 		const d = this.opts.state() || {};
 		const any = this.acting != null;
 		const btn = (name, icon, cls, text) => mh.button({
@@ -281,10 +338,14 @@ return baseclass.extend({
 			click: ui.createHandlerFn(this, 'act', name)
 		});
 
-		const list = [ E('b', _('Actions')) ];
+		const list = [
+			mh.button({ icon: 'search', cls: 'cbi-button-apply', text: _('Diagnostics'), click: ui.createHandlerFn(this, 'diagnostics', true) }),
+			mh.button({ icon: 'logs', text: _('Logs'), click: ui.createHandlerFn(this, 'logs') }),
+			E('span', { 'class': 'mh-grow' })
+		];
 
 		if (d.enabled) {
-			list.push(btn('restart', 'restart', 'cbi-button-apply', _('Restart Mayhem')));
+			list.push(btn('restart', 'restart', 'cbi-button-apply', _('Restart')));
 			list.push(d.running ? btn('stop', 'stop', 'cbi-button-remove', _('Stop until restart'))
 				: btn('start', 'play', 'cbi-button-save', _('Start Mayhem')));
 			list.push(btn('disable', 'pause', 'cbi-button-remove', _('Turn Mayhem off')));
@@ -293,46 +354,6 @@ return baseclass.extend({
 			list.push(btn('enable', 'play', 'cbi-button-save', _('Turn Mayhem on')));
 		}
 
-		list.push(mh.button({ icon: 'logs', text: _('Logs'), click: ui.createHandlerFn(this, 'logs') }));
-		list.push(mh.button({ icon: 'copy', text: _('Copy report'), disabled: !this.checks.length, click: ui.createHandlerFn(this, 'copy') }));
-
-		return E('div', { 'class': 'mh-box mh-stack mh-actions' }, list);
-	},
-
-	sysInfo() {
-		const s = this.sys;
-		const rows = [
-			[ 'Mayhem', s.mayhem ],
-			[ 'xray', s.xray ],
-			[ 'OpenWrt', s.openwrt ],
-			[ _('Device'), s.model ],
-			[ _('Kernel'), s.kernel ]
-		];
-
-		return E('div', { 'class': 'mh-box mh-stack' }, [ E('b', _('System information')) ].concat(rows.map((r) =>
-			E('div', { 'class': 'mh-info-row' }, [ E('b', r[0]), E('span', r[1] || '—') ]))));
-	},
-
-	draw() {
-		if (!this.node)
-			return;
-
-		const left = [
-			E('div', { 'class': 'mh-run' }, mh.button({
-				icon: 'search', cls: 'cbi-button-apply', text: this.running ? _('Checking…') : _('Run diagnostics'),
-				busy: this.running, click: ui.createHandlerFn(this, 'run')
-			}))
-		];
-
-		// The boxes appear with the first run: idle ones would only take room.
-		if (this.running || this.checks.length)
-			GROUPS.forEach((g) => left.push(this.checkBox(g[0], g[1], g[2])));
-		else
-			left.push(E('div', { 'class': 'mh-box mh-small mh-muted' }, _('Checks every part of the traffic path. External addresses are requested through each section, so you can see where the traffic really leaves.')));
-
-		this.node.replaceChildren(
-			E('div', { 'class': 'mh-stack' }, left),
-			E('div', { 'class': 'mh-stack' }, [ this.actions(), this.sysInfo() ])
-		);
+		this.node.replaceChildren(...list);
 	}
 });

@@ -334,14 +334,17 @@ def main():
             close_modal(pg)
 
         def run_diag(pg):
-            pg.click('#mayhem-diag .mh-run button')
+            pg.click('#mayhem-tools button >> nth=0')
+            pg.wait_for_selector('.modal .mh-drow', timeout=5000)
             pg.wait_for_timeout(500)
-            pg.wait_for_function('!document.querySelector("#mayhem-diag .mh-run button").disabled', timeout=90000)
-            if not pg.query_selector('#mayhem-diag .mh-check-items'):
+            pg.wait_for_function('!document.querySelector(".modal .mh-spin")', timeout=90000)
+            if not pg.query_selector('.modal .mh-drow-items .mh-item'):
                 raise RuntimeError('no check results')
+            shot(pg, 'dashboard_diag')
+            close_modal(pg)
 
         def logs_modal(pg):
-            pg.click('#mayhem-diag .mh-actions button >> nth=-2')
+            pg.click('#mayhem-tools button >> nth=1')
             pg.wait_for_selector('.modal .mh-log', timeout=5000)
             pg.wait_for_timeout(500)
             shot(pg, 'dashboard_logs')

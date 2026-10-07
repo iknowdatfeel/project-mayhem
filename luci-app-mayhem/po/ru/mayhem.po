@@ -1373,3 +1373,9 @@ msgstr "Загрузка…"
 
 msgid "Check method"
 msgstr "Способ проверки"
+
+msgid "Back"
+msgstr "Назад"
+
+msgid "Run again"
+msgstr "Проверить ещё раз"
