@@ -108,27 +108,6 @@ LAN ─► nftables (inet mayhem) ─┬─ локальные адреса, и�
 dnsmasq ─► xray DNS (127.0.0.1:12753) ─► домашний / удалённый DNS
 ```
 
-| Путь | Назначение |
-| --- | --- |
-| `/etc/config/mayhem` | настройки (UCI) |
-| `/usr/share/mayhem/gen.uc` | генератор: UCI → конфиг xray, nftables, dnsmasq |
-| `/usr/share/mayhem/sub.uc` | загрузка и разбор подписок |
-| `/usr/libexec/mayhem/scheduler` | фоновые задачи: обновление подписок |
-| `/etc/mayhem/subs/` | сохранённые подписки (переживают обновление прошивки) |
-| `/usr/share/ucode/mayhem/` | разбор ссылок, правила, сборка конфига |
-| `/usr/libexec/mayhem/xray-run` | запуск xray и управление перехватом |
-| `/usr/libexec/mayhem/xray` | бинарь xray |
-| `/var/run/mayhem/` | сгенерированные файлы и статус |
-
-## Разработка
-
-Тесты запускаются вне роутера:
-
-```sh
-UCODE=ucode XRAY=/path/to/xray tests/run.sh          # ссылки, генератор, xray -test, nft -c, shellcheck
-sudo UCODE=ucode XRAY=/path/to/xray tests/netns.sh   # сквозной тест в network namespaces
-```
-
 `tests/netns.sh` поднимает клиент, роутер и «интернет» в отдельных сетевых пространствах, запускает настоящий xray и проверяет маршрутизацию, DNS, поведение при падении xray, загрузку подписки с заголовками Happ, автоматический и ручной выбор сервера, переключение с дашборда, проверки задержки и скачивание подписки через секцию.
 
 Пакеты собираются в GitHub Actions через OpenWrt SDK (24.10 — ipk, 25.12 — apk); при пуше тега `v*` они публикуются в релиз.
