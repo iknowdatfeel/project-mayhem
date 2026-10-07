@@ -143,7 +143,10 @@ mayhem_apply_overrides() {
 	[ -s "$MAYHEM_RUN_DIR/overrides" ] || return 0
 
 	while read -r bal tag; do
-		[ -n "$bal" ] && [ -n "$tag" ] || continue
+		if [ -z "$bal" ] || [ -z "$tag" ]; then
+			continue
+		fi
+
 		mayhem_select "$bal" "$tag" ||
 			mayhem_log "could not select $tag in $bal" warn
 	done < "$MAYHEM_RUN_DIR/overrides"
