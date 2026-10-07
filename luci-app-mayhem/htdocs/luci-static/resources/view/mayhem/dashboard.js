@@ -3,70 +3,50 @@
 'require rpc';
 'require poll';
 'require ui';
+'require mayhem.common as mh';
+
+// The dashboard: four small widgets, then every proxy section as a box of
+// server tiles grouped by where they come from (a subscription with its
+// traffic and expiry, links, interfaces), like Happ shows subscriptions.
+// Actions and the detailed checks are on the diagnostics page.
 
 const callDashboard = rpc.declare({ object: 'luci.mayhem', method: 'dashboard', expect: { '': {} } });
 const callAction = rpc.declare({ object: 'luci.mayhem', method: 'action', params: [ 'name' ], expect: { '': {} } });
 const callSelect = rpc.declare({ object: 'luci.mayhem', method: 'select_node', params: [ 'section', 'tag' ], expect: { '': {} } });
 const callProbe = rpc.declare({ object: 'luci.mayhem', method: 'probe', params: [ 'tag', 'method' ], expect: { '': {} } });
 const callSubUpdate = rpc.declare({ object: 'luci.mayhem', method: 'sub_update', params: [ 'name' ], expect: { '': {} } });
-const callDataUpdate = rpc.declare({ object: 'luci.mayhem', method: 'data_update', params: [ 'what', 'name' ], expect: { '': {} } });
 
-const COLORS = { ok: '#2e7d32', warn: '#ef6c00', bad: '#c62828', off: '#9e9e9e' };
 const PROBE_PARALLEL = 4;
+const DAY = 86400;
 
-function bytes(n) {
-	if (n == null)
-		return '—';
+const CSS = `
+.mh-head { display:flex; align-items:center; justify-content:space-between; gap:10px; flex-wrap:wrap; }
+.mh-head .mh-grow { flex:1 1 auto; }
+.mh-widget-row { white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
 
-	const u = [ 'B', 'KB', 'MB', 'GB', 'TB' ];
-	let i = 0;
-
-	while (n >= 1024 && i < u.length - 1) {
-		n /= 1024;
-		i++;
-	}
-
-	return (i ? n.toFixed(n < 10 ? 1 : 0) : n) + ' ' + u[i];
-}
+.mh-group { margin-top:10px; }
+.mh-ghead { display:flex; align-items:center; flex-wrap:wrap; gap:4px 12px; margin-bottom:6px; }
+.mh-bar { display:inline-block; width:90px; height:6px; border-radius:3px; background:var(--background-color-low, lightgray); vertical-align:middle; overflow:hidden; }
+.mh-bar > span { display:block; height:100%; background:var(--primary-color-high, dodgerblue); }
+.mh-bar.mh-full > span { background:var(--error-color-medium, red); }
+.mh-tile { border:2px solid var(--background-color-low, lightgray); border-radius:4px; padding:8px 10px; transition:border .2s ease; min-width:0; }
+.mh-tile b { display:block; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.mh-tile--pick { cursor:pointer; }
+.mh-tile--pick:hover { border-color:var(--primary-color-high, dodgerblue); }
+.mh-tile--active { border-color:var(--success-color-medium, green); }
+.mh-tile-foot { display:flex; justify-content:space-between; margin-top:6px; gap:6px; }
+.mh-alert { display:grid; grid-template-columns:24px 1fr auto; grid-column-gap:10px; align-items:center; }
+.mh-alert ul { margin:4px 0 0; padding-left:18px; }
+.mh-ghead .btn { padding:0 8px; line-height:22px; min-height:0; }
+.mh-ghead > .btn:last-child { margin-left:auto; }
+`;
 
 function rate(n) {
-	return n == null ? '—' : bytes(n) + '/s';
+	return n == null ? '—' : mh.bytes(n) + '/s';
 }
 
-function ago(ts, now) {
-	if (!ts)
-		return _('never');
-
-	const s = Math.max(0, now - ts);
-
-	if (s < 90)
-		return _('just now');
-
-	if (s < 5400)
-		return _('%d min ago').format(Math.round(s / 60));
-
-	if (s < 129600)
-		return _('%d h ago').format(Math.round(s / 3600));
-
-	return _('%d d ago').format(Math.round(s / 86400));
-}
-
-function badge(color, text) {
-	return E('span', {
-		'style': 'display:inline-block;padding:1px 8px;border-radius:9px;color:#fff;font-size:90%%;background:%s'.format(color)
-	}, text);
-}
-
-function ms(v) {
-	if (v == null)
-		return '—';
-
-	if (typeof v === 'string')
-		return E('span', { 'style': 'color:' + COLORS.bad, 'title': v }, '✕');
-
-	const c = v < 150 ? COLORS.ok : (v < 400 ? COLORS.warn : COLORS.bad);
-
-	return E('span', { 'style': 'color:' + c }, '%d ms'.format(v));
+function latencyClass(v) {
+	return v < 400 ? 'mh-ok' : (v < 1000 ? 'mh-warn' : 'mh-fail');
 }
 
 const MODES = {
@@ -77,7 +57,6 @@ const MODES = {
 
 return view.extend({
 	data: null,
-	prev: null,
 	speed: null,
 	probes: {},
 	busy: {},
@@ -125,9 +104,10 @@ return view.extend({
 		});
 	},
 
-	probeSection(sec, method) {
+	// URL test of every server of the section, a few at a time.
+	probeSection(sec) {
 		const queue = sec.nodes.slice();
-		const key = sec.name + ':' + method;
+		const key = 'probe:' + sec.name;
 
 		if (this.busy[key])
 			return Promise.resolve();
@@ -141,9 +121,8 @@ return view.extend({
 			if (!n)
 				return Promise.resolve();
 
-			return callProbe(n.tag, method).then((r) => {
-				this.probes[n.tag] = this.probes[n.tag] || {};
-				this.probes[n.tag][method] = (r.ms != null) ? r.ms : (r.error || 'error');
+			return callProbe(n.tag, 'url').then((r) => {
+				this.probes[n.tag] = (r.ms != null) ? r.ms : (r.error || 'error');
 				this.redraw();
 			}).then(worker);
 		};
@@ -174,245 +153,281 @@ return view.extend({
 		});
 	},
 
-	renderSummary(d) {
-		const st = d.status || {};
+	// --- widgets -----------------------------------------------------------------
+
+	widget(title, rows) {
+		return E('div', { 'class': 'mh-box' }, [
+			E('div', { 'class': 'mh-title' }, title)
+		].concat(rows.map((r) => E('div', { 'class': 'mh-widget-row', 'title': r[0] + ': ' + r[1] }, [
+			E('span', { 'class': 'mh-muted' }, r[0] + ': '),
+			E('span', { 'class': r[2] || '' }, r[1])
+		]))));
+	},
+
+	renderWidgets(d) {
 		const working = d.running && d.active;
-		const state = !d.enabled ? badge(COLORS.off, _('Disabled'))
-			: working ? badge(COLORS.ok, _('Working'))
-			: d.running ? badge(COLORS.warn, _('Starting…'))
-			: badge(COLORS.bad, _('Not running'));
+		const sp = this.speed && working ? this.speed : null;
+		const t = d.totals || { proxy: {}, direct: {} };
+		const svc = !d.enabled ? [ '✘ ' + _('Disabled'), 'mh-muted' ]
+			: working ? [ '✔ ' + _('Working'), 'mh-ok' ]
+			: d.running ? [ '… ' + _('Starting…'), 'mh-warn' ]
+			: [ '✘ ' + _('Not running'), 'mh-fail' ];
 
-		const rows = [
-			[ _('State'), state ],
-			[ _('Mode'), d.mode === 'global' ? _('Everything through proxy, except exclusions') : _('Only matched lists') ],
-			[ _('xray'), d.xray || E('em', _('not installed — run "mayhem xray-install"')) ],
-			[ _('xray memory'), d.rss_kb ? '%s (%s %d MiB)'.format(bytes(d.rss_kb * 1024), _('soft limit'), st.memlimit_mib || 0) : '—' ],
-			[ 'dnsmasq', d.dnsmasq ? badge(COLORS.ok, _('Working')) : badge(COLORS.bad, _('Not running')) ]
-		];
-
-		if (this.speed)
-			rows.push([ _('Speed'), '%s ↓ %s ↑ %s · %s ↓ %s ↑ %s'.format(
-				_('proxy'), rate(this.speed.proxy.down), rate(this.speed.proxy.up),
-				_('direct'), rate(this.speed.direct.down), rate(this.speed.direct.up)) ]);
-
-		const notes = [].concat(
-			(st.errors || []).map((m) => E('li', { 'style': 'color:' + COLORS.bad }, m)),
-			(st.warnings || []).map((m) => E('li', { 'style': 'color:' + COLORS.warn }, m))
-		);
-
-		return E('div', { 'class': 'cbi-section' }, [
-			E('table', { 'class': 'table' }, rows.map((r) => E('tr', { 'class': 'tr' }, [
-				E('td', { 'class': 'td left', 'style': 'width:30%' }, r[0]),
-				E('td', { 'class': 'td left' }, r[1])
-			]))),
-			notes.length ? E('ul', { 'style': 'margin-top:8px' }, notes) : '',
-			E('div', { 'style': 'margin-top:8px' }, [
-				E('button', { 'class': 'btn cbi-button-positive', 'click': ui.createHandlerFn(this, 'act', 'enable') }, _('Enable')), ' ',
-				E('button', { 'class': 'btn cbi-button-negative', 'click': ui.createHandlerFn(this, 'act', 'disable') }, _('Disable')), ' ',
-				E('button', { 'class': 'btn cbi-button-action', 'click': ui.createHandlerFn(this, 'act', 'restart') }, _('Restart'))
+		return E('div', { 'class': 'mh-grid' }, [
+			this.widget(_('Speed'), [
+				[ _('Proxy'), sp ? '↓ %s ↑ %s'.format(rate(sp.proxy.down), rate(sp.proxy.up)) : '—' ],
+				[ _('Direct'), sp ? '↓ %s ↑ %s'.format(rate(sp.direct.down), rate(sp.direct.up)) : '—' ]
+			]),
+			this.widget(_('Traffic'), [
+				[ _('Proxy'), '↓ %s ↑ %s'.format(mh.bytes(t.proxy.down || 0), mh.bytes(t.proxy.up || 0)) ],
+				[ _('Direct'), '↓ %s ↑ %s'.format(mh.bytes(t.direct.down || 0), mh.bytes(t.direct.up || 0)) ]
+			]),
+			this.widget(_('System'), [
+				[ _('Mode'), d.mode === 'global' ? _('everything through proxy') : _('by lists') ],
+				[ _('xray memory'), d.rss_kb ? mh.bytes(d.rss_kb * 1024) : '—' ]
+			]),
+			this.widget(_('Services'), [
+				[ 'Mayhem', svc[0], svc[1] ],
+				[ 'xray', d.xray ? (d.running ? '✔ ' + d.xray : '✘ ' + d.xray) : '✘ ' + _('not installed'),
+					d.xray && d.running ? 'mh-ok' : 'mh-fail' ],
+				[ 'dnsmasq', d.dnsmasq ? '✔ ' + _('running') : '✘ ' + _('not running'), d.dnsmasq ? 'mh-ok' : 'mh-fail' ]
 			])
 		]);
+	},
+
+	// Configuration errors stop xray: they stay in sight. Warnings are on the
+	// diagnostics page.
+	renderAlert(d) {
+		const errors = ((d.status || {}).errors || []).slice();
+
+		if (!d.xray)
+			errors.push(_('xray is not installed: run "mayhem xray-install"'));
+
+		if (!d.enabled)
+			return E('div', { 'class': 'mh-box mh-alert' }, [
+				E('span', { 'class': 'mh-muted' }, mh.icon('circle-idle')),
+				E('div', [ E('b', _('Mayhem is turned off')), E('div', { 'class': 'mh-muted mh-small' }, _('All traffic goes direct.')) ]),
+				mh.button({ icon: 'play', cls: 'cbi-button-positive', text: _('Enable'), click: ui.createHandlerFn(this, 'act', 'enable') })
+			]);
+
+		if (!errors.length)
+			return '';
+
+		return E('div', { 'class': 'mh-box mh-box--fail mh-alert mh-fail' }, [
+			mh.icon('circle-x'),
+			E('div', [
+				E('b', _('Mayhem cannot work like this')),
+				E('ul', { 'class': 'mh-small' }, errors.map((m) => E('li', m)))
+			]),
+			E('a', { 'class': 'mh-small', 'href': L.url('admin/services/mayhem/diagnostics') }, _('Diagnostics'))
+		]);
+	},
+
+	// --- servers ------------------------------------------------------------------
+
+	latency(n) {
+		const p = this.probes[n.tag];
+
+		if (typeof p === 'string')
+			return E('span', { 'class': 'mh-fail', 'title': p }, _('no answer'));
+
+		const v = p != null ? p : (n.alive === false ? null : n.delay);
+
+		if (v == null)
+			return E('span', { 'class': n.alive === false ? 'mh-fail' : 'mh-muted' }, n.alive === false ? _('no answer') : 'N/A');
+
+		return E('span', { 'class': latencyClass(v) }, '%d ms'.format(v));
+	},
+
+	tile(s, n) {
+		const active = n.tag === s.active;
+		const pick = s.balancer && !active;
+		const attrs = {
+			'class': 'mh-tile' + (active ? ' mh-tile--active' : '') + (pick ? ' mh-tile--pick' : ''),
+			'title': '%s:%s · ↓ %s ↑ %s'.format(n.address || '?', n.port || '?', mh.bytes(n.down), mh.bytes(n.up))
+		};
+
+		if (pick)
+			attrs.click = ui.createHandlerFn(this, 'select', s.name, n.tag);
+
+		return E('div', attrs, [
+			E('b', n.name),
+			E('div', { 'class': 'mh-tile-foot mh-small' }, [
+				E('span', { 'class': 'mh-muted' }, n.protocol),
+				this.latency(n)
+			])
+		]);
+	},
+
+	// A subscription: title, traffic used of the limit, expiry, last update.
+	subHead(sub, now) {
+		const info = sub.info || {};
+		const u = info.userinfo || {};
+		const used = (u.upload || 0) + (u.download || 0);
+		const parts = [ E('b', info.title || sub.name) ];
+
+		if (!sub.enabled)
+			parts.push(E('span', { 'class': 'mh-muted mh-small' }, _('disabled')));
+
+		if (u.total) {
+			const share = Math.min(1, used / u.total);
+
+			parts.push(E('span', { 'class': 'mh-small' }, [
+				E('span', { 'class': 'mh-bar' + (share > 0.9 ? ' mh-full' : '') }, E('span', { 'style': 'width:%d%%'.format(Math.round(share * 100)) })),
+				' ', _('%s of %s').format(mh.bytes(used), mh.bytes(u.total))
+			]));
+		}
+		else if (used) {
+			parts.push(E('span', { 'class': 'mh-small' }, mh.bytes(used)));
+		}
+
+		if (u.expire) {
+			const left = u.expire - now;
+			const date = new Date(u.expire * 1000).toLocaleDateString();
+
+			parts.push(E('span', { 'class': 'mh-small ' + (left < 0 ? 'mh-fail' : left < 3 * DAY ? 'mh-warn' : 'mh-muted') },
+				left < 0 ? _('expired %s').format(date) : _('until %s').format(date)));
+		}
+
+		parts.push(E('span', { 'class': 'mh-muted mh-small' }, _('updated %s').format(mh.ago(sub.updated, now))));
+
+		if (sub.error)
+			parts.push(E('span', { 'class': 'mh-fail mh-small' }, sub.error));
+
+		if (info.hwid && info.hwid.limit)
+			parts.push(E('span', { 'class': 'mh-fail mh-small' }, _('Device limit reached: the provider does not accept this HWID')));
+		else if (info.hwid && info.hwid.not_supported)
+			parts.push(E('span', { 'class': 'mh-warn mh-small' }, _('The provider expects an HWID: turn on "Send device data"')));
+
+		parts.push(mh.button({
+			icon: 'refresh', text: _('Update'), busy: this.busy['sub:' + sub.name],
+			click: ui.createHandlerFn(this, 'updateSub', sub.name)
+		}));
+
+		return E('div', { 'class': 'mh-ghead' }, parts);
+	},
+
+	groups(s, subs, now) {
+		const order = [];
+		const by = {};
+
+		for (const n of s.nodes) {
+			const src = n.source || 'link';
+
+			if (!by[src]) {
+				by[src] = [];
+				order.push(src);
+			}
+
+			by[src].push(n);
+		}
+
+		const own = { link: _('Links'), json: _('JSON outbound'), interface: _('Interfaces') };
+
+		order.sort((a, b) => (own[a] ? 1 : 0) - (own[b] ? 1 : 0));
+
+		return order.map((src) => {
+			let head;
+
+			if (own[src]) {
+				head = E('div', { 'class': 'mh-ghead' }, E('b', own[src]));
+			}
+			else {
+				const sub = subs[src] || { name: src, enabled: true };
+
+				sub.shown = true;
+				head = this.subHead(sub, now);
+			}
+
+			return E('div', { 'class': 'mh-group' }, [
+				head,
+				E('div', { 'class': 'mh-grid' }, by[src].map((n) => this.tile(s, n)))
+			]);
+		});
+	},
+
+	renderSection(s, subs, now) {
+		if (s.type === 'interface')
+			return this.renderTunnel(s, now);
+
+		if (s.type !== 'proxy')
+			return '';
+
+		const current = (s.nodes || []).find((n) => n.tag === s.active);
+		const info = [ MODES[s.mode] || s.mode ];
+
+		if (s.mode === 'auto' && s.pinned)
+			info.push(_('pinned by hand'));
+
+		if (current)
+			info.push(_('now: %s').format(current.name));
+
+		const tools = [];
+
+		if (s.mode === 'auto' && s.pinned)
+			tools.push(E('button', { 'class': 'btn cbi-button-action', 'click': ui.createHandlerFn(this, 'select', s.name, '') }, _('Back to automatic')), ' ');
+
+		tools.push(mh.button({
+			icon: 'zap', text: _('Test latency'), busy: this.busy['probe:' + s.name],
+			click: ui.createHandlerFn(this, 'probeSection', s)
+		}));
+
+		return E('div', { 'class': 'mh-box mh-section' }, [
+			E('div', { 'class': 'mh-head' }, [
+				E('div', { 'class': 'mh-grow' }, [
+					E('span', { 'class': 'mh-title' }, s.name), ' ',
+					E('span', { 'class': 'mh-muted mh-small' }, info.join(' · '))
+				]),
+				E('div', tools)
+			])
+		].concat(this.groups(s, subs, now)));
 	},
 
 	renderTunnel(s, now) {
 		const t = s.tunnel || {};
-		const state = t.state === 'up' ? badge(COLORS.ok, _('Works'))
-			: t.state === 'down' ? badge(COLORS.bad, _('Down, traffic goes direct'))
-			: badge(COLORS.off, _('Unknown'));
-		const hs = t.handshake ? _('last handshake %s').format(ago(t.handshake, now)) : '';
+		const state = t.state === 'up' ? [ 'mh-ok', '✔ ' + _('Works') ]
+			: t.state === 'down' ? [ 'mh-fail', '✘ ' + _('Down, traffic goes direct') ]
+			: [ 'mh-muted', _('Unknown') ];
+		const info = [ '%s %s'.format(_('interface'), s.interface || '?'), s.mode === 'xray' ? _('through xray') : _('kernel mode') ];
 
-		return E('div', { 'class': 'cbi-section' }, [
-			E('h3', '%s — %s'.format(s.name, _('Tunnel'))),
-			E('div', { 'class': 'cbi-section-descr' }, [
-				state, ' ',
-				'%s %s · %s'.format(_('interface'), s.interface || '?', s.mode === 'xray' ? _('through xray') : _('kernel mode')),
-				hs ? ' · ' + hs : '',
-				' · %s ↓ %s ↑ %s'.format(s.mode === 'xray' ? _('traffic') : _('through xray'), bytes(s.traffic.down), bytes(s.traffic.up))
-			])
-		]);
-	},
+		if (t.handshake)
+			info.push(_('last handshake %s').format(mh.ago(t.handshake, now)));
 
-	renderSection(s) {
-		if (s.type === 'interface')
-			return this.renderTunnel(s, this.data.time);
+		info.push('↓ %s ↑ %s'.format(mh.bytes(s.traffic.down), mh.bytes(s.traffic.up)));
 
-		if (s.type !== 'proxy')
-			return E('div', { 'class': 'cbi-section' }, [
-				E('h3', '%s — %s'.format(s.name, s.type === 'block' ? _('Block') : _('Direct')))
-			]);
-
-		const probe = (m, label) => {
-			const busy = this.busy[s.name + ':' + m];
-
-			return E('button', {
-				'class': 'btn cbi-button',
-				'disabled': busy ? '' : null,
-				'click': ui.createHandlerFn(this, 'probeSection', s, m)
-			}, busy ? label + '…' : label);
-		};
-
-		const head = E('tr', { 'class': 'tr table-titles' }, [
-			E('th', { 'class': 'th', 'style': 'width:1.5em' }, ''),
-			E('th', { 'class': 'th' }, _('Server')),
-			E('th', { 'class': 'th' }, _('Protocol')),
-			E('th', { 'class': 'th' }, _('URL test')),
-			E('th', { 'class': 'th' }, _('TCP')),
-			E('th', { 'class': 'th' }, _('ICMP')),
-			E('th', { 'class': 'th' }, _('Traffic')),
-			E('th', { 'class': 'th' }, '')
-		]);
-
-		const rows = s.nodes.map((n) => {
-			const p = this.probes[n.tag] || {};
-			const active = n.tag === s.active;
-			const auto = n.alive === false ? _('down') : n.delay;
-			const url = p.url != null ? p.url : auto;
-
-			return E('tr', { 'class': 'tr', 'style': active ? 'font-weight:600' : '' }, [
-				E('td', { 'class': 'td' }, active ? E('span', { 'style': 'color:' + COLORS.ok }, '●') : ''),
-				E('td', { 'class': 'td', 'title': '%s:%s'.format(n.address || '?', n.port || '?') },
-					n.source && n.source !== 'link' ? [ n.name, E('small', { 'style': 'color:#888' }, ' · ' + n.source) ] : n.name),
-				E('td', { 'class': 'td' }, n.protocol),
-				E('td', { 'class': 'td' }, typeof url === 'string' ? E('span', { 'style': 'color:' + COLORS.bad }, url) : ms(url)),
-				E('td', { 'class': 'td' }, n.protocol === 'interface' ? '—' : ms(p.tcp)),
-				E('td', { 'class': 'td' }, n.protocol === 'interface' ? '—' : ms(p.icmp)),
-				E('td', { 'class': 'td' }, '↓ %s ↑ %s'.format(bytes(n.down), bytes(n.up))),
-				E('td', { 'class': 'td' }, (s.balancer && !active)
-					? E('button', { 'class': 'btn cbi-button cbi-button-apply', 'click': ui.createHandlerFn(this, 'select', s.name, n.tag) }, _('Use'))
-					: '')
-			]);
-		});
-
-		const tools = [ probe('url', _('URL test')), ' ', probe('tcp', _('TCP ping')), ' ', probe('icmp', _('ICMP ping')) ];
-
-		if (s.mode === 'auto' && s.pinned)
-			tools.unshift(E('button', { 'class': 'btn cbi-button-action', 'click': ui.createHandlerFn(this, 'select', s.name, '') }, _('Back to automatic')), ' ');
-
-		return E('div', { 'class': 'cbi-section' }, [
-			E('h3', s.name),
-			E('div', { 'class': 'cbi-section-descr' }, '%s%s · %s ↓ %s ↑ %s'.format(
-				MODES[s.mode] || s.mode,
-				s.mode === 'auto' && s.pinned ? ' (' + _('pinned by hand') + ')' : '',
-				_('traffic'), bytes(s.traffic.down), bytes(s.traffic.up))),
-			E('div', { 'style': 'margin:6px 0' }, tools),
-			E('table', { 'class': 'table' }, [ head ].concat(rows))
-		]);
-	},
-
-	renderSubscriptions(d) {
-		if (!d.subscriptions || !d.subscriptions.length)
-			return '';
-
-		const head = E('tr', { 'class': 'tr table-titles' }, [
-			E('th', { 'class': 'th' }, _('Subscription')),
-			E('th', { 'class': 'th' }, _('Servers')),
-			E('th', { 'class': 'th' }, _('Traffic')),
-			E('th', { 'class': 'th' }, _('Expires')),
-			E('th', { 'class': 'th' }, _('Updated')),
-			E('th', { 'class': 'th' }, '')
-		]);
-
-		const rows = d.subscriptions.map((s) => {
-			const info = s.info || {};
-			const ui_ = info.userinfo || {};
-			const used = (ui_.upload || 0) + (ui_.download || 0);
-			const notes = [];
-
-			if (s.error)
-				notes.push(E('div', { 'style': 'color:' + COLORS.bad }, s.error));
-
-			if (info.hwid && info.hwid.limit)
-				notes.push(E('div', { 'style': 'color:' + COLORS.bad }, _('Device limit reached: the provider does not accept this HWID')));
-			else if (info.hwid && info.hwid.not_supported)
-				notes.push(E('div', { 'style': 'color:' + COLORS.warn }, _('The provider expects an HWID: turn on "Send device data"')));
-
-			if (info.announce)
-				notes.push(E('div', { 'style': 'color:#888' }, info.announce));
-
-			const busy = this.busy['sub:' + s.name];
-
-			return E('tr', { 'class': 'tr' }, [
-				E('td', { 'class': 'td' }, [ E('strong', info.title || s.name), info.title ? E('small', { 'style': 'color:#888' }, ' · ' + s.name) : '' ].concat(notes)),
-				E('td', { 'class': 'td' }, s.skipped ? '%d (+%d %s)'.format(s.nodes, s.skipped, _('unreadable')) : String(s.nodes)),
-				E('td', { 'class': 'td' }, ui_.total ? '%s / %s'.format(bytes(used), bytes(ui_.total)) : (used ? bytes(used) : '—')),
-				E('td', { 'class': 'td' }, ui_.expire ? new Date(ui_.expire * 1000).toLocaleDateString() : '—'),
-				E('td', { 'class': 'td' }, ago(s.updated, d.time)),
-				E('td', { 'class': 'td' }, E('button', {
-					'class': 'btn cbi-button',
-					'disabled': busy ? '' : null,
-					'click': ui.createHandlerFn(this, 'updateSub', s.name)
-				}, busy ? _('Updating…') : _('Update')))
-			]);
-		});
-
-		return E('div', { 'class': 'cbi-section' }, [
-			E('h3', _('Subscriptions')),
-			E('table', { 'class': 'table' }, [ head ].concat(rows))
-		]);
-	},
-
-	updateData(what) {
-		return callDataUpdate(what, '').then((r) => {
-			if (r.busy)
-				ui.addNotification(null, E('p', _('An update is already running')), 'info');
-			else if (r.error)
-				ui.addNotification(null, E('p', r.error), 'error');
-
-			return this.refresh();
-		});
-	},
-
-	renderData(d) {
-		const data = d.data || {};
-		const sources = data.sources || [];
-		const lists = data.lists || [];
-
-		if (!sources.length && !lists.length)
-			return '';
-
-		const head = E('tr', { 'class': 'tr table-titles' }, [
-			E('th', { 'class': 'th' }, _('Source')),
-			E('th', { 'class': 'th' }, _('Categories in use')),
-			E('th', { 'class': 'th' }, _('Updated'))
-		]);
-
-		const rows = sources.filter((s) => s.enabled).map((s) => E('tr', { 'class': 'tr' }, [
-			E('td', { 'class': 'td' }, [ E('strong', s.name), E('small', { 'style': 'color:#888' }, ' · ' + s.kind) ]
-				.concat(s.error ? [ E('div', { 'style': 'color:' + COLORS.bad }, s.error) ] : [])),
-			E('td', { 'class': 'td' }, s.copied.length ? s.copied.join(', ') : '—'),
-			E('td', { 'class': 'td' }, ago(s.updated, d.time))
-		]));
-
-		for (const l of lists)
-			rows.push(E('tr', { 'class': 'tr' }, [
-				E('td', { 'class': 'td', 'style': 'word-break:break-all' }, [ l.url, E('small', { 'style': 'color:#888' }, ' · ' + l.section) ]
-					.concat(l.error ? [ E('div', { 'style': 'color:' + COLORS.bad }, l.error) ] : [])),
-				E('td', { 'class': 'td' }, l.bytes != null ? bytes(l.bytes) : '—'),
-				E('td', { 'class': 'td' }, ago(l.updated, d.time))
-			]));
-
-		const running = data.running;
-
-		return E('div', { 'class': 'cbi-section' }, [
-			E('h3', _('Geo data and lists')),
-			E('div', { 'style': 'margin:6px 0' }, [
-				E('button', {
-					'class': 'btn cbi-button', 'disabled': running ? '' : null,
-					'click': ui.createHandlerFn(this, 'updateData', 'geo')
-				}, running ? _('Updating…') : _('Update geo data')), ' ',
-				E('button', {
-					'class': 'btn cbi-button', 'disabled': (running || !lists.length) ? '' : null,
-					'click': ui.createHandlerFn(this, 'updateData', 'lists')
-				}, _('Update lists'))
+		return E('div', { 'class': 'mh-box mh-section mh-head' }, [
+			E('div', { 'class': 'mh-grow' }, [
+				E('span', { 'class': 'mh-title' }, s.name), ' ',
+				E('span', { 'class': 'mh-muted mh-small' }, _('Tunnel') + ' · ' + info.join(' · '))
 			]),
-			E('table', { 'class': 'table' }, [ head ].concat(rows))
+			E('span', { 'class': state[0] }, state[1])
 		]);
+	},
+
+	// Subscriptions no section uses yet: their state is still worth seeing.
+	renderLoose(subs, now) {
+		const left = Object.values(subs).filter((s) => !s.shown);
+
+		if (!left.length)
+			return '';
+
+		return E('div', { 'class': 'mh-box mh-section' }, [
+			E('div', { 'class': 'mh-title' }, _('Subscriptions without a section'))
+		].concat(left.map((s) => E('div', { 'class': 'mh-group' }, [
+			this.subHead(s, now),
+			E('div', { 'class': 'mh-muted mh-small' }, _('%d servers').format(s.nodes))
+		]))));
 	},
 
 	renderBody(d) {
-		return [ this.renderSummary(d) ]
-			.concat((d.sections || []).map((s) => this.renderSection(s)))
-			.concat([ this.renderSubscriptions(d), this.renderData(d) ]);
+		const subs = {};
+
+		for (const s of d.subscriptions || [])
+			subs[s.name] = Object.assign({}, s);
+
+		const sections = (d.sections || []).map((s) => this.renderSection(s, subs, d.time));
+
+		return [ this.renderAlert(d), this.renderWidgets(d) ].concat(sections, [ this.renderLoose(subs, d.time) ]);
 	},
 
 	render(d) {
@@ -420,9 +435,11 @@ return view.extend({
 
 		poll.add(() => document.hidden ? Promise.resolve() : this.refresh(), 2);
 
-		return E('div', { 'class': 'cbi-map' }, [
+		return E('div', { 'class': 'cbi-map mh-page' }, [
+			mh.style(),
+			E('style', CSS),
 			E('h2', _('Mayhem')),
-			E('div', { 'id': 'mayhem-body' }, this.renderBody(d))
+			E('div', { 'id': 'mayhem-body', 'class': 'mh-stack' }, this.renderBody(d))
 		]);
 	},
 
