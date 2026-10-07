@@ -55,7 +55,7 @@ function put(name, data) {
 	const path = `${opts.out}/${name}`;
 	const tmp = `${path}.tmp`;
 
-	if (!fs.writefile(tmp, data) || !fs.rename(tmp, path)) {
+	if (fs.writefile(tmp, data) == null || !fs.rename(tmp, path)) {
 		warn(`cannot write ${path}: ${fs.error()}\n`);
 		exit(1);
 	}
@@ -86,6 +86,8 @@ put('xray.json', sprintf('%.J\n', res.xray));
 put('nft.conf', res.nft);
 put('dnsmasq.conf', res.dnsmasq);
 put('env', `GOMEMLIMIT=${res.memlimit_mib}MiB\nMAYHEM_IPV6=${res.ipv6 ? 1 : 0}\n`);
+put('nodes.json', sprintf('%J\n', res.state));
+put('overrides', length(res.overrides) ? join('\n', res.overrides) + '\n' : '');
 
 for (let w in res.status.warnings)
 	warn(`mayhem: warning: ${w}\n`);

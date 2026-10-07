@@ -9,7 +9,8 @@
 # The web server answers with the source address it sees, which tells the path:
 #   192.168.1.2  not intercepted (kernel direct)
 #   45.0.0.1     xray direct (router WAN address)
-#   45.0.0.2     through the proxy server in the wan namespace
+#   45.0.0.3     through proxy server A
+#   45.0.0.8     through proxy server B
 
 set -u
 
@@ -27,6 +28,8 @@ export MAYHEM_XRAY_BIN="$XRAY"
 
 SS_KEY='AAECAwQFBgcICQoLDA0ODw=='
 SS_LINK='ss://2022-blake3-aes-128-gcm:AAECAwQFBgcICQoLDA0ODw%3D%3D@45.0.0.3:8443#srv'
+SS_LINK_A='ss://2022-blake3-aes-128-gcm:AAECAwQFBgcICQoLDA0ODw%3D%3D@45.0.0.3:8443#A'
+SS_LINK_B='ss://2022-blake3-aes-128-gcm:AAECAwQFBgcICQoLDA0ODw%3D%3D@45.0.0.3:8444#B'
 
 ok() { printf 'ok   %s\n' "$1"; }
 bad() { printf 'FAIL %s\n' "$1"; fail=1; }
@@ -55,6 +58,27 @@ except Exception:
 PY
 }
 
+expect_one_of() {
+	# $1 description, $2 space-separated allowed answers, rest: curl arguments
+	local what="$1" allowed="$2" got
+	shift 2
+	got="$(ip netns exec client curl -s -m 4 "$@" 2>/dev/null)" || got="failed"
+	case " $allowed " in
+		*" $got "*) ok "$what ($got)" ;;
+		*) bad "$what: expected one of $allowed, got $got" ;;
+	esac
+}
+
+uc() {
+	"$UCODE" -L "$FILES/usr/share/ucode/*.uc" ${UCODE_LIB:+-L "$UCODE_LIB"} "$@"
+}
+
+rpc() {
+	# $1 method, $2 JSON arguments: calls the LuCI backend inside the router namespace
+	ip netns exec router "$UCODE" -L "$FILES/usr/share/ucode/*.uc" ${UCODE_LIB:+-L "$UCODE_LIB"} \
+		"$WORK/rpc.uc" "$ROOT/luci-app-mayhem/root/usr/share/rpcd/ucode/luci.mayhem" "$1" "${2:-null}"
+}
+
 expect_dns() {
 	local got
 	got="$(dns "$2" "$3" "$4" "$5")"
@@ -74,10 +98,14 @@ cleanup() {
 trap cleanup EXIT
 
 start_mayhem() {
-	# $1 model file
+	# $1 model file, or "uci" to read $MAYHEM_UCI_DIR
 	mkdir -p "$MAYHEM_RUN_DIR"
-	"$UCODE" -L "$FILES/usr/share/ucode/*.uc" ${UCODE_LIB:+-L "$UCODE_LIB"} \
-		"$FILES/usr/share/mayhem/gen.uc" --model "$1" --out "$MAYHEM_RUN_DIR" 2>/dev/null || { bad "generator"; return 1; }
+
+	if [ "$1" = uci ]; then
+		uc "$FILES/usr/share/mayhem/gen.uc" --out "$MAYHEM_RUN_DIR" 2>/dev/null || { bad "generator"; return 1; }
+	else
+		uc "$FILES/usr/share/mayhem/gen.uc" --model "$1" --out "$MAYHEM_RUN_DIR" 2>/dev/null || { bad "generator"; return 1; }
+	fi
 	ip netns exec router "$FILES/usr/libexec/mayhem/xray-run" > "$WORK/run.log" 2>&1 &
 
 	local i=0
@@ -128,20 +156,41 @@ ip -n router link set br-lan up
 ip -n router addr add 45.0.0.1/24 dev wan0
 ip -n router link set wan0 up
 ip -n router route add default via 45.0.0.2
-for a in 2 3 4 6 7; do ip -n wan addr add "45.0.0.$a/24" dev w0; done
+for a in 2 3 4 6 7 8; do ip -n wan addr add "45.0.0.$a/24" dev w0; done
 ip -n wan link set w0 up
 ip -n wan route add 192.168.1.0/24 via 45.0.0.1
 ip netns exec router sysctl -qw net.ipv4.ip_forward=1
 
 cat > "$WORK/web.py" <<'PY'
 import http.server, sys
+WORK = sys.argv[1]
 class H(http.server.BaseHTTPRequestHandler):
     def do_GET(self):
-        b = self.client_address[0].encode()
-        self.send_response(200); self.send_header('Content-Length', str(len(b))); self.end_headers(); self.wfile.write(b)
+        if self.path == '/204':
+            self.send_response(204); self.end_headers(); return
+        if self.path == '/sub':
+            with open(WORK + '/sub.log', 'a') as f:
+                f.write('source: %s\n' % self.client_address[0])
+                for k, v in self.headers.items():
+                    f.write('%s: %s\n' % (k.lower(), v))
+            b = open(WORK + '/sub.txt', 'rb').read()
+            self.send_response(200)
+            self.send_header('subscription-userinfo', 'upload=10; download=20; total=1000; expire=1798761600')
+            self.send_header('profile-title', 'Test sub')
+            self.send_header('profile-update-interval', '6')
+        else:
+            b = self.client_address[0].encode()
+            self.send_response(200)
+        self.send_header('Content-Length', str(len(b))); self.end_headers(); self.wfile.write(b)
     def log_message(self, *a): pass
 http.server.ThreadingHTTPServer(('0.0.0.0', 8080), H).serve_forever()
 PY
+
+cat > "$WORK/rpc.uc" <<'UC'
+const plugin = loadfile(ARGV[0])();
+const m = plugin['luci.mayhem'][ARGV[1]];
+print(sprintf('%J\n', m.call({ args: json(ARGV[2] ?? 'null') ?? {} })));
+UC
 
 cat > "$WORK/dns.py" <<'PY'
 import socket, struct, sys
@@ -159,12 +208,18 @@ PY
 
 cat > "$WORK/server.json" <<EOF
 { "log": { "loglevel": "warning" },
-  "inbounds": [ { "listen": "45.0.0.3", "port": 8443, "protocol": "shadowsocks",
-    "settings": { "method": "2022-blake3-aes-128-gcm", "password": "$SS_KEY", "network": "tcp,udp" } } ],
-  "outbounds": [ { "protocol": "freedom" } ] }
+  "inbounds": [
+    { "tag": "a", "listen": "45.0.0.3", "port": 8443, "protocol": "shadowsocks",
+      "settings": { "method": "2022-blake3-aes-128-gcm", "password": "$SS_KEY", "network": "tcp,udp" } },
+    { "tag": "b", "listen": "45.0.0.3", "port": 8444, "protocol": "shadowsocks",
+      "settings": { "method": "2022-blake3-aes-128-gcm", "password": "$SS_KEY", "network": "tcp,udp" } } ],
+  "outbounds": [
+    { "tag": "out-a", "protocol": "freedom", "sendThrough": "45.0.0.3" },
+    { "tag": "out-b", "protocol": "freedom", "sendThrough": "45.0.0.8" } ],
+  "routing": { "rules": [ { "inboundTag": [ "b" ], "outboundTag": "out-b" } ] } }
 EOF
 
-ip netns exec wan python3 "$WORK/web.py" >/dev/null 2>&1 &
+ip netns exec wan python3 "$WORK/web.py" "$WORK" >/dev/null 2>&1 &
 ip netns exec wan python3 "$WORK/dns.py" 45.0.0.2 45.0.0.2 >/dev/null 2>&1 &
 ip netns exec wan python3 "$WORK/dns.py" 45.0.0.4 45.0.0.7 >/dev/null 2>&1 &
 ip netns exec wan "$XRAY" run -c "$WORK/server.json" > "$WORK/server.log" 2>&1 &
@@ -189,11 +244,11 @@ EOF
 echo "== lists mode"
 if start_mayhem "$WORK/lists.json"; then
 	expect "no rule -> xray direct" 45.0.0.1 http://45.0.0.2:8080/
-	expect "domain -> proxy" 45.0.0.2 -H 'Host: youtube.test' http://45.0.0.2:8080/
-	expect "subdomain -> proxy" 45.0.0.2 -H 'Host: www.youtube.test' http://45.0.0.2:8080/
-	expect "keyword -> proxy" 45.0.0.2 -H 'Host: mytube2.example' http://45.0.0.2:8080/
+	expect "domain -> proxy" 45.0.0.3 -H 'Host: youtube.test' http://45.0.0.2:8080/
+	expect "subdomain -> proxy" 45.0.0.3 -H 'Host: www.youtube.test' http://45.0.0.2:8080/
+	expect "keyword -> proxy" 45.0.0.3 -H 'Host: mytube2.example' http://45.0.0.2:8080/
 	expect "block section" failed -H 'Host: ads.test' http://45.0.0.2:8080/
-	expect "IP rule -> proxy" 45.0.0.2 http://45.0.0.7:8080/
+	expect "IP rule -> proxy" 45.0.0.3 http://45.0.0.7:8080/
 	expect "exclusion IP -> kernel direct" 192.168.1.2 http://45.0.0.6:8080/
 	expect_dns "proxy domain -> remote DNS" router 127.0.0.1 12753 youtube.test 45.0.0.7
 	expect_dns "other domain -> domestic DNS" router 127.0.0.1 12753 other.test 45.0.0.2
@@ -224,11 +279,140 @@ EOF
 
 echo "== global mode"
 if start_mayhem "$WORK/global.json"; then
-	expect "no rule -> proxy" 45.0.0.2 http://45.0.0.2:8080/
+	expect "no rule -> proxy" 45.0.0.3 http://45.0.0.2:8080/
 	expect "exclusion domain -> xray direct" 45.0.0.1 -H 'Host: gosuslugi.test' http://45.0.0.2:8080/
 	expect "exclusion IP -> kernel direct" 192.168.1.2 http://45.0.0.6:8080/
 	expect_dns "exclusion domain -> domestic DNS" client 1.1.1.1 53 gosuslugi.test 45.0.0.2
 	expect_dns "other domain -> remote DNS" client 1.1.1.1 53 anything.test 45.0.0.7
+fi
+stop_mayhem
+
+
+# --- subscriptions and server choice ------------------------------------------------
+
+export MAYHEM_UCI_DIR="$WORK/uci"
+export MAYHEM_SUBS_DIR="$WORK/subs"
+mkdir -p "$MAYHEM_UCI_DIR" "$MAYHEM_SUBS_DIR"
+printf '%s\n%s\n' "$SS_LINK_A" "$SS_LINK_B" | base64 | tr -d '\n' > "$WORK/sub.txt"
+
+write_uci() {
+	# $1 server choice lines for the section, $2 how to download the subscription
+	{
+		printf '%s\n' \
+			"config settings 'settings'" \
+			"	option enabled '1'" \
+			"	option mode 'lists'" \
+			"	list interface 'br-lan'" \
+			"	option ip_family 'ipv4_only'" \
+			"	option probe_url 'http://45.0.0.2:8080/204'" \
+			"	option probe_interval '1m'" \
+			"" \
+			"config dns 'dns'" \
+			"	list domestic '45.0.0.2'" \
+			"	list remote '45.0.0.4'" \
+			"" \
+			"config device 'device'" \
+			"	option hwid 'TESTHWID12345678'" \
+			"	option user_agent 'Happ/3.13.0'" \
+			"	option model 'Test Router'" \
+			"" \
+			"config subscription 'mysub'" \
+			"	option url 'http://45.0.0.2:8080/sub'" \
+			"	option update_via '$2'" \
+			"	option update_section 'main'" \
+			"" \
+			"config section 'main'" \
+			"	option type 'proxy'" \
+			"	list subscription 'mysub'" \
+			"	list domain 'youtube.test'"
+		printf '%s\n' "$1"
+	} > "$MAYHEM_UCI_DIR/mayhem"
+}
+
+sub_update() {
+	ip netns exec router "$UCODE" -L "$FILES/usr/share/ucode/*.uc" ${UCODE_LIB:+-L "$UCODE_LIB"} \
+		"$FILES/usr/share/mayhem/sub.uc" update --force
+}
+
+echo "== subscriptions and server choice"
+write_uci "	option select 'auto'" direct
+out="$(sub_update)"
+rc=$?
+case "$out" in
+	*'"ok": true'*'"nodes": 2'*) ok "subscription downloaded, 2 servers" ;;
+	*) bad "subscription download: $out" ;;
+esac
+if [ "$rc" = 3 ]; then ok "first download reports a change"; else bad "first download exit code: $rc"; fi
+if grep -q '^x-hwid: TESTHWID12345678$' "$WORK/sub.log" && grep -q '^user-agent: Happ/3.13.0$' "$WORK/sub.log" &&
+   grep -q '^x-device-model: Test Router$' "$WORK/sub.log" && grep -q '^x-device-os: Android$' "$WORK/sub.log"; then
+	ok "device headers sent"
+else
+	bad "device headers sent"
+fi
+before="$(stat -c %y "$MAYHEM_SUBS_DIR/mysub.json")"
+sub_update >/dev/null
+rc=$?
+if [ "$rc" = 0 ]; then ok "unchanged subscription does not ask for a reload"; else bad "unchanged subscription exit code: $rc"; fi
+if [ "$(stat -c %y "$MAYHEM_SUBS_DIR/mysub.json")" = "$before" ]; then
+	ok "unchanged subscription is not rewritten on flash"
+else
+	bad "unchanged subscription was rewritten"
+fi
+
+if start_mayhem uci; then
+	expect_one_of "automatic choice uses a subscription server" "45.0.0.3 45.0.0.8" -H 'Host: youtube.test' http://45.0.0.2:8080/
+
+	i=0
+	while [ "$i" -lt 20 ] && ! rpc dashboard | grep -q '"delay": [0-9]'; do sleep 1; i=$((i + 1)); done
+	out="$(rpc dashboard)"
+	case "$out" in
+		*'"delay": '[0-9]*) ok "dashboard shows URL-test delays" ;;
+		*) bad "dashboard delays: $out" ;;
+	esac
+	case "$out" in
+		*'"title": "Test sub"'*'"total": 1000'*) ok "dashboard shows subscription traffic" ;;
+		*) bad "dashboard subscription info" ;;
+	esac
+
+	if rpc select_node '{"section":"main","tag":"n-main-1"}' | grep -q '"ok": true'; then ok "pin server B"; else bad "pin server B"; fi
+	expect "pinned server is used at once" 45.0.0.8 -H 'Host: youtube.test' http://45.0.0.2:8080/
+	if grep -q "option override 'B'" "$MAYHEM_UCI_DIR/mayhem"; then ok "pinned server saved by name"; else bad "pinned server saved"; fi
+	rpc select_node '{"section":"main","tag":"n-main-0"}' >/dev/null
+	expect "switch to server A" 45.0.0.3 -H 'Host: youtube.test' http://45.0.0.2:8080/
+	if rpc select_node '{"section":"main","tag":""}' | grep -q '"ok": true' && ! grep -q "option override" "$MAYHEM_UCI_DIR/mayhem"; then
+		ok "back to automatic"
+	else
+		bad "back to automatic"
+	fi
+
+	if rpc probe '{"tag":"n-main-1","method":"url"}' | grep -q '"ms": [0-9]'; then ok "URL test through one server"; else bad "URL test"; fi
+	if rpc probe '{"tag":"n-main-1","method":"tcp"}' | grep -q '"ms": [0-9]'; then ok "TCP ping"; else bad "TCP ping"; fi
+	out="$(rpc probe '{"tag":"n-main-1","method":"icmp"}')"
+	case "$out" in
+		*'"ms": '*) ok "ICMP ping" ;;
+		*) if command -v ping >/dev/null 2>&1; then bad "ICMP ping: $out"; else ok "ICMP ping skipped (no ping here)"; fi ;;
+	esac
+fi
+stop_mayhem
+
+write_uci "	option select 'manual'
+	option selected 'B'" direct
+if start_mayhem uci; then
+	expect "manual choice is applied at start" 45.0.0.8 -H 'Host: youtube.test' http://45.0.0.2:8080/
+
+	write_uci "	option select 'manual'
+	option selected 'B'" section
+	: > "$WORK/sub.log"
+	out="$(sub_update)"
+	case "$out" in
+		*'"via": "section"'*) ok "subscription downloaded through the section" ;;
+		*) bad "download through the section: $out" ;;
+	esac
+	if grep -q '^source: 45.0.0.8$' "$WORK/sub.log"; then
+		ok "subscription server saw the proxy address"
+	else
+		bad "subscription source: $(head -n 1 "$WORK/sub.log")"
+	fi
 fi
 stop_mayhem
 

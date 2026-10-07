@@ -1,8 +1,9 @@
 'use strict';
 'require view';
 'require form';
+'require uci';
 
-const LINK_RE = /^(vless|vmess|trojan|ss|socks5?|https?|hysteria2|hy2|wireguard|wg):\/\/\S+$/i;
+const LINK_RE = /^(vless|vmess|trojan|ss|socks5?|https?|hysteria2|hy2|wireguard|wg):\/\/\S+/i;
 const DOMAIN_RE = /^(domain:|full:)?(\*\.|\.)?[a-z0-9_-]+(\.[a-z0-9_-]+)*\.?$/i;
 
 function validateDomain(section_id, value) {
@@ -29,8 +30,27 @@ function validateIP(section_id, value) {
 		? true : _('Expected an IP address or a subnet in CIDR form');
 }
 
+function validateRegexp(section_id, value) {
+	if (!value)
+		return true;
+
+	try {
+		new RegExp(value);
+		return true;
+	}
+	catch (e) {
+		return _('Invalid regular expression');
+	}
+}
+
 return view.extend({
+	load() {
+		return uci.load('mayhem');
+	},
+
 	render() {
+		const subs = uci.sections('mayhem', 'subscription').map((s) => s['.name']);
+
 		const m = new form.Map('mayhem', _('Sections'),
 			_('A section is a set of rules and the way its traffic leaves the router. Sections are checked top to bottom; block sections always go first.'));
 
@@ -56,27 +76,46 @@ return view.extend({
 		o.value('block', _('Block'));
 		o.default = 'proxy';
 
-		o = s.option(form.ListValue, 'proxy_type', _('Server from'));
-		o.value('link', _('Share link'));
+		o = s.option(form.ListValue, 'proxy_type', _('Servers from'));
+		o.value('link', _('Links and subscriptions'));
 		o.value('json', _('Xray outbound JSON'));
 		o.default = 'link';
 		o.depends('type', 'proxy');
 		o.modalonly = true;
 
-		o = s.option(form.TextValue, 'link', _('Link'),
-			_('vless://, vmess://, trojan://, ss://, socks://, http(s)://, hysteria2:// or wireguard:// link.'));
-		o.rows = 3;
+		o = s.option(form.DynamicList, 'link', _('Links'),
+			_('One server per entry: vless://, vmess://, trojan://, ss://, socks://, http(s)://, hysteria2://, wireguard://'));
 		o.depends({ type: 'proxy', proxy_type: 'link' });
 		o.modalonly = true;
 		o.validate = function(section_id, value) {
-			if (!value)
-				return _('Paste a server link');
+			return (!value || LINK_RE.test(value.trim())) ? true : _('Unsupported or malformed link');
+		};
 
-			return LINK_RE.test(value.trim()) ? true : _('Unsupported or malformed link');
-		};
-		o.write = function(section_id, value) {
-			return form.TextValue.prototype.write.call(this, section_id, value.trim());
-		};
+		o = s.option(form.MultiValue, 'subscription', _('Subscriptions'),
+			subs.length ? _('Servers of these subscriptions are added to the section.')
+				: _('No subscriptions yet: add them on the Subscriptions page.'));
+		subs.forEach((n) => o.value(n));
+		o.depends({ type: 'proxy', proxy_type: 'link' });
+		o.modalonly = true;
+
+		o = s.option(form.Value, 'filter', _('Take servers named'),
+			_('Regular expression over server names, case-insensitive. Example: NL|DE'));
+		o.depends({ type: 'proxy', proxy_type: 'link' });
+		o.modalonly = true;
+		o.validate = validateRegexp;
+
+		o = s.option(form.Value, 'exclude', _('Skip servers named'));
+		o.depends({ type: 'proxy', proxy_type: 'link' });
+		o.modalonly = true;
+		o.validate = validateRegexp;
+
+		o = s.option(form.ListValue, 'select', _('Server choice'),
+			_('With several servers. Automatic: the fastest by URL test, checked periodically; you can still pin a server on the dashboard. Manual: the server picked on the dashboard.'));
+		o.value('auto', _('Automatic'));
+		o.value('manual', _('Manual'));
+		o.default = 'auto';
+		o.depends({ type: 'proxy', proxy_type: 'link' });
+		o.modalonly = true;
 
 		o = s.option(form.TextValue, 'outbound_json', _('Outbound JSON'),
 			_('A single Xray outbound object. Its tag is replaced automatically.'));
@@ -105,6 +144,29 @@ return view.extend({
 			_('IPv4 or IPv6 addresses, CIDR allowed: 91.108.4.0/22'));
 		o.modalonly = true;
 		o.validate = validateIP;
+
+		o = s.option(form.DummyValue, '_servers', _('Servers'));
+		o.modalonly = false;
+		o.textvalue = function(section_id) {
+			const get = (k) => L.toArray(this.map.data.get('mayhem', section_id, k));
+			const type = this.map.data.get('mayhem', section_id, 'type') || 'proxy';
+
+			if (type !== 'proxy')
+				return '—';
+
+			if (this.map.data.get('mayhem', section_id, 'proxy_type') === 'json')
+				return 'JSON';
+
+			const parts = [];
+			const links = get('link').length;
+
+			if (links)
+				parts.push(_('%d links').format(links));
+
+			get('subscription').forEach((n) => parts.push(n));
+
+			return parts.join(', ') || _('none');
+		};
 
 		o = s.option(form.DummyValue, '_rules', _('Rules'));
 		o.modalonly = false;

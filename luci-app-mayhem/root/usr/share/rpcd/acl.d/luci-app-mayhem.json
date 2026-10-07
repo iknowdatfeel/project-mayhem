@@ -3,13 +3,13 @@
 		"description": "Grant access to Mayhem",
 		"read": {
 			"ubus": {
-				"luci.mayhem": [ "status", "check", "parse_link" ]
+				"luci.mayhem": [ "status", "dashboard", "check", "parse_link" ]
 			},
 			"uci": [ "mayhem" ]
 		},
 		"write": {
 			"ubus": {
-				"luci.mayhem": [ "action" ]
+				"luci.mayhem": [ "action", "select_node", "probe", "sub_update" ]
 			},
 			"uci": [ "mayhem" ]
 		}

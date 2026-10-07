@@ -17,6 +17,9 @@ config settings 'settings'
 	option mux_concurrency '8'
 	option mux_xudp_concurrency '16'
 	option mux_xudp_udp443 'reject'
+	# automatic server choice: how often and with which URL servers are checked
+	option probe_url 'https://www.gstatic.com/generate_204'
+	option probe_interval '3m'
 
 config dns 'dns'
 	# empty = DNS servers received from the provider on WAN
@@ -29,8 +32,32 @@ config dns 'dns'
 	option fakedns '0'
 	option hijack '1'
 
+# How subscription requests present the router (Happ-compatible headers).
+# hwid and model are filled in on install.
+config device 'device'
+	option user_agent 'Happ/3.13.0'
+	option os 'Android'
+	option os_version '14'
+	option locale 'ru'
+
+# config subscription 'mysub'
+#	option enabled '1'
+#	option url 'https://example.com/sub/token'
+#	option format 'auto'            # auto | uri | xray_json
+#	option update_interval ''       # hours, empty = from the provider or 12
+#	option update_via 'auto'        # auto (direct, then through a section) | direct | section
+#	option update_section ''
+#	option send_hwid '1'
+#	list header 'X-Custom: value'
+
 config section 'main'
 	option enabled '1'
 	option type 'proxy'
 	option proxy_type 'link'
-	option link ''
+	# one link per entry; servers of subscriptions can be added too
+	# list link 'vless://...'
+	# list subscription 'mysub'
+	# option filter 'NL|DE'         # take only servers whose names match
+	# option exclude ''
+	# auto: fastest by URL test, manual: the one chosen on the dashboard
+	option select 'auto'

@@ -32,15 +32,18 @@ define Build/Compile
 endef
 
 define Package/mayhem/install
-	$(INSTALL_DIR) $(1)/etc/config $(1)/etc/init.d $(1)/usr/bin $(1)/usr/libexec/mayhem
-	$(INSTALL_DIR) $(1)/usr/share/mayhem $(1)/usr/share/ucode/mayhem
+	$(INSTALL_DIR) $(1)/etc/config $(1)/etc/init.d $(1)/etc/uci-defaults $(1)/usr/bin $(1)/usr/libexec/mayhem
+	$(INSTALL_DIR) $(1)/usr/share/mayhem $(1)/usr/share/ucode/mayhem $(1)/lib/upgrade/keep.d
 	$(INSTALL_CONF) ./files/etc/config/mayhem $(1)/etc/config/mayhem
 	$(INSTALL_BIN) ./files/etc/init.d/mayhem $(1)/etc/init.d/mayhem
 	$(INSTALL_BIN) ./files/usr/bin/mayhem $(1)/usr/bin/mayhem
+	$(INSTALL_BIN) ./files/etc/uci-defaults/90-mayhem $(1)/etc/uci-defaults/90-mayhem
 	$(INSTALL_BIN) ./files/usr/libexec/mayhem/xray-run $(1)/usr/libexec/mayhem/xray-run
+	$(INSTALL_BIN) ./files/usr/libexec/mayhem/scheduler $(1)/usr/libexec/mayhem/scheduler
 	$(INSTALL_DATA) ./files/usr/share/mayhem/*.sh $(1)/usr/share/mayhem/
-	$(INSTALL_DATA) ./files/usr/share/mayhem/gen.uc $(1)/usr/share/mayhem/
+	$(INSTALL_DATA) ./files/usr/share/mayhem/*.uc $(1)/usr/share/mayhem/
 	$(INSTALL_DATA) ./files/usr/share/ucode/mayhem/*.uc $(1)/usr/share/ucode/mayhem/
+	$(INSTALL_DATA) ./files/lib/upgrade/keep.d/mayhem $(1)/lib/upgrade/keep.d/mayhem
 	$(SED) 's/__MAYHEM_VERSION__/$(PKG_VERSION)/' $(1)/usr/share/mayhem/const.sh
 endef
 

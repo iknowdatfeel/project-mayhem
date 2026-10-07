@@ -1,0 +1,2 @@
+vless://11111111-2222-3333-4444-555555555555@nl.example:443?security=tls#Plain1
+ss://YWVzLTI1Ni1nY206cHc@us.example:8388#US

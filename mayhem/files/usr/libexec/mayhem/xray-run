@@ -27,13 +27,16 @@ fi
 
 "$MAYHEM_XRAY_BIN" run -c "$MAYHEM_RUN_DIR/xray.json" &
 xray_pid=$!
+echo "$xray_pid" > "$MAYHEM_RUN_DIR/xray.pid"
+mayhem_xray_version > "$MAYHEM_RUN_DIR/xray.version" 2>/dev/null
 
 ready=0
 i=0
 while [ "$i" -lt 40 ] && [ "$stopping" = 0 ]; do
 	kill -0 "$xray_pid" 2>/dev/null || break
 
-	if mayhem_port_listening "$MAYHEM_TPROXY_PORT" && mayhem_port_listening "$MAYHEM_DNS_PORT"; then
+	if mayhem_port_listening "$MAYHEM_TPROXY_PORT" && mayhem_port_listening "$MAYHEM_DNS_PORT" &&
+	   mayhem_port_listening "$MAYHEM_API_PORT"; then
 		ready=1
 		break
 	fi
@@ -43,7 +46,11 @@ while [ "$i" -lt 40 ] && [ "$stopping" = 0 ]; do
 done
 
 if [ "$ready" = 1 ]; then
+	# Saved server choices go in before any traffic does.
+	mayhem_apply_overrides
+
 	if mayhem_net_up && mayhem_dns_up; then
+		touch "$MAYHEM_RUN_DIR/active"
 		mayhem_log "started, traffic is redirected to xray (pid $xray_pid)"
 	else
 		mayhem_log "could not set up traffic redirection, stopping" err
@@ -61,6 +68,7 @@ while kill -0 "$xray_pid" 2>/dev/null; do
 	rc=$?
 done
 
+rm -f "$MAYHEM_RUN_DIR/active" "$MAYHEM_RUN_DIR/xray.pid"
 mayhem_net_down
 mayhem_dns_down
 

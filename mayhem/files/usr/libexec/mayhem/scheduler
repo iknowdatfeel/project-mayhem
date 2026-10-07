@@ -1,0 +1,20 @@
+#!/bin/sh
+# Mayhem: background jobs. Checks subscriptions every minute and downloads
+# the ones that are due; reloads the service when their servers changed.
+# A reload only restarts xray when its generated config really changed.
+
+. "${MAYHEM_LIB_DIR:-/usr/share/mayhem}/lib.sh"
+
+sleep 10
+
+while :; do
+	ucode "$MAYHEM_SUB" update >/dev/null 2>&1
+	rc=$?
+
+	if [ "$rc" = 3 ]; then
+		mayhem_log "subscriptions changed, applying the new servers"
+		/etc/init.d/mayhem reload
+	fi
+
+	sleep 60
+done

@@ -1,12 +1,22 @@
 // Mayhem: rpcd backend for the LuCI app (ubus object "luci.mayhem").
+// The dashboard is polled every few seconds, so it only reads files under
+// /var/run/mayhem and xray's metrics endpoint; nothing heavy is spawned.
 
 'use strict';
 
-import { popen } from 'fs';
+import * as fs from 'fs';
 import { parse_link } from 'mayhem.links';
+import * as C from 'mayhem.const';
+
+const XRAY = getenv('MAYHEM_XRAY_BIN') ?? '/usr/libexec/mayhem/xray';
+const RUN = C.RUN_DIR;
+
+function q(s) {
+	return "'" + replace(`${s}`, /'/g, "'\\''") + "'";
+}
 
 function run(cmd) {
-	const p = popen(cmd, 'r');
+	const p = fs.popen(cmd, 'r');
 
 	if (!p)
 		return null;
@@ -18,13 +28,118 @@ function run(cmd) {
 	return out;
 }
 
-function run_json(cmd) {
+function read_json(path) {
 	try {
-		return json(run(cmd) ?? '');
+		return json(fs.readfile(path) ?? '');
 	}
 	catch (e) {
 		return null;
 	}
+}
+
+function write_json(path, v) {
+	const tmp = `${path}.tmp`;
+
+	return fs.writefile(tmp, sprintf('%J\n', v)) != null && fs.rename(tmp, path);
+}
+
+function uci_cursor() {
+	const c = require('uci').cursor(C.UCI_DIR);
+
+	c.load('mayhem');
+
+	return c;
+}
+
+function xray_pid() {
+	const pid = trim(fs.readfile(`${RUN}/xray.pid`) ?? '');
+
+	return (pid != '' && fs.access(`/proc/${pid}`)) ? pid : null;
+}
+
+function rss_kb(pid) {
+	const m = match(fs.readfile(`/proc/${pid}/status`) ?? '', /VmRSS:[[:space:]]+([0-9]+)/);
+
+	return m ? int(m[1]) : null;
+}
+
+function metrics() {
+	try {
+		const j = json(run(`curl -s -m 2 http://127.0.0.1:${C.METRICS_PORT}/debug/vars`) ?? '');
+
+		return { stats: j?.stats?.outbound ?? {}, observatory: j?.observatory ?? {} };
+	}
+	catch (e) {
+		return { stats: {}, observatory: {} };
+	}
+}
+
+function mayhem_version() {
+	const m = match(fs.readfile('/usr/share/mayhem/const.sh') ?? '', /MAYHEM_VERSION="([^"]*)"/);
+
+	return m ? m[1] : null;
+}
+
+// The server a section is using right now.
+function active_tag(s, obs) {
+	if (!length(s.nodes ?? []))
+		return null;
+
+	if (s.mode == 'single')
+		return s.nodes[0].tag;
+
+	if (s.mode == 'manual')
+		return s.selected;
+
+	if (s.override)
+		return s.override;
+
+	// leastPing: the fastest server that answered the last check
+	let best = null;
+
+	for (let n in s.nodes) {
+		const o = obs[n.tag];
+
+		if (o?.alive && (!best || o.delay < best.delay))
+			best = { tag: n.tag, delay: o.delay };
+	}
+
+	return best?.tag ?? s.nodes[0].tag;
+}
+
+function subscriptions() {
+	const out = [];
+	const state = read_json(`${RUN}/subs-state.json`) ?? {};
+	const c = uci_cursor();
+
+	c.foreach('mayhem', 'subscription', (s) => {
+		const cache = read_json(`${C.SUBS_DIR}/${s['.name']}.json`);
+		const st = state[s['.name']] ?? {};
+
+		// Fresh counters and check time are kept in RAM, the cache on flash
+		// only changes together with the servers.
+		push(out, {
+			name: s['.name'],
+			enabled: (s.enabled ?? '1') == '1',
+			nodes: length(cache?.nodes ?? []),
+			skipped: cache?.skipped ?? 0,
+			updated: max(st.updated ?? 0, cache?.updated ?? 0) || null,
+			info: st.info ?? cache?.info,
+			error: st.error,
+			last_try: st.last_try
+		});
+	});
+
+	return out;
+}
+
+function find_node(state, tag) {
+	for (let sn in keys(state?.sections ?? {}))
+		for (let n in state.sections[sn].nodes ?? [])
+			if (n.tag == tag)
+				return { section: sn, node: n, info: state.sections[sn] };
+
+	return null;
 }
 
 const ACTIONS = {
@@ -38,13 +153,218 @@ const ACTIONS = {
 const methods = {
 	status: {
 		call: function() {
-			return run_json('/usr/bin/mayhem status 2>/dev/null') ?? { error: 'mayhem status failed' };
+			try {
+				return json(run('/usr/bin/mayhem status 2>/dev/null') ?? '');
+			}
+			catch (e) {
+				return { error: 'mayhem status failed' };
+			}
+		}
+	},
+
+	dashboard: {
+		call: function() {
+			const pid = xray_pid();
+			const state = read_json(`${RUN}/nodes.json`) ?? { sections: {} };
+			const m = pid ? metrics() : { stats: {}, observatory: {} };
+			const c = uci_cursor();
+			const sections = [];
+			const totals = { proxy: { up: 0, down: 0 }, direct: { up: 0, down: 0 } };
+
+			for (let sn in keys(state.sections ?? {})) {
+				const s = state.sections[sn];
+				const nodes = [];
+				const traffic = { up: 0, down: 0 };
+
+				for (let n in s.nodes ?? []) {
+					const o = m.observatory[n.tag];
+					const t = m.stats[n.tag] ?? {};
+
+					traffic.up += t.uplink ?? 0;
+					traffic.down += t.downlink ?? 0;
+
+					push(nodes, {
+						tag: n.tag, name: n.name, protocol: n.protocol, address: n.address,
+						port: n.port, udp: n.udp, source: n.source,
+						delay: o ? o.delay : null, alive: o ? o.alive : null,
+						up: t.uplink ?? 0, down: t.downlink ?? 0
+					});
+				}
+
+				push(sections, {
+					name: sn, type: s.type, mode: s.mode, balancer: s.balancer,
+					active: s.type == 'proxy' ? active_tag(s, m.observatory) : null,
+					pinned: s.override ?? null, nodes: nodes, traffic: traffic
+				});
+			}
+
+			for (let tag in keys(m.stats)) {
+				const t = m.stats[tag];
+				const k = substr(tag, 0, 2) == 'n-' ? 'proxy' : (tag == 'direct' ? 'direct' : null);
+
+				if (k) {
+					totals[k].up += t.uplink ?? 0;
+					totals[k].down += t.downlink ?? 0;
+				}
+			}
+
+			return {
+				time: time(),
+				version: mayhem_version(),
+				enabled: c.get('mayhem', 'settings', 'enabled') == '1',
+				running: pid != null,
+				active: pid != null && fs.access(`${RUN}/active`) == true,
+				xray: trim(fs.readfile(`${RUN}/xray.version`) ?? '') || null,
+				rss_kb: pid ? rss_kb(pid) : null,
+				status: read_json(`${RUN}/status.json`),
+				mode: state.mode,
+				probe_url: state.probe_url,
+				sections: sections,
+				totals: totals,
+				subscriptions: subscriptions()
+			};
+		}
+	},
+
+	select_node: {
+		args: { section: '', tag: '' },
+		call: function(req) {
+			const sn = req.args?.section;
+			const tag = req.args?.tag ?? '';
+			const state = read_json(`${RUN}/nodes.json`);
+			const s = state?.sections?.[sn];
+
+			if (!s?.balancer)
+				return { error: 'this section has a single server' };
+
+			const node = filter(s.nodes, (n) => n.tag == tag)[0];
+
+			if (tag != '' && !node)
+				return { error: 'unknown server' };
+
+			if (tag == '' && s.mode == 'manual')
+				return { error: 'a manual section needs a server' };
+
+			if (xray_pid()) {
+				const cmd = `${XRAY} api bo --server=127.0.0.1:${C.API_PORT} -b ${q(s.balancer)} ${tag != '' ? q(tag) : '-r'} >/dev/null 2>&1; echo $?`;
+
+				if (trim(run(cmd) ?? '1') != '0')
+					return { error: 'xray did not accept the choice' };
+			}
+
+			// Remember the choice by name: tags change when the server list does.
+			const c = uci_cursor();
+
+			if (s.mode == 'manual') {
+				c.set('mayhem', sn, 'selected', node.name);
+				s.selected = tag;
+			}
+			else if (tag != '') {
+				c.set('mayhem', sn, 'override', node.name);
+				s.override = tag;
+			}
+			else {
+				c.delete('mayhem', sn, 'override');
+				delete s.override;
+			}
+
+			c.commit('mayhem');
+			write_json(`${RUN}/nodes.json`, state);
+
+			return { ok: true };
+		}
+	},
+
+	probe: {
+		args: { tag: '', method: 'url' },
+		call: function(req) {
+			const state = read_json(`${RUN}/nodes.json`);
+			const f = find_node(state, req.args?.tag);
+
+			if (!f)
+				return { error: 'unknown server' };
+
+			const n = f.node;
+			const addr = n.address ?? '';
+
+			if (!match(addr, /^[A-Za-z0-9.:_-]+$/))
+				return { error: 'no address' };
+
+			let out, m;
+
+			switch (req.args?.method) {
+			case 'tcp':
+				if (n.udp)
+					return { error: 'UDP protocol' };
+
+				if (!n.port)
+					return { error: 'no port' };
+
+				const host = index(addr, ':') >= 0 ? `[${addr}]` : addr;
+
+				out = trim(run(`curl -s -o /dev/null --connect-timeout 5 -m 6 -w '%{time_connect}' ${q(`http://${host}:${n.port}/`)}`) ?? '');
+
+				return (out != '' && out * 1 > 0) ? { ms: int(out * 1000) } : { error: 'no connection' };
+
+			case 'icmp':
+				out = run(`ping -c 1 -W 3 ${q(addr)} 2>&1`) ?? '';
+				m = match(out, /time=([0-9.]+)/);
+
+				return m ? { ms: int(m[1] * 1) || 1 } : { error: 'no reply' };
+
+			case 'url':
+				if (!xray_pid())
+					return { error: 'xray is not running' };
+
+				const proxy = `socks5h://${n.tag}:${C.HELPER_PASS}@127.0.0.1:${C.HELPER_PORT}`;
+				const url = state.probe_url ?? C.DEFAULT_PROBE_URL;
+
+				out = trim(run(`curl -s -o /dev/null -m 10 -x ${q(proxy)} -w '%{http_code} %{time_starttransfer}' ${q(url)}`) ?? '');
+				m = match(out, /^([0-9]+) ([0-9.]+)$/);
+
+				if (!m || int(m[1]) < 200 || int(m[1]) >= 400)
+					return { error: m ? `HTTP ${m[1]}` : 'timeout' };
+
+				return { ms: int(m[2] * 1000) || 1 };
+
+			default:
+				return { error: 'unknown method' };
+			}
+		}
+	},
+
+	sub_update: {
+		args: { name: '' },
+		call: function(req) {
+			const name = req.args?.name ?? '';
+
+			if (name != '' && !match(name, /^[A-Za-z0-9_]+$/))
+				return { error: 'invalid name' };
+
+			const out = run(`/usr/bin/mayhem sub-update ${name != '' ? q(name) : ''} 2>/dev/null`) ?? '';
+
+			for (let line in split(out, '\n'))
+				if (substr(line, 0, 1) == '[') {
+					try {
+						return { results: json(line) };
+					}
+					catch (e) {
+						break;
+					}
+				}
+
+			return { error: 'update failed' };
 		}
 	},
 
 	check: {
 		call: function() {
-			return run_json('/usr/bin/mayhem check 2>/dev/null') ?? { ok: false, errors: [ 'check failed' ] };
+			try {
+				return json(run('/usr/bin/mayhem check 2>/dev/null') ?? '');
+			}
+			catch (e) {
+				return { ok: false, errors: [ 'check failed' ] };
+			}
 		}
 	},
 

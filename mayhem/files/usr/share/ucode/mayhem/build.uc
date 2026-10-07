@@ -4,7 +4,7 @@
 
 'use strict';
 
-import { parse_link, outbound_host } from 'mayhem.links';
+import { parse_link, outbound_host, outbound_port, outbound_udp } from 'mayhem.links';
 import { is_true, entries, norm_domain, norm_ip, is_ip, dns_server } from 'mayhem.rules';
 import * as C from 'mayhem.const';
 
@@ -126,6 +126,111 @@ function build_nft(S, v6, sets) {
 	return s;
 }
 
+// Links are one per line; commas and spaces may appear inside a link.
+function link_list(v) {
+	const out = [];
+
+	for (let item in type(v) == 'array' ? v : ((v == null || v == '') ? [] : [ v ]))
+		for (let l in split(`${item}`, '\n')) {
+			l = trim(l);
+
+			if (l != '' && substr(l, 0, 1) != '#')
+				push(out, l);
+		}
+
+	return out;
+}
+
+function name_regexp(src, what, warn) {
+	if (src == null || src == '')
+		return null;
+
+	try {
+		return regexp(src, 'i');
+	}
+	catch (e) {
+		warn(`${what}: invalid regular expression "${src}", ignored`);
+		return null;
+	}
+}
+
+function copy(v) {
+	return json(sprintf('%J', v));
+}
+
+// All servers of a proxy section: its own links, then nodes of its
+// subscriptions that pass the name filters. Returns [{ name, outbound, source }].
+function collect_nodes(sec, model, warn) {
+	const name = sec['.name'];
+	const nodes = [];
+
+	if (sec.proxy_type == 'json') {
+		push(nodes, { name: 'JSON', outbound: json_outbound(sec.outbound_json ?? ''), source: 'json' });
+		return nodes;
+	}
+
+	let n = 0;
+
+	for (let l in link_list(sec.link)) {
+		n++;
+
+		try {
+			const r = parse_link(l);
+
+			for (let w in r.warnings)
+				warn(`section "${name}": ${w}`);
+
+			push(nodes, { name: r.name != '' ? r.name : `${name} ${n}`, outbound: r.outbound, source: 'link' });
+		}
+		catch (e) {
+			warn(`section "${name}": link ${n}: ${e.message}; skipped`);
+		}
+	}
+
+	const inc = name_regexp(sec.filter, `section "${name}" filter`, warn);
+	const exc = name_regexp(sec.exclude, `section "${name}" exclude`, warn);
+
+	for (let sub in entries(sec.subscription)) {
+		const cache = model.subscriptions?.[sub];
+
+		if (!cache) {
+			warn(`section "${name}": subscription "${sub}" has not been downloaded yet`);
+			continue;
+		}
+
+		for (let node in cache.nodes ?? []) {
+			const nn = node.name ?? '';
+
+			if ((inc && !match(nn, inc)) || (exc && match(nn, exc)))
+				continue;
+
+			try {
+				const ob = node.outbound ? copy(node.outbound) : parse_link(node.link).outbound;
+
+				push(nodes, { name: nn, outbound: ob, source: sub });
+			}
+			catch (e) {
+				warn(`section "${name}": server "${nn}" from "${sub}": ${e.message}; skipped`);
+			}
+		}
+	}
+
+	// Names identify servers on the dashboard and in saved choices.
+	const seen = {};
+
+	for (let nd in nodes) {
+		const base = nd.name;
+		let k = 1;
+
+		while (seen[nd.name])
+			nd.name = `${base} (${++k})`;
+
+		seen[nd.name] = true;
+	}
+
+	return nodes;
+}
+
 function memlimit_mib(S, R) {
 	const v = int_opt(S.memlimit, 0, 16, 4096);
 
@@ -170,6 +275,11 @@ export function build(model) {
 	const block_rules = [];
 	const section_rules = [];
 	const proxy_targets = {};
+	const node_tags = [];
+	const balancers = [];
+	const overrides = [];
+	const observe = [];
+	const state = { sections: {} };
 	let first_proxy = null;
 
 	// --- sections -----------------------------------------------------------
@@ -221,21 +331,10 @@ export function build(model) {
 
 		switch (info.type) {
 		case 'proxy':
-			let ob;
+			let nodes;
 
 			try {
-				if (sec.proxy_type == 'json') {
-					ob = json_outbound(sec.outbound_json ?? '');
-				}
-				else {
-					const r = parse_link(sec.link);
-
-					ob = r.outbound;
-					info.node = r.name;
-
-					for (let w in r.warnings)
-						warn(`section "${name}": ${w}`);
-				}
+				nodes = collect_nodes(sec, model, warn);
 			}
 			catch (e) {
 				info.error = e.message;
@@ -243,17 +342,97 @@ export function build(model) {
 				continue;
 			}
 
-			ob.tag = `sec-${name}`;
-			apply_sockopt(ob, F.sockopt);
-			apply_mux(ob, S);
-			push(outbounds, ob);
+			if (!length(nodes)) {
+				info.error = 'no servers';
+				warn(`section "${name}": no servers (links or subscription nodes), skipped`);
+				continue;
+			}
 
-			const host = outbound_host(ob);
+			if (length(nodes) > C.MAX_NODES) {
+				warn(`section "${name}": ${length(nodes)} servers, only the first ${C.MAX_NODES} are used`);
+				nodes = slice(nodes, 0, C.MAX_NODES);
+			}
 
-			if (host && !is_ip(host))
-				uniq_push(server_hosts, `full:${host}`);
+			const smode = sec.select == 'manual' ? 'manual' : 'auto';
+			const sinfo = { type: 'proxy', mode: length(nodes) > 1 ? smode : 'single', nodes: [] };
 
-			target = { outboundTag: ob.tag };
+			for (let i = 0; i < length(nodes); i++) {
+				const ob = nodes[i].outbound;
+				const host = outbound_host(ob);
+
+				ob.tag = `n-${name}-${i}`;
+				apply_sockopt(ob, F.sockopt);
+				apply_mux(ob, S);
+				push(outbounds, ob);
+				push(node_tags, ob.tag);
+
+				if (host && !is_ip(host))
+					uniq_push(server_hosts, `full:${host}`);
+
+				push(sinfo.nodes, {
+					tag: ob.tag,
+					name: nodes[i].name,
+					protocol: ob.protocol,
+					address: host,
+					port: outbound_port(ob),
+					udp: outbound_udp(ob),
+					source: nodes[i].source
+				});
+			}
+
+			if (length(nodes) == 1) {
+				target = { outboundTag: sinfo.nodes[0].tag };
+				info.node = sinfo.nodes[0].name;
+			}
+			else {
+				const bal = `bal-${name}`;
+				const byname = (n) => filter(sinfo.nodes, (x) => x.name == n)[0];
+				let pick = null;
+
+				if (smode == 'manual') {
+					pick = byname(sec.selected);
+
+					if (sec.selected && !pick)
+						warn(`section "${name}": selected server "${sec.selected}" is gone, using the first one`);
+
+					pick ??= sinfo.nodes[0];
+					sinfo.selected = pick.tag;
+				}
+				else if (sec.override) {
+					pick = byname(sec.override);
+
+					if (pick)
+						sinfo.override = pick.tag;
+					else
+						warn(`section "${name}": pinned server "${sec.override}" is gone, back to automatic choice`);
+				}
+
+				// A fallback tag makes xray require the observatory, which only
+				// watches automatic sections. A manual section gets its server
+				// through the override that is applied before traffic is let in.
+				const balancer = {
+					tag: bal,
+					selector: [ `n-${name}-` ],
+					strategy: { type: smode == 'auto' ? 'leastPing' : 'random' }
+				};
+
+				if (smode == 'auto')
+					balancer.fallbackTag = (pick ?? sinfo.nodes[0]).tag;
+
+				push(balancers, balancer);
+
+				if (pick)
+					push(overrides, `${bal} ${pick.tag}`);
+
+				if (smode == 'auto')
+					push(observe, `n-${name}-`);
+
+				sinfo.balancer = bal;
+				target = { balancerTag: bal };
+				info.node = `${length(nodes)} servers`;
+			}
+
+			state.sections[name] = sinfo;
 			proxy_targets[name] = target;
 			first_proxy ??= name;
 
@@ -263,6 +442,7 @@ export function build(model) {
 
 		case 'exclusion':
 			target = { outboundTag: 'direct' };
+			state.sections[name] = { type: 'exclusion' };
 
 			for (let d in domains)
 				uniq_push(excl_domains, d);
@@ -276,6 +456,7 @@ export function build(model) {
 
 		case 'block':
 			target = { outboundTag: 'block' };
+			state.sections[name] = { type: 'block' };
 
 			for (let c in ips4)
 				uniq_push(nftsets.block4, c);
@@ -436,7 +617,26 @@ export function build(model) {
 
 	// --- routing ------------------------------------------------------------
 
-	const rules = [ { inboundTag: [ 'dns-in' ], outboundTag: 'dns-out' } ];
+	// Local SOCKS helper: user "<node tag>" goes through that server, user
+	// "sec-<section>" through the section. Used for URL tests and for
+	// downloading subscriptions through a section.
+	const helper_accounts = [];
+	const rules = [];
+
+	for (let sn in keys(proxy_targets)) {
+		push(helper_accounts, { user: `sec-${sn}`, pass: C.HELPER_PASS });
+		push(rules, { inboundTag: [ 'helper-in' ], user: [ `sec-${sn}` ], ...proxy_targets[sn] });
+	}
+
+	for (let t in node_tags) {
+		push(helper_accounts, { user: t, pass: C.HELPER_PASS });
+		push(rules, { inboundTag: [ 'helper-in' ], user: [ t ], outboundTag: t });
+	}
+
+	if (length(helper_accounts))
+		push(rules, { inboundTag: [ 'helper-in' ], outboundTag: 'direct' });
+
+	push(rules, { inboundTag: [ 'dns-in' ], outboundTag: 'dns-out' });
 
 	if (is_true(D.hijack ?? '1'))
 		push(rules, { inboundTag: [ 'tproxy-in' ], port: '53', outboundTag: 'dns-out' });
@@ -519,11 +719,35 @@ export function build(model) {
 			}
 		],
 		outbounds: outbounds,
-		routing: { domainStrategy: 'AsIs', rules: rules }
+		routing: { domainStrategy: 'AsIs', rules: rules, balancers: balancers },
+		api: { tag: 'api', listen: `127.0.0.1:${C.API_PORT}`, services: [ 'RoutingService' ] },
+		metrics: { tag: 'metrics', listen: `127.0.0.1:${C.METRICS_PORT}` },
+		stats: {},
+		policy: { system: { statsOutboundUplink: true, statsOutboundDownlink: true } }
 	};
+
+	if (length(helper_accounts))
+		push(xray.inbounds, {
+			tag: 'helper-in',
+			listen: '127.0.0.1',
+			port: C.HELPER_PORT,
+			protocol: 'socks',
+			settings: { auth: 'password', accounts: helper_accounts, udp: false }
+		});
+
+	if (length(observe)) {
+		const iv = match(S.probe_interval ?? '', /^[0-9]+[smh]$/) ? S.probe_interval : C.DEFAULT_PROBE_INTERVAL;
+		const url = match(S.probe_url ?? '', /^https?:\/\//) ? S.probe_url : C.DEFAULT_PROBE_URL;
+
+		xray.observatory = { subjectSelector: observe, probeURL: url, probeInterval: iv, enableConcurrency: true };
+	}
 
 	if (fakedns)
 		xray.fakedns = [ { ipPool: C.FAKEDNS_POOL, poolSize: C.FAKEDNS_POOL_SIZE } ];
+
+	state.generated = R.now ?? time();
+	state.mode = mode;
+	state.probe_url = xray.observatory?.probeURL ?? (match(S.probe_url ?? '', /^https?:\/\//) ? S.probe_url : C.DEFAULT_PROBE_URL);
 
 	return {
 		ok: !length(st.errors),
@@ -533,6 +757,8 @@ export function build(model) {
 		dnsmasq: `server=127.0.0.1#${C.DNS_PORT}\nno-resolv\n`,
 		memlimit_mib: memlimit_mib(S, R),
 		ipv6: v6,
+		state: state,
+		overrides: overrides,
 		status: st
 	};
 }

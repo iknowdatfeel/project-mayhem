@@ -15,10 +15,16 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y cmake libjson-c-dev nftables shellcheck unzip
-      - name: Build ucode
+      - name: Build ucode with the uci module
         run: |
+          git clone --depth 1 https://github.com/openwrt/libubox.git /tmp/libubox
+          cmake -S /tmp/libubox -B /tmp/libubox/build -DBUILD_LUA=OFF -DBUILD_EXAMPLES=OFF
+          sudo cmake --build /tmp/libubox/build --target install -j4
+          git clone --depth 1 https://github.com/openwrt/uci.git /tmp/uci
+          cmake -S /tmp/uci -B /tmp/uci/build -DBUILD_LUA=OFF
+          sudo cmake --build /tmp/uci/build --target install -j4
           git clone --depth 1 https://github.com/jow-/ucode.git /tmp/ucode
-          cmake -S /tmp/ucode -B /tmp/ucode/build -DUBUS_SUPPORT=OFF -DUCI_SUPPORT=OFF -DULOOP_SUPPORT=OFF \
+          cmake -S /tmp/ucode -B /tmp/ucode/build -DUBUS_SUPPORT=OFF -DUCI_SUPPORT=ON -DULOOP_SUPPORT=OFF \
             -DRTNL_SUPPORT=OFF -DNL80211_SUPPORT=OFF -DLOG_SUPPORT=OFF
           sudo cmake --build /tmp/ucode/build --target install -j4
           sudo ldconfig

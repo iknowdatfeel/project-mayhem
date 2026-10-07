@@ -663,3 +663,31 @@ export function outbound_host(ob) {
 
 	return null;
 }
+
+// Server port of an outbound (for TCP ping).
+export function outbound_port(ob) {
+	const s = ob?.settings ?? {};
+
+	if (s.port)
+		return int(s.port);
+
+	if (length(s.vnext ?? []))
+		return int(s.vnext[0].port);
+
+	if (length(s.servers ?? []))
+		return int(s.servers[0].port);
+
+	if (length(s.peers ?? [])) {
+		const m = match(s.peers[0].endpoint ?? '', /:([0-9]+)$/);
+
+		return m ? int(m[1]) : null;
+	}
+
+	return null;
+}
+
+// True for protocols carried over UDP, where a TCP ping says nothing.
+export function outbound_udp(ob) {
+	return ob?.protocol == 'hysteria' || ob?.protocol == 'wireguard' ||
+		ob?.streamSettings?.network == 'kcp';
+}

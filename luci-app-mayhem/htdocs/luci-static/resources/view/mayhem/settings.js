@@ -58,6 +58,21 @@ return view.extend({
 		o.datatype = 'range(16,4096)';
 		o.placeholder = _('auto');
 
+		o = s.option(form.Value, 'probe_url', _('URL for server checks'),
+			_('Automatic server choice and the URL test request this address through each server.'));
+		o.placeholder = 'https://www.gstatic.com/generate_204';
+		o.validate = function(section_id, value) {
+			return (!value || /^https?:\/\/\S+$/.test(value)) ? true : _('Expected an http(s):// address');
+		};
+
+		o = s.option(form.ListValue, 'probe_interval', _('Check servers every'));
+		o.value('1m', _('1 minute'));
+		o.value('3m', _('3 minutes'));
+		o.value('5m', _('5 minutes'));
+		o.value('10m', _('10 minutes'));
+		o.value('30m', _('30 minutes'));
+		o.default = '3m';
+
 		o = s.option(form.Flag, 'mux', _('Mux for VLESS'),
 			_('Applies to every VLESS server. With XTLS Vision only UDP is multiplexed.'));
 

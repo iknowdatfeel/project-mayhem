@@ -135,3 +135,25 @@ mayhem_xray_version() {
 	[ -x "$MAYHEM_XRAY_BIN" ] || return 1
 	"$MAYHEM_XRAY_BIN" version 2>/dev/null | awk 'NR == 1 { print $2 }'
 }
+
+# Balancer choices saved by the user: "<balancer> <outbound tag>" per line.
+mayhem_apply_overrides() {
+	local bal tag
+
+	[ -s "$MAYHEM_RUN_DIR/overrides" ] || return 0
+
+	while read -r bal tag; do
+		[ -n "$bal" ] && [ -n "$tag" ] || continue
+		mayhem_select "$bal" "$tag" ||
+			mayhem_log "could not select $tag in $bal" warn
+	done < "$MAYHEM_RUN_DIR/overrides"
+}
+
+# Pin a balancer to a server; an empty tag returns it to automatic choice.
+mayhem_select() {
+	if [ -n "$2" ]; then
+		"$MAYHEM_XRAY_BIN" api bo --server="127.0.0.1:$MAYHEM_API_PORT" -b "$1" "$2" >/dev/null 2>&1
+	else
+		"$MAYHEM_XRAY_BIN" api bo --server="127.0.0.1:$MAYHEM_API_PORT" -b "$1" -r >/dev/null 2>&1
+	fi
+}

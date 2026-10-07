@@ -11,12 +11,12 @@
 		}
 	},
 
-	"admin/services/mayhem/status": {
-		"title": "Status",
+	"admin/services/mayhem/dashboard": {
+		"title": "Dashboard",
 		"order": 10,
 		"action": {
 			"type": "view",
-			"path": "mayhem/status"
+			"path": "mayhem/dashboard"
 		}
 	},
 
@@ -26,6 +26,15 @@
 		"action": {
 			"type": "view",
 			"path": "mayhem/sections"
+		}
+	},
+
+	"admin/services/mayhem/subscriptions": {
+		"title": "Subscriptions",
+		"order": 25,
+		"action": {
+			"type": "view",
+			"path": "mayhem/subscriptions"
 		}
 	},
 

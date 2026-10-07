@@ -14,6 +14,7 @@ Usage: mayhem <command>
   status                     service state as JSON
   check                      validate the configuration without applying it
   show-config                print the generated xray config
+  sub-update [NAME]          download subscriptions now (all or one)
   xray-install [VERSION]     download the official xray build (default $MAYHEM_XRAY_VERSION)
   version                    print versions
 EOF
@@ -30,7 +31,8 @@ cmd_status() {
 	enabled="$(uci -q get mayhem.settings.enabled)"
 	/etc/init.d/mayhem running >/dev/null 2>&1 && running=true
 	nft list table inet "$MAYHEM_NFT_TABLE" >/dev/null 2>&1 && nft=true
-	xver="$(mayhem_xray_version)"
+	xver="$(cat "$MAYHEM_RUN_DIR/xray.version" 2>/dev/null)"
+	[ -n "$xver" ] || xver="$(mayhem_xray_version)"
 	gen="$(cat "$MAYHEM_RUN_DIR/status.json" 2>/dev/null)"
 
 	printf '{"version":%s,"enabled":%s,"running":%s,"intercepting":%s,"xray":%s,"conflicts":%s,"config":%s}\n' \
@@ -146,6 +148,15 @@ case "$1" in
 		;;
 	show-config)
 		ucode "$MAYHEM_GEN" --print
+		;;
+	sub-update)
+		ucode "$MAYHEM_SUB" update ${2:+"$2"} --force
+		rc=$?
+		if [ "$rc" = 3 ]; then
+			/etc/init.d/mayhem running >/dev/null 2>&1 && /etc/init.d/mayhem reload
+			rc=0
+		fi
+		exit "$rc"
 		;;
 	xray-install)
 		cmd_xray_install "$2"

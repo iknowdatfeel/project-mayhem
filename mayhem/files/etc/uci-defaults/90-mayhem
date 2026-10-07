@@ -1,0 +1,21 @@
+#!/bin/sh
+# Mayhem: device profile for subscription requests. Runs once after install;
+# keeps values the user already has.
+
+uci -q get mayhem.device >/dev/null || uci set mayhem.device=device
+
+if [ -z "$(uci -q get mayhem.device.hwid)" ]; then
+	uci set mayhem.device.hwid="$(tr -dc 'A-Za-z0-9' </dev/urandom 2>/dev/null | head -c 16)"
+fi
+
+if [ -z "$(uci -q get mayhem.device.model)" ]; then
+	uci set mayhem.device.model="$(cat /tmp/sysinfo/model 2>/dev/null || echo OpenWrt)"
+fi
+
+[ -n "$(uci -q get mayhem.device.user_agent)" ] || uci set mayhem.device.user_agent='Happ/3.13.0'
+[ -n "$(uci -q get mayhem.device.os)" ] || uci set mayhem.device.os='Android'
+[ -n "$(uci -q get mayhem.device.os_version)" ] || uci set mayhem.device.os_version='14'
+[ -n "$(uci -q get mayhem.device.locale)" ] || uci set mayhem.device.locale='ru'
+
+uci commit mayhem
+exit 0
