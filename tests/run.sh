@@ -2,6 +2,10 @@
 # Off-device tests: link parser, config generator, xray and nftables validation,
 # shell and LuCI syntax.  UCODE and XRAY may point to the binaries to use.
 #   UCODE=ucode XRAY=/path/to/xray tests/run.sh
+# Run it with the ucode OpenWrt ships, not only the latest: older ucode wants
+# `;` after `export function f() {}` and has no `name() {}` object methods.
+# JSMIN (LuCI's modules/luci-base/src/jsmin.c, built) enables the check that
+# the minified JS of the package still means the same as the source.
 
 set -u
 
@@ -12,8 +16,9 @@ XRAY="${XRAY:-xray}"
 OUT="$(mktemp -d)"
 fail=0
 
-# Generated and downloaded files of the tests stay in OUT.
-export MAYHEM_RUN_DIR="$OUT/run" MAYHEM_GEO_DIR="$OUT/geo-store" MAYHEM_LISTS_DIR="$OUT/lists" MAYHEM_TMP_DIR="$OUT"
+# Generated and downloaded files of the tests stay in OUT. OUT/etc does not
+# exist yet, like /etc/mayhem on a fresh router.
+export MAYHEM_RUN_DIR="$OUT/run" MAYHEM_GEO_DIR="$OUT/etc/geo" MAYHEM_LISTS_DIR="$OUT/etc/lists" MAYHEM_TMP_DIR="$OUT"
 
 uc() { "$UCODE" -L "$FILES/usr/share/ucode/*.uc" ${UCODE_LIB:+-L "$UCODE_LIB"} "$@"; }
 ok() { printf 'ok   %s\n' "$1"; }
@@ -38,6 +43,28 @@ if out="$(uc "$ROOT/tests/links.uc" 2>&1)"; then
 	ok "links"
 else
 	bad "links: $out"
+fi
+
+# Servers without TLS: refused_by_xray() must agree with xray itself, or one
+# such server keeps xray from starting (or a usable one gets dropped).
+mkdir -p "$OUT/refusal"
+if list="$(uc "$ROOT/tests/refusal.uc" "$OUT/refusal" 2>&1)"; then
+	wrong=""
+	while read -r file want what; do
+		out="$("$XRAY" run -test -c "$file" 2>&1)"
+		case "$out" in
+			*"Configuration OK"*) got=0 ;;
+			*"prohibited unless"*) got=1 ;;
+			*) got="error: $(printf '%s' "$out" | tail -n 1)" ;;
+		esac
+		[ "$got" = "$want" ] || wrong="$wrong
+  $what: xray $got, generator $want"
+	done <<EOF
+$list
+EOF
+	if [ -z "$wrong" ]; then ok "plaintext servers: same verdict as xray"; else bad "plaintext servers:$wrong"; fi
+else
+	bad "plaintext servers: $list"
 fi
 
 # subscription responses
@@ -204,10 +231,19 @@ for m in "$ROOT"/tests/models/*.json; do
 	fi
 done
 
+# The user's case: one such server in a subscription next to a working one.
+if grep -q '185.132.132.239\|tr.example.org' "$OUT/plaintext/xray.json" 2>/dev/null; then
+	bad "model plaintext: refused servers are still in the xray config"
+elif ! grep -q 'Backup 1' "$OUT/plaintext/status.json" 2>/dev/null; then
+	bad "model plaintext: no warning about the skipped server"
+else
+	ok "model plaintext: refused servers are skipped with a warning"
+fi
+
 if command -v shellcheck >/dev/null 2>&1; then
 	if out="$(shellcheck -s sh -f gcc -e SC1091,SC2034,SC3043,SC2086,SC2046,SC2317,SC2329 \
 		"$FILES/usr/bin/mayhem" "$FILES/usr/libexec/mayhem/xray-run" "$FILES/usr/libexec/mayhem/scheduler" \
-		"$FILES/etc/uci-defaults/90-mayhem" "$ROOT/tests/netns.sh" \
+		"$FILES/etc/uci-defaults/90-mayhem" "$ROOT/tests/netns.sh" "$ROOT/tests/build-ucode.sh" \
 		"$FILES/usr/share/mayhem/lib.sh" "$FILES/usr/share/mayhem/const.sh" "$ROOT/install.sh" 2>&1)"; then
 		ok "shellcheck"
 	else
@@ -224,6 +260,18 @@ if command -v node >/dev/null 2>&1; then
 			bad "syntax $(basename "$f"): $out"
 		fi
 	done
+
+	# The package ships these files minified by LuCI's jsmin.
+	if [ -n "${JSMIN:-}" ]; then
+		if out="$(node "$ROOT/tests/jsmin.js" "$ROOT"/luci-app-mayhem/htdocs/luci-static/resources/view/mayhem/*.js \
+			"$ROOT"/luci-app-mayhem/htdocs/luci-static/resources/mayhem/*.js 2>&1)"; then
+			ok "JS survives jsmin"
+		else
+			bad "JS survives jsmin: $out"
+		fi
+	fi
+elif [ -n "${JSMIN:-}" ]; then
+	bad "JS survives jsmin: node is not installed"
 fi
 
 # every string of the LuCI app has a Russian translation, the template is current

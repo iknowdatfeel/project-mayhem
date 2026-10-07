@@ -1,0 +1,19 @@
+{
+  "settings": { "mode": "global", "default_section": "main", "interface": ["br-lan"] },
+  "dns": { "remote": ["https://1.1.1.1/dns-query"] },
+  "sections": [
+    { ".name": "main", "type": "proxy", "enabled": "1", "select": "manual", "selected": "Main 1",
+      "link": [ "vless://11111111-2222-3333-4444-555555555555@192.168.1.10:8080?security=none&type=ws&path=%2Fws#LAN box" ],
+      "subscription": "easy" }
+  ],
+  "subscriptions": {
+    "easy": {
+      "nodes": [
+        { "name": "Main 1", "link": "vless://11111111-2222-3333-4444-555555555555@main.example:443?security=reality&type=tcp&headerType=none&flow=xtls-rprx-vision&sni=main.example&fp=safari&pbk=SbVKOEMjK0sIlbwg4akyBg5mL5KZwwB-ed4eEE7YnRc&sid=ab#Main 1" },
+        { "name": "Backup 1", "link": "vless://11111111-2222-3333-4444-555555555555@185.132.132.239:9443?security=none&type=ws&headerType=&path=%2Fupload%2Fsession&host=#Backup 1" },
+        { "name": "Plain trojan", "outbound": { "protocol": "trojan", "settings": { "address": "tr.example.org", "port": 80, "password": "pw" }, "streamSettings": { "network": "raw", "security": "none" } } }
+      ]
+    }
+  },
+  "runtime": { "wan_dns": ["192.168.1.1"], "ipv6": false, "mem_total_kb": 262144 }
+}

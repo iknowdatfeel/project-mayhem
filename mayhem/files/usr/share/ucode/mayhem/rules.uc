@@ -6,14 +6,14 @@ const DOMAIN_RE = /^[a-z0-9_*-]+(\.[a-z0-9_-]+)*\.?$/;
 
 export function is_true(v) {
 	return v === true || v === 1 || v == '1' || v == 'true' || v == 'yes' || v == 'on';
-}
+};
 
 export function as_list(v) {
 	if (v == null || v == '')
 		return [];
 
 	return type(v) == 'array' ? v : [ v ];
-}
+};
 
 // Expands list values that may hold several entries separated by spaces,
 // commas or new lines (textarea input).
@@ -26,7 +26,7 @@ export function entries(v) {
 				push(out, e);
 
 	return out;
-}
+};
 
 const CATEGORY_RE = /^[a-z0-9][a-z0-9_!.-]*$/;
 const SOURCE_RE = /^[A-Za-z0-9_]+$/;
@@ -69,7 +69,7 @@ export function geo_ref(kind, val, orig) {
 		return { error: `invalid category in "${orig}"` };
 
 	return { kind: kind, source: source, cat: cat, attr: attr, neg: neg };
-}
+};
 
 // Returns { value } | { geo: { kind, source, cat, attr } } | { error }.
 // Bare entries mean "domain and its subdomains" (xray "domain:").
@@ -122,7 +122,7 @@ export function norm_domain(s) {
 		return { error: `invalid domain "${s}"` };
 
 	return { value: `domain:${d}` };
-}
+};
 
 function mask_bytes(bytes, prefix) {
 	const out = [];
@@ -179,11 +179,11 @@ export function norm_ip(s) {
 		family: length(bytes) == 4 ? 4 : 6,
 		cidr: `${arrtoip(mask_bytes(bytes, prefix))}/${prefix}`
 	};
-}
+};
 
 export function is_ip(s) {
 	return iptoarr(s ?? '') != null;
-}
+};
 
 // User DNS string -> xray NameServerConfig fragment, or { error }.
 // Accepted: "1.1.1.1", "1.1.1.1:53", "[2606:4700::1111]:53", "udp://host[:port]",
@@ -228,7 +228,7 @@ export function dns_server(s) {
 	}
 
 	return { error: `invalid DNS server "${s}"` };
-}
+};
 
 // Rule list text (a downloaded or local list): one domain, rule or subnet per
 // line; "#" starts a comment. Returns { domains: [], ips: [], bad: n }
@@ -262,7 +262,7 @@ export function split_list(text) {
 	}
 
 	return res;
-}
+};
 
 // File name for a downloaded list: two 32-bit string hashes of its URL.
 export function list_key(url) {
@@ -276,4 +276,4 @@ export function list_key(url) {
 	}
 
 	return sprintf('%08x%08x', a, b);
-}
+};

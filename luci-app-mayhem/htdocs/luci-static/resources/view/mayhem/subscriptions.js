@@ -77,7 +77,7 @@ return view.extend({
 		o = s.taboption('main', form.Value, 'url', _('URL'));
 		o.rmempty = false;
 		o.validate = function(section_id, value) {
-			return /^https?:\/\/\S+$/.test(value || '') ? true : _('Expected an http(s):// address');
+			return (/^https?:\/\/\S+$/).test(value || '') ? true : _('Expected an http(s):// address');
 		};
 
 		o = s.taboption('main', form.ListValue, 'format', _('Format'));

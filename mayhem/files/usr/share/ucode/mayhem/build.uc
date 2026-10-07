@@ -4,7 +4,7 @@
 
 'use strict';
 
-import { parse_link, outbound_host, outbound_port, outbound_udp } from 'mayhem.links';
+import { parse_link, outbound_host, outbound_port, outbound_udp, refused_by_xray } from 'mayhem.links';
 import { is_true, entries, norm_domain, norm_ip, is_ip, dns_server, split_list } from 'mayhem.rules';
 import { resolve, HEAVY } from 'mayhem.geo';
 import * as C from 'mayhem.const';
@@ -40,14 +40,14 @@ function uset() {
 	return {
 		items: [], seen: {},
 
-		add(v) {
+		add: function(v) {
 			if (!this.seen[v]) {
 				this.seen[v] = true;
 				push(this.items, v);
 			}
 		},
 
-		add_all(arr) {
+		add_all: function(arr) {
 			for (let v in arr)
 				this.add(v);
 		}
@@ -281,7 +281,14 @@ function collect_nodes(sec, model, warn) {
 	const nodes = [];
 
 	if (sec.proxy_type == 'json') {
-		push(nodes, { name: 'JSON', outbound: json_outbound(sec.outbound_json ?? ''), source: 'json' });
+		const ob = json_outbound(sec.outbound_json ?? '');
+		const why = refused_by_xray(ob);
+
+		if (why)
+			warn(`section "${name}": the JSON outbound is ${why}; skipped`);
+		else
+			push(nodes, { name: 'JSON', outbound: ob, source: 'json' });
+
 		return nodes;
 	}
 
@@ -339,10 +346,22 @@ function collect_nodes(sec, model, warn) {
 		}
 	}
 
+	// One such server would keep xray from starting with every other one.
+	const usable = [];
+
+	for (let nd in nodes) {
+		const why = refused_by_xray(nd.outbound);
+
+		if (why)
+			warn(`section "${name}": server "${nd.name}": ${why}; skipped`);
+		else
+			push(usable, nd);
+	}
+
 	// Names identify servers on the dashboard and in saved choices.
 	const seen = {};
 
-	for (let nd in nodes) {
+	for (let nd in usable) {
 		const base = nd.name;
 		let k = 1;
 
@@ -352,7 +371,7 @@ function collect_nodes(sec, model, warn) {
 		seen[nd.name] = true;
 	}
 
-	return nodes;
+	return usable;
 }
 
 // Rules of a section from its own entries, geo categories and rule lists.
@@ -1179,4 +1198,4 @@ export function build(model) {
 		geo_files: geo_files,
 		status: st
 	};
-}
+};

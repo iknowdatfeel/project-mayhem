@@ -27,11 +27,11 @@ function reader(fh) {
 	const r = {
 		buf: '', pos: 0, base: 0, eof: false, cap: -1, out: null,
 
-		at() {
+		at: function() {
 			return this.base + this.pos;
 		},
 
-		flush() {
+		flush: function() {
 			if (this.cap >= 0) {
 				if (this.pos > this.cap)
 					this.out.write(substr(this.buf, this.cap, this.pos - this.cap));
@@ -40,7 +40,7 @@ function reader(fh) {
 			}
 		},
 
-		fill(n) {
+		fill: function(n) {
 			while (length(this.buf) - this.pos < n && !this.eof) {
 				const d = fh.read(CHUNK);
 
@@ -62,7 +62,7 @@ function reader(fh) {
 			return length(this.buf) - this.pos >= n;
 		},
 
-		varint() {
+		varint: function() {
 			this.fill(10);
 
 			let v = 0, sh = 0;
@@ -81,7 +81,7 @@ function reader(fh) {
 			die('truncated data');
 		},
 
-		skip(n) {
+		skip: function(n) {
 			while (n > 0) {
 				const avail = length(this.buf) - this.pos;
 
@@ -98,7 +98,7 @@ function reader(fh) {
 			}
 		},
 
-		bytes(n) {
+		bytes: function(n) {
 			if (!this.fill(n))
 				die('truncated data');
 
@@ -110,7 +110,7 @@ function reader(fh) {
 		},
 
 		// Skips a field of the given wire type.
-		skip_field(wt) {
+		skip_field: function(wt) {
 			switch (wt) {
 			case 0: this.varint(); break;
 			case 1: this.skip(8); break;
@@ -120,12 +120,12 @@ function reader(fh) {
 			}
 		},
 
-		capture(out) {
+		capture: function(out) {
 			this.out = out;
 			this.cap = this.pos;
 		},
 
-		release() {
+		release: function() {
 			this.flush();
 			this.cap = -1;
 		}
@@ -257,7 +257,7 @@ export function scan(fh, want, out) {
 	}
 
 	return { categories: cats, copied: copied, bytes: r.at() };
-}
+};
 
 // Trimmed files are small (the categories in use), so they are read whole and
 // parsed with plain string offsets: on a router this is much faster than the
@@ -377,7 +377,7 @@ export function geoip_cidrs(path, cats) {
 	});
 
 	return res;
-}
+};
 
 // Domain types in geosite: 0 keyword (plain), 1 regexp, 2 domain, 3 full.
 const DOMAIN_TYPES = [ 'keyword', 'regexp', 'domain', 'full' ];
@@ -432,7 +432,7 @@ export function geosite_domains(path, cats) {
 	});
 
 	return res;
-}
+};
 
 // --- which source serves a category --------------------------------------------
 
@@ -485,7 +485,7 @@ export function resolve(sources, ref) {
 			return check(s);
 
 	return { error: `category "${ref.cat}" is not in any ${ref.kind} source` };
-}
+};
 
 // Every geo reference in the rules of enabled sections.
 export function refs(sections) {
@@ -511,7 +511,7 @@ export function refs(sections) {
 	}
 
 	return out;
-}
+};
 
 // Categories each source has to keep in its trimmed file: { source: [cats] }.
 export function wanted(sections, sources) {
@@ -528,4 +528,4 @@ export function wanted(sections, sources) {
 	}
 
 	return res;
-}
+};

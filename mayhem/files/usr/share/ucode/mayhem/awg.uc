@@ -75,7 +75,7 @@ export function parse_conf(text) {
 		die('no [Peer] with a PublicKey');
 
 	return res;
-}
+};
 
 // Is it AmneziaWG (obfuscation parameters present) or plain WireGuard?
 export function is_amnezia(conf) {
@@ -84,7 +84,7 @@ export function is_amnezia(conf) {
 			return true;
 
 	return false;
-}
+};
 
 function endpoint(v) {
 	let m = match(v ?? '', /^\[([0-9A-Fa-f:.]+)\]:([0-9]+)$/);
@@ -141,4 +141,4 @@ export function uci_sections(conf, proto) {
 	}
 
 	return { iface: iface, peers: peers, v6: length(filter(addrs, (a) => index(a, ':') >= 0)) > 0 };
-}
+};

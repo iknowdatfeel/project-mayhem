@@ -800,6 +800,7 @@ const methods = {
 			const data = fs.readfile(up);
 
 			fs.unlink(up);
+			fs.mkdir(fs.dirname(C.GEO_DIR), 0755);
 			fs.mkdir(C.GEO_DIR, 0755);
 			fs.mkdir(dir, 0755);
 

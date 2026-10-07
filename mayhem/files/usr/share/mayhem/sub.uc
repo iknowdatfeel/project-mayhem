@@ -329,7 +329,7 @@ function update(name, force) {
 	const results = [];
 	let changed = false, failed = 0, tried = 0;
 
-	fs.mkdir('/etc/mayhem', 0755);
+	fs.mkdir(fs.dirname(C.SUBS_DIR), 0755);
 	fs.mkdir(C.SUBS_DIR, 0700);
 	fs.mkdir(C.RUN_DIR, 0700);
 
