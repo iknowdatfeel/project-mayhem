@@ -10,7 +10,7 @@ jobs:
   test:
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - name: Install test tools
         run: |
           sudo apt-get update
@@ -34,9 +34,9 @@ jobs:
           curl -fsSL -o /tmp/xray.zip "https://github.com/XTLS/Xray-core/releases/download/v$v/Xray-linux-64.zip"
           unzip -o /tmp/xray.zip xray -d /tmp/xray
       - name: Unit tests
-        run: sudo env UCODE=ucode XRAY=/tmp/xray/xray tests/run.sh
+        run: sudo env GITHUB_ACTIONS="$GITHUB_ACTIONS" UCODE=ucode XRAY=/tmp/xray/xray tests/run.sh
       - name: End-to-end test in network namespaces
-        run: sudo env UCODE=ucode XRAY=/tmp/xray/xray tests/netns.sh
+        run: sudo env GITHUB_ACTIONS="$GITHUB_ACTIONS" UCODE=ucode XRAY=/tmp/xray/xray tests/netns.sh
 
   build:
     needs: test
@@ -46,7 +46,7 @@ jobs:
       matrix:
         release: [ '24.10.4', '25.12.2' ]
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - name: Version
         id: ver

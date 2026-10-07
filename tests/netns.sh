@@ -32,7 +32,14 @@ SS_LINK_A='ss://2022-blake3-aes-128-gcm:AAECAwQFBgcICQoLDA0ODw%3D%3D@45.0.0.3:84
 SS_LINK_B='ss://2022-blake3-aes-128-gcm:AAECAwQFBgcICQoLDA0ODw%3D%3D@45.0.0.3:8444#B'
 
 ok() { printf 'ok   %s\n' "$1"; }
-bad() { printf 'FAIL %s\n' "$1"; fail=1; }
+bad() {
+	printf 'FAIL %s\n' "$1"
+	fail=1
+	# On GitHub the failure also becomes an annotation of the run.
+	if [ -n "${GITHUB_ACTIONS:-}" ]; then
+		printf '::error title=%s::%s\n' "$(basename "$0")" "$(printf '%s' "$1" | awk 'BEGIN { ORS = "%0A" } { gsub(/%/, "%25"); print }')"
+	fi
+}
 
 expect() {
 	# $1 description, $2 expected answer, rest: curl arguments

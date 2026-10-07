@@ -14,7 +14,14 @@ fail=0
 
 uc() { "$UCODE" -L "$FILES/usr/share/ucode/*.uc" ${UCODE_LIB:+-L "$UCODE_LIB"} "$@"; }
 ok() { printf 'ok   %s\n' "$1"; }
-bad() { printf 'FAIL %s\n' "$1"; fail=1; }
+bad() {
+	printf 'FAIL %s\n' "$1"
+	fail=1
+	# On GitHub the failure also becomes an annotation of the run.
+	if [ -n "${GITHUB_ACTIONS:-}" ]; then
+		printf '::error title=%s::%s\n' "$(basename "$0")" "$(printf '%s' "$1" | awk 'BEGIN { ORS = "%0A" } { gsub(/%/, "%25"); print }')"
+	fi
+}
 
 # constants must match between shell and ucode
 for k in TPROXY_PORT DNS_PORT API_PORT METRICS_PORT HELPER_PORT FWMARK RT_TABLE NFT_TABLE RUN_DIR SUBS_DIR; do
@@ -23,7 +30,12 @@ for k in TPROXY_PORT DNS_PORT API_PORT METRICS_PORT HELPER_PORT FWMARK RT_TABLE 
 	if [ "$sh_v" = "$uc_v" ]; then ok "const $k"; else bad "const $k: sh=$sh_v uc=$uc_v"; fi
 done
 
-uc "$ROOT/tests/links.uc" && ok "links" || bad "links"
+if out="$(uc "$ROOT/tests/links.uc" 2>&1)"; then
+	printf '%s\n' "$out"
+	ok "links"
+else
+	bad "links: $out"
+fi
 
 # subscription responses
 sub_check() {
@@ -51,11 +63,15 @@ cat > "$OUT/uci-subs/mysub.json" <<'JSON'
   { "name": "B", "link": "ss://YWVzLTI1Ni1nY206cHc@1.2.3.5:8388#B" } ] }
 JSON
 mkdir -p "$OUT/uci-run"
-if MAYHEM_UCI_DIR="$ROOT/tests/uci" MAYHEM_SUBS_DIR="$OUT/uci-subs" uc "$FILES/usr/share/mayhem/gen.uc" --out "$OUT/uci-run" 2>/dev/null &&
-   grep -q '"bal-main"' "$OUT/uci-run/xray.json" && "$XRAY" run -test -c "$OUT/uci-run/xray.json" >/dev/null 2>&1; then
-	ok "config from UCI with a subscription"
+if ! out="$(MAYHEM_UCI_DIR="$ROOT/tests/uci" MAYHEM_SUBS_DIR="$OUT/uci-subs" \
+	uc "$FILES/usr/share/mayhem/gen.uc" --out "$OUT/uci-run" 2>&1)"; then
+	bad "config from UCI with a subscription: $out"
+elif ! grep -q '"bal-main"' "$OUT/uci-run/xray.json"; then
+	bad "config from UCI with a subscription: no balancer for the section"
+elif ! out="$("$XRAY" run -test -c "$OUT/uci-run/xray.json" 2>&1)"; then
+	bad "config from UCI with a subscription: $(printf '%s' "$out" | tail -n 5)"
 else
-	bad "config from UCI with a subscription"
+	ok "config from UCI with a subscription"
 fi
 
 for m in "$ROOT"/tests/models/*.json; do
@@ -67,39 +83,50 @@ for m in "$ROOT"/tests/models/*.json; do
 		[ "$expect" = fail ] && { bad "model $name: expected failure"; continue; }
 	else
 		[ "$expect" = fail ] && { ok "model $name fails as expected"; continue; }
-		bad "model $name: generator failed"; cat "$OUT/$name.log"; continue
+		bad "model $name: generator failed: $(cat "$OUT/$name.log")"; continue
 	fi
 
 	if "$XRAY" run -test -c "$OUT/$name/xray.json" >"$OUT/$name.xray.log" 2>&1; then
 		ok "model $name: xray accepts the config"
 	else
-		bad "model $name: xray rejects the config"; tail -n 5 "$OUT/$name.xray.log"
+		bad "model $name: xray rejects the config: $(tail -n 5 "$OUT/$name.xray.log")"
 	fi
 
 	if command -v nft >/dev/null 2>&1; then
-		nft -c -f "$OUT/$name/nft.conf" && ok "model $name: nftables ruleset" || bad "model $name: nftables ruleset"
+		if out="$(nft -c -f "$OUT/$name/nft.conf" 2>&1)"; then
+			ok "model $name: nftables ruleset"
+		else
+			bad "model $name: nftables ruleset: $out"
+		fi
 	fi
 done
 
 if command -v shellcheck >/dev/null 2>&1; then
-	shellcheck -s sh -e SC1091,SC2034,SC3043,SC2086,SC2046,SC2329 \
+	if out="$(shellcheck -s sh -f gcc -e SC1091,SC2034,SC3043,SC2086,SC2046,SC2329 \
 		"$FILES/usr/bin/mayhem" "$FILES/usr/libexec/mayhem/xray-run" "$FILES/usr/libexec/mayhem/scheduler" \
 		"$FILES/etc/uci-defaults/90-mayhem" \
-		"$FILES/usr/share/mayhem/lib.sh" "$FILES/usr/share/mayhem/const.sh" "$ROOT/install.sh" &&
-		ok "shellcheck" || bad "shellcheck"
+		"$FILES/usr/share/mayhem/lib.sh" "$FILES/usr/share/mayhem/const.sh" "$ROOT/install.sh" 2>&1)"; then
+		ok "shellcheck"
+	else
+		bad "shellcheck: $out"
+	fi
 fi
 
 if command -v node >/dev/null 2>&1; then
 	for f in "$ROOT"/luci-app-mayhem/htdocs/luci-static/resources/view/mayhem/*.js; do
 		{ echo '(function(){'; cat "$f"; echo '})'; } > "$OUT/check.js"
-		node --check "$OUT/check.js" && ok "syntax $(basename "$f")" || bad "syntax $(basename "$f")"
+		if out="$(node --check "$OUT/check.js" 2>&1)"; then
+			ok "syntax $(basename "$f")"
+		else
+			bad "syntax $(basename "$f"): $out"
+		fi
 	done
 fi
 
-if uc -e "loadfile('$ROOT/luci-app-mayhem/root/usr/share/rpcd/ucode/luci.mayhem')" >/dev/null 2>&1; then
+if out="$(uc -e "loadfile('$ROOT/luci-app-mayhem/root/usr/share/rpcd/ucode/luci.mayhem')" 2>&1 >/dev/null)"; then
 	ok "rpcd backend compiles"
 else
-	bad "rpcd backend compiles"
+	bad "rpcd backend compiles: $out"
 fi
 
 for f in "$ROOT"/luci-app-mayhem/root/usr/share/luci/menu.d/*.json "$ROOT"/luci-app-mayhem/root/usr/share/rpcd/acl.d/*.json; do
