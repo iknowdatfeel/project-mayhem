@@ -352,6 +352,32 @@ if start_mayhem "$WORK/global.json"; then
 fi
 stop_mayhem
 
+# FakeDNS: the client only ever sees a fake address, yet an exclusion by the
+# real IP (remote DNS answers 45.0.0.7 for every name) must still go direct.
+cat > "$WORK/fakedns.json" <<EOF
+{
+  "settings": { "mode": "global", "default_section": "main", "interface": [ "br-lan" ], "ip_family": "ipv4_only" },
+  "dns": { "domestic": [ "45.0.0.2" ], "remote": [ "45.0.0.4" ], "hijack": "1", "fakedns": "1" },
+  "sections": [
+    { ".name": "main", "type": "proxy", "enabled": "1", "link": "$SS_LINK" },
+    { ".name": "ru", "type": "exclusion", "enabled": "1", "ip": [ "45.0.0.7" ] }
+  ],
+  "runtime": { "wan_dns": [ "45.0.0.2" ], "ipv6": false, "mem_total_kb": 262144 }
+}
+EOF
+
+echo "== global mode with FakeDNS"
+if start_mayhem "$WORK/fakedns.json"; then
+	fake="$(dns client 1.1.1.1 53 site.test)"
+	case "$fake" in
+		198.1[89].*) ok "domain -> fake address $fake" ;;
+		*) bad "domain -> fake address: got $fake" ;;
+	esac
+	expect "fake address, excluded real IP -> xray direct" 45.0.0.1 --resolve "site.test:8080:$fake" http://site.test:8080/
+	expect "real excluded IP -> kernel direct" 192.168.1.2 http://45.0.0.7:8080/
+fi
+stop_mayhem
+
 
 # --- subscriptions and server choice ------------------------------------------------
 

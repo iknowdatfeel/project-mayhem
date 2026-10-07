@@ -1103,6 +1103,13 @@ export function build(model) {
 	if (fakedns)
 		unshift(sniff, 'fakedns');
 
+	// FakeDNS in global mode gives every domain a fake address, so xray only
+	// knows the domain and IP rules (geoip:ru in an exclusion, say) never
+	// match: let xray resolve the domain when it reaches such a rule. The
+	// lookup skips FakeDNS and is cached by xray's DNS. In lists mode only
+	// listed domains get fake addresses, and their domain rules match first.
+	const ip_strategy = (fakedns && mode == 'global' && length(filter(rules, (r) => r.ip))) ? 'IPOnDemand' : 'AsIs';
+
 	const xray = {
 		log: {
 			loglevel: log_level,
@@ -1134,7 +1141,7 @@ export function build(model) {
 			}
 		],
 		outbounds: outbounds,
-		routing: { domainStrategy: 'AsIs', rules: rules, balancers: balancers },
+		routing: { domainStrategy: ip_strategy, rules: rules, balancers: balancers },
 		api: { tag: 'api', listen: `127.0.0.1:${C.API_PORT}`, services: [ 'RoutingService' ] },
 		metrics: { tag: 'metrics', listen: `127.0.0.1:${C.METRICS_PORT}` },
 		stats: {},
