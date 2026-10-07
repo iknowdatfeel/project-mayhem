@@ -12,11 +12,19 @@ FIXTURE_DIR  prepared by tests/luci/run.sh: uci/ (mayhem, network, firewall),
 Requests to /ubus/ are answered by a small fake ubus: uci and network calls
 from the fixture, luci.mayhem calls by the real rpcd plugin run with ucode.
 Needs python3-playwright with Chromium.
+
+For screenshots (SHOTS=DIR saves one per page):
+  MAYHEM_LANG=ru  pages in Russian, from luci-app-mayhem/po/ru/mayhem.po
+  MAYHEM_DARK=1   the dark variant of the bootstrap theme
+  MAYHEM_DEMO=1   xray looks running: a fake metrics endpoint answers with
+                  delays and growing traffic for the servers in run/nodes.json
 """
 
 import http.server
+import importlib.util
 import json
 import os
+import random
 import subprocess
 import sys
 import threading
@@ -41,6 +49,62 @@ SIDE_EFFECTS = {'action', 'system_install', 'data_update', 'awg_import', 'geo_im
 
 calls = []
 unknown = []
+DEMO = bool(os.environ.get('MAYHEM_DEMO'))
+METRICS_PORT = 12781
+TRANSLATIONS = {}
+
+
+def translations():
+    lang = os.environ.get('MAYHEM_LANG')
+    if not lang:
+        return {}
+    spec = importlib.util.spec_from_file_location('i18n', os.path.join(ROOT, 'tools/i18n.py'))
+    i18n = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(i18n)
+    po = i18n.read_po(os.path.join(ROOT, 'luci-app-mayhem/po', lang, 'mayhem.po'))
+    return {k: v for k, v in po.items() if k and v}
+
+
+def start_demo():
+    """xray seems to run: a pid, the active flag, and /debug/vars with numbers."""
+    run = os.path.join(FIX, 'run')
+    open(os.path.join(run, 'xray.pid'), 'w').write('%d\n' % os.getpid())
+    open(os.path.join(run, 'active'), 'w').close()
+    open(os.path.join(run, 'xray.version'), 'w').write('26.9.30\n')
+    shim = os.path.join(FIX, 'demo-bin')
+    os.makedirs(shim, exist_ok=True)
+    with open(os.path.join(shim, 'pidof'), 'w') as f:
+        f.write('#!/bin/sh\necho 1234\n')
+    os.chmod(os.path.join(shim, 'pidof'), 0o755)
+    os.environ['PATH'] = shim + ':' + os.environ['PATH']
+
+    state = json.load(open(os.path.join(run, 'nodes.json')))
+    tags = [n['tag'] for s in state.get('sections', {}).values() for n in s.get('nodes', [])]
+    rnd = random.Random(7)
+    delay = {t: rnd.choice([None, 48, 63, 95, 142, 210, 380]) for t in tags}
+    total = {t: [rnd.randint(1, 900) << 20, rnd.randint(1, 9000) << 20] for t in tags}
+    total['direct'] = [700 << 20, 21000 << 20]
+
+    class Vars(http.server.BaseHTTPRequestHandler):
+        def log_message(self, *a):
+            pass
+
+        def do_GET(self):
+            for t in total:
+                total[t][0] += rnd.randint(20, 200) << 10
+                total[t][1] += rnd.randint(200, 3000) << 10
+            body = json.dumps({
+                'stats': {'outbound': {t: {'uplink': v[0], 'downlink': v[1]} for t, v in total.items()}},
+                'observatory': {t: {'alive': d is not None, 'delay': d or 0} for t, d in delay.items()},
+            }).encode()
+            self.send_response(200)
+            self.send_header('Content-Type', 'application/json')
+            self.send_header('Content-Length', str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
+    srv = http.server.ThreadingHTTPServer(('127.0.0.1', METRICS_PORT), Vars)
+    threading.Thread(target=srv.serve_forever, daemon=True).start()
 
 
 def ucode_env():
@@ -121,7 +185,7 @@ def page(view):
         'nodespec': {'action': {'type': 'view', 'path': view}},
         'apply_rollback': 90, 'apply_holdoff': 4, 'apply_timeout': 5, 'apply_display': 1.5, 'rollback_token': None,
     }
-    return ('<!DOCTYPE html><html><head><meta charset="utf-8">'
+    html = ('<!DOCTYPE html><html><head><meta charset="utf-8">'
             '<link rel="stylesheet" href="/luci-static/bootstrap/cascade.css">'
             '<script src="/luci-static/resources/cbi.js"></script></head>'
             '<body><header><ul class="nav" id="topmenu"></ul><div id="indicators"></div></header>'
@@ -130,6 +194,14 @@ def page(view):
             '<script>L = new LuCI(%s);</script>'
             '<script>L.require("ui").then(function(ui) { ui.instantiateView("%s"); });</script>'
             '</body></html>') % (json.dumps(env), view)
+
+    # Added after the % formatting: the translations contain "%d" and "%s".
+    if os.environ.get('MAYHEM_DARK'):
+        html = html.replace('<html>', '<html data-darkmode="true">', 1)
+    if TRANSLATIONS:
+        script = '<script>(function(t){window.TR={};for(var k in t)TR[sfh(trimws(k))]=t[k];})(%s);</script>' % json.dumps(TRANSLATIONS)
+        html = html.replace('</head>', script + '</head>', 1)
+    return html
 
 
 class Handler(http.server.BaseHTTPRequestHandler):
@@ -186,6 +258,12 @@ class Handler(http.server.BaseHTTPRequestHandler):
 def main():
     from playwright.sync_api import sync_playwright
 
+    global TRANSLATIONS
+    TRANSLATIONS = translations()
+
+    if DEMO:
+        start_demo()
+
     srv = http.server.ThreadingHTTPServer(('127.0.0.1', 0), Handler)
     threading.Thread(target=srv.serve_forever, daemon=True).start()
     base = 'http://127.0.0.1:%d' % srv.server_address[1]
@@ -227,9 +305,9 @@ def main():
             pg.evaluate('L.ui.hideModal()')
             pg.wait_for_timeout(300)
 
-        def open_modals(pg):
+        def open_modals(pg, scope=''):
             # edit every section of the grid and close the modal again
-            btns = pg.query_selector_all('.cbi-section-table-row .cbi-button-edit')
+            btns = pg.query_selector_all(scope + ' .cbi-section-table-row .cbi-button-edit')
             if not btns:
                 raise RuntimeError('no rows to edit')
             for btn in btns:
@@ -240,7 +318,7 @@ def main():
 
         def type_tunnel(pg):
             # switch the first section to a tunnel to render its options
-            pg.query_selector_all('.cbi-section-table-row .cbi-button-edit')[0].click()
+            pg.query_selector_all('[data-tab="section"] .cbi-section-table-row .cbi-button-edit')[0].click()
             pg.wait_for_selector('.modal', timeout=5000)
             pg.select_option('.modal select[id$=".type"]', 'interface')
             pg.wait_for_timeout(300)
@@ -256,26 +334,47 @@ def main():
             close_modal(pg)
 
         def run_diag(pg):
-            pg.click('text=Run')
-            pg.wait_for_selector('#mayhem-diag table', timeout=60000)
-            pg.wait_for_function('!document.querySelector("#mayhem-diag p").textContent.includes("Checking")', timeout=90000)
+            pg.click('#mayhem-diag .mh-run button')
+            pg.wait_for_timeout(500)
+            pg.wait_for_function('!document.querySelector("#mayhem-diag .mh-run button").disabled', timeout=90000)
+            if not pg.query_selector('#mayhem-diag .mh-check-items'):
+                raise RuntimeError('no check results')
+
+        def geo_tab(pg):
+            pg.click('.cbi-tabmenu [data-tab="geo"] a')
+            pg.wait_for_timeout(300)
+            shot(pg, 'routing_geo')
+            open_modals(pg, '[data-tab="geo"]')
+            pg.click('.cbi-tabmenu [data-tab="section"] a')
+
+        def dns_tab(pg):
+            pg.click('.cbi-tabmenu [data-tab="dns"] a')
+            pg.wait_for_selector('[data-tab="dns"] [data-name="remote"]', state='visible', timeout=5000)
+            shot(pg, 'routing_dns')
 
         def upload_modal(pg):
-            pg.click('text=Upload .dat…')
+            pg.click('.cbi-tabmenu [data-tab="geo"] a')
+            pg.click('[data-tab="geo"] [data-name="_upload_geo"] button')
             pg.wait_for_selector('.modal input', timeout=5000)
             close_modal(pg)
 
         def dashboard_buttons(pg):
-            pg.click('text=Update geo data')
-            pg.wait_for_timeout(500)
-            if 'Server' not in pg.inner_text('#mayhem-body'):
-                raise RuntimeError('no server table on the dashboard')
+            if not pg.query_selector('#mayhem-body .mh-tile'):
+                raise RuntimeError('no servers on the dashboard')
+            if not pg.query_selector('#mayhem-body .mh-ghead .mh-bar'):
+                raise RuntimeError('no subscription traffic on the dashboard')
+            if not DEMO:  # a screenshot shows the demo delays, not failed checks
+                pg.click('#mayhem-body .mh-section .mh-head button >> nth=-1')
+                pg.wait_for_timeout(1500)
+            else:
+                pg.wait_for_timeout(4500)  # two polls: the speed widget has numbers
 
         pages = [
             ('mayhem/dashboard', [('buttons', dashboard_buttons)]),
-            ('mayhem/sections', [('edit sections', open_modals), ('tunnel options', type_tunnel), ('import dialog', import_modal)]),
+            ('mayhem/sections', [('edit sections', lambda pg: open_modals(pg, '[data-tab="section"]')), ('tunnel options', type_tunnel),
+                                 ('import dialog', import_modal), ('DNS tab', dns_tab), ('edit geo sources', geo_tab), ('upload dialog', upload_modal)]),
             ('mayhem/subscriptions', [('edit subscriptions', open_modals)]),
-            ('mayhem/settings', [('edit geo sources', open_modals), ('upload dialog', upload_modal)]),
+            ('mayhem/settings', []),
             ('mayhem/diagnostics', [('run diagnostics', run_diag)]),
             ('mayhem/logs', []),
         ]

@@ -23,7 +23,7 @@
 		}
 	},
 	"admin/services/mayhem/sections": {
-		"title": "Sections",
+		"title": "Routing",
 		"order": 20,
 		"action": {
 			"type": "view",

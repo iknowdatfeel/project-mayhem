@@ -1247,3 +1247,120 @@ msgstr "Память xray"
 #: htdocs/luci-static/resources/view/mayhem/settings.js
 msgid "xray memory limit, MiB"
 msgstr "Лимит памяти xray, МиБ"
+
+msgid "everything through proxy"
+msgstr "всё через прокси"
+
+msgid "by lists"
+msgstr "по спискам"
+
+msgid "Services"
+msgstr "Службы"
+
+msgid "not installed"
+msgstr "не установлен"
+
+msgid "running"
+msgstr "работает"
+
+msgid "not running"
+msgstr "не работает"
+
+msgid "xray is not installed: run \"mayhem xray-install\""
+msgstr "xray не установлен: выполните «mayhem xray-install»"
+
+msgid "Mayhem is turned off"
+msgstr "Mayhem выключен"
+
+msgid "All traffic goes direct."
+msgstr "Весь трафик идёт напрямую."
+
+msgid "Mayhem cannot work like this"
+msgstr "Mayhem не может работать с такими настройками"
+
+msgid "no answer"
+msgstr "нет ответа"
+
+msgid "disabled"
+msgstr "выключена"
+
+msgid "%s of %s"
+msgstr "%s из %s"
+
+msgid "expired %s"
+msgstr "истекла %s"
+
+msgid "until %s"
+msgstr "до %s"
+
+msgid "updated %s"
+msgstr "обновлено %s"
+
+msgid "JSON outbound"
+msgstr "JSON outbound"
+
+msgid "Interfaces"
+msgstr "Интерфейсы"
+
+msgid "now: %s"
+msgstr "сейчас: %s"
+
+msgid "Test latency"
+msgstr "Проверить задержку"
+
+msgid "Subscriptions without a section"
+msgstr "Подписки без секции"
+
+msgid "%d servers"
+msgstr "серверов: %d"
+
+msgid "nftables and routing"
+msgstr "nftables и маршрутизация"
+
+msgid "Not checked yet"
+msgstr "Ещё не проверялось"
+
+msgid "Nothing to check"
+msgstr "Нечего проверять"
+
+msgid "Problems found"
+msgstr "Найдены проблемы"
+
+msgid "Works, with warnings"
+msgstr "Работает, есть предупреждения"
+
+msgid "All checks passed"
+msgstr "Все проверки пройдены"
+
+msgid "Actions"
+msgstr "Действия"
+
+msgid "Restart Mayhem"
+msgstr "Перезапустить Mayhem"
+
+msgid "Stop until restart"
+msgstr "Остановить до перезапуска"
+
+msgid "Start Mayhem"
+msgstr "Запустить Mayhem"
+
+msgid "Turn Mayhem off"
+msgstr "Выключить Mayhem"
+
+msgid "Turn Mayhem on"
+msgstr "Включить Mayhem"
+
+msgid "View logs"
+msgstr "Открыть логи"
+
+msgid "Device"
+msgstr "Устройство"
+
+msgid "System information"
+msgstr "Информация о системе"
+
+msgid "Run diagnostics"
+msgstr "Запустить диагностику"
+
+msgid "The update runs in the background. Reopen this tab in a few minutes to see the result."
+msgstr "Обновление идёт в фоне. Откройте вкладку через несколько минут, чтобы увидеть результат."

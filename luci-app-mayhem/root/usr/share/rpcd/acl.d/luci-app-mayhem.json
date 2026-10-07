@@ -3,7 +3,7 @@
 		"description": "Grant access to Mayhem",
 		"read": {
 			"ubus": {
-				"luci.mayhem": [ "status", "dashboard", "check", "parse_link", "geo", "tunnel_info", "logs" ]
+				"luci.mayhem": [ "status", "dashboard", "check", "parse_link", "geo", "tunnel_info", "logs", "sysinfo" ]
 			},
 			"uci": [ "mayhem", "network", "firewall" ]
 		},

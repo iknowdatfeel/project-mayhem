@@ -599,8 +599,7 @@ const methods = {
 				probe_url: state.probe_url,
 				sections: sections,
 				totals: totals,
-				subscriptions: subscriptions(),
-				data: data_status(false)
+				subscriptions: subscriptions()
 			};
 		}
 	},
@@ -977,6 +976,29 @@ const methods = {
 			system(`(/etc/init.d/network reload; /etc/init.d/firewall reload) >/dev/null 2>&1 &`);
 
 			return { ok: true, interface: name, proto: proto, section: section, v6: cfg.v6 };
+		}
+	},
+
+	// Versions for the diagnostics page and bug reports.
+	sysinfo: {
+		call: function() {
+			let xver = trim(fs.readfile(`${RUN}/xray.version`) ?? '');
+
+			if (xver == '' && fs.access(XRAY)) {
+				const m = match(run(`${XRAY} version 2>/dev/null`) ?? '', /Xray ([0-9][^ ]*)/);
+
+				xver = m ? m[1] : 'installed';
+			}
+
+			const rel = match(fs.readfile('/etc/openwrt_release') ?? '', /DISTRIB_DESCRIPTION='([^']*)'/);
+
+			return {
+				mayhem: mayhem_version(),
+				xray: xver != '' ? xver : null,
+				openwrt: rel ? rel[1] : null,
+				model: trim(fs.readfile('/tmp/sysinfo/model') ?? '') || null,
+				kernel: trim(fs.readfile('/proc/sys/kernel/osrelease') ?? '') || null
+			};
 		}
 	},
 

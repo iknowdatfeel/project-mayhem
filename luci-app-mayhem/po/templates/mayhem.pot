@@ -1,11 +1,11 @@
 msgid ""
 msgstr "Content-Type: text/plain; charset=UTF-8"
 
-#: htdocs/luci-static/resources/view/mayhem/settings.js
+#: htdocs/luci-static/resources/view/mayhem/sections.js
 msgid "%d categories, %d in use, updated %s"
 msgstr ""
 
-#: htdocs/luci-static/resources/view/mayhem/dashboard.js
+#: htdocs/luci-static/resources/mayhem/common.js
 msgid "%d d ago"
 msgstr ""
 
@@ -13,11 +13,7 @@ msgstr ""
 msgid "%d domains, %d addresses"
 msgstr ""
 
-#: htdocs/luci-static/resources/view/mayhem/diagnostics.js
-msgid "%d fine, %d warnings, %d problems"
-msgstr ""
-
-#: htdocs/luci-static/resources/view/mayhem/dashboard.js
+#: htdocs/luci-static/resources/mayhem/common.js
 msgid "%d h ago"
 msgstr ""
 
@@ -29,12 +25,20 @@ msgstr ""
 msgid "%d lists"
 msgstr ""
 
-#: htdocs/luci-static/resources/view/mayhem/dashboard.js
+#: htdocs/luci-static/resources/mayhem/common.js
 msgid "%d min ago"
+msgstr ""
+
+#: htdocs/luci-static/resources/view/mayhem/dashboard.js
+msgid "%d servers"
 msgstr ""
 
 #: htdocs/luci-static/resources/view/mayhem/settings.js
 msgid "%d%% of RAM"
+msgstr ""
+
+#: htdocs/luci-static/resources/view/mayhem/dashboard.js
+msgid "%s of %s"
 msgstr ""
 
 #: htdocs/luci-static/resources/view/mayhem/settings.js
@@ -53,15 +57,15 @@ msgstr ""
 msgid "1000 lines"
 msgstr ""
 
-#: htdocs/luci-static/resources/view/mayhem/settings.js
+#: htdocs/luci-static/resources/view/mayhem/sections.js
 msgid "12 hours"
 msgstr ""
 
-#: htdocs/luci-static/resources/view/mayhem/settings.js
+#: htdocs/luci-static/resources/view/mayhem/sections.js
 msgid "24 hours"
 msgstr ""
 
-#: htdocs/luci-static/resources/view/mayhem/settings.js
+#: htdocs/luci-static/resources/view/mayhem/sections.js
 msgid "3 days"
 msgstr ""
 
@@ -81,7 +85,7 @@ msgstr ""
 msgid "5 minutes"
 msgstr ""
 
-#: htdocs/luci-static/resources/view/mayhem/settings.js
+#: htdocs/luci-static/resources/view/mayhem/sections.js
 msgid "6 hours"
 msgstr ""
 
@@ -101,11 +105,15 @@ msgstr ""
 msgid "A tunnel section sends its traffic into a network interface: AmneziaWG, WireGuard, OpenVPN or any other."
 msgstr ""
 
+#: htdocs/luci-static/resources/view/mayhem/diagnostics.js
+msgid "Actions"
+msgstr ""
+
 #: htdocs/luci-static/resources/view/mayhem/sections.js
 msgid "Add section"
 msgstr ""
 
-#: htdocs/luci-static/resources/view/mayhem/settings.js
+#: htdocs/luci-static/resources/view/mayhem/sections.js
 msgid "Add source"
 msgstr ""
 
@@ -115,6 +123,14 @@ msgstr ""
 
 #: htdocs/luci-static/resources/view/mayhem/settings.js
 msgid "Address for the external IP check"
+msgstr ""
+
+#: htdocs/luci-static/resources/view/mayhem/diagnostics.js
+msgid "All checks passed"
+msgstr ""
+
+#: htdocs/luci-static/resources/view/mayhem/dashboard.js
+msgid "All traffic goes direct."
 msgstr ""
 
 #: htdocs/luci-static/resources/view/mayhem/sections.js
@@ -129,7 +145,7 @@ msgstr ""
 msgid "An installation is already running"
 msgstr ""
 
-#: htdocs/luci-static/resources/view/mayhem/dashboard.js
+#: htdocs/luci-static/resources/view/mayhem/sections.js
 msgid "An update is already running"
 msgstr ""
 
@@ -137,7 +153,7 @@ msgstr ""
 msgid "Applies to every VLESS server. With XTLS Vision only UDP is multiplexed."
 msgstr ""
 
-#: htdocs/luci-static/resources/view/mayhem/settings.js
+#: htdocs/luci-static/resources/view/mayhem/sections.js
 msgid "Applies to geo data and lists."
 msgstr ""
 
@@ -157,7 +173,7 @@ msgstr ""
 msgid "Back to automatic"
 msgstr ""
 
-#: htdocs/luci-static/resources/view/mayhem/dashboard.js
+#: htdocs/luci-static/resources/view/mayhem/sections.js
 msgid "Block"
 msgstr ""
 
@@ -167,10 +183,6 @@ msgstr ""
 
 #: htdocs/luci-static/resources/view/mayhem/sections.js
 msgid "Categories appear in the list after the first geo data download."
-msgstr ""
-
-#: htdocs/luci-static/resources/view/mayhem/dashboard.js
-msgid "Categories in use"
 msgstr ""
 
 #: htdocs/luci-static/resources/view/mayhem/settings.js
@@ -185,7 +197,7 @@ msgstr ""
 msgid "Checks every part of the traffic path. External addresses are requested through each section, so you can see where the traffic really leaves."
 msgstr ""
 
-#: htdocs/luci-static/resources/view/mayhem/settings.js
+#: htdocs/luci-static/resources/view/mayhem/sections.js
 msgid "Choose file…"
 msgstr ""
 
@@ -229,12 +241,16 @@ msgstr ""
 msgid "Dashboard"
 msgstr ""
 
-#: htdocs/luci-static/resources/view/mayhem/settings.js
+#: htdocs/luci-static/resources/view/mayhem/sections.js
 msgid "Default section"
 msgstr ""
 
 #: htdocs/luci-static/resources/view/mayhem/subscriptions.js
 msgid "Detect"
+msgstr ""
+
+#: htdocs/luci-static/resources/view/mayhem/diagnostics.js
+msgid "Device"
 msgstr ""
 
 #: htdocs/luci-static/resources/view/mayhem/subscriptions.js
@@ -253,11 +269,11 @@ msgstr ""
 msgid "Device profile"
 msgstr ""
 
-#: htdocs/luci-static/resources/view/mayhem/settings.js
+#: htdocs/luci-static/resources/view/mayhem/sections.js
 msgid "Devices that use their own DNS server (8.8.8.8 and so on) are answered by Mayhem as well."
 msgstr ""
 
-#: htdocs/luci-static/resources/view/mayhem/diagnostics.js
+#: htdocs/luci-static/resources/view/mayhem/dashboard.js
 msgid "Diagnostics"
 msgstr ""
 
@@ -273,24 +289,20 @@ msgstr ""
 msgid "Direct"
 msgstr ""
 
-#: htdocs/luci-static/resources/view/mayhem/settings.js
+#: htdocs/luci-static/resources/view/mayhem/sections.js
 msgid "Direct only"
 msgstr ""
 
-#: htdocs/luci-static/resources/view/mayhem/settings.js
+#: htdocs/luci-static/resources/view/mayhem/sections.js
 msgid "Direct traffic is resolved by the domestic DNS, proxied traffic by the remote DNS. The first server in a list is the main one, the next ones are fallbacks. Xray has no DNS-over-TLS: use https:// (DoH), tcp:// or a plain address."
 msgstr ""
 
-#: htdocs/luci-static/resources/view/mayhem/settings.js
+#: htdocs/luci-static/resources/view/mayhem/sections.js
 msgid "Direct, then through a section"
 msgstr ""
 
 #: htdocs/luci-static/resources/view/mayhem/subscriptions.js
 msgid "Direct, then through a section if that fails"
-msgstr ""
-
-#: htdocs/luci-static/resources/view/mayhem/dashboard.js
-msgid "Disable"
 msgstr ""
 
 #: htdocs/luci-static/resources/view/mayhem/dashboard.js
@@ -305,7 +317,7 @@ msgstr ""
 msgid "Domains"
 msgstr ""
 
-#: htdocs/luci-static/resources/view/mayhem/settings.js
+#: htdocs/luci-static/resources/view/mayhem/sections.js
 msgid "Domestic DNS"
 msgstr ""
 
@@ -317,11 +329,11 @@ msgstr ""
 msgid "Down, traffic goes direct"
 msgstr ""
 
-#: htdocs/luci-static/resources/view/mayhem/settings.js
+#: htdocs/luci-static/resources/view/mayhem/sections.js
 msgid "Download"
 msgstr ""
 
-#: htdocs/luci-static/resources/view/mayhem/settings.js
+#: htdocs/luci-static/resources/view/mayhem/sections.js
 msgid "Download geo data"
 msgstr ""
 
@@ -333,7 +345,7 @@ msgstr ""
 msgid "Downloading geo data in the background. Reopen this page in a few minutes."
 msgstr ""
 
-#: htdocs/luci-static/resources/view/mayhem/settings.js
+#: htdocs/luci-static/resources/view/mayhem/sections.js
 msgid "Empty: DNS servers received from the provider."
 msgstr ""
 
@@ -365,7 +377,7 @@ msgstr ""
 msgid "Everything"
 msgstr ""
 
-#: htdocs/luci-static/resources/view/mayhem/dashboard.js
+#: htdocs/luci-static/resources/view/mayhem/settings.js
 msgid "Everything through proxy, except exclusions"
 msgstr ""
 
@@ -389,12 +401,8 @@ msgstr ""
 msgid "Expected an http(s):// address"
 msgstr ""
 
-#: htdocs/luci-static/resources/view/mayhem/settings.js
+#: htdocs/luci-static/resources/view/mayhem/sections.js
 msgid "Expected an http(s):// address or a file path"
-msgstr ""
-
-#: htdocs/luci-static/resources/view/mayhem/dashboard.js
-msgid "Expires"
 msgstr ""
 
 #: htdocs/luci-static/resources/view/mayhem/diagnostics.js
@@ -409,7 +417,7 @@ msgstr ""
 msgid "Failed, see the log above. Nothing else was changed."
 msgstr ""
 
-#: htdocs/luci-static/resources/view/mayhem/settings.js
+#: htdocs/luci-static/resources/view/mayhem/sections.js
 msgid "FakeDNS"
 msgstr ""
 
@@ -417,7 +425,7 @@ msgstr ""
 msgid "Files on the router in the same format, for example /etc/mayhem/my.lst."
 msgstr ""
 
-#: htdocs/luci-static/resources/view/mayhem/settings.js
+#: htdocs/luci-static/resources/view/mayhem/sections.js
 msgid "First proxy section"
 msgstr ""
 
@@ -433,19 +441,11 @@ msgstr ""
 msgid "Generate a new HWID"
 msgstr ""
 
-#: htdocs/luci-static/resources/view/mayhem/settings.js
-msgid "Geo data"
-msgstr ""
-
-#: htdocs/luci-static/resources/view/mayhem/dashboard.js
-msgid "Geo data and lists"
-msgstr ""
-
 #: htdocs/luci-static/resources/view/mayhem/diagnostics.js
 msgid "Geo data, lists and subscriptions"
 msgstr ""
 
-#: htdocs/luci-static/resources/view/mayhem/settings.js
+#: htdocs/luci-static/resources/view/mayhem/sections.js
 msgid "Geo sources"
 msgstr ""
 
@@ -455,14 +455,6 @@ msgstr ""
 
 #: htdocs/luci-static/resources/view/mayhem/subscriptions.js
 msgid "How the router presents itself to subscription servers. The headers match the Happ client: x-hwid, x-device-os, x-ver-os, x-device-model, x-device-locale."
-msgstr ""
-
-#: htdocs/luci-static/resources/view/mayhem/dashboard.js
-msgid "ICMP"
-msgstr ""
-
-#: htdocs/luci-static/resources/view/mayhem/dashboard.js
-msgid "ICMP ping"
 msgstr ""
 
 #: htdocs/luci-static/resources/view/mayhem/sections.js
@@ -521,7 +513,7 @@ msgstr ""
 msgid "Installing dnsmasq-full"
 msgstr ""
 
-#: htdocs/luci-static/resources/view/mayhem/settings.js
+#: htdocs/luci-static/resources/view/mayhem/sections.js
 msgid "Intercept DNS on port 53"
 msgstr ""
 
@@ -541,12 +533,20 @@ msgstr ""
 msgid "Interface name"
 msgstr ""
 
+#: htdocs/luci-static/resources/view/mayhem/dashboard.js
+msgid "Interfaces"
+msgstr ""
+
 #: htdocs/luci-static/resources/view/mayhem/sections.js
 msgid "Invalid JSON: %s"
 msgstr ""
 
 #: htdocs/luci-static/resources/view/mayhem/sections.js
 msgid "Invalid regular expression"
+msgstr ""
+
+#: htdocs/luci-static/resources/view/mayhem/dashboard.js
+msgid "JSON outbound"
 msgstr ""
 
 #: htdocs/luci-static/resources/view/mayhem/diagnostics.js
@@ -573,7 +573,7 @@ msgstr ""
 msgid "Leave empty for a proxy without a password."
 msgstr ""
 
-#: htdocs/luci-static/resources/view/mayhem/sections.js
+#: htdocs/luci-static/resources/view/mayhem/dashboard.js
 msgid "Links"
 msgstr ""
 
@@ -621,6 +621,14 @@ msgstr ""
 msgid "Mayhem"
 msgstr ""
 
+#: htdocs/luci-static/resources/view/mayhem/dashboard.js
+msgid "Mayhem cannot work like this"
+msgstr ""
+
+#: htdocs/luci-static/resources/view/mayhem/dashboard.js
+msgid "Mayhem is turned off"
+msgstr ""
+
 #: htdocs/luci-static/resources/view/mayhem/diagnostics.js
 msgid "Memory"
 msgstr ""
@@ -657,7 +665,7 @@ msgstr ""
 msgid "Network interfaces (AmneziaWG, WireGuard…) that join the servers of this section: with automatic choice the fastest one wins."
 msgstr ""
 
-#: htdocs/luci-static/resources/view/mayhem/settings.js
+#: htdocs/luci-static/resources/view/mayhem/sections.js
 msgid "Nightly update at"
 msgstr ""
 
@@ -669,8 +677,16 @@ msgstr ""
 msgid "No subscriptions yet: add them on the Subscriptions page."
 msgstr ""
 
+#: htdocs/luci-static/resources/view/mayhem/diagnostics.js
+msgid "Not checked yet"
+msgstr ""
+
 #: htdocs/luci-static/resources/view/mayhem/dashboard.js
 msgid "Not running"
+msgstr ""
+
+#: htdocs/luci-static/resources/view/mayhem/diagnostics.js
+msgid "Nothing to check"
 msgstr ""
 
 #: htdocs/luci-static/resources/view/mayhem/subscriptions.js
@@ -681,7 +697,7 @@ msgstr ""
 msgid "OS version"
 msgstr ""
 
-#: htdocs/luci-static/resources/view/mayhem/settings.js
+#: htdocs/luci-static/resources/view/mayhem/sections.js
 msgid "Off: remote DNS queries go direct (encrypted with DoH)."
 msgstr ""
 
@@ -693,7 +709,7 @@ msgstr ""
 msgid "One server per entry: vless://, vmess://, trojan://, ss://, socks://, http(s)://, hysteria2://, wireguard://"
 msgstr ""
 
-#: htdocs/luci-static/resources/view/mayhem/dashboard.js
+#: htdocs/luci-static/resources/view/mayhem/settings.js
 msgid "Only matched lists"
 msgstr ""
 
@@ -709,7 +725,7 @@ msgstr ""
 msgid "Outbound JSON"
 msgstr ""
 
-#: htdocs/luci-static/resources/view/mayhem/settings.js
+#: htdocs/luci-static/resources/view/mayhem/sections.js
 msgid "Own file"
 msgstr ""
 
@@ -734,18 +750,14 @@ msgid "Prefer IPv6"
 msgstr ""
 
 #: htdocs/luci-static/resources/view/mayhem/diagnostics.js
-msgid "Press \"Run\" to check the service, DNS, tunnels and the external address of every section."
-msgstr ""
-
-#: htdocs/luci-static/resources/view/mayhem/dashboard.js
-msgid "Protocol"
-msgstr ""
-
-#: htdocs/luci-static/resources/view/mayhem/settings.js
-msgid "Proxied domains get addresses from 198.18.0.0/15. Helps when an app hides the domain, but cached fake addresses break if Mayhem stops."
+msgid "Problems found"
 msgstr ""
 
 #: htdocs/luci-static/resources/view/mayhem/sections.js
+msgid "Proxied domains get addresses from 198.18.0.0/15. Helps when an app hides the domain, but cached fake addresses break if Mayhem stops."
+msgstr ""
+
+#: htdocs/luci-static/resources/view/mayhem/dashboard.js
 msgid "Proxy"
 msgstr ""
 
@@ -773,7 +785,7 @@ msgstr ""
 msgid "Refresh every 5 seconds"
 msgstr ""
 
-#: htdocs/luci-static/resources/view/mayhem/settings.js
+#: htdocs/luci-static/resources/view/mayhem/sections.js
 msgid "Refresh lists every"
 msgstr ""
 
@@ -785,16 +797,16 @@ msgstr ""
 msgid "Reject, browsers fall back to TCP"
 msgstr ""
 
-#: htdocs/luci-static/resources/view/mayhem/settings.js
+#: htdocs/luci-static/resources/view/mayhem/sections.js
 msgid "Remote DNS"
 msgstr ""
 
-#: htdocs/luci-static/resources/view/mayhem/settings.js
+#: htdocs/luci-static/resources/view/mayhem/sections.js
 msgid "Remote DNS through proxy"
 msgstr ""
 
-#: htdocs/luci-static/resources/view/mayhem/dashboard.js
-msgid "Restart"
+#: htdocs/luci-static/resources/view/mayhem/diagnostics.js
+msgid "Restart Mayhem"
 msgstr ""
 
 #: htdocs/luci-static/resources/view/mayhem/settings.js
@@ -814,14 +826,14 @@ msgid "Rules"
 msgstr ""
 
 #: htdocs/luci-static/resources/view/mayhem/diagnostics.js
-msgid "Run"
+msgid "Run diagnostics"
 msgstr ""
 
 #: htdocs/luci-static/resources/view/mayhem/sections.js
 msgid "Section"
 msgstr ""
 
-#: htdocs/luci-static/resources/view/mayhem/settings.js
+#: htdocs/luci-static/resources/view/mayhem/sections.js
 msgid "Section for DNS"
 msgstr ""
 
@@ -829,7 +841,7 @@ msgstr ""
 msgid "Section for downloading"
 msgstr ""
 
-#: htdocs/luci-static/resources/view/mayhem/settings.js
+#: htdocs/luci-static/resources/view/mayhem/sections.js
 msgid "Section for downloads"
 msgstr ""
 
@@ -837,7 +849,7 @@ msgstr ""
 msgid "Sections"
 msgstr ""
 
-#: htdocs/luci-static/resources/view/mayhem/settings.js
+#: htdocs/luci-static/resources/view/mayhem/sections.js
 msgid "Sections refer to categories as geosite:category or geosite:source:category. When several sources have a category, the first one in this list wins."
 msgstr ""
 
@@ -853,15 +865,11 @@ msgstr ""
 msgid "Send without Mux"
 msgstr ""
 
-#: htdocs/luci-static/resources/view/mayhem/dashboard.js
-msgid "Server"
-msgstr ""
-
 #: htdocs/luci-static/resources/view/mayhem/sections.js
 msgid "Server choice"
 msgstr ""
 
-#: htdocs/luci-static/resources/view/mayhem/dashboard.js
+#: htdocs/luci-static/resources/view/mayhem/sections.js
 msgid "Servers"
 msgstr ""
 
@@ -877,6 +885,10 @@ msgstr ""
 msgid "Service"
 msgstr ""
 
+#: htdocs/luci-static/resources/view/mayhem/dashboard.js
+msgid "Services"
+msgstr ""
+
 #: htdocs/luci-static/resources/view/mayhem/settings.js
 msgid "Settings"
 msgstr ""
@@ -889,11 +901,7 @@ msgstr ""
 msgid "Soft limit: xray frees memory more often when it gets close. Empty means a quarter of the router RAM."
 msgstr ""
 
-#: htdocs/luci-static/resources/view/mayhem/dashboard.js
-msgid "Source"
-msgstr ""
-
-#: htdocs/luci-static/resources/view/mayhem/settings.js
+#: htdocs/luci-static/resources/view/mayhem/sections.js
 msgid "Source name"
 msgstr ""
 
@@ -901,15 +909,23 @@ msgstr ""
 msgid "Speed"
 msgstr ""
 
+#: htdocs/luci-static/resources/view/mayhem/diagnostics.js
+msgid "Start Mayhem"
+msgstr ""
+
 #: htdocs/luci-static/resources/view/mayhem/dashboard.js
 msgid "Starting…"
 msgstr ""
 
-#: htdocs/luci-static/resources/view/mayhem/dashboard.js
+#: htdocs/luci-static/resources/view/mayhem/sections.js
 msgid "State"
 msgstr ""
 
-#: htdocs/luci-static/resources/view/mayhem/dashboard.js
+#: htdocs/luci-static/resources/view/mayhem/diagnostics.js
+msgid "Stop until restart"
+msgstr ""
+
+#: htdocs/luci-static/resources/view/mayhem/subscriptions.js
 msgid "Subscription"
 msgstr ""
 
@@ -921,31 +937,35 @@ msgstr ""
 msgid "Subscription servers are added to sections on the Sections page. Downloads repeat by the interval the provider sets, or every 12 hours."
 msgstr ""
 
-#: htdocs/luci-static/resources/view/mayhem/dashboard.js
+#: htdocs/luci-static/resources/view/mayhem/sections.js
 msgid "Subscriptions"
 msgstr ""
 
-#: htdocs/luci-static/resources/view/mayhem/diagnostics.js
+#: htdocs/luci-static/resources/view/mayhem/dashboard.js
+msgid "Subscriptions without a section"
+msgstr ""
+
+#: htdocs/luci-static/resources/view/mayhem/dashboard.js
 msgid "System"
 msgstr ""
 
-#: htdocs/luci-static/resources/view/mayhem/dashboard.js
-msgid "TCP"
-msgstr ""
-
-#: htdocs/luci-static/resources/view/mayhem/dashboard.js
-msgid "TCP ping"
+#: htdocs/luci-static/resources/view/mayhem/diagnostics.js
+msgid "System information"
 msgstr ""
 
 #: htdocs/luci-static/resources/view/mayhem/sections.js
 msgid "Take servers named"
 msgstr ""
 
+#: htdocs/luci-static/resources/view/mayhem/dashboard.js
+msgid "Test latency"
+msgstr ""
+
 #: htdocs/luci-static/resources/view/mayhem/sections.js
 msgid "Text lists with one domain, rule or subnet per line, \"#\" for comments. Downloaded and refreshed automatically (Settings → Geo data)."
 msgstr ""
 
-#: htdocs/luci-static/resources/view/mayhem/settings.js
+#: htdocs/luci-static/resources/view/mayhem/sections.js
 msgid "The file is kept on the router as it is, so it must be small (up to 8 MB). Big files are better added by URL."
 msgstr ""
 
@@ -969,7 +989,7 @@ msgstr ""
 msgid "The key is not valid base64"
 msgstr ""
 
-#: htdocs/luci-static/resources/view/mayhem/settings.js
+#: htdocs/luci-static/resources/view/mayhem/sections.js
 msgid "The name may only contain letters, digits and _"
 msgstr ""
 
@@ -985,8 +1005,8 @@ msgstr ""
 msgid "The provider expects an HWID: turn on \"Send device data\""
 msgstr ""
 
-#: htdocs/luci-static/resources/view/mayhem/settings.js
-msgid "The update runs in the background, see the dashboard for its result."
+#: htdocs/luci-static/resources/view/mayhem/sections.js
+msgid "The update runs in the background. Reopen this tab in a few minutes to see the result."
 msgstr ""
 
 #: htdocs/luci-static/resources/mayhem/vpnkey.js
@@ -997,7 +1017,7 @@ msgstr ""
 msgid "This takes a minute. Do not close the page."
 msgstr ""
 
-#: htdocs/luci-static/resources/view/mayhem/settings.js
+#: htdocs/luci-static/resources/view/mayhem/sections.js
 msgid "Through a section only"
 msgstr ""
 
@@ -1033,6 +1053,14 @@ msgstr ""
 msgid "Tunnels as servers"
 msgstr ""
 
+#: htdocs/luci-static/resources/view/mayhem/diagnostics.js
+msgid "Turn Mayhem off"
+msgstr ""
+
+#: htdocs/luci-static/resources/view/mayhem/diagnostics.js
+msgid "Turn Mayhem on"
+msgstr ""
+
 #: htdocs/luci-static/resources/view/mayhem/sections.js
 msgid "Type"
 msgstr ""
@@ -1045,12 +1073,8 @@ msgstr ""
 msgid "URL for server checks"
 msgstr ""
 
-#: htdocs/luci-static/resources/view/mayhem/settings.js
+#: htdocs/luci-static/resources/view/mayhem/sections.js
 msgid "URL or file"
-msgstr ""
-
-#: htdocs/luci-static/resources/view/mayhem/dashboard.js
-msgid "URL test"
 msgstr ""
 
 #: htdocs/luci-static/resources/view/mayhem/dashboard.js
@@ -1069,40 +1093,24 @@ msgstr ""
 msgid "Update every, hours"
 msgstr ""
 
-#: htdocs/luci-static/resources/view/mayhem/dashboard.js
-msgid "Update geo data"
-msgstr ""
-
-#: htdocs/luci-static/resources/view/mayhem/dashboard.js
-msgid "Update lists"
-msgstr ""
-
-#: htdocs/luci-static/resources/view/mayhem/settings.js
+#: htdocs/luci-static/resources/view/mayhem/sections.js
 msgid "Update now"
 msgstr ""
 
-#: htdocs/luci-static/resources/view/mayhem/dashboard.js
-msgid "Updated"
-msgstr ""
-
-#: htdocs/luci-static/resources/view/mayhem/dashboard.js
-msgid "Updating…"
-msgstr ""
-
-#: htdocs/luci-static/resources/view/mayhem/settings.js
+#: htdocs/luci-static/resources/view/mayhem/sections.js
 msgid "Upload .dat…"
 msgstr ""
 
-#: htdocs/luci-static/resources/view/mayhem/settings.js
+#: htdocs/luci-static/resources/view/mayhem/sections.js
 msgid "Upload a .dat file"
-msgstr ""
-
-#: htdocs/luci-static/resources/view/mayhem/dashboard.js
-msgid "Use"
 msgstr ""
 
 #: htdocs/luci-static/resources/view/mayhem/diagnostics.js
 msgid "Version"
+msgstr ""
+
+#: htdocs/luci-static/resources/view/mayhem/diagnostics.js
+msgid "View logs"
 msgstr ""
 
 #: htdocs/luci-static/resources/view/mayhem/diagnostics.js
@@ -1129,6 +1137,10 @@ msgstr ""
 msgid "Works"
 msgstr ""
 
+#: htdocs/luci-static/resources/view/mayhem/diagnostics.js
+msgid "Works, with warnings"
+msgstr ""
+
 #: htdocs/luci-static/resources/view/mayhem/subscriptions.js
 msgid "Xray JSON"
 msgstr ""
@@ -1142,22 +1154,30 @@ msgid "auto"
 msgstr ""
 
 #: htdocs/luci-static/resources/view/mayhem/dashboard.js
-msgid "direct"
+msgid "by lists"
 msgstr ""
 
 #: htdocs/luci-static/resources/view/mayhem/dashboard.js
-msgid "down"
+msgid "disabled"
+msgstr ""
+
+#: htdocs/luci-static/resources/view/mayhem/dashboard.js
+msgid "everything through proxy"
 msgstr ""
 
 #: htdocs/luci-static/resources/view/mayhem/sections.js
 msgid "example.com matches the domain and its subdomains. Prefixes: full: exact name, keyword: substring, regexp: regular expression, geosite: a category of geo data (pick from the list). Categories marked as heavy hold more than %s rules and make xray use a lot of memory."
 msgstr ""
 
+#: htdocs/luci-static/resources/view/mayhem/dashboard.js
+msgid "expired %s"
+msgstr ""
+
 #: htdocs/luci-static/resources/view/mayhem/sections.js
 msgid "geosite and geoip categories have not been downloaded yet."
 msgstr ""
 
-#: htdocs/luci-static/resources/view/mayhem/settings.js
+#: htdocs/luci-static/resources/view/mayhem/sections.js
 msgid "geosite and geoip files are read on the router while they download; only the categories used in sections are kept, so a 70 MB file takes a few hundred kilobytes of flash. New categories are downloaded within a minute after saving, the rest is refreshed nightly."
 msgstr ""
 
@@ -1165,7 +1185,7 @@ msgstr ""
 msgid "heavy"
 msgstr ""
 
-#: htdocs/luci-static/resources/view/mayhem/settings.js
+#: htdocs/luci-static/resources/view/mayhem/sections.js
 msgid "https:// address of a .dat file, or a path to a file on the router."
 msgstr ""
 
@@ -1173,7 +1193,7 @@ msgstr ""
 msgid "interface"
 msgstr ""
 
-#: htdocs/luci-static/resources/view/mayhem/dashboard.js
+#: htdocs/luci-static/resources/mayhem/common.js
 msgid "just now"
 msgstr ""
 
@@ -1189,20 +1209,36 @@ msgstr ""
 msgid "last handshake %s"
 msgstr ""
 
-#: htdocs/luci-static/resources/view/mayhem/dashboard.js
+#: htdocs/luci-static/resources/mayhem/common.js
 msgid "never"
+msgstr ""
+
+#: htdocs/luci-static/resources/view/mayhem/diagnostics.js
+msgid "nftables and routing"
+msgstr ""
+
+#: htdocs/luci-static/resources/view/mayhem/dashboard.js
+msgid "no answer"
 msgstr ""
 
 #: htdocs/luci-static/resources/view/mayhem/sections.js
 msgid "none"
 msgstr ""
 
-#: htdocs/luci-static/resources/view/mayhem/settings.js
+#: htdocs/luci-static/resources/view/mayhem/sections.js
 msgid "not downloaded yet"
 msgstr ""
 
 #: htdocs/luci-static/resources/view/mayhem/dashboard.js
-msgid "not installed — run \"mayhem xray-install\""
+msgid "not installed"
+msgstr ""
+
+#: htdocs/luci-static/resources/view/mayhem/dashboard.js
+msgid "not running"
+msgstr ""
+
+#: htdocs/luci-static/resources/view/mayhem/dashboard.js
+msgid "now: %s"
 msgstr ""
 
 #: htdocs/luci-static/resources/view/mayhem/sections.js
@@ -1214,11 +1250,7 @@ msgid "pinned by hand"
 msgstr ""
 
 #: htdocs/luci-static/resources/view/mayhem/dashboard.js
-msgid "proxy"
-msgstr ""
-
-#: htdocs/luci-static/resources/view/mayhem/dashboard.js
-msgid "soft limit"
+msgid "running"
 msgstr ""
 
 #: htdocs/luci-static/resources/view/mayhem/dashboard.js
@@ -1226,15 +1258,15 @@ msgid "through xray"
 msgstr ""
 
 #: htdocs/luci-static/resources/view/mayhem/dashboard.js
-msgid "traffic"
+msgid "until %s"
 msgstr ""
 
 #: htdocs/luci-static/resources/view/mayhem/dashboard.js
-msgid "unreadable"
+msgid "updated %s"
 msgstr ""
 
 #: htdocs/luci-static/resources/view/mayhem/dashboard.js
-msgid "xray"
+msgid "xray is not installed: run \"mayhem xray-install\""
 msgstr ""
 
 #: htdocs/luci-static/resources/view/mayhem/dashboard.js
