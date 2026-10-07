@@ -32,8 +32,8 @@ return view.extend({
 			.map((s) => s['.name']);
 		const dev = uci.get('mayhem', 'device') || {};
 
-		const m = new form.Map('mayhem', _('Subscriptions'),
-			_('Subscription servers are added to sections on the Sections page. Downloads repeat by the interval the provider sets, or every 12 hours.'));
+		const m = new form.Map('mayhem', '',
+			_('Subscription servers are added to sections on the Routing page. Downloads repeat by the interval the provider sets, or every 12 hours.'));
 		let s, o;
 
 		// --- device profile ---

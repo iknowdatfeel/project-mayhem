@@ -340,6 +340,13 @@ def main():
             if not pg.query_selector('#mayhem-diag .mh-check-items'):
                 raise RuntimeError('no check results')
 
+        def logs_modal(pg):
+            pg.click('#mayhem-diag .mh-actions button >> nth=-2')
+            pg.wait_for_selector('.modal .mh-log', timeout=5000)
+            pg.wait_for_timeout(500)
+            shot(pg, 'dashboard_logs')
+            close_modal(pg)
+
         def geo_tab(pg):
             pg.click('.cbi-tabmenu [data-tab="geo"] a')
             pg.wait_for_timeout(300)
@@ -370,13 +377,11 @@ def main():
                 pg.wait_for_timeout(4500)  # two polls: the speed widget has numbers
 
         pages = [
-            ('mayhem/dashboard', [('buttons', dashboard_buttons)]),
+            ('mayhem/dashboard', [('buttons', dashboard_buttons), ('logs dialog', logs_modal), ('run diagnostics', run_diag)]),
             ('mayhem/sections', [('edit sections', lambda pg: open_modals(pg, '[data-tab="section"]')), ('tunnel options', type_tunnel),
                                  ('import dialog', import_modal), ('DNS tab', dns_tab), ('edit geo sources', geo_tab), ('upload dialog', upload_modal)]),
             ('mayhem/subscriptions', [('edit subscriptions', open_modals)]),
             ('mayhem/settings', []),
-            ('mayhem/diagnostics', [('run diagnostics', run_diag)]),
-            ('mayhem/logs', []),
         ]
 
         for view, actions in pages:

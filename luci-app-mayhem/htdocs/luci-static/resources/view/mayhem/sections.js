@@ -7,6 +7,7 @@
 'require poll';
 'require tools.widgets as widgets';
 'require mayhem.vpnkey as vpnkey';
+'require mayhem.common as mh';
 
 const callGeo = rpc.declare({ object: 'luci.mayhem', method: 'geo', expect: { '': {} } });
 const callDataUpdate = rpc.declare({ object: 'luci.mayhem', method: 'data_update', params: [ 'what', 'name' ], expect: { '': {} } });
@@ -262,7 +263,7 @@ return view.extend({
 			.map((x) => x['.name']);
 
 		// Tabs: sections, DNS, geo files.
-		const m = new form.Map('mayhem', _('Routing'));
+		const m = new form.Map('mayhem');
 
 		m.tabbed = true;
 
@@ -580,6 +581,8 @@ return view.extend({
 		return m.render().then((node) => {
 			// Tunnels and the category hint belong to the sections tab.
 			const pane = node.querySelector('.cbi-section[data-tab="section"]') || node;
+
+			node.insertBefore(mh.style(), node.firstChild);
 
 			pane.appendChild(this.renderTunnels(tun));
 

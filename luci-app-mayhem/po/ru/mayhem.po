@@ -1364,3 +1364,12 @@ msgstr "Запустить диагностику"
 
 msgid "The update runs in the background. Reopen this tab in a few minutes to see the result."
 msgstr "Обновление идёт в фоне. Откройте вкладку через несколько минут, чтобы увидеть результат."
+
+msgid "Subscription servers are added to sections on the Routing page. Downloads repeat by the interval the provider sets, or every 12 hours."
+msgstr "Серверы подписок добавляются в секции на вкладке «Маршрутизация». Подписки обновляются с интервалом, который задал провайдер, или раз в 12 часов."
+
+msgid "Loading…"
+msgstr "Загрузка…"
+
+msgid "Check method"
+msgstr "Способ проверки"

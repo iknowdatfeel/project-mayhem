@@ -4,11 +4,12 @@
 'require poll';
 'require ui';
 'require mayhem.common as mh';
+'require mayhem.diag as diag';
 
-// The dashboard: four small widgets, then every proxy section as a box of
-// server tiles grouped by where they come from (a subscription with its
-// traffic and expiry, links, interfaces), like Happ shows subscriptions.
-// Actions and the detailed checks are on the diagnostics page.
+// The dashboard: three small widgets, every proxy section as a box of server
+// tiles grouped by where they come from (a subscription with its traffic and
+// expiry, links, interfaces), like Happ shows subscriptions, and the
+// diagnostics with the actions and the logs below.
 
 const callDashboard = rpc.declare({ object: 'luci.mayhem', method: 'dashboard', expect: { '': {} } });
 const callAction = rpc.declare({ object: 'luci.mayhem', method: 'action', params: [ 'name' ], expect: { '': {} } });
@@ -18,11 +19,16 @@ const callSubUpdate = rpc.declare({ object: 'luci.mayhem', method: 'sub_update',
 
 const PROBE_PARALLEL = 4;
 const DAY = 86400;
+const PROBES = [ [ 'url', _('URL test') ], [ 'tcp', _('TCP ping') ], [ 'icmp', _('ICMP ping') ] ];
 
 const CSS = `
 .mh-head { display:flex; align-items:center; justify-content:space-between; gap:10px; flex-wrap:wrap; }
 .mh-head .mh-grow { flex:1 1 auto; }
+.mh-widgets { display:grid; grid-template-columns:repeat(3, 1fr); grid-gap:10px; }
+@media (max-width: 700px) { .mh-widgets { grid-template-columns:1fr; } }
 .mh-widget-row { white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+.mh-tools { display:flex; align-items:center; gap:6px; }
+.mh-tools select { width:auto; min-width:0; }
 
 .mh-group { margin-top:10px; }
 .mh-ghead { display:flex; align-items:center; flex-wrap:wrap; gap:4px 12px; margin-bottom:6px; }
@@ -60,6 +66,7 @@ return view.extend({
 	speed: null,
 	probes: {},
 	busy: {},
+	method: 'url',
 
 	load() {
 		return callDashboard();
@@ -104,8 +111,9 @@ return view.extend({
 		});
 	},
 
-	// URL test of every server of the section, a few at a time.
+	// Checks every server of the section with the chosen method, a few at a time.
 	probeSection(sec) {
+		const method = this.method;
 		const queue = sec.nodes.slice();
 		const key = 'probe:' + sec.name;
 
@@ -121,8 +129,8 @@ return view.extend({
 			if (!n)
 				return Promise.resolve();
 
-			return callProbe(n.tag, 'url').then((r) => {
-				this.probes[n.tag] = (r.ms != null) ? r.ms : (r.error || 'error');
+			return callProbe(n.tag, method).then((r) => {
+				this.probes[n.tag] = { method: method, value: (r.ms != null) ? r.ms : (r.error || 'error') };
 				this.redraw();
 			}).then(worker);
 		};
@@ -167,20 +175,15 @@ return view.extend({
 	renderWidgets(d) {
 		const working = d.running && d.active;
 		const sp = this.speed && working ? this.speed : null;
-		const t = d.totals || { proxy: {}, direct: {} };
 		const svc = !d.enabled ? [ '✘ ' + _('Disabled'), 'mh-muted' ]
 			: working ? [ '✔ ' + _('Working'), 'mh-ok' ]
 			: d.running ? [ '… ' + _('Starting…'), 'mh-warn' ]
 			: [ '✘ ' + _('Not running'), 'mh-fail' ];
 
-		return E('div', { 'class': 'mh-grid' }, [
+		return E('div', { 'class': 'mh-widgets' }, [
 			this.widget(_('Speed'), [
 				[ _('Proxy'), sp ? '↓ %s ↑ %s'.format(rate(sp.proxy.down), rate(sp.proxy.up)) : '—' ],
 				[ _('Direct'), sp ? '↓ %s ↑ %s'.format(rate(sp.direct.down), rate(sp.direct.up)) : '—' ]
-			]),
-			this.widget(_('Traffic'), [
-				[ _('Proxy'), '↓ %s ↑ %s'.format(mh.bytes(t.proxy.down || 0), mh.bytes(t.proxy.up || 0)) ],
-				[ _('Direct'), '↓ %s ↑ %s'.format(mh.bytes(t.direct.down || 0), mh.bytes(t.direct.up || 0)) ]
 			]),
 			this.widget(_('System'), [
 				[ _('Mode'), d.mode === 'global' ? _('everything through proxy') : _('by lists') ],
@@ -219,7 +222,7 @@ return view.extend({
 				E('b', _('Mayhem cannot work like this')),
 				E('ul', { 'class': 'mh-small' }, errors.map((m) => E('li', m)))
 			]),
-			E('a', { 'class': 'mh-small', 'href': L.url('admin/services/mayhem/diagnostics') }, _('Diagnostics'))
+			E('a', { 'class': 'mh-small', 'href': '#mayhem-diag' }, _('Diagnostics'))
 		]);
 	},
 
@@ -228,15 +231,22 @@ return view.extend({
 	latency(n) {
 		const p = this.probes[n.tag];
 
-		if (typeof p === 'string')
-			return E('span', { 'class': 'mh-fail', 'title': p }, _('no answer'));
+		if (p) {
+			const label = p.method === 'url' ? '' : p.method.toUpperCase() + ' ';
 
-		const v = p != null ? p : (n.alive === false ? null : n.delay);
+			if (typeof p.value === 'string')
+				return E('span', { 'class': 'mh-fail', 'title': p.value }, label + _('no answer'));
 
-		if (v == null)
-			return E('span', { 'class': n.alive === false ? 'mh-fail' : 'mh-muted' }, n.alive === false ? _('no answer') : 'N/A');
+			return E('span', { 'class': latencyClass(p.value) }, '%s%d ms'.format(label, p.value));
+		}
 
-		return E('span', { 'class': latencyClass(v) }, '%d ms'.format(v));
+		if (n.alive === false)
+			return E('span', { 'class': 'mh-fail' }, _('no answer'));
+
+		if (n.delay == null)
+			return E('span', { 'class': 'mh-muted' }, 'N/A');
+
+		return E('span', { 'class': latencyClass(n.delay) }, '%d ms'.format(n.delay));
 	},
 
 	tile(s, n) {
@@ -367,6 +377,12 @@ return view.extend({
 		if (s.mode === 'auto' && s.pinned)
 			tools.push(E('button', { 'class': 'btn cbi-button-action', 'click': ui.createHandlerFn(this, 'select', s.name, '') }, _('Back to automatic')), ' ');
 
+		tools.push(E('select', {
+			'class': 'cbi-input-select',
+			'title': _('Check method'),
+			'change': (ev) => { this.method = ev.target.value; }
+		}, PROBES.map((p) => E('option', { 'value': p[0], 'selected': p[0] === this.method ? '' : null }, p[1]))));
+
 		tools.push(mh.button({
 			icon: 'zap', text: _('Test latency'), busy: this.busy['probe:' + s.name],
 			click: ui.createHandlerFn(this, 'probeSection', s)
@@ -378,7 +394,7 @@ return view.extend({
 					E('span', { 'class': 'mh-title' }, s.name), ' ',
 					E('span', { 'class': 'mh-muted mh-small' }, info.join(' · '))
 				]),
-				E('div', tools)
+				E('div', { 'class': 'mh-tools' }, tools)
 			])
 		].concat(this.groups(s, subs, now)));
 	},
@@ -435,11 +451,11 @@ return view.extend({
 
 		poll.add(() => document.hidden ? Promise.resolve() : this.refresh(), 2);
 
-		return E('div', { 'class': 'cbi-map mh-page' }, [
+		return E('div', { 'class': 'cbi-map mh-page mh-stack' }, [
 			mh.style(),
 			E('style', CSS),
-			E('h2', _('Mayhem')),
-			E('div', { 'id': 'mayhem-body', 'class': 'mh-stack' }, this.renderBody(d))
+			E('div', { 'id': 'mayhem-body', 'class': 'mh-stack' }, this.renderBody(d)),
+			diag.render({ state: () => this.data, refresh: () => this.refresh() })
 		]);
 	},
 
