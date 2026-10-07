@@ -8,8 +8,8 @@
 
 // The dashboard: three small widgets, every proxy section as a box of server
 // tiles grouped by where they come from (a subscription with its traffic and
-// expiry, links, interfaces), like Happ shows subscriptions, and the
-// diagnostics with the actions and the logs below.
+// expiry, links, interfaces), like Happ shows subscriptions, and a row of
+// buttons: diagnostics and logs (in dialogs), restart, stop, turn off.
 
 const callDashboard = rpc.declare({ object: 'luci.mayhem', method: 'dashboard', expect: { '': {} } });
 const callAction = rpc.declare({ object: 'luci.mayhem', method: 'action', params: [ 'name' ], expect: { '': {} } });
@@ -92,6 +92,8 @@ return view.extend({
 
 		if (body)
 			body.replaceChildren(...this.renderBody(this.data));
+
+		diag.draw();
 	},
 
 	refresh() {
@@ -222,7 +224,7 @@ return view.extend({
 				E('b', _('Mayhem cannot work like this')),
 				E('ul', { 'class': 'mh-small' }, errors.map((m) => E('li', m)))
 			]),
-			E('a', { 'class': 'mh-small', 'href': '#mayhem-diag' }, _('Diagnostics'))
+			E('a', { 'class': 'mh-small', 'href': '#', 'click': (ev) => { ev.preventDefault(); diag.diagnostics(true); } }, _('Diagnostics'))
 		]);
 	},
 
