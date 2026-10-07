@@ -32,10 +32,60 @@ pkg_install_file() {
 
 pkg_installed() {
 	if [ "$PKG" = apk ]; then
-		apk info -e "$1" >/dev/null 2>&1
+		apk list --installed 2>/dev/null | grep -q "^$1-[0-9]"
 	else
-		opkg list-installed "$1" 2>/dev/null | grep -q "^$1 "
+		opkg list-installed 2>/dev/null | grep -q "^$1 - "
 	fi
+}
+
+# Would the package install from the configured feeds (matching kernel and arch)?
+pkg_installable() {
+	if [ "$PKG" = apk ]; then
+		apk add --simulate "$1" >/dev/null 2>&1
+	else
+		opkg install --noaction "$1" >/dev/null 2>&1
+	fi
+}
+
+# Everything Mayhem needs, checked before anything is installed.
+DEPS="ucode ucode-mod-fs ucode-mod-uci kmod-nft-tproxy ca-bundle unzip curl rpcd-mod-ucode luci-base"
+
+check_deps() {
+	local p missing=""
+
+	for p in $DEPS; do
+		pkg_installed "$p" && continue
+		pkg_installable "$p" || missing="$missing $p"
+	done
+
+	[ -z "$missing" ] && return 0
+
+	case "$missing" in
+		*kmod-*)
+			warn "Kernel modules cannot be installed:${missing}."
+			warn "Usually the firmware is a custom or snapshot build whose kernel does not match the package feeds."
+			warn "Use an official OpenWrt image of the same version, or a firmware built with kmod-nft-tproxy."
+			;;
+	esac
+
+	die "Missing packages that cannot be installed:${missing}. Nothing was changed."
+}
+
+# The kernel must accept a TPROXY rule, otherwise interception cannot work.
+check_tproxy() {
+	local rc
+
+	printf '%s\n' \
+		'table inet mayhem_probe {' \
+		'	chain probe {' \
+		'		type filter hook prerouting priority mangle; policy accept;' \
+		'		meta l4proto tcp ip daddr 127.0.0.2 tproxy ip to 127.0.0.1:1' \
+		'	}' \
+		'}' | nft -f - >/dev/null 2>&1
+	rc=$?
+	nft delete table inet mayhem_probe >/dev/null 2>&1
+
+	return "$rc"
 }
 
 fetch() {
@@ -146,10 +196,18 @@ main() {
 	msg "Updating package lists..."
 	pkg_update || die "Package list update failed."
 
+	msg "Checking dependencies..."
+	check_deps
+
 	msg "Downloading Mayhem from $REPO..."
 	download_release
 	install_packages
 	rm -rf "$TMP"
+
+	if ! check_tproxy; then
+		/etc/init.d/mayhem disable >/dev/null 2>&1
+		die "The kernel rejects TPROXY rules even with kmod-nft-tproxy installed. Mayhem is installed but disabled: reboot the router and run the installer again."
+	fi
 
 	msg "Installing xray..."
 	/usr/bin/mayhem xray-install || die "xray installation failed, run 'mayhem xray-install' later."
