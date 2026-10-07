@@ -10,7 +10,7 @@ export function urldecode(s) {
 		return null;
 
 	return replace(s, /%([0-9A-Fa-f]{2})/g, (m, h) => chr(hex(h)));
-}
+};
 
 // Tolerant base64: accepts url-safe alphabet, missing padding and whitespace.
 export function b64(s) {
@@ -24,7 +24,7 @@ export function b64(s) {
 		s += '=';
 
 	return b64dec(s);
-}
+};
 
 function parse_query(q) {
 	const r = {};
@@ -639,7 +639,7 @@ export function parse_link(link) {
 	r.warnings = warn;
 
 	return r;
-}
+};
 
 // Server host of an outbound (for resolving it with the domestic DNS).
 export function outbound_host(ob) {
@@ -662,7 +662,7 @@ export function outbound_host(ob) {
 	}
 
 	return null;
-}
+};
 
 // Server port of an outbound (for TCP ping).
 export function outbound_port(ob) {
@@ -684,10 +684,89 @@ export function outbound_port(ob) {
 	}
 
 	return null;
-}
+};
 
 // True for protocols carried over UDP, where a TCP ping says nothing.
 export function outbound_udp(ob) {
 	return ob?.protocol == 'hysteria' || ob?.protocol == 'wireguard' ||
 		ob?.streamSettings?.network == 'kcp';
+};
+
+// Addresses where Xray allows VLESS/Trojan without TLS (xray-core 26.9.30,
+// common/geodata/consts.go): private IPs, private domains and dotless names.
+const PRIVATE_NETS = [
+	'0.0.0.0/8', '10.0.0.0/8', '100.64.0.0/10', '127.0.0.0/8', '169.254.0.0/16', '172.16.0.0/12',
+	'192.0.0.0/24', '192.0.2.0/24', '192.88.99.0/24', '192.168.0.0/16', '198.18.0.0/15',
+	'198.51.100.0/24', '203.0.113.0/24', '224.0.0.0/3',
+	'::/127', 'fc00::/7', 'fe80::/10', 'ff00::/8'
+];
+const PRIVATE_DOMAINS = [ 'lan', 'localdomain', 'example', 'invalid', 'localhost', 'test', 'local', 'home.arpa', 'internal' ];
+
+function in_net(bytes, net) {
+	const p = split(net, '/');
+	const want = iptoarr(p[0]);
+
+	if (length(want) != length(bytes))
+		return false;
+
+	let bits = int(p[1]);
+
+	for (let i = 0; bits > 0; i++) {
+		const mask = bits >= 8 ? 0xff : (0xff << (8 - bits)) & 0xff;
+
+		if ((want[i] & mask) != (bytes[i] & mask))
+			return false;
+
+		bits -= 8;
+	}
+
+	return true;
 }
+
+function private_address(addr) {
+	const host = rtrim(lc(`${addr}`), '.');
+	const ip = iptoarr(host);
+
+	if (ip)
+		return length(filter(PRIVATE_NETS, (n) => in_net(ip, n))) > 0;
+
+	if (match(host, /^[a-z]([a-z0-9-]{0,61}[a-z0-9])?$/))
+		return true;
+
+	for (let d in PRIVATE_DOMAINS)
+		if (host == d || substr(host, -length(d) - 1) == `.${d}`)
+			return true;
+
+	return false;
+}
+
+// Xray 26 refuses to start at all when one VLESS server has neither TLS,
+// Reality nor VLESS encryption, or one Trojan server has no TLS, unless its
+// address is private (infra/conf/xray.go, validateOutboundTransportSecurity).
+// Returns the reason such a server has to be left out, or null.
+export function refused_by_xray(ob) {
+	const sec = ob?.streamSettings?.security;
+
+	if (sec != null && sec != '' && sec != 'none')
+		return null;
+
+	const s = ob?.settings ?? {};
+
+	if (ob?.protocol == 'vless') {
+		// Only the flat form is checked by xray; "vnext" servers pass.
+		if (type(s.address) != 'string' || (s.encryption != null && s.encryption != '' && s.encryption != 'none'))
+			return null;
+
+		return private_address(s.address) ? null :
+			'VLESS without TLS, Reality or encryption to a public address, xray refuses to start with it';
+	}
+
+	if (ob?.protocol == 'trojan') {
+		const addr = type(s.address) == 'string' ? s.address : s.servers?.[0]?.address;
+
+		return (addr == null || private_address(addr)) ? null :
+			'Trojan without TLS to a public address, xray refuses to start with it';
+	}
+
+	return null;
+};

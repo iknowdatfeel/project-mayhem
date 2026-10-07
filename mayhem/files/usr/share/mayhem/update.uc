@@ -243,6 +243,7 @@ function update_source(cfg, src, cats, state, now) {
 	const changed_dat = fresh != (fs.readfile(dat) ?? null);
 
 	fs.unlink(tmp);
+	fs.mkdir(fs.dirname(C.GEO_DIR), 0755);
 	fs.mkdir(C.GEO_DIR, 0755);
 
 	if (changed_dat)
@@ -385,6 +386,7 @@ function run_lists(cfg, state, force) {
 	const keep = {};
 	const results = [];
 
+	fs.mkdir(fs.dirname(C.LISTS_DIR), 0755);
 	fs.mkdir(C.LISTS_DIR, 0755);
 
 	for (let url in urls) {

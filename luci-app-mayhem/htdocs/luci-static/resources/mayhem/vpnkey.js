@@ -61,7 +61,7 @@ function findConf(obj) {
 
 return baseclass.extend({
 	isKey(text) {
-		return /^\s*vpn:\/\//i.test(text || '');
+		return (/^\s*vpn:\/\//i).test(text || '');
 	},
 
 	// Resolves to the .conf text inside a vpn:// key.

@@ -61,11 +61,12 @@ elif [ "$stopping" = 0 ]; then
 	kill -TERM "$xray_pid" 2>/dev/null
 fi
 
-# `wait` returns early when a trapped signal arrives, so loop until xray is gone.
-rc=0
-while kill -0 "$xray_pid" 2>/dev/null; do
+# `wait` returns early when a trapped signal arrives, so loop until xray is
+# gone. Wait at least once: xray that failed at start is already gone here.
+while :; do
 	wait "$xray_pid"
 	rc=$?
+	kill -0 "$xray_pid" 2>/dev/null || break
 done
 
 rm -f "$MAYHEM_RUN_DIR/active" "$MAYHEM_RUN_DIR/xray.pid" "$MAYHEM_RUN_DIR/watchdog.mem"

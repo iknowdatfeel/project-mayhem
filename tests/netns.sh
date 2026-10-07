@@ -27,8 +27,9 @@ export MAYHEM_RUN_DIR="$WORK/run"
 export MAYHEM_DNSMASQ_INIT="$WORK/dnsmasq-init"
 export MAYHEM_DNSMASQ_DIRS="$WORK/dnsmasq.d"
 export MAYHEM_XRAY_BIN="$XRAY"
-export MAYHEM_GEO_DIR="$WORK/geo-store"
-export MAYHEM_LISTS_DIR="$WORK/lists"
+# Like /etc/mayhem on a fresh router, the parent of these does not exist yet.
+export MAYHEM_GEO_DIR="$WORK/etc/geo"
+export MAYHEM_LISTS_DIR="$WORK/etc/lists"
 export MAYHEM_TMP_DIR="$WORK"
 
 SS_KEY='AAECAwQFBgcICQoLDA0ODw=='

@@ -15,7 +15,9 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y cmake libjson-c-dev nftables shellcheck unzip dnsmasq-base
-      - name: Build ucode with the uci module
+      # Routers run the ucode their OpenWrt release ships, which can be a year
+      # behind master: test with each of them, and with master to see what comes.
+      - name: Build ucode of OpenWrt 24.10, 25.12 and master
         run: |
           git clone --depth 1 https://github.com/openwrt/libubox.git /tmp/libubox
           cmake -S /tmp/libubox -B /tmp/libubox/build -DBUILD_LUA=OFF -DBUILD_EXAMPLES=OFF
@@ -23,26 +25,39 @@ jobs:
           git clone --depth 1 https://github.com/openwrt/uci.git /tmp/uci
           cmake -S /tmp/uci -B /tmp/uci/build -DBUILD_LUA=OFF
           sudo cmake --build /tmp/uci/build --target install -j4
-          git clone --depth 1 https://github.com/jow-/ucode.git /tmp/ucode
-          cmake -S /tmp/ucode -B /tmp/ucode/build -DUBUS_SUPPORT=OFF -DUCI_SUPPORT=ON -DULOOP_SUPPORT=OFF \
-            -DRTNL_SUPPORT=OFF -DNL80211_SUPPORT=OFF -DLOG_SUPPORT=OFF
-          sudo cmake --build /tmp/ucode/build --target install -j4
           sudo ldconfig
+          for rel in 24.10 25.12 master; do
+            sudo sh tests/build-ucode.sh "$rel" "/opt/ucode-$rel"
+          done
+          # Scripts under test call plain `ucode`: make it the oldest supported one.
+          sudo ln -sf /opt/ucode-24.10/ucode /usr/local/bin/ucode
       - name: Get xray
         run: |
           v=$(sed -n 's/^MAYHEM_XRAY_VERSION="\(.*\)"/\1/p' mayhem/files/usr/share/mayhem/const.sh)
           curl -fsSL -o /tmp/xray.zip "https://github.com/XTLS/Xray-core/releases/download/v$v/Xray-linux-64.zip"
           unzip -o /tmp/xray.zip xray -d /tmp/xray
+      # The package build minifies JS with LuCI's jsmin; acorn compares the result.
+      - name: Get LuCI and its jsmin
+        run: |
+          git clone --depth 1 --filter=blob:none --sparse -b openwrt-24.10 https://github.com/openwrt/luci.git /tmp/luci
+          git -C /tmp/luci sparse-checkout set modules/luci-base/htdocs modules/luci-base/src themes/luci-theme-bootstrap/htdocs
+          gcc -O2 -o /tmp/jsmin /tmp/luci/modules/luci-base/src/jsmin.c
+          npm install --prefix /tmp/acorn acorn@8
       - name: Unit tests
-        run: sudo env GITHUB_ACTIONS="$GITHUB_ACTIONS" UCODE=ucode XRAY=/tmp/xray/xray tests/run.sh
+        run: |
+          for rel in 24.10 25.12 master; do
+            echo "::group::ucode $rel"
+            sudo env GITHUB_ACTIONS="$GITHUB_ACTIONS" UCODE="/opt/ucode-$rel/ucode" XRAY=/tmp/xray/xray \
+              JSMIN=/tmp/jsmin NODE_PATH=/tmp/acorn/node_modules tests/run.sh || failed="$failed $rel"
+            echo "::endgroup::"
+          done
+          [ -z "$failed" ] || { echo "unit tests failed with ucode:$failed"; exit 1; }
       - name: End-to-end test in network namespaces
         run: sudo env GITHUB_ACTIONS="$GITHUB_ACTIONS" UCODE=ucode XRAY=/tmp/xray/xray tests/netns.sh
       - name: LuCI pages in a browser
         run: |
           pip install --break-system-packages playwright
           python3 -m playwright install --with-deps chromium
-          git clone --depth 1 --filter=blob:none --sparse -b openwrt-24.10 https://github.com/openwrt/luci.git /tmp/luci
-          git -C /tmp/luci sparse-checkout set modules/luci-base/htdocs themes/luci-theme-bootstrap/htdocs
           UCODE=ucode sh tests/luci/run.sh /tmp/luci
 
   build:

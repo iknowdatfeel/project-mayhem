@@ -260,7 +260,7 @@ return view.extend({
 			_('https:// address of a .dat file, or a path to a file on the router.'));
 		o.rmempty = false;
 		o.validate = function(section_id, value) {
-			return /^(https?:\/\/\S+|file:\/\/\/\S+|\/\S+)$/.test(value || '') ? true : _('Expected an http(s):// address or a file path');
+			return (/^(https?:\/\/\S+|file:\/\/\/\S+|\/\S+)$/).test(value || '') ? true : _('Expected an http(s):// address or a file path');
 		};
 
 		o = s.option(form.DummyValue, '_state', _('State'));
