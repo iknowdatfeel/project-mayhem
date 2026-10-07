@@ -5,9 +5,8 @@
 'require ui';
 'require mayhem.common as mh';
 
-// Diagnostics block of the dashboard, laid out like podkop's: the checks on
-// the left, one box per part of the traffic path; actions, logs and versions
-// on the right. The logs open in a dialog.
+// Service controls of the dashboard: diagnostics and logs open in dialogs,
+// restart, stop or start, autostart on boot.
 
 const callDiagnose = rpc.declare({ object: 'luci.mayhem', method: 'diagnose', params: [ 'part', 'target' ], expect: { '': {} } });
 const callAction = rpc.declare({ object: 'luci.mayhem', method: 'action', params: [ 'name' ], expect: { '': {} } });
@@ -51,8 +50,6 @@ const NAMES = {
 };
 
 const CSS = `
-.mh-toolbar { display:flex; flex-wrap:wrap; align-items:center; gap:8px; }
-.mh-toolbar .mh-grow { flex:1 1 auto; }
 .mh-drow { border-bottom:1px solid var(--background-color-low, lightgray); }
 .mh-drow > summary { display:flex; align-items:center; gap:8px; padding:7px 2px; cursor:pointer; list-style:none; }
 .mh-drow > summary::-webkit-details-marker { display:none; }
@@ -75,16 +72,14 @@ return baseclass.extend({
 	node: null,
 	list: null,
 
-	// A row of buttons under the sections: diagnostics and logs open in
-	// dialogs. opts.state(): the dashboard data; opts.refresh(): reload it.
+	// opts.state(): the dashboard data; opts.refresh(): reload it;
+	// opts.redraw(): draw it again. Returns the styles for the dialogs.
 	render(opts) {
 		this.opts = opts;
-		this.node = E('div', { 'class': 'mh-box mh-toolbar', 'id': 'mayhem-tools' });
 
 		L.resolveDefault(callSysinfo(), {}).then((s) => { this.sys = s; });
-		window.requestAnimationFrame(() => this.draw());
 
-		return E('div', [ E('style', CSS), this.node ]);
+		return E('style', CSS);
 	},
 
 	add(r) {
@@ -130,11 +125,11 @@ return baseclass.extend({
 
 	act(name) {
 		this.acting = name;
-		this.draw();
+		this.opts.redraw();
 
-		return callAction(name).then(() => this.opts.refresh()).finally(() => {
+		return callAction(name).finally(() => {
 			this.acting = null;
-			this.draw();
+			return this.opts.refresh();
 		});
 	},
 
@@ -325,12 +320,9 @@ return baseclass.extend({
 		});
 	},
 
-	// --- toolbar ---------------------------------------------------------------------
+	// --- buttons ---------------------------------------------------------------------
 
-	draw() {
-		if (!this.node)
-			return;
-
+	controls() {
 		const d = this.opts.state() || {};
 		const any = this.acting != null;
 		const btn = (name, icon, cls, text) => mh.button({
@@ -338,22 +330,14 @@ return baseclass.extend({
 			click: ui.createHandlerFn(this, 'act', name)
 		});
 
-		const list = [
-			mh.button({ icon: 'search', cls: 'cbi-button-apply', text: _('Diagnostics'), click: ui.createHandlerFn(this, 'diagnostics', true) }),
-			mh.button({ icon: 'logs', text: _('Logs'), click: ui.createHandlerFn(this, 'logs') }),
-			E('span', { 'class': 'mh-grow' })
+		return [
+			mh.button({ icon: 'search', text: _('Diagnostics'), click: ui.createHandlerFn(this, 'diagnostics', true) }),
+			mh.button({ icon: 'logs', text: _('View logs'), click: ui.createHandlerFn(this, 'logs') }),
+			btn('restart', 'restart', 'cbi-button-apply', _('Restart Mayhem')),
+			d.running ? btn('stop', 'stop', 'cbi-button-remove', _('Stop Mayhem'))
+				: btn('start', 'play', 'cbi-button-save', _('Start Mayhem')),
+			d.autostart ? btn('autostart_off', 'pause', 'cbi-button-remove', _('Turn autostart off'))
+				: btn('autostart_on', 'play', 'cbi-button-save', _('Turn autostart on'))
 		];
-
-		if (d.enabled) {
-			list.push(btn('restart', 'restart', 'cbi-button-apply', _('Restart')));
-			list.push(d.running ? btn('stop', 'stop', 'cbi-button-remove', _('Stop until restart'))
-				: btn('start', 'play', 'cbi-button-save', _('Start Mayhem')));
-			list.push(btn('disable', 'pause', 'cbi-button-remove', _('Turn Mayhem off')));
-		}
-		else {
-			list.push(btn('enable', 'play', 'cbi-button-save', _('Turn Mayhem on')));
-		}
-
-		this.node.replaceChildren(...list);
 	}
 });

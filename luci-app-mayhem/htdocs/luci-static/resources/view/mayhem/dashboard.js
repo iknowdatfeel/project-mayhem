@@ -6,10 +6,11 @@
 'require mayhem.common as mh';
 'require mayhem.diag as diag';
 
-// The dashboard: three small widgets, every proxy section as a box of server
-// tiles grouped by where they come from (a subscription with its traffic and
-// expiry, links, interfaces), like Happ shows subscriptions, and a row of
-// buttons: diagnostics and logs (in dialogs), restart, stop, turn off.
+// The dashboard: three small widgets and every proxy section as a box of
+// server tiles grouped by where they come from (a subscription with its
+// traffic and expiry, links, interfaces), like Happ shows subscriptions. The
+// buttons sit together at the top right of the first section: checks,
+// updates, diagnostics and logs (in dialogs), restart, stop, autostart.
 
 const callDashboard = rpc.declare({ object: 'luci.mayhem', method: 'dashboard', expect: { '': {} } });
 const callAction = rpc.declare({ object: 'luci.mayhem', method: 'action', params: [ 'name' ], expect: { '': {} } });
@@ -27,8 +28,12 @@ const CSS = `
 .mh-widgets { display:grid; grid-template-columns:repeat(3, 1fr); grid-gap:10px; }
 @media (max-width: 700px) { .mh-widgets { grid-template-columns:1fr; } }
 .mh-widget-row { white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
-.mh-tools { display:flex; align-items:center; gap:6px; }
-.mh-tools select { width:auto; min-width:0; }
+.mh-split { display:grid; grid-template-columns:1fr 240px; grid-column-gap:12px; align-items:start; }
+@media (max-width: 700px) { .mh-split { grid-template-columns:1fr; grid-row-gap:10px; } }
+.mh-side { display:grid; grid-template-columns:1fr; grid-row-gap:6px; }
+.mh-side > .btn, .mh-side > select { width:100%; height:30px; line-height:28px; min-height:0; margin:0; padding:0 10px; font-size:90%; box-sizing:border-box; }
+.mh-side > .btn .mh-icon { width:14px; height:14px; }
+.mh-side-gap { height:4px; }
 
 .mh-group { margin-top:10px; }
 .mh-ghead { display:flex; align-items:center; flex-wrap:wrap; gap:4px 12px; margin-bottom:6px; }
@@ -92,8 +97,6 @@ return view.extend({
 
 		if (body)
 			body.replaceChildren(...this.renderBody(this.data));
-
-		diag.draw();
 	},
 
 	refresh() {
@@ -148,17 +151,33 @@ return view.extend({
 		});
 	},
 
-	updateSub(name) {
-		this.busy['sub:' + name] = true;
+	probeAll(sections) {
+		this.busy.probeAll = true;
 		this.redraw();
 
-		return callSubUpdate(name).then((r) => {
-			const res = (r.results || [])[0];
+		return Promise.all(sections.map((s) => this.probeSection(s))).finally(() => {
+			delete this.busy.probeAll;
+			this.redraw();
+		});
+	},
 
-			if (r.error || (res && !res.ok))
-				ui.addNotification(null, E('p', _('Subscription %s: %s').format(name, r.error || res.error)), 'error');
-		}).finally(() => {
-			delete this.busy['sub:' + name];
+	// Downloads the given subscriptions again, one after another.
+	updateSubs(key, names) {
+		this.busy[key] = true;
+		this.redraw();
+
+		let p = Promise.resolve();
+
+		for (const name of names)
+			p = p.then(() => callSubUpdate(name)).then((r) => {
+				const res = (r.results || [])[0];
+
+				if (r.error || (res && !res.ok))
+					ui.addNotification(null, E('p', _('Subscription %s: %s').format(name, r.error || res.error)), 'error');
+			});
+
+		return p.finally(() => {
+			delete this.busy[key];
 			return this.refresh();
 		});
 	},
@@ -272,7 +291,7 @@ return view.extend({
 	},
 
 	// A subscription: title, traffic used of the limit, expiry, last update.
-	subHead(sub, now) {
+	subHead(sub, now, loose) {
 		const info = sub.info || {};
 		const u = info.userinfo || {};
 		const used = (u.upload || 0) + (u.download || 0);
@@ -311,10 +330,11 @@ return view.extend({
 		else if (info.hwid && info.hwid.not_supported)
 			parts.push(E('span', { 'class': 'mh-warn mh-small' }, _('The provider expects an HWID: turn on "Send device data"')));
 
-		parts.push(mh.button({
-			icon: 'refresh', text: _('Update'), busy: this.busy['sub:' + sub.name],
-			click: ui.createHandlerFn(this, 'updateSub', sub.name)
-		}));
+		if (loose)
+			parts.push(mh.button({
+				icon: 'refresh', text: _('Update'), busy: this.busy['subs:' + sub.name],
+				click: ui.createHandlerFn(this, 'updateSubs', 'subs:' + sub.name, [ sub.name ])
+			}));
 
 		return E('div', { 'class': 'mh-ghead' }, parts);
 	},
@@ -374,31 +394,46 @@ return view.extend({
 		if (current)
 			info.push(_('now: %s').format(current.name));
 
-		const tools = [];
+		const head = [ E('span', { 'class': 'mh-title' }, s.name), ' ',
+			E('span', { 'class': 'mh-muted mh-small' }, info.join(' · ')) ];
 
 		if (s.mode === 'auto' && s.pinned)
-			tools.push(E('button', { 'class': 'btn cbi-button-action', 'click': ui.createHandlerFn(this, 'select', s.name, '') }, _('Back to automatic')), ' ');
+			head.push(' ', E('a', { 'href': '#', 'class': 'mh-small', 'click': ui.createHandlerFn(this, 'select', s.name, '') }, _('Back to automatic')));
 
-		tools.push(E('select', {
-			'class': 'cbi-input-select',
-			'title': _('Check method'),
-			'change': (ev) => { this.method = ev.target.value; }
-		}, PROBES.map((p) => E('option', { 'value': p[0], 'selected': p[0] === this.method ? '' : null }, p[1]))));
+		return E('div', { 'class': 'mh-box mh-section' }, [ E('div', head) ].concat(this.groups(s, subs, now)));
+	},
 
-		tools.push(mh.button({
-			icon: 'zap', text: _('Test latency'), busy: this.busy['probe:' + s.name],
-			click: ui.createHandlerFn(this, 'probeSection', s)
-		}));
+	// The box at the side: checks and updates of every section, then the
+	// service controls; all buttons of one width and height.
+	renderSide(d) {
+		const proxies = (d.sections || []).filter((s) => s.type === 'proxy');
+		const own = { link: true, json: true, interface: true };
+		const subNames = [ ...new Set([].concat(...proxies.map((s) => s.nodes.map((n) => n.source))).filter((x) => x && !own[x])) ];
+		const side = [];
 
-		return E('div', { 'class': 'mh-box mh-section' }, [
-			E('div', { 'class': 'mh-head' }, [
-				E('div', { 'class': 'mh-grow' }, [
-					E('span', { 'class': 'mh-title' }, s.name), ' ',
-					E('span', { 'class': 'mh-muted mh-small' }, info.join(' · '))
-				]),
-				E('div', { 'class': 'mh-tools' }, tools)
-			])
-		].concat(this.groups(s, subs, now)));
+		if (proxies.length) {
+			side.push(E('select', {
+				'class': 'cbi-input-select',
+				'title': _('Check method'),
+				'change': (ev) => { this.method = ev.target.value; }
+			}, PROBES.map((p) => E('option', { 'value': p[0], 'selected': p[0] === this.method ? '' : null }, p[1]))));
+
+			side.push(mh.button({
+				icon: 'zap', text: _('Test latency'), busy: this.busy.probeAll,
+				click: ui.createHandlerFn(this, 'probeAll', proxies)
+			}));
+		}
+
+		if (subNames.length)
+			side.push(mh.button({
+				icon: 'refresh', text: _('Update'), busy: this.busy['subs:all'],
+				click: ui.createHandlerFn(this, 'updateSubs', 'subs:all', subNames)
+			}));
+
+		if (side.length)
+			side.push(E('div', { 'class': 'mh-side-gap' }));
+
+		return E('div', { 'class': 'mh-box mh-side' }, side.concat(diag.controls()));
 	},
 
 	renderTunnel(s, now) {
@@ -432,7 +467,7 @@ return view.extend({
 		return E('div', { 'class': 'mh-box mh-section' }, [
 			E('div', { 'class': 'mh-title' }, _('Subscriptions without a section'))
 		].concat(left.map((s) => E('div', { 'class': 'mh-group' }, [
-			this.subHead(s, now),
+			this.subHead(s, now, true),
 			E('div', { 'class': 'mh-muted mh-small' }, _('%d servers').format(s.nodes))
 		]))));
 	},
@@ -445,7 +480,11 @@ return view.extend({
 
 		const sections = (d.sections || []).map((s) => this.renderSection(s, subs, d.time));
 
-		return [ this.renderAlert(d), this.renderWidgets(d) ].concat(sections, [ this.renderLoose(subs, d.time) ]);
+		// Sections on the left, the buttons in a box of their own on the right.
+		return [ this.renderAlert(d), this.renderWidgets(d), E('div', { 'class': 'mh-split' }, [
+			E('div', { 'class': 'mh-stack' }, sections.concat([ this.renderLoose(subs, d.time) ])),
+			this.renderSide(d)
+		]) ];
 	},
 
 	render(d) {
@@ -453,11 +492,14 @@ return view.extend({
 
 		poll.add(() => document.hidden ? Promise.resolve() : this.refresh(), 2);
 
+		// First: the section headers draw its buttons.
+		const dialogs = diag.render({ state: () => this.data, refresh: () => this.refresh(), redraw: () => this.redraw() });
+
 		return E('div', { 'class': 'cbi-map mh-page mh-stack' }, [
 			mh.style(),
 			E('style', CSS),
-			E('div', { 'id': 'mayhem-body', 'class': 'mh-stack' }, this.renderBody(d)),
-			diag.render({ state: () => this.data, refresh: () => this.refresh() })
+			dialogs,
+			E('div', { 'id': 'mayhem-body', 'class': 'mh-stack' }, this.renderBody(d))
 		]);
 	},
 

@@ -1351,7 +1351,7 @@ msgid "Turn Mayhem on"
 msgstr "Включить Mayhem"
 
 msgid "View logs"
-msgstr "Открыть логи"
+msgstr "Посмотреть логи"
 
 msgid "Device"
 msgstr "Устройство"
@@ -1379,3 +1379,12 @@ msgstr "Назад"
 
 msgid "Run again"
 msgstr "Проверить ещё раз"
+
+msgid "Stop Mayhem"
+msgstr "Остановить Mayhem"
+
+msgid "Turn autostart off"
+msgstr "Выключить автозапуск"
+
+msgid "Turn autostart on"
+msgstr "Включить автозапуск"
