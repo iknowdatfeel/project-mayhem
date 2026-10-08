@@ -397,7 +397,7 @@ return baseclass.extend({
 			});
 		});
 
-		ui.showModal(_('Import and export'), [
+		ui.showModal(_('Backup'), [
 			E('div', { 'class': 'mh-backup' }, [
 				E('b', _('Export')),
 				E('div', { 'class': 'mh-small' }, _('One file with every setting of Mayhem: sections and their rules, DNS, geo sources, settings and rule list files. Downloaded data is fetched again after a restore.')),
@@ -428,7 +428,7 @@ return baseclass.extend({
 		return [
 			mh.button({ icon: 'search', text: _('Diagnostics'), click: ui.createHandlerFn(this, 'diagnostics', true) }),
 			mh.button({ icon: 'logs', text: _('View logs'), click: ui.createHandlerFn(this, 'logs') }),
-			mh.button({ icon: 'archive', text: _('Import / export'), click: ui.createHandlerFn(this, 'backup') }),
+			mh.button({ icon: 'archive', text: _('Backup'), click: ui.createHandlerFn(this, 'backup') }),
 			btn('restart', 'restart', 'cbi-button-apply', _('Restart Mayhem')),
 			d.running ? btn('stop', 'stop', 'cbi-button-remove', _('Stop Mayhem'))
 				: btn('start', 'play', 'cbi-button-save', _('Start Mayhem')),

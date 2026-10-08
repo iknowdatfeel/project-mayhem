@@ -1592,3 +1592,21 @@ msgstr "ТБ"
 
 msgid "%s/s"
 msgstr "%s/с"
+
+msgid "Ping time"
+msgstr "Пинг"
+
+msgid "Backup"
+msgstr "Резервная копия"
+
+msgid "Not used"
+msgstr "Не используется"
+
+msgid "No servers"
+msgstr "Нет"
+
+msgid "Download route"
+msgstr "Скачивание"
+
+msgid "Server name"
+msgstr "Имя сервера"

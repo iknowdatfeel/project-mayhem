@@ -407,7 +407,7 @@ return view.extend({
 		o = s.option(form.Value, 'local_port', _('Local proxy port'),
 			_('A SOCKS5 and HTTP proxy on the router that sends everything into this section, for apps and devices that can use a proxy. Reachable from the LAN; the firewall closes it from the internet.'));
 		o.datatype = 'range(1024,65535)';
-		o.placeholder = _('off');
+		o.placeholder = _('Not used');
 		o.depends('type', 'proxy');
 		o.depends('type', 'interface');
 		o.modalonly = true;
@@ -449,7 +449,7 @@ return view.extend({
 
 			get('subscription').forEach((n) => parts.push(n));
 
-			return parts.join(', ') || _('none');
+			return parts.join(', ') || _('No servers');
 		};
 
 		o = s.option(form.DummyValue, '_rules', _('Rules'));
@@ -500,7 +500,7 @@ return view.extend({
 			o.value(String(h), '%02d:00'.format(h));
 		o.default = '4';
 
-		o = s.option(form.ListValue, 'update_via', _('Download'),
+		o = s.option(form.ListValue, 'update_via', _('Download route'),
 			_('Applies to geo data and lists.'));
 		o.value('auto', _('Direct, then through a section'));
 		o.value('direct', _('Direct only'));

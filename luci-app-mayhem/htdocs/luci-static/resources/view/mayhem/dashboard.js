@@ -286,14 +286,14 @@ return view.extend({
 		const wait = '…';
 
 		if (!c) {
-			rows.push([ _('Ping'), '—' ], [ _('External IP'), '—' ], [ _('Location'), '—' ]);
+			rows.push([ _('Ping time'), '—' ], [ _('External IP'), '—' ], [ _('Location'), '—' ]);
 			return rows;
 		}
 
 		if (c.ms != null)
-			rows.push([ _('Ping'), _('%d ms').format(c.ms), latencyClass(c.ms) ]);
+			rows.push([ _('Ping time'), _('%d ms').format(c.ms), latencyClass(c.ms) ]);
 		else
-			rows.push([ _('Ping'), c.busy ? wait : _('No answer'), c.busy ? 'mh-muted' : 'mh-fail', c.pingError ]);
+			rows.push([ _('Ping time'), c.busy ? wait : _('No answer'), c.busy ? 'mh-muted' : 'mh-fail', c.pingError ]);
 
 		const x = c.exit || {};
 
