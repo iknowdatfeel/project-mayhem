@@ -49,7 +49,10 @@ const ICONS = {
 	logs: [ [], [ 'M4 6h16', 'M4 12h10', 'M4 18h13' ] ],
 	copy: [ [], [ 'M8 8h12v12H8z', 'M16 8V4H4v12h4' ] ],
 	zap: [ [], [ 'M13 2 4 14h7l-1 8 9-12h-7l1-8Z' ] ],
-	refresh: [ [], [ 'M21 12a9 9 0 0 1-15 6.7L3 16', 'M3 12a9 9 0 0 1 15-6.7L21 8', 'M21 3v5h-5', 'M3 21v-5h5' ] ]
+	refresh: [ [], [ 'M21 12a9 9 0 0 1-15 6.7L3 16', 'M3 12a9 9 0 0 1 15-6.7L21 8', 'M21 3v5h-5', 'M3 21v-5h5' ] ],
+	download: [ [], [ 'M12 3v12', 'm7 10 5 5 5-5', 'M5 21h14' ] ],
+	upload: [ [], [ 'M12 15V3', 'm7 8 5-5 5 5', 'M5 21h14' ] ],
+	archive: [ [], [ 'M3 4h18v4H3z', 'M5 8v12h14V8', 'M10 12h4' ] ]
 };
 
 const SVG = 'http://www.w3.org/2000/svg';
@@ -90,7 +93,7 @@ function bytes(n) {
 	if (n == null)
 		return '—';
 
-	const u = [ 'B', 'KB', 'MB', 'GB', 'TB' ];
+	const u = [ _('B'), _('KB'), _('MB'), _('GB'), _('TB') ];
 	let i = 0;
 
 	while (n >= 1024 && i < u.length - 1) {

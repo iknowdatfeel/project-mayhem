@@ -436,6 +436,7 @@ write_uci() {
 			"	option ip_family 'ipv4_only'" \
 			"	option probe_url 'http://45.0.0.2:8080/204'" \
 			"	option probe_interval '1m'" \
+			"	option ip_check_url 'http://45.0.0.2:8080/'" \
 			"" \
 			"config dns 'dns'" \
 			"	list domestic '45.0.0.2'" \
@@ -540,6 +541,17 @@ if start_mayhem uci; then
 	fi
 
 	if rpc probe "{\"tag\":\"$(tag_of B)\",\"method\":\"url\"}" | grep -q '"ms": [0-9]'; then ok "URL test through one server"; else bad "URL test"; fi
+	# No geo service is reachable here: the address comes from ip_check_url.
+	out="$(rpc exit_info '{}')"
+	case "$out" in
+		*'"section": "main"'*'"ip": "45.0.0.'[38]'"'*) ok "dashboard: external address of the default section" ;;
+		*) bad "dashboard external address: $out" ;;
+	esac
+	if rpc set_ping_method '{"method":"tcp"}' | grep -q '"ok": true' && rpc dashboard | grep -q '"ping_method": "tcp"'; then
+		ok "dashboard: ping method is kept"
+	else
+		bad "dashboard: ping method is not kept"
+	fi
 	if rpc probe "{\"tag\":\"$(tag_of B)\",\"method\":\"tcp\"}" | grep -q '"ms": [0-9]'; then ok "TCP ping"; else bad "TCP ping"; fi
 	out="$(rpc probe "{\"tag\":\"$(tag_of B)\",\"method\":\"icmp\"}")"
 	case "$out" in

@@ -45,7 +45,8 @@ STATIC = [
 ]
 
 # Methods the pages may call that would change the system: never run them.
-SIDE_EFFECTS = {'action', 'system_install', 'data_update', 'awg_import', 'geo_import', 'set_log_level', 'sub_update', 'select_node'}
+SIDE_EFFECTS = {'action', 'system_install', 'data_update', 'awg_import', 'geo_import', 'set_log_level', 'sub_update', 'select_node',
+                'set_ping_method', 'backup_import'}
 
 calls = []
 unknown = []
@@ -145,6 +146,11 @@ def call(obj, method, args):
     calls.append('%s.%s' % (obj, method))
 
     if obj == 'luci.mayhem':
+        # In the demo the checks through a server answer like a real one would.
+        if DEMO and method == 'exit_info':
+            return {'section': 'main', 'ip': '185.132.132.192', 'country_code': 'NL', 'country': 'Netherlands', 'city': 'Amsterdam'}
+        if DEMO and method == 'probe':
+            return {'ms': random.choice([48, 63, 95, 142])}
         if method in SIDE_EFFECTS:
             return {'started': True} if method in ('system_install', 'data_update') else {'ok': True}
         return ucode(os.path.join(os.path.dirname(__file__), 'rpc.uc'), PLUGIN, method, json.dumps(args or {}))
@@ -198,6 +204,8 @@ def page(view):
     # Added after the % formatting: the translations contain "%d" and "%s".
     if os.environ.get('MAYHEM_DARK'):
         html = html.replace('<html>', '<html data-darkmode="true">', 1)
+    if os.environ.get('MAYHEM_LANG'):
+        html = html.replace('<html', '<html lang="%s"' % os.environ['MAYHEM_LANG'], 1)
     if TRANSLATIONS:
         script = '<script>(function(t){window.TR={};for(var k in t)TR[sfh(trimws(k))]=t[k];})(%s);</script>' % json.dumps(TRANSLATIONS)
         html = html.replace('</head>', script + '</head>', 1)
@@ -334,7 +342,7 @@ def main():
             close_modal(pg)
 
         def run_diag(pg):
-            pg.click('#mayhem-body .mh-side button >> nth=-5')
+            pg.click('#mayhem-body .mh-side button >> nth=-6')
             pg.wait_for_selector('.modal .mh-drow', timeout=5000)
             pg.wait_for_timeout(500)
             pg.wait_for_function('!document.querySelector(".modal .mh-spin")', timeout=90000)
@@ -344,11 +352,41 @@ def main():
             close_modal(pg)
 
         def logs_modal(pg):
-            pg.click('#mayhem-body .mh-side button >> nth=-4')
+            pg.click('#mayhem-body .mh-side button >> nth=-5')
             pg.wait_for_selector('.modal .mh-log', timeout=5000)
             pg.wait_for_timeout(500)
             shot(pg, 'dashboard_logs')
             close_modal(pg)
+
+        def backup_modal(pg):
+            pg.click('#mayhem-body .mh-side button >> nth=-4')
+            pg.wait_for_selector('.modal .mh-backup', timeout=5000)
+            pg.wait_for_timeout(300)
+            shot(pg, 'dashboard_backup')
+            close_modal(pg)
+
+        def servers_tabs(pg):
+            if not pg.query_selector('[data-tab="settings"] .mh-keys'):
+                raise RuntimeError('no table of servers added by key')
+            shot(pg, 'servers_add')
+            # a key into a new section: checked by the backend, then saved
+            pg.fill('[data-tab="settings"] textarea', 'ss://YWVzLTI1Ni1nY206cHc@1.2.3.6:8388#FI 3')
+            pg.select_option('[data-tab="settings"] select', '')
+            pg.fill('[data-tab="settings"] input.cbi-input-text', 'extra')
+            # applying needs the router: only note that it was asked for
+            pg.evaluate('L.ui.changes.apply = function() { window.mhApplied = true; return Promise.resolve(); }')
+            n = len(calls)
+            pg.click('[data-tab="settings"] .cbi-button-add')
+            pg.wait_for_timeout(1500)
+            if 'luci.mayhem.parse_link' not in calls[n:] or 'uci.add' not in calls[n:] or not pg.evaluate('window.mhApplied === true'):
+                raise RuntimeError('adding a key did not save and apply it: %s' % calls[n:])
+            pg.click('.cbi-tabmenu [data-tab="subscription"] a')
+            pg.wait_for_timeout(300)
+            shot(pg, 'servers_subscriptions')
+            open_modals(pg, '[data-tab="subscription"]')
+            pg.click('.cbi-tabmenu [data-tab="device"] a')
+            pg.wait_for_timeout(300)
+            shot(pg, 'servers_device')
 
         def geo_tab(pg):
             pg.click('.cbi-tabmenu [data-tab="geo"] a')
@@ -380,10 +418,11 @@ def main():
                 pg.wait_for_timeout(4500)  # two polls: the speed widget has numbers
 
         pages = [
-            ('mayhem/dashboard', [('buttons', dashboard_buttons), ('logs dialog', logs_modal), ('run diagnostics', run_diag)]),
-            ('mayhem/sections', [('edit sections', lambda pg: open_modals(pg, '[data-tab="section"]')), ('tunnel options', type_tunnel),
+            ('mayhem/dashboard', [('buttons', dashboard_buttons), ('logs dialog', logs_modal), ('backup dialog', backup_modal), ('run diagnostics', run_diag)]),
+            ('mayhem/sections', [('sections tab', lambda pg: shot(pg, 'routing_sections')),
+                                 ('edit sections', lambda pg: open_modals(pg, '[data-tab="section"]')), ('tunnel options', type_tunnel),
                                  ('import dialog', import_modal), ('DNS tab', dns_tab), ('edit geo sources', geo_tab), ('upload dialog', upload_modal)]),
-            ('mayhem/subscriptions', [('edit subscriptions', open_modals)]),
+            ('mayhem/servers', [('server list tabs', servers_tabs)]),
             ('mayhem/settings', []),
         ]
 

@@ -17,6 +17,8 @@ const callAction = rpc.declare({ object: 'luci.mayhem', method: 'action', params
 const callSelect = rpc.declare({ object: 'luci.mayhem', method: 'select_node', params: [ 'section', 'tag' ], expect: { '': {} } });
 const callProbe = rpc.declare({ object: 'luci.mayhem', method: 'probe', params: [ 'tag', 'method' ], expect: { '': {} } });
 const callSubUpdate = rpc.declare({ object: 'luci.mayhem', method: 'sub_update', params: [ 'name' ], expect: { '': {} } });
+const callExitInfo = rpc.declare({ object: 'luci.mayhem', method: 'exit_info', params: [ 'section', 'lang' ], expect: { '': {} } });
+const callSetPing = rpc.declare({ object: 'luci.mayhem', method: 'set_ping_method', params: [ 'method' ], expect: { '': {} } });
 
 const PROBE_PARALLEL = 4;
 const DAY = 86400;
@@ -28,6 +30,7 @@ const CSS = `
 .mh-widgets { display:grid; grid-template-columns:repeat(3, 1fr); grid-gap:10px; }
 @media (max-width: 700px) { .mh-widgets { grid-template-columns:1fr; } }
 .mh-widget-row { white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+.mh-whead { display:flex; justify-content:space-between; align-items:baseline; gap:8px; }
 .mh-split { display:grid; grid-template-columns:1fr 240px; grid-column-gap:12px; align-items:start; }
 @media (max-width: 700px) { .mh-split { grid-template-columns:1fr; grid-row-gap:10px; } }
 .mh-side { display:grid; grid-template-columns:1fr; grid-row-gap:6px; }
@@ -53,11 +56,50 @@ const CSS = `
 `;
 
 function rate(n) {
-	return n == null ? '—' : mh.bytes(n) + '/s';
+	return n == null ? '—' : _('%s/s').format(mh.bytes(n));
+}
+
+const PROTOCOLS = {
+	vless: 'VLESS', vmess: 'VMess', trojan: 'Trojan', shadowsocks: 'Shadowsocks', socks: 'SOCKS', http: 'HTTP',
+	hysteria: 'Hysteria2', hysteria2: 'Hysteria2', wireguard: 'WireGuard', freedom: 'Freedom'
+};
+
+function protocolName(p) {
+	return p === 'interface' ? _('Tunnel') : (PROTOCOLS[p] || (p ? p.charAt(0).toUpperCase() + p.slice(1) : '?'));
 }
 
 function latencyClass(v) {
 	return v < 400 ? 'mh-ok' : (v < 1000 ? 'mh-warn' : 'mh-fail');
+}
+
+function pageLang() {
+	return document.documentElement.getAttribute('lang') || (L.env && L.env.lang) || navigator.language || 'en';
+}
+
+// Flag emoji of a country: the two letters of its code as regional indicators.
+function flag(cc) {
+	if (!/^[A-Z]{2}$/.test(cc || ''))
+		return '';
+
+	return String.fromCodePoint(0x1F1E6 + cc.charCodeAt(0) - 65, 0x1F1E6 + cc.charCodeAt(1) - 65);
+}
+
+// Country name in the language of the page; the service's name otherwise.
+function countryName(cc, fallback) {
+	try {
+		return new Intl.DisplayNames([ pageLang() ], { type: 'region' }).of(cc) || fallback;
+	}
+	catch (e) {
+		return fallback;
+	}
+}
+
+// Languages the geo services know city names in.
+function geoLang() {
+	const l = pageLang().replace('_', '-');
+	const known = [ 'en', 'de', 'es', 'fr', 'ja', 'pt-BR', 'ru', 'zh-CN' ];
+
+	return known.indexOf(l) >= 0 ? l : (known.indexOf(l.split('-')[0]) >= 0 ? l.split('-')[0] : 'en');
 }
 
 const MODES = {
@@ -72,6 +114,7 @@ return view.extend({
 	probes: {},
 	busy: {},
 	method: 'url',
+	conn: null,		// ping and exit of the default section, checked on demand
 
 	load() {
 		return callDashboard();
@@ -82,9 +125,11 @@ return view.extend({
 			const dt = d.time - this.data.time;
 			const diff = (a, b) => Math.max(0, (a - b) / dt);
 
+			const all = (x) => x.totals.all || { up: 0, down: 0 };
+
 			this.speed = {
-				proxy: { up: diff(d.totals.proxy.up, this.data.totals.proxy.up), down: diff(d.totals.proxy.down, this.data.totals.proxy.down) },
-				direct: { up: diff(d.totals.direct.up, this.data.totals.direct.up), down: diff(d.totals.direct.down, this.data.totals.direct.down) }
+				up: diff(all(d).up, all(this.data).up),
+				down: diff(all(d).down, all(this.data).down)
 			};
 		}
 
@@ -113,7 +158,45 @@ return view.extend({
 				ui.addNotification(null, E('p', r.error), 'error');
 
 			return this.refresh();
+		}).then(() => {
+			if (section === this.data.default_section)
+				this.checkConnection();
 		});
+	},
+
+	// Ping and external address of the default section: once when the page
+	// opens, after a server change and with the latency test. Never polled.
+	checkConnection() {
+		const d = this.data;
+		const sec = (d.sections || []).find((s) => s.name === d.default_section);
+
+		if (!sec || !d.running) {
+			this.conn = null;
+			this.redraw();
+			return Promise.resolve();
+		}
+
+		const conn = this.conn = { section: sec.name, busy: true };
+		const method = this.method;
+
+		this.redraw();
+
+		const ping = sec.active
+			? callProbe(sec.active, method).then((r) => { conn.ms = r.ms; conn.pingError = r.error; })
+			: Promise.resolve();
+		const exit = callExitInfo(sec.name, geoLang()).then((r) => { conn.exit = r; });
+
+		return Promise.all([ ping, exit ]).catch(() => {}).finally(() => {
+			conn.busy = false;
+
+			if (this.conn === conn)
+				this.redraw();
+		});
+	},
+
+	setMethod(m) {
+		this.method = m;
+		callSetPing(m);
 	},
 
 	// Checks every server of the section with the chosen method, a few at a time.
@@ -155,7 +238,7 @@ return view.extend({
 		this.busy.probeAll = true;
 		this.redraw();
 
-		return Promise.all(sections.map((s) => this.probeSection(s))).finally(() => {
+		return Promise.all(sections.map((s) => this.probeSection(s)).concat([ this.checkConnection() ])).finally(() => {
 			delete this.busy.probeAll;
 			this.redraw();
 		});
@@ -184,37 +267,74 @@ return view.extend({
 
 	// --- widgets -----------------------------------------------------------------
 
-	widget(title, rows) {
+	widget(title, rows, note) {
 		return E('div', { 'class': 'mh-box' }, [
-			E('div', { 'class': 'mh-title' }, title)
-		].concat(rows.map((r) => E('div', { 'class': 'mh-widget-row', 'title': r[0] + ': ' + r[1] }, [
+			E('div', { 'class': 'mh-whead' }, [ E('span', { 'class': 'mh-title' }, title), note ? E('span', { 'class': 'mh-muted mh-small' }, note) : '' ])
+		].concat(rows.map((r) => E('div', { 'class': 'mh-widget-row', 'title': r[0] + ': ' + (r[3] || r[1]) }, [
 			E('span', { 'class': 'mh-muted' }, r[0] + ': '),
 			E('span', { 'class': r[2] || '' }, r[1])
 		]))));
 	},
 
+	connectionRows(d, working) {
+		const c = this.conn;
+		const sp = this.speed && working ? this.speed : null;
+		const rows = [
+			[ _('Incoming'), sp ? rate(sp.down) : '—' ],
+			[ _('Outgoing'), sp ? rate(sp.up) : '—' ]
+		];
+		const wait = '…';
+
+		if (!c) {
+			rows.push([ _('Ping'), '—' ], [ _('External IP'), '—' ], [ _('Location'), '—' ]);
+			return rows;
+		}
+
+		if (c.ms != null)
+			rows.push([ _('Ping'), _('%d ms').format(c.ms), latencyClass(c.ms) ]);
+		else
+			rows.push([ _('Ping'), c.busy ? wait : _('No answer'), c.busy ? 'mh-muted' : 'mh-fail', c.pingError ]);
+
+		const x = c.exit || {};
+
+		if (x.ip) {
+			const f = flag(x.country_code);
+			const place = [ x.country_code ? countryName(x.country_code, x.country) : x.country, x.city ].filter((v) => v).join(', ');
+
+			rows.push([ _('External IP'), (f ? f + ' ' : '') + x.ip ]);
+			rows.push([ _('Location'), place || '—' ]);
+		}
+		else {
+			rows.push([ _('External IP'), c.busy ? wait : _('No answer'), c.busy ? 'mh-muted' : 'mh-fail', x.error ]);
+			rows.push([ _('Location'), c.busy ? wait : '—', 'mh-muted' ]);
+		}
+
+		return rows;
+	},
+
 	renderWidgets(d) {
 		const working = d.running && d.active;
-		const sp = this.speed && working ? this.speed : null;
-		const svc = !d.enabled ? [ '✘ ' + _('Disabled'), 'mh-muted' ]
-			: working ? [ '✔ ' + _('Working'), 'mh-ok' ]
+		const svc = !d.enabled ? [ '✘ ' + _('Turned off'), 'mh-muted' ]
+			: working ? [ '✔ ' + _('Works'), 'mh-ok' ]
 			: d.running ? [ '… ' + _('Starting…'), 'mh-warn' ]
-			: [ '✘ ' + _('Not running'), 'mh-fail' ];
+			: [ '✘ ' + _('Does not work'), 'mh-fail' ];
+		const xray = !d.xray ? [ '✘ ' + _('Not installed'), 'mh-fail' ]
+			: d.running ? [ '✔ ' + _('Works'), 'mh-ok' ]
+			: [ '✘ ' + _('Does not work'), 'mh-fail' ];
 
 		return E('div', { 'class': 'mh-widgets' }, [
-			this.widget(_('Speed'), [
-				[ _('Proxy'), sp ? '↓ %s ↑ %s'.format(rate(sp.proxy.down), rate(sp.proxy.up)) : '—' ],
-				[ _('Direct'), sp ? '↓ %s ↑ %s'.format(rate(sp.direct.down), rate(sp.direct.up)) : '—' ]
-			]),
+			this.widget(_('Connection state'), this.connectionRows(d, working), this.conn ? this.conn.section : ''),
 			this.widget(_('System'), [
-				[ _('Mode'), d.mode === 'global' ? _('everything through proxy') : _('by lists') ],
-				[ _('xray memory'), d.rss_kb ? mh.bytes(d.rss_kb * 1024) : '—' ]
+				[ _('Router'), d.model || '—' ],
+				[ _('OS'), d.system || '—' ],
+				[ 'Mayhem', d.version || '—' ],
+				[ 'Xray', d.xray || '—' ]
 			]),
 			this.widget(_('Services'), [
 				[ 'Mayhem', svc[0], svc[1] ],
-				[ 'xray', d.xray ? (d.running ? '✔ ' + d.xray : '✘ ' + d.xray) : '✘ ' + _('not installed'),
-					d.xray && d.running ? 'mh-ok' : 'mh-fail' ],
-				[ 'dnsmasq', d.dnsmasq ? '✔ ' + _('running') : '✘ ' + _('not running'), d.dnsmasq ? 'mh-ok' : 'mh-fail' ]
+				[ 'Xray', xray[0], xray[1] ],
+				[ 'Dnsmasq', d.dnsmasq ? '✔ ' + _('Works') : '✘ ' + _('Does not work'), d.dnsmasq ? 'mh-ok' : 'mh-fail' ],
+				[ _('Xray memory'), d.rss_kb ? mh.bytes(d.rss_kb * 1024) : '—' ]
 			])
 		]);
 	},
@@ -225,7 +345,7 @@ return view.extend({
 		const errors = ((d.status || {}).errors || []).slice();
 
 		if (!d.xray)
-			errors.push(_('xray is not installed: run "mayhem xray-install"'));
+			errors.push(_('Xray is not installed: run "mayhem xray-install"'));
 
 		if (!d.enabled)
 			return E('div', { 'class': 'mh-box mh-alert' }, [
@@ -256,18 +376,18 @@ return view.extend({
 			const label = p.method === 'url' ? '' : p.method.toUpperCase() + ' ';
 
 			if (typeof p.value === 'string')
-				return E('span', { 'class': 'mh-fail', 'title': p.value }, label + _('no answer'));
+				return E('span', { 'class': 'mh-fail', 'title': p.value }, label + _('No answer'));
 
-			return E('span', { 'class': latencyClass(p.value) }, '%s%d ms'.format(label, p.value));
+			return E('span', { 'class': latencyClass(p.value) }, label + _('%d ms').format(p.value));
 		}
 
 		if (n.alive === false)
-			return E('span', { 'class': 'mh-fail' }, _('no answer'));
+			return E('span', { 'class': 'mh-fail' }, _('No answer'));
 
 		if (n.delay == null)
 			return E('span', { 'class': 'mh-muted' }, 'N/A');
 
-		return E('span', { 'class': latencyClass(n.delay) }, '%d ms'.format(n.delay));
+		return E('span', { 'class': latencyClass(n.delay) }, _('%d ms').format(n.delay));
 	},
 
 	tile(s, n) {
@@ -284,7 +404,7 @@ return view.extend({
 		return E('div', attrs, [
 			E('b', n.name),
 			E('div', { 'class': 'mh-tile-foot mh-small' }, [
-				E('span', { 'class': 'mh-muted' }, n.protocol),
+				E('span', { 'class': 'mh-muted' }, protocolName(n.protocol)),
 				this.latency(n)
 			])
 		]);
@@ -298,7 +418,7 @@ return view.extend({
 		const parts = [ E('b', info.title || sub.name) ];
 
 		if (!sub.enabled)
-			parts.push(E('span', { 'class': 'mh-muted mh-small' }, _('disabled')));
+			parts.push(E('span', { 'class': 'mh-muted mh-small' }, _('Disabled subscription')));
 
 		if (u.total) {
 			const share = Math.min(1, used / u.total);
@@ -317,10 +437,10 @@ return view.extend({
 			const date = new Date(u.expire * 1000).toLocaleDateString();
 
 			parts.push(E('span', { 'class': 'mh-small ' + (left < 0 ? 'mh-fail' : left < 3 * DAY ? 'mh-warn' : 'mh-muted') },
-				left < 0 ? _('expired %s').format(date) : _('until %s').format(date)));
+				left < 0 ? _('Expired %s').format(date) : _('Until %s').format(date)));
 		}
 
-		parts.push(E('span', { 'class': 'mh-muted mh-small' }, _('updated %s').format(mh.ago(sub.updated, now))));
+		parts.push(E('span', { 'class': 'mh-muted mh-small' }, _('Updated %s').format(mh.ago(sub.updated, now))));
 
 		if (sub.error)
 			parts.push(E('span', { 'class': 'mh-fail mh-small' }, sub.error));
@@ -389,10 +509,10 @@ return view.extend({
 		const info = [ MODES[s.mode] || s.mode ];
 
 		if (s.mode === 'auto' && s.pinned)
-			info.push(_('pinned by hand'));
+			info.push(_('Pinned by hand'));
 
 		if (current)
-			info.push(_('now: %s').format(current.name));
+			info.push(_('Now: %s').format(current.name));
 
 		const head = [ E('span', { 'class': 'mh-title' }, s.name), ' ',
 			E('span', { 'class': 'mh-muted mh-small' }, info.join(' · ')) ];
@@ -415,7 +535,7 @@ return view.extend({
 			side.push(E('select', {
 				'class': 'cbi-input-select',
 				'title': _('Check method'),
-				'change': (ev) => { this.method = ev.target.value; }
+				'change': (ev) => this.setMethod(ev.target.value)
 			}, PROBES.map((p) => E('option', { 'value': p[0], 'selected': p[0] === this.method ? '' : null }, p[1]))));
 
 			side.push(mh.button({
@@ -441,10 +561,10 @@ return view.extend({
 		const state = t.state === 'up' ? [ 'mh-ok', '✔ ' + _('Works') ]
 			: t.state === 'down' ? [ 'mh-fail', '✘ ' + _('Down, traffic goes direct') ]
 			: [ 'mh-muted', _('Unknown') ];
-		const info = [ '%s %s'.format(_('interface'), s.interface || '?'), s.mode === 'xray' ? _('through xray') : _('kernel mode') ];
+		const info = [ _('Interface %s').format(s.interface || '?'), s.mode === 'xray' ? _('Through Xray') : _('Kernel mode') ];
 
 		if (t.handshake)
-			info.push(_('last handshake %s').format(mh.ago(t.handshake, now)));
+			info.push(_('Last handshake %s').format(mh.ago(t.handshake, now)));
 
 		info.push('↓ %s ↑ %s'.format(mh.bytes(s.traffic.down), mh.bytes(s.traffic.up)));
 
@@ -489,6 +609,11 @@ return view.extend({
 
 	render(d) {
 		this.data = d;
+
+		if (PROBES.some((p) => p[0] === d.ping_method))
+			this.method = d.ping_method;
+
+		window.setTimeout(() => this.checkConnection(), 0);
 
 		poll.add(() => document.hidden ? Promise.resolve() : this.refresh(), 2);
 

@@ -5,7 +5,7 @@
 'use strict';
 
 import * as fs from 'fs';
-import { parse_link } from 'mayhem.links';
+import { parse_link, outbound_host, outbound_port, refused_by_xray } from 'mayhem.links';
 import { list_key, entries } from 'mayhem.rules';
 import { parse_conf, is_amnezia, uci_sections } from 'mayhem.awg';
 import * as C from 'mayhem.const';
@@ -74,6 +74,12 @@ function metrics() {
 	catch (e) {
 		return { stats: {}, observatory: {} };
 	}
+}
+
+function os_release() {
+	const m = match(fs.readfile('/etc/openwrt_release') ?? '', /DISTRIB_DESCRIPTION='([^']*)'/);
+
+	return m ? trim(m[1]) : null;
 }
 
 function mayhem_version() {
@@ -484,33 +490,96 @@ function diag_dns() {
 	return { checks: res };
 }
 
+// curl arguments that send a request through a section: its tunnel device or
+// the helper SOCKS user of the section. "direct" needs none.
+function section_via(state, target) {
+	if (target == 'direct')
+		return { via: '' };
+
+	const s = state.sections?.[target];
+
+	if (!s)
+		return { error: 'unknown section' };
+
+	if (s.type == 'interface') {
+		if (!match(s.device ?? '', /^[A-Za-z0-9_.-]+$/))
+			return { error: 'no device' };
+
+		return { via: `--interface ${q(s.device)}` };
+	}
+
+	if (!xray_pid())
+		return { error: 'xray is not running' };
+
+	return { via: `-x ${q(`socks5h://sec-${target}:${C.HELPER_PASS}@127.0.0.1:${C.HELPER_PORT}`)}` };
+}
+
+// The section the dashboard shows the connection of: the default section of
+// "everything through proxy", otherwise the first proxy section.
+function default_section(state) {
+	const want = uci_cursor().get('mayhem', 'settings', 'default_section');
+	const secs = state?.sections ?? {};
+
+	if (want && secs[want]?.type == 'proxy')
+		return want;
+
+	for (let sn in keys(secs))
+		if (secs[sn].type == 'proxy')
+			return sn;
+
+	return null;
+}
+
+// Services that tell the address a request comes from and where it is. They
+// are asked in turn; the city comes in the language of the page if they know it.
+const GEO_LANGS = [ 'en', 'de', 'es', 'fr', 'ja', 'pt-BR', 'ru', 'zh-CN' ];
+const GEO_SERVICES = [
+	(lang) => `https://ipwho.is/?lang=${lang}&fields=success,ip,country,country_code,city`,
+	(lang) => 'https://api.ip.sb/geoip',
+	(lang) => `http://ip-api.com/json/?lang=${lang}&fields=status,query,country,countryCode,city`
+];
+
+function exit_geo(via, lang) {
+	for (let svc in GEO_SERVICES) {
+		let j = null;
+
+		try {
+			j = json(run(`curl -s -m 6 ${via} ${q(svc(lang))} 2>/dev/null`) ?? '');
+		}
+		catch (e) {
+			continue;
+		}
+
+		const ip = j?.ip ?? j?.query;
+
+		if (type(j) != 'object' || j.success === false || (j.status != null && j.status != 'success') ||
+		    !match(`${ip}`, /^[0-9a-fA-F:.]+$/))
+			continue;
+
+		const cc = j.country_code ?? j.countryCode;
+
+		return {
+			ip: ip,
+			country_code: match(`${cc}`, /^[A-Za-z]{2}$/) ? uc(cc) : null,
+			country: type(j.country) == 'string' ? j.country : null,
+			city: type(j.city) == 'string' ? j.city : null
+		};
+	}
+
+	return null;
+}
+
 // External address and response time through a section (or direct).
 function diag_exit(target) {
 	const res = [];
 	const state = read_json(`${RUN}/nodes.json`) ?? { sections: {} };
 	const url = uci_cursor().get('mayhem', 'settings', 'ip_check_url') ?? IP_CHECK_URL;
-	let via = '';
+	const v = section_via(state, target);
 
-	if (target != 'direct') {
-		const s = state.sections?.[target];
+	if (v.error)
+		return { checks: [ { group: 'exit', name: target, status: 'fail', detail: v.error } ] };
 
-		if (!s)
-			return { checks: [ { group: 'exit', name: target, status: 'fail', detail: 'unknown section' } ] };
-
-		if (s.type == 'interface') {
-			if (!match(s.device ?? '', /^[A-Za-z0-9_.-]+$/))
-				return { checks: [ { group: 'exit', name: target, status: 'fail', detail: 'no device' } ] };
-
-			via = `--interface ${q(s.device)}`;
-		}
-		else {
-			if (!xray_pid())
-				return { checks: [ { group: 'exit', name: target, status: 'fail', detail: 'xray is not running' } ] };
-
-			via = `-x ${q(`socks5h://sec-${target}:${C.HELPER_PASS}@127.0.0.1:${C.HELPER_PORT}`)}`;
-		}
-	}
-
+	const via = v.via;
 	const out = trim(run(`curl -s -m 10 ${via} -w ' %{http_code} %{time_total}' ${q(url)} 2>/dev/null`) ?? '');
 	const m = match(out, /^([0-9a-fA-F:.]+) ([0-9]+) ([0-9.]+)$/);
 
@@ -520,6 +589,180 @@ function diag_exit(target) {
 		check(res, 'exit', target == 'direct' ? 'Direct' : target, 'fail', `no answer from ${url}`);
 
 	return { checks: res };
+}
+
+// --- backup -----------------------------------------------------------------------
+// The whole UCI config of Mayhem and the rule list files of the sections.
+// Without connections: no subscriptions, server links, outbound JSON or HWID;
+// restoring such a backup keeps the connections the router has.
+
+const BACKUP_TYPES = [ 'settings', 'dns', 'geo', 'geo_source', 'device', 'subscription', 'section' ];
+const LINK_OPTIONS = [ 'link', 'subscription', 'outbound_json', 'proxy_type' ];
+const LIST_MAX = 262144;
+
+function safe_list_path(p) {
+	return type(p) == 'string' && match(p, /^\/etc\/mayhem\/[A-Za-z0-9_.\/-]+$/) && index(p, '..') < 0;
+}
+
+function uci_sections_ordered(c) {
+	const all = c.get_all('mayhem') ?? {};
+
+	return sort(values(all), (a, b) => a['.index'] - b['.index']);
+}
+
+function backup_export(with_links) {
+	const c = uci_cursor();
+	const sections = [];
+	const files = {};
+
+	for (let s in uci_sections_ordered(c)) {
+		if (index(BACKUP_TYPES, s['.type']) < 0)
+			continue;
+
+		if (!with_links && s['.type'] == 'subscription')
+			continue;
+
+		const out = { '.type': s['.type'], '.name': s['.anonymous'] ? null : s['.name'] };
+
+		for (let k in keys(s)) {
+			if (substr(k, 0, 1) == '.')
+				continue;
+
+			if (!with_links && ((s['.type'] == 'section' && index(LINK_OPTIONS, k) >= 0) || (s['.type'] == 'device' && k == 'hwid')))
+				continue;
+
+			out[k] = s[k];
+		}
+
+		if (s['.type'] == 'section')
+			for (let f in entries(s.list_file)) {
+				const st = fs.stat(f);
+
+				if (safe_list_path(f) && st?.type == 'file' && st.size <= LIST_MAX)
+					files[f] = fs.readfile(f);
+			}
+
+		push(sections, out);
+	}
+
+	return {
+		mayhem_backup: 1,
+		version: mayhem_version(),
+		created: time(),
+		connections: !!with_links,
+		sections: sections,
+		files: files
+	};
+}
+
+function valid_value(v) {
+	if (type(v) == 'string')
+		return true;
+
+	return type(v) == 'array' && length(filter(v, (x) => type(x) != 'string')) == 0;
+}
+
+function backup_import(b) {
+	if (type(b) != 'object' || b.mayhem_backup != 1 || type(b.sections) != 'array')
+		return { error: 'this is not a Mayhem backup' };
+
+	for (let s in b.sections) {
+		if (type(s) != 'object' || index(BACKUP_TYPES, s['.type']) < 0)
+			return { error: 'unknown section in the backup' };
+
+		if (s['.name'] != null && !match(`${s['.name']}`, /^[A-Za-z0-9_]+$/))
+			return { error: 'invalid section name in the backup' };
+
+		for (let k in keys(s))
+			if (substr(k, 0, 1) != '.' && (!match(k, /^[a-z_][a-z0-9_]*$/) || !valid_value(s[k])))
+				return { error: `invalid option "${k}" in the backup` };
+	}
+
+	const c = uci_cursor();
+	const keep = {};
+
+	// A backup without connections keeps the ones this router has.
+	if (!b.connections) {
+		keep.subs = [];
+		keep.links = {};
+
+		for (let s in uci_sections_ordered(c)) {
+			if (s['.type'] == 'subscription')
+				push(keep.subs, s);
+			else if (s['.type'] == 'section') {
+				keep.links[s['.name']] = {};
+
+				for (let k in LINK_OPTIONS)
+					if (s[k] != null)
+						keep.links[s['.name']][k] = s[k];
+			}
+			else if (s['.type'] == 'device' && s.hwid)
+				keep.hwid = s.hwid;
+		}
+	}
+
+	for (let s in uci_sections_ordered(c))
+		c.delete('mayhem', s['.name']);
+
+	const put = (s) => {
+		let name = s['.name'];
+
+		if (name != null)
+			c.set('mayhem', name, s['.type']);
+		else
+			name = c.add('mayhem', s['.type']);
+
+		for (let k in keys(s))
+			if (substr(k, 0, 1) != '.')
+				c.set('mayhem', name, k, s[k]);
+
+		return name;
+	};
+
+	let added_subs = false;
+
+	for (let s in b.sections) {
+		// Subscriptions of the router go where the backup had its own.
+		if (keep.subs && !added_subs && s['.type'] == 'section') {
+			for (let sub in keep.subs)
+				put(sub);
+
+			added_subs = true;
+		}
+
+		const name = put(s);
+
+		if (keep.links && s['.type'] == 'section')
+			for (let k in keys(keep.links[name] ?? {}))
+				c.set('mayhem', name, k, keep.links[name][k]);
+
+		if (keep.hwid && s['.type'] == 'device')
+			c.set('mayhem', name, 'hwid', keep.hwid);
+	}
+
+	if (keep.subs && !added_subs)
+		for (let sub in keep.subs)
+			put(sub);
+
+	c.commit('mayhem');
+
+	let files = 0;
+
+	for (let f in keys(b.files ?? {})) {
+		const data = b.files[f];
+
+		if (!safe_list_path(f) || type(data) != 'string' || length(data) > LIST_MAX)
+			continue;
+
+		system(`mkdir -p ${q(fs.dirname(f))}`);
+
+		if (fs.writefile(`${f}.tmp`, data) != null && fs.rename(`${f}.tmp`, f))
+			files++;
+	}
+
+	system('/etc/init.d/mayhem reload >/dev/null 2>&1 &');
+
+	return { ok: true, sections: length(b.sections), files: files, kept_connections: !b.connections };
 }
 
 const methods = {
@@ -541,7 +784,7 @@ const methods = {
 			const m = pid ? metrics() : { stats: {}, observatory: {} };
 			const c = uci_cursor();
 			const sections = [];
-			const totals = { proxy: { up: 0, down: 0 }, direct: { up: 0, down: 0 } };
+			const totals = { proxy: { up: 0, down: 0 }, direct: { up: 0, down: 0 }, all: { up: 0, down: 0 } };
 
 			for (let sn in keys(state.sections ?? {})) {
 				const s = state.sections[sn];
@@ -586,6 +829,13 @@ const methods = {
 					totals[k].up += t.uplink ?? 0;
 					totals[k].down += t.downlink ?? 0;
 				}
+
+				// Everything that leaves the router through xray: servers,
+				// tunnels in xray mode and direct; not DNS and not blocked.
+				if (k || substr(tag, 0, 2) == 'i-') {
+					totals.all.up += t.uplink ?? 0;
+					totals.all.down += t.downlink ?? 0;
+				}
 			}
 
 			return {
@@ -601,6 +851,10 @@ const methods = {
 				status: read_json(`${RUN}/status.json`),
 				mode: state.mode,
 				probe_url: state.probe_url,
+				default_section: default_section(state),
+				ping_method: c.get('mayhem', 'settings', 'ping_method') ?? 'url',
+				model: trim(fs.readfile('/tmp/sysinfo/model') ?? '') || null,
+				system: os_release(),
 				sections: sections,
 				totals: totals,
 				subscriptions: subscriptions()
@@ -994,12 +1248,10 @@ const methods = {
 				xver = m ? m[1] : 'installed';
 			}
 
-			const rel = match(fs.readfile('/etc/openwrt_release') ?? '', /DISTRIB_DESCRIPTION='([^']*)'/);
-
 			return {
 				mayhem: mayhem_version(),
 				xray: xver != '' ? xver : null,
-				openwrt: rel ? rel[1] : null,
+				openwrt: os_release(),
 				model: trim(fs.readfile('/tmp/sysinfo/model') ?? '') || null,
 				kernel: trim(fs.readfile('/proc/sys/kernel/osrelease') ?? '') || null
 			};
@@ -1078,17 +1330,92 @@ const methods = {
 		}
 	},
 
+	// Server links as the generator sees them: name, protocol, address, and
+	// why xray would refuse the server.
 	parse_link: {
-		args: { link: '' },
+		args: { link: '', links: [] },
 		call: function(req) {
-			try {
-				const r = parse_link(req.args?.link);
+			const one = (l) => {
+				try {
+					const r = parse_link(l);
+					const why = refused_by_xray(r.outbound);
 
-				return { ok: true, name: r.name, protocol: r.outbound.protocol, warnings: r.warnings };
-			}
-			catch (e) {
-				return { ok: false, error: e.message };
-			}
+					return {
+						ok: !why, name: r.name, protocol: r.outbound.protocol,
+						address: outbound_host(r.outbound), port: outbound_port(r.outbound),
+						warnings: r.warnings, error: why ? `xray does not accept this server: ${why}` : null
+					};
+				}
+				catch (e) {
+					return { ok: false, error: e.message };
+				}
+			};
+
+			if (type(req.args?.links) == 'array')
+				return { results: map(slice(req.args.links, 0, 500), (l) => one(`${l}`)) };
+
+			return one(req.args?.link);
+		}
+	},
+
+	// Where a section leads: its external address with country and city.
+	// Asked once when the dashboard opens, not polled.
+	exit_info: {
+		args: { section: '', lang: 'en' },
+		call: function(req) {
+			const state = read_json(`${RUN}/nodes.json`) ?? { sections: {} };
+			const sn = req.args?.section || default_section(state);
+
+			if (!sn)
+				return { error: 'no proxy section' };
+
+			const v = section_via(state, sn);
+
+			if (v.error)
+				return { section: sn, error: v.error };
+
+			const lang = index(GEO_LANGS, req.args?.lang) >= 0 ? req.args.lang : 'en';
+			const geo = exit_geo(v.via, lang);
+
+			if (geo)
+				return { section: sn, ...geo };
+
+			// No geo service answered: at least the address.
+			const url = uci_cursor().get('mayhem', 'settings', 'ip_check_url') ?? IP_CHECK_URL;
+			const ip = trim(run(`curl -s -m 8 ${v.via} ${q(url)} 2>/dev/null`) ?? '');
+
+			return match(ip, /^[0-9a-fA-F:.]+$/) ? { section: sn, ip: ip } : { section: sn, error: 'no answer' };
+		}
+	},
+
+	backup_export: {
+		args: { connections: true },
+		call: function(req) {
+			return backup_export(req.args?.connections !== false);
+		}
+	},
+
+	backup_import: {
+		args: { backup: {} },
+		call: function(req) {
+			return backup_import(req.args?.backup);
+		}
+	},
+
+	// The check method picked on the dashboard is kept for the next visit.
+	// Written straight to UCI: nothing reloads, the generator does not use it.
+	set_ping_method: {
+		args: { method: 'url' },
+		call: function(req) {
+			if (index([ 'url', 'tcp', 'icmp' ], req.args?.method) < 0)
+				return { error: 'unknown method' };
+
+			const c = uci_cursor();
+
+			c.set('mayhem', 'settings', 'ping_method', req.args.method);
+			c.commit('mayhem');
+
+			return { ok: true };
 		}
 	}
 };

@@ -5,21 +5,23 @@
 'require ui';
 'require mayhem.common as mh';
 
-// Service controls of the dashboard: diagnostics and logs open in dialogs,
-// restart, stop or start, autostart on boot.
+// Service controls of the dashboard: diagnostics, logs and the backup open in
+// dialogs; restart, stop or start, autostart on boot.
 
 const callDiagnose = rpc.declare({ object: 'luci.mayhem', method: 'diagnose', params: [ 'part', 'target' ], expect: { '': {} } });
 const callAction = rpc.declare({ object: 'luci.mayhem', method: 'action', params: [ 'name' ], expect: { '': {} } });
 const callSysinfo = rpc.declare({ object: 'luci.mayhem', method: 'sysinfo', expect: { '': {} } });
 const callLogs = rpc.declare({ object: 'luci.mayhem', method: 'logs', params: [ 'component', 'lines' ], expect: { '': {} } });
 const callLevel = rpc.declare({ object: 'luci.mayhem', method: 'set_log_level', params: [ 'level' ], expect: { '': {} } });
+const callExport = rpc.declare({ object: 'luci.mayhem', method: 'backup_export', params: [ 'connections' ], expect: { '': {} } });
+const callImport = rpc.declare({ object: 'luci.mayhem', method: 'backup_import', params: [ 'backup' ], expect: { '': {} } });
 
 // [ group, title, request part that fills it ]
 const GROUPS = [
 	[ 'service', _('Service'), 'local' ],
 	[ 'config', _('Configuration'), 'local' ],
-	[ 'xray', 'xray', 'local' ],
-	[ 'kernel', _('nftables and routing'), 'local' ],
+	[ 'xray', 'Xray', 'local' ],
+	[ 'kernel', _('Nftables and routing'), 'local' ],
 	[ 'dns', _('DNS'), 'dns' ],
 	[ 'tunnels', _('Tunnels'), 'local' ],
 	[ 'exit', _('External address'), 'exit' ],
@@ -39,9 +41,9 @@ const NAMES = {
 	'Version': _('Version'),
 	'Memory': _('Memory'),
 	'Ports': _('Ports'),
-	'nftables': 'nftables',
+	'nftables': 'Nftables',
 	'Policy routing': _('Policy routing'),
-	'dnsmasq': 'dnsmasq',
+	'dnsmasq': 'Dnsmasq',
 	'Redirect to xray': _('Redirect to xray'),
 	'Clock': _('Clock'),
 	'Watchdog': _('Watchdog'),
@@ -61,6 +63,9 @@ const CSS = `
 .mh-log { height:60vh; overflow:auto; white-space:pre-wrap; font-size:12px; }
 .mh-log-tools { display:flex; flex-wrap:wrap; gap:8px; align-items:center; margin:8px 0; }
 .mh-log-tools select { width:auto; }
+.mh-backup { display:grid; grid-row-gap:6px; padding:8px 0 12px; border-bottom:1px solid var(--background-color-low, lightgray); }
+.mh-backup:last-of-type { border-bottom:0; }
+.mh-backup .btn { justify-self:start; }
 `;
 
 return baseclass.extend({
@@ -291,7 +296,7 @@ return baseclass.extend({
 			ui.showModal(_('Logs'), [
 				E('div', { 'class': 'mh-small mh-muted' }, _('Messages of Mayhem, xray and dnsmasq from the system log. At the debug level xray logs every connection and DNS query: turn it back down when you are done.')),
 				E('div', { 'class': 'mh-log-tools' }, [
-					select([ [ 'all', _('Everything') ], [ 'mayhem', 'Mayhem' ], [ 'xray', 'xray' ], [ 'dnsmasq', 'dnsmasq' ] ], component,
+					select([ [ 'all', _('Everything') ], [ 'mayhem', 'Mayhem' ], [ 'xray', 'Xray' ], [ 'dnsmasq', 'Dnsmasq' ] ], component,
 						(ev) => { component = ev.target.value; show(); }),
 					select([ [ '100', _('100 lines') ], [ '300', _('300 lines') ], [ '1000', _('1000 lines') ] ], String(lines),
 						(ev) => { lines = +ev.target.value; show(); }),
@@ -320,6 +325,96 @@ return baseclass.extend({
 		});
 	},
 
+	// --- backup ----------------------------------------------------------------------
+	// All settings in one JSON file; subscriptions and server keys only when
+	// asked for. Restoring a file without them keeps the router's own.
+
+	backup() {
+		const links = E('input', { 'type': 'checkbox', 'checked': '' });
+		const file = E('input', { 'type': 'file', 'accept': '.json,application/json', 'style': 'display:none' });
+		const found = E('div');
+
+		const download = () => callExport(links.checked).then((b) => {
+			if (!b || b.mayhem_backup !== 1) {
+				ui.addNotification(null, E('p', _('The router did not return a backup.')), 'error');
+				return;
+			}
+
+			const day = new Date().toISOString().slice(0, 10);
+			const a = E('a', {
+				'href': URL.createObjectURL(new Blob([ JSON.stringify(b, null, '\t') ], { 'type': 'application/json' })),
+				'download': 'mayhem-%s%s.json'.format(day, b.connections ? '' : '-no-keys')
+			});
+
+			document.body.appendChild(a);
+			a.click();
+			window.setTimeout(() => { URL.revokeObjectURL(a.href); a.remove(); }, 1000);
+		});
+
+		const restore = (b) => callImport(b).then((r) => {
+			if (r.error) {
+				ui.addNotification(null, E('p', r.error), 'error');
+				return;
+			}
+
+			ui.hideModal();
+			ui.addNotification(null, E('p', r.kept_connections
+				? _('Settings restored; the subscriptions and server keys of this router are kept. Mayhem applies them now.')
+				: _('Settings restored. Mayhem applies them now.')), 'info');
+			window.setTimeout(() => this.opts.refresh(), 3000);
+		});
+
+		file.addEventListener('change', () => {
+			const f = file.files[0];
+
+			if (!f)
+				return;
+
+			f.text().then((t) => {
+				let b;
+
+				try {
+					b = JSON.parse(t);
+				}
+				catch (e) {
+					b = null;
+				}
+
+				if (!b || b.mayhem_backup !== 1 || !Array.isArray(b.sections)) {
+					found.replaceChildren(E('p', { 'class': 'mh-fail' }, _('This file is not a Mayhem backup.')));
+					return;
+				}
+
+				found.replaceChildren(
+					E('p', [
+						E('b', f.name), E('br'),
+						_('Made %s, Mayhem %s.').format(b.created ? new Date(b.created * 1000).toLocaleString() : '?', b.version || '?'), ' ',
+						b.connections ? _('With subscriptions and server keys.') : _('Without subscriptions and server keys: the ones of this router stay.')
+					]),
+					E('p', { 'class': 'mh-warn' }, _('All current settings of Mayhem are replaced.')),
+					E('button', { 'class': 'btn cbi-button-negative', 'click': ui.createHandlerFn(this, restore, b) }, _('Restore'))
+				);
+			});
+		});
+
+		ui.showModal(_('Import and export'), [
+			E('div', { 'class': 'mh-backup' }, [
+				E('b', _('Export')),
+				E('div', { 'class': 'mh-small' }, _('One file with every setting of Mayhem: sections and their rules, DNS, geo sources, settings and rule list files. Downloaded data is fetched again after a restore.')),
+				E('label', [ links, ' ', _('With connections: subscriptions, server keys and HWID') ]),
+				mh.button({ icon: 'download', cls: 'cbi-button-action', text: _('Download the backup'), click: ui.createHandlerFn(this, download) })
+			]),
+			E('div', { 'class': 'mh-backup' }, [
+				E('b', _('Import')),
+				E('div', { 'class': 'mh-small' }, _('Restores a backup file. A backup without connections keeps the subscriptions and server keys this router has.')),
+				file,
+				mh.button({ icon: 'upload', text: _('Choose a file…'), click: () => file.click() }),
+				found
+			]),
+			E('div', { 'class': 'right' }, E('button', { 'class': 'btn', 'click': ui.hideModal }, _('Close')))
+		]);
+	},
+
 	// --- buttons ---------------------------------------------------------------------
 
 	controls() {
@@ -333,6 +428,7 @@ return baseclass.extend({
 		return [
 			mh.button({ icon: 'search', text: _('Diagnostics'), click: ui.createHandlerFn(this, 'diagnostics', true) }),
 			mh.button({ icon: 'logs', text: _('View logs'), click: ui.createHandlerFn(this, 'logs') }),
+			mh.button({ icon: 'archive', text: _('Import / export'), click: ui.createHandlerFn(this, 'backup') }),
 			btn('restart', 'restart', 'cbi-button-apply', _('Restart Mayhem')),
 			d.running ? btn('stop', 'stop', 'cbi-button-remove', _('Stop Mayhem'))
 				: btn('start', 'play', 'cbi-button-save', _('Start Mayhem')),

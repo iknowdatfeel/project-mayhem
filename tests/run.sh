@@ -303,6 +303,18 @@ else
 	bad "rpcd backend compiles: $out"
 fi
 
+# Backup and restore of the config, with and without subscriptions and keys.
+mkdir -p "$OUT/backup-uci" "$OUT/bin"
+cp "$ROOT/tests/uci/mayhem" "$OUT/backup-uci/mayhem"
+printf '#!/bin/sh\nexit 0\n' > "$OUT/bin/logger"
+chmod +x "$OUT/bin/logger"
+if out="$(PATH="$OUT/bin:$PATH" MAYHEM_UCI_DIR="$OUT/backup-uci" MAYHEM_RUN_DIR="$OUT/backup-run" \
+	uc "$ROOT/tests/backup.uc" "$ROOT/luci-app-mayhem/root/usr/share/rpcd/ucode/luci.mayhem" 2>&1)"; then
+	ok "backup with and without connections"
+else
+	bad "backup: $out"
+fi
+
 for f in "$ROOT"/luci-app-mayhem/root/usr/share/luci/menu.d/*.json "$ROOT"/luci-app-mayhem/root/usr/share/rpcd/acl.d/*.json; do
 	uc -e "json(require('fs').readfile('$f'))" >/dev/null 2>&1 && ok "json $(basename "$f")" || bad "json $(basename "$f")"
 done
