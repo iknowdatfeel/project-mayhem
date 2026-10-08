@@ -1,7 +1,7 @@
 // Checks that LuCI's minifier does not change the meaning of our JS: the
 // package build runs every file through jsmin, which tells a regex from a
 // division only by the character before it. After `return` it guesses
-// division, so `return /a\/\//` turns `//` into a comment and cuts the line.
+// division (after `=>` too), so `return /a\/\//` turns `//` into a comment.
 // Write `return (/.../).test(x)` instead.
 //
 //   JSMIN=/path/to/jsmin node tests/jsmin.js FILE...

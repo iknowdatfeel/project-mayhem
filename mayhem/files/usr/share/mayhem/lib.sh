@@ -185,6 +185,29 @@ mayhem_watchdog_note() {
 		mv "$MAYHEM_RUN_DIR/watchdog.log.tmp" "$MAYHEM_RUN_DIR/watchdog.log"
 }
 
+# Once a day, half an hour into the nightly update hour: Mayhem's own update
+# when it is turned on. It runs apart from the scheduler, in a session of its
+# own: the installer stops and starts the service.
+mayhem_auto_update() {
+	local hour day stamp="$MAYHEM_RUN_DIR/auto-update.day"
+
+	[ "$(uci -q get mayhem.settings.auto_update)" = 1 ] || return 0
+	hour="$(uci -q get mayhem.geo.update_hour)"
+	[ "$(date +%H)" -eq "${hour:-4}" ] 2>/dev/null && [ "$(date +%M)" -ge 30 ] || return 0
+
+	day="$(date +%Y%m%d)"
+	[ "$(cat "$stamp" 2>/dev/null)" = "$day" ] && return 0
+	echo "$day" > "$stamp"
+
+	[ -e "$MAYHEM_RUN_DIR/install.pid" ] && return 0
+
+	if command -v setsid >/dev/null 2>&1; then
+		setsid /usr/bin/mayhem auto-update >"$MAYHEM_RUN_DIR/auto-update.log" 2>&1 </dev/null &
+	else
+		( /usr/bin/mayhem auto-update >"$MAYHEM_RUN_DIR/auto-update.log" 2>&1 </dev/null & )
+	fi
+}
+
 mayhem_watchdog() {
 	local pid rss total pct limit n
 

@@ -651,7 +651,7 @@ if start_mayhem uci; then
 	: > "$WORK/sub.log"
 	out="$(sub_update)"
 	case "$out" in
-		*'"via": "section"'*) ok "subscription downloaded through the section" ;;
+		*'"via": "xray"'*) ok "subscription downloaded through the section" ;;
 		*) bad "download through the section: $out" ;;
 	esac
 	if grep -q '^source: 45.0.0.8$' "$WORK/sub.log"; then

@@ -245,7 +245,8 @@ function find_node(state, tag) {
 }
 
 const ACTIONS = {
-	start: '/etc/init.d/mayhem start',
+	// starting turns routing on as well: there is no separate switch for it
+	start: 'uci set mayhem.settings.enabled=1 && uci commit mayhem && /etc/init.d/mayhem start',
 	stop: '/etc/init.d/mayhem stop',
 	restart: '/etc/init.d/mayhem restart',
 	reload: '/etc/init.d/mayhem reload',
@@ -517,10 +518,10 @@ function section_via(state, target) {
 // The section the dashboard shows the connection of: the default section of
 // "everything through proxy", otherwise the first proxy section.
 function default_section(state) {
-	const want = uci_cursor().get('mayhem', 'settings', 'default_section');
+	const want = state?.default_section ?? uci_cursor().get('mayhem', 'settings', 'default_section');
 	const secs = state?.sections ?? {};
 
-	if (want && secs[want]?.type == 'proxy')
+	if (want && secs[want])
 		return want;
 
 	for (let sn in keys(secs))
@@ -596,7 +597,7 @@ function diag_exit(target) {
 // Without connections: no subscriptions, server links, outbound JSON or HWID;
 // restoring such a backup keeps the connections the router has.
 
-const BACKUP_TYPES = [ 'settings', 'dns', 'geo', 'geo_source', 'device', 'subscription', 'section' ];
+const BACKUP_TYPES = [ 'settings', 'dns', 'geo', 'geo_source', 'device', 'subscription', 'pool', 'section' ];
 const LINK_OPTIONS = [ 'link', 'subscription', 'outbound_json', 'proxy_type' ];
 const LIST_MAX = 262144;
 
@@ -628,7 +629,7 @@ function backup_export(with_links) {
 			if (substr(k, 0, 1) == '.')
 				continue;
 
-			if (!with_links && ((s['.type'] == 'section' && index(LINK_OPTIONS, k) >= 0) || (s['.type'] == 'device' && k == 'hwid')))
+			if (!with_links && (((s['.type'] == 'section' || s['.type'] == 'pool') && index(LINK_OPTIONS, k) >= 0) || (s['.type'] == 'device' && k == 'hwid')))
 				continue;
 
 			out[k] = s[k];
@@ -662,7 +663,7 @@ function valid_value(v) {
 	return type(v) == 'array' && length(filter(v, (x) => type(x) != 'string')) == 0;
 }
 
-function backup_import(b) {
+function backup_import(b, no_reload) {
 	if (type(b) != 'object' || b.mayhem_backup != 1 || type(b.sections) != 'array')
 		return { error: 'this is not a Mayhem backup' };
 
@@ -689,7 +690,7 @@ function backup_import(b) {
 		for (let s in uci_sections_ordered(c)) {
 			if (s['.type'] == 'subscription')
 				push(keep.subs, s);
-			else if (s['.type'] == 'section') {
+			else if (s['.type'] == 'section' || s['.type'] == 'pool') {
 				keep.links[s['.name']] = {};
 
 				for (let k in LINK_OPTIONS)
@@ -732,7 +733,7 @@ function backup_import(b) {
 
 		const name = put(s);
 
-		if (keep.links && s['.type'] == 'section')
+		if (keep.links && (s['.type'] == 'section' || s['.type'] == 'pool'))
 			for (let k in keys(keep.links[name] ?? {}))
 				c.set('mayhem', name, k, keep.links[name][k]);
 
@@ -744,7 +745,19 @@ function backup_import(b) {
 		for (let sub in keep.subs)
 			put(sub);
 
+	// The server list of the router, when the backup has none.
+	if (keep.links?.pool && !c.get('mayhem', 'pool')) {
+		c.set('mayhem', 'pool', 'pool');
+
+		for (let k in keys(keep.links.pool))
+			c.set('mayhem', 'pool', k, keep.links.pool[k]);
+	}
+
 	c.commit('mayhem');
+
+	// A backup of an older version: brought up to date.
+	if (!c.get('mayhem', 'pool'))
+		system(`ucode ${LIB}/migrate.uc >/dev/null 2>&1`);
 
 	let files = 0;
 
@@ -760,9 +773,185 @@ function backup_import(b) {
 			files++;
 	}
 
-	system('/etc/init.d/mayhem reload >/dev/null 2>&1 &');
+	if (!no_reload)
+		system('/etc/init.d/mayhem reload >/dev/null 2>&1 &');
 
 	return { ok: true, sections: length(b.sections), files: files, kept_connections: !b.connections };
+}
+
+// --- reset ------------------------------------------------------------------------
+// The config the package ships, with or without the subscriptions, server keys
+// and HWID the router has now.
+
+const DEFAULTS = getenv('MAYHEM_DEFAULTS') ?? '/usr/share/mayhem/defaults.conf';
+
+function reset_config(keep) {
+	const data = fs.readfile(DEFAULTS);
+
+	if (!data)
+		return { error: 'the default config is missing' };
+
+	const dir = `/tmp/mayhem-defaults.${clock()[1]}`;
+
+	fs.mkdir(dir, 0700);
+	fs.writefile(`${dir}/mayhem`, data);
+
+	const dc = require('uci').cursor(dir);
+
+	dc.load('mayhem');
+
+	const sections = map(uci_sections_ordered(dc), (x) => {
+		const o = { '.type': x['.type'], '.name': x['.anonymous'] ? null : x['.name'] };
+
+		for (let k in keys(x))
+			if (substr(k, 0, 1) != '.')
+				o[k] = x[k];
+
+		return o;
+	});
+
+	fs.unlink(`${dir}/mayhem`);
+	fs.rmdir(dir);
+
+	// Server keys of every section go to the server list; subscriptions stay.
+	const links = [];
+
+	if (keep)
+		for (let x in uci_sections_ordered(uci_cursor()))
+			if (x['.type'] == 'section' || x['.type'] == 'pool')
+				for (let l in (type(x.link) == 'array' ? x.link : (x.link ? [ x.link ] : [])))
+					if (index(links, l) < 0) push(links, l);
+
+	const res = backup_import({ mayhem_backup: 1, connections: !keep, sections: sections }, true);
+
+	if (res.error)
+		return res;
+
+	const c = uci_cursor();
+
+	if (!c.get('mayhem', 'pool'))
+		c.set('mayhem', 'pool', 'pool');
+
+	if (keep && length(links))
+		c.set('mayhem', 'pool', 'link', links);
+	else
+		c.delete('mayhem', 'pool', 'link');
+
+	if (!c.get('mayhem', 'device'))
+		c.set('mayhem', 'device', 'device');
+
+	if (!c.get('mayhem', 'device', 'hwid'))
+		c.set('mayhem', 'device', 'hwid', trim(run("tr -dc 'A-Za-z0-9' </dev/urandom 2>/dev/null | head -c 16") ?? ''));
+
+	if (!c.get('mayhem', 'device', 'model'))
+		c.set('mayhem', 'device', 'model', trim(fs.readfile('/tmp/sysinfo/model') ?? '') || 'OpenWrt');
+
+	c.commit('mayhem');
+	system('/etc/init.d/mayhem reload >/dev/null 2>&1 &');
+
+	return { ok: true, kept_connections: !!keep };
+}
+
+// --- section names ------------------------------------------------------------------
+
+function rename_section(from, to) {
+	if (!match(from ?? '', /^[A-Za-z0-9_]+$/) || !match(to ?? '', /^[A-Za-z0-9_]+$/))
+		return { error: 'a section name may only contain letters, digits and _' };
+
+	if (to == 'pool')
+		return { error: 'this name is taken by the server list' };
+
+	const c = uci_cursor();
+
+	if (c.get('mayhem', from) != 'section')
+		return { error: 'no such section' };
+
+	if (c.get('mayhem', to) != null)
+		return { error: 'this name is taken' };
+
+	c.rename('mayhem', from, to);
+
+	// Settings that name the section.
+	for (let ref in [ [ 'settings', 'default_section' ], [ 'dns', 'proxy_section' ], [ 'geo', 'update_section' ] ])
+		if (c.get('mayhem', ref[0], ref[1]) == from)
+			c.set('mayhem', ref[0], ref[1], to);
+
+	c.foreach('mayhem', 'subscription', (x) => {
+		if (x.update_section == from)
+			c.set('mayhem', x['.name'], 'update_section', to);
+	});
+
+	c.commit('mayhem');
+	system('/etc/init.d/mayhem reload >/dev/null 2>&1 &');
+
+	return { ok: true };
+}
+
+// --- components ---------------------------------------------------------------------
+
+const REPO = getenv('MAYHEM_REPO') ?? 'iknowdatfeel/project-mayhem';
+
+// Latest release of a GitHub repository, through the default section first.
+// Numbers of a version: "v26.9.30" -> [ 26, 9, 30 ].
+function version_parts(v) {
+	return map(split(replace(v ?? '', /^v/, ''), /[.-]/), (x) => int(x) || 0);
+}
+
+function version_newer(a, b) {
+	const x = version_parts(a), y = version_parts(b);
+
+	for (let i = 0; i < max(length(x), length(y)); i++)
+		if ((x[i] ?? 0) != (y[i] ?? 0))
+			return (x[i] ?? 0) > (y[i] ?? 0);
+
+	return false;
+}
+
+// The latest release of a repository, or with tags the newest version among
+// its tags: Xray marks most of its releases as pre-releases, so its
+// "releases/latest" is older than the version Mayhem ships with.
+function latest_release(repo, tags) {
+	const state = read_json(`${RUN}/nodes.json`) ?? { sections: {} };
+	const v = section_via(state, default_section(state) ?? 'direct');
+	const url = tags ? `https://api.github.com/repos/${repo}/tags?per_page=100`
+		: `https://api.github.com/repos/${repo}/releases/latest`;
+
+	for (let via in (v.error || v.via == '') ? [ '' ] : [ v.via, '' ]) {
+		try {
+			const j = json(run(`curl -s -m 15 ${via} -H 'Accept: application/vnd.github+json' ${q(url)} 2>/dev/null`) ?? '');
+			let best = null;
+
+			if (!tags && type(j?.tag_name) == 'string')
+				return replace(j.tag_name, /^v/, '');
+
+			if (type(j) != 'array')
+				continue;
+
+			for (let tag in j) {
+				const name = tag?.name;
+
+				if (type(name) == 'string' && match(name, /^v?[0-9]+(\.[0-9]+)+$/) && (best == null || version_newer(name, best)))
+					best = name;
+			}
+
+			if (best)
+				return replace(best, /^v/, '');
+		}
+		catch (e) {
+			continue;
+		}
+	}
+
+	return null;
+}
+
+function xray_installed() {
+	if (!fs.access(XRAY))
+		return null;
+
+	const m = match(run(`${XRAY} version 2>/dev/null`) ?? '', /Xray ([0-9][^ ]*)/);
+
+	return m ? m[1] : 'installed';
 }
 
 const methods = {
@@ -807,7 +996,7 @@ const methods = {
 				}
 
 				const sec = {
-					name: sn, type: s.type, mode: s.mode, balancer: s.balancer,
+					name: sn, type: s.type, mode: s.mode, balancer: s.balancer, pool: s.pool == true,
 					active: s.type == 'proxy' ? active_tag(s, m.observatory) : null,
 					pinned: s.override ?? null, nodes: nodes, traffic: traffic
 				};
@@ -1108,9 +1297,10 @@ const methods = {
 	// Package changes take a while and restart services: they run in the
 	// background, tunnel_info reports progress.
 	system_install: {
-		args: { what: '' },
+		args: { what: '', version: '' },
 		call: function(req) {
-			const cmds = { awg: 'awg-install', dnsmasq: 'dnsmasq-full' };
+			const ver = match(req.args?.version ?? '', /^[0-9][0-9A-Za-z.-]*$/) ? req.args.version : '';
+			const cmds = { awg: 'awg-install', dnsmasq: 'dnsmasq-full', xray: `xray-install ${ver}`, mayhem: 'self-update' };
 			const cmd = cmds[req.args?.what];
 
 			if (!cmd)
@@ -1121,7 +1311,10 @@ const methods = {
 
 			fs.writefile(`${RUN}/install.what`, req.args.what);
 			fs.unlink(`${RUN}/install.rc`);
-			system(`sh -c 'echo $$ > ${RUN}/install.pid; /usr/bin/mayhem ${cmd} > ${RUN}/install.log 2>&1; echo $? > ${RUN}/install.rc; rm -f ${RUN}/install.pid' >/dev/null 2>&1 &`);
+			// A session of its own: updating Mayhem restarts rpcd and the service.
+			const detach = system('command -v setsid >/dev/null 2>&1') == 0 ? 'setsid ' : '';
+
+			system(`${detach}sh -c 'echo $$ > ${RUN}/install.pid; /usr/bin/mayhem ${cmd} > ${RUN}/install.log 2>&1; echo $? > ${RUN}/install.rc; rm -f ${RUN}/install.pid' >/dev/null 2>&1 </dev/null &`);
 
 			return { started: true };
 		}
@@ -1388,6 +1581,63 @@ const methods = {
 		}
 	},
 
+	reset_config: {
+		args: { connections: true },
+		call: function(req) {
+			return reset_config(req.args?.connections !== false);
+		}
+	},
+
+	rename_section: {
+		args: { name: '', new_name: '' },
+		call: function(req) {
+			return rename_section(req.args?.name, req.args?.new_name);
+		}
+	},
+
+	// Downloads every subscription again and applies the servers even when
+	// nothing changed: servers that did not make it into xray get there.
+	refresh_servers: {
+		call: function() {
+			const out = run('/usr/bin/mayhem sub-update 2>/dev/null') ?? '';
+			let results = [];
+
+			for (let line in split(out, '\n'))
+				if (substr(line, 0, 1) == '[') {
+					try {
+						results = json(line);
+					}
+					catch (e) {
+						results = [];
+					}
+				}
+
+			run('/etc/init.d/mayhem reload >/dev/null 2>&1');
+
+			return { results: results };
+		}
+	},
+
+	// Installed and latest versions of Xray and Mayhem.
+	components: {
+		args: { check: false },
+		call: function(req) {
+			const res = {
+				mayhem: mayhem_version(),
+				xray: xray_installed(),
+				xray_pinned: match(fs.readfile(`${LIB}/const.sh`) ?? '', /MAYHEM_XRAY_VERSION="([^"]*)"/)?.[1],
+				install: install_running() ? 'running' : null
+			};
+
+			if (req.args?.check) {
+				res.xray_latest = latest_release('XTLS/Xray-core', true);
+				res.mayhem_latest = latest_release(REPO);
+			}
+
+			return res;
+		}
+	},
+
 	backup_export: {
 		args: { connections: true },
 		call: function(req) {
@@ -1414,6 +1664,28 @@ const methods = {
 
 			c.set('mayhem', 'settings', 'ping_method', req.args.method);
 			c.commit('mayhem');
+
+			return { ok: true };
+		}
+	},
+
+	// The main section, chosen on the dashboard: remote DNS, downloads and the
+	// rest of the traffic go through it.
+	set_main_section: {
+		args: { section: '' },
+		call: function(req) {
+			const c = uci_cursor();
+			const sn = req.args?.section ?? '';
+
+			if (sn == 'pool' || sn == '')
+				c.delete('mayhem', 'settings', 'default_section');
+			else if (c.get('mayhem', sn) != 'section' || index([ 'proxy', 'interface' ], c.get('mayhem', sn, 'type') ?? 'proxy') < 0)
+				return { error: 'not a proxy or tunnel section' };
+			else
+				c.set('mayhem', 'settings', 'default_section', sn);
+
+			c.commit('mayhem');
+			system('/etc/init.d/mayhem reload >/dev/null 2>&1 &');
 
 			return { ok: true };
 		}

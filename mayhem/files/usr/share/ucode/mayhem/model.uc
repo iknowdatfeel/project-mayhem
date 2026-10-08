@@ -7,7 +7,7 @@
 import { cursor } from 'uci';
 import { readfile, writefile, access, stat, mkdir, lsdir, unlink, popen } from 'fs';
 import { SUBS_DIR, UCI_DIR, GEO_DIR, LISTS_DIR, RUN_DIR } from 'mayhem.const';
-import { is_true, entries, list_key, norm_ip, norm_domain } from 'mayhem.rules';
+import { is_true, entries, list_key, norm_ip, norm_domain, is_ip } from 'mayhem.rules';
 import { resolve, geoip_cidrs, geosite_domains } from 'mayhem.geo';
 
 const RESOLV_FILES = [ '/tmp/resolv.conf.d/resolv.conf.auto', '/tmp/resolv.conf.auto' ];
@@ -87,6 +87,31 @@ function ifaces(names) {
 	return out;
 }
 
+// Addresses of the router itself (static interfaces): as a domestic DNS server
+// they stand for the provider's servers.
+function router_ips() {
+	const out = [];
+
+	try {
+		const c = cursor(UCI_DIR);
+
+		c.load('network');
+		c.foreach('network', 'interface', (s) => {
+			for (let a in entries(s.ipaddr)) {
+				const ip = split(a, '/')[0];
+
+				if (is_ip(ip))
+					push(out, ip);
+			}
+		});
+	}
+	catch (e) {
+		// no network config (tests)
+	}
+
+	return out;
+}
+
 function runtime(sections) {
 	const names = [];
 
@@ -105,6 +130,7 @@ function runtime(sections) {
 		wan_dns: wan_dns(),
 		ipv6: access('/proc/net/if_inet6') == true,
 		mem_total_kb: mem_total_kb(),
+		router_ips: router_ips(),
 		ifaces: ifaces(names),
 		dnsmasq_nftset: length(names) ? index(command('dnsmasq --version 2>/dev/null') ?? '', 'nftset') >= 0 : null
 	};
@@ -294,14 +320,57 @@ function lists(sections) {
 	return out;
 }
 
+// A proxy section without servers of its own uses the server list. Older
+// configurations have no "servers" option: links, subscriptions, a JSON
+// outbound or tunnels as servers make them sections with their own servers.
+function own_servers(s) {
+	if (s.servers == 'own' || s.servers == 'pool')
+		return s.servers == 'own';
+
+	return length(entries(s.link)) > 0 || length(entries(s.subscription)) > 0 ||
+		s.proxy_type == 'json' || length(entries(s.iface_node)) > 0;
+}
+
+// The server list as a proxy section of its own, first, without rules: the
+// servers added by key and those of every enabled subscription.
+function pool_section(c) {
+	const p = c.get_all('mayhem', 'pool');
+
+	if (!p)
+		return null;
+
+	const subs = [];
+
+	c.foreach('mayhem', 'subscription', (s) => {
+		if (is_true(s.enabled ?? '1'))
+			push(subs, s['.name']);
+	});
+
+	return {
+		'.name': 'pool', '.type': 'pool', type: 'proxy', enabled: '1', pool: true,
+		link: p.link, subscription: subs,
+		select: p.select, selected: p.selected, override: p.override
+	};
+}
+
 function load_model() {
 	const c = cursor(UCI_DIR);
 
 	c.load('mayhem');
 
 	const sections = [];
+	const pool = pool_section(c);
+
+	if (pool)
+		push(sections, pool);
 
 	c.foreach('mayhem', 'section', (s) => {
+		if (s['.name'] == 'pool')
+			return;
+
+		if (pool && (s.type ?? 'proxy') == 'proxy' && !own_servers(s))
+			s = { ...s, use_pool: true };
+
 		push(sections, s);
 	});
 
@@ -333,4 +402,4 @@ function load_model() {
 	};
 }
 
-return { load_model, runtime };
+return { load_model, runtime, own_servers };

@@ -122,10 +122,37 @@ function ago(ts, now) {
 	return _('%d d ago').format(Math.round(s / 86400));
 }
 
+// The section that carries the main traffic and the server it uses now, from
+// the dashboard data. A section without servers of its own uses the server
+// list ("pool"); the server list is the main section by default.
+function mainServer(d) {
+	const secs = (d && d.sections) || [];
+	let sec = secs.find((s) => s.name === d.default_section) || null;
+
+	if (sec && sec.pool)
+		sec = secs.find((s) => s.name === 'pool') || sec;
+
+	const node = sec ? (sec.nodes || []).find((n) => n.tag === sec.active) : null;
+
+	return { section: sec, node: node || null };
+}
+
+// "Server name" or the section name when it has no servers to name.
+function mainServerText(d) {
+	const m = mainServer(d);
+
+	if (m.node)
+		return m.node.name;
+
+	return (m.section && m.section.name !== 'pool') ? m.section.name : null;
+}
+
 return baseclass.extend({
 	icon: icon,
 	bytes: bytes,
 	ago: ago,
+	mainServer: mainServer,
+	mainServerText: mainServerText,
 
 	style() {
 		return E('style', CSS);

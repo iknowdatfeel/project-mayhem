@@ -115,6 +115,11 @@ function pick_outbound(cfg) {
 	return filter(obs, (o) => o.tag == 'proxy')[0] ?? obs[0];
 }
 
+function link_lines(text) {
+	return filter(map(split(replace(text, '\r', ''), '\n'), (l) => trim(l)),
+		(l) => match(l, /^[a-z][a-z0-9+.-]*:\/\/[^[:space:]]/i));
+}
+
 // Body -> { nodes: [{ name, link } | { name, outbound }], skipped }
 function parse_body(body, format) {
 	body = trim(body ?? '');
@@ -132,9 +137,15 @@ function parse_body(body, format) {
 				die('the response is not JSON');
 		}
 
-		if (j != null) {
+		if (type(j) == 'object' || type(j) == 'array') {
 			const configs = type(j) == 'array' ? j : [ j ];
 			let n = 0;
+
+			// JSON without outbounds is an error page of the server, not a config.
+			if (!length(filter(configs, (c) => type(c?.outbounds) == 'array')))
+				die(type(j) == 'object' && type(j.message) == 'string'
+					? `the server answered: ${substr(j.message, 0, 200)}`
+					: 'the response is JSON, but not an Xray config');
 
 			res.format = 'xray_json';
 
@@ -165,23 +176,23 @@ function parse_body(body, format) {
 	if (length(filter(split(body, '\n'), (l) => match(l, /^(proxies|port|mixed-port):/))))
 		die('Clash/mihomo YAML is not supported, ask for a plain or Xray JSON subscription');
 
-	let text = body;
+	// A list of keys, plain or in base64. Only lines that start with a scheme
+	// count: comments and other text around the keys are not servers.
+	let lines = link_lines(body);
 
-	if (index(text, '://') < 0) {
-		text = b64(text);
+	if (!length(lines))
+		lines = link_lines(b64(body) ?? '');
 
-		if (!text || index(text, '://') < 0)
-			die('the response has no server links');
+	if (!length(lines)) {
+		if (match(body, /^(<!doctype|<html|<\?xml|<head|<body)/i))
+			die('the address returns a web page, not a subscription: use a direct link to the file');
+
+		die('the response has no server links');
 	}
 
 	res.format = 'uri';
 
-	for (let line in split(text, '\n')) {
-		line = trim(line);
-
-		if (index(line, '://') < 0)
-			continue;
-
+	for (let line in lines) {
 		try {
 			const r = parse_link(line);
 
@@ -262,29 +273,49 @@ function curl(url, req, proxy) {
 	return res;
 }
 
+// A link to a file page on GitHub or GitLab gives HTML: take the raw file.
+function raw_url(url) {
+	let m = match(url, /^https:\/\/github\.com\/([^\/]+)\/([^\/]+)\/(blob|raw)\/(.+)$/);
+
+	if (m)
+		return `https://raw.githubusercontent.com/${m[1]}/${m[2]}/${m[4]}`;
+
+	m = match(url, /^(https:\/\/gitlab\.[^\/]+\/.+)\/-\/blob\/(.+)$/);
+
+	if (m)
+		return `${m[1]}/-/raw/${m[2]}`;
+
+	return url;
+}
+
+// Download through Xray (the active server of the default section) when that
+// is on, direct as the fallback. Older configs said so with update_via.
+function via_xray(sub) {
+	if (nonempty(sub.via_xray))
+		return is_true(sub.via_xray);
+
+	return (sub.update_via ?? 'auto') != 'direct';
+}
+
 function fetch(sub, dev, route_section) {
 	const req = request_headers(sub, dev);
 	const proxy = (sec) => `socks5h://${sec}:${C.HELPER_PASS}@127.0.0.1:${C.HELPER_PORT}`;
-	const via = sub.update_via ?? 'auto';
+	const url = raw_url(sub.url);
 	const tries = [];
 
-	if (via != 'section')
-		push(tries, null);
-
-	if (via != 'direct' && route_section)
+	if (via_xray(sub) && route_section)
 		push(tries, proxy(`sec-${route_section}`));
 
-	if (!length(tries))
-		die('no route to download: choose a section for the download');
+	push(tries, null);
 
 	let last = 'download failed';
 
 	for (let pr in tries) {
-		const r = curl(sub.url, req, pr);
+		const r = curl(url, req, pr);
 		const status = r.headers[':status'];
 
 		if (r.rc == 0 && status >= 200 && status < 300)
-			return { headers: r.headers, body: r.body, via: pr ? 'section' : 'direct' };
+			return { headers: r.headers, body: r.body, via: pr ? 'xray' : 'direct' };
 
 		last = r.rc != 0 ? (r.error != '' ? r.error : `curl exit code ${r.rc}`) : `HTTP ${status}`;
 
@@ -309,17 +340,15 @@ function load_uci() {
 	return { device: uci.get_all('mayhem', 'device') ?? {}, subs: subs, sections: sections };
 }
 
-// Section used to download a subscription through the proxy.
+// The default section: downloads go through its active server, like the
+// remote DNS. The generator wrote which one it is.
 function route_section(sub, sections) {
-	if (nonempty(sub.update_section))
-		return sub.update_section;
+	const st = read_json(`${C.RUN_DIR}/nodes.json`);
 
-	const proxies = filter(sections, (s) => (s.type ?? 'proxy') == 'proxy' && is_true(s.enabled ?? '1'));
-	const users = filter(proxies, (s) => index(entries(s.subscription), sub['.name']) >= 0);
+	if (st?.default_section)
+		return st.default_section;
 
-	// A section that only lives on this subscription cannot fetch it when its servers are dead,
-	// but its cached servers are the best bet we have.
-	return (users[0] ?? proxies[0])?.['.name'];
+	return filter(sections, (s) => (s.type ?? 'proxy') == 'proxy' && is_true(s.enabled ?? '1'))[0]?.['.name'];
 }
 
 function update(name, force) {
@@ -352,7 +381,7 @@ function update(name, force) {
 		const st = state[sn] ?? {};
 
 		if (!force) {
-			const hours = int(sub.update_interval ?? 0) || (st.info ?? cache?.info)?.interval || DEFAULT_INTERVAL_H;
+			const hours = int(sub.update_interval ?? 0) || DEFAULT_INTERVAL_H;
 			const last = max(cache?.updated ?? 0, st.updated ?? 0);
 
 			if (cache?.url == sub.url && now - last < hours * 3600)
@@ -367,7 +396,7 @@ function update(name, force) {
 
 		try {
 			const r = fetch(sub, cfg.device, route_section(sub, cfg.sections));
-			const parsed = parse_body(r.body, sub.format ?? 'auto');
+			const parsed = parse_body(r.body, 'auto');
 
 			if (!length(parsed.nodes))
 				die(parsed.skipped ? `none of ${parsed.skipped} servers could be read` : 'the subscription is empty');

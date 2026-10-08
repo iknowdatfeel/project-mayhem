@@ -184,10 +184,17 @@ install_packages() {
 }
 
 main() {
-	local upgrade=0 conflicts
+	local upgrade=0 autostart=1 running=0 conflicts
 
 	check_system
-	[ -x /etc/init.d/mayhem ] && upgrade=1
+
+	# An update keeps the autostart and the running state as they were (the
+	# old package's removal script stops and disables the service).
+	if [ -x /etc/init.d/mayhem ]; then
+		upgrade=1
+		ls /etc/rc.d/S*mayhem >/dev/null 2>&1 || autostart=0
+		/etc/init.d/mayhem running >/dev/null 2>&1 && running=1
+	fi
 
 	msg "Updating package lists..."
 	pkg_update || die "Package list update failed."
@@ -208,7 +215,7 @@ main() {
 	msg "Installing xray..."
 	/usr/bin/mayhem xray-install || die "xray installation failed, run 'mayhem xray-install' later."
 
-	/etc/init.d/mayhem enable
+	[ "$autostart" = 1 ] && /etc/init.d/mayhem enable
 	/etc/init.d/rpcd restart >/dev/null 2>&1
 	rm -rf /tmp/luci-indexcache* /tmp/luci-modulecache
 
@@ -216,7 +223,7 @@ main() {
 	conflicts="$(mayhem_conflicts)"
 
 	if [ "$upgrade" = 1 ]; then
-		/etc/init.d/mayhem restart
+		[ "$running" = 1 ] && /etc/init.d/mayhem restart
 		msg "Mayhem is updated."
 	else
 		msg "Mayhem is installed and switched off."

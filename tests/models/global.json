@@ -1,5 +1,5 @@
 {
-  "settings": { "enabled": "1", "mode": "global", "default_section": "main", "interface": "br-lan br-guest", "ip_family": "ipv4_only", "log_level": "debug" },
+  "settings": { "enabled": "1", "mode": "global", "default_section": "main", "interface": "br-lan br-guest", "ip_family": "ipv4_only", "log_level": "debug", "exclude_local": "0", "block_quic": "1", "torrent_direct": "1" },
   "dns": { "domestic": ["77.88.8.8", "udp://77.88.8.1:53"], "remote": ["https://1.1.1.1/dns-query"], "fakedns": "1", "hijack": "0" },
   "sections": [
     { ".name": "main", "type": "proxy", "enabled": "1", "link": "trojan://pw@tr.example:443?type=ws&path=%2Fws&host=tr.example#tr" },

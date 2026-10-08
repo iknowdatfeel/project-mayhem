@@ -45,5 +45,13 @@
 			"type": "view",
 			"path": "mayhem/settings"
 		}
+	},
+	"admin/services/mayhem/components": {
+		"title": "Component updates",
+		"order": 28,
+		"action": {
+			"type": "view",
+			"path": "mayhem/components"
+		}
 	}
 }

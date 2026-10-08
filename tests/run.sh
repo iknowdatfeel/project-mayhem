@@ -92,6 +92,12 @@ sub_check b64.txt '"limit": true'
 sub_check plain.txt '"name": "US"'
 sub_check xray.json '"name": "NL xray"'
 sub_check clash.yaml 'not supported'
+# Comments and text around the keys are not servers; base64 may be wrapped.
+sub_check mixed-b64.txt '"name": "A server"'
+sub_check mixed-b64.txt '"skipped": 0'
+# A web page instead of the file (a GitHub file page, a login page).
+sub_check page.html 'web page'
+sub_check error.json 'the server answered: Not Found'
 
 # configuration read from UCI, with a downloaded subscription
 mkdir -p "$OUT/uci-subs"
@@ -110,6 +116,48 @@ elif ! out="$("$XRAY" run -test -c "$OUT/uci-run/xray.json" 2>&1)"; then
 	bad "config from UCI with a subscription: $(printf '%s' "$out" | tail -n 5)"
 else
 	ok "config from UCI with a subscription"
+fi
+
+# Migration to the server list: the main section's servers move into it, the
+# section keeps its rules and uses the list; then a section without servers of
+# its own goes through the list's active server.
+mkdir -p "$OUT/uci-pool"
+cp "$ROOT/tests/uci/mayhem" "$OUT/uci-pool/mayhem"
+cat >> "$OUT/uci-pool/mayhem" <<'UCI'
+	list link 'ss://YWVzLTI1Ni1nY206cHc@1.2.3.9:8388#Own'
+
+config subscription 'other'
+	option url 'http://example.invalid/other'
+	option enabled '0'
+
+config section 'video'
+	option type 'proxy'
+	list domain 'example.org'
+UCI
+if ! out="$(MAYHEM_UCI_DIR="$OUT/uci-pool" uc "$FILES/usr/share/mayhem/migrate.uc" 2>&1)"; then
+	bad "migration to the server list: $out"
+elif ! grep -q "config pool 'pool'" "$OUT/uci-pool/mayhem" || ! grep -A3 "config pool" "$OUT/uci-pool/mayhem" | grep -q "1.2.3.9" ||
+	! grep -A6 "config section 'main'" "$OUT/uci-pool/mayhem" | grep -q "servers 'pool'" ||
+	grep -A6 "config section 'main'" "$OUT/uci-pool/mayhem" | grep -q "list subscription"; then
+	bad "migration to the server list: $(cat "$OUT/uci-pool/mayhem")"
+elif ! out="$(MAYHEM_UCI_DIR="$OUT/uci-pool" uc "$FILES/usr/share/mayhem/migrate.uc" 2>&1)" || [ "$out" != "nothing to do" ]; then
+	bad "migration to the server list runs twice: $out"
+elif ! out="$(MAYHEM_UCI_DIR="$OUT/uci-pool" MAYHEM_SUBS_DIR="$OUT/uci-subs" \
+	uc "$FILES/usr/share/mayhem/gen.uc" --out "$OUT/uci-pool-run" 2>&1)"; then
+	bad "server list: $out"
+elif ! uc -e "
+	const x = json(require('fs').readfile('$OUT/uci-pool-run/xray.json'));
+	const tags = map(filter(x.outbounds, (o) => match(o.tag, /^n-pool-/)), (o) => o.tag);
+	const rules = filter(x.routing.rules, (r) => r.balancerTag == 'bal-pool' && length(r.domain ?? []));
+	const doms = [];
+	for (let r in rules) push(doms, ...r.domain);
+	exit((length(tags) == 3 && index(doms, 'domain:youtube.com') >= 0 && index(doms, 'domain:example.org') >= 0) ? 0 : 1);
+" 2>/dev/null; then
+	bad "server list: sections without servers do not use it"
+elif ! out="$("$XRAY" run -test -c "$OUT/uci-pool-run/xray.json" 2>&1)"; then
+	bad "server list: $(printf '%s' "$out" | tail -n 5)"
+else
+	ok "server list: migration, sections without servers, subscriptions"
 fi
 
 # WireGuard/AmneziaWG configs and AmneziaVPN keys
