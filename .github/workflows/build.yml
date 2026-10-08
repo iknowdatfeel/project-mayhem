@@ -76,7 +76,27 @@ jobs:
           if [[ "$GITHUB_REF" == refs/tags/v* ]]; then v="${GITHUB_REF#refs/tags/v}"; else v="0.0.$GITHUB_RUN_NUMBER"; fi
           echo "version=$v" >> "$GITHUB_OUTPUT"
 
+      # The official SDK container comes from ghcr.io, next to the runners;
+      # downloads.openwrt.org is the fallback (slow for runners at times).
+      - name: OpenWrt SDK from its container
+        id: box
+        run: |
+          img="ghcr.io/openwrt/sdk:x86_64-${{ matrix.release }}"
+          if timeout 900 docker pull -q "$img" && cid="$(docker create "$img")"; then
+            mkdir sdk
+            if docker cp "$cid:/builder/." sdk/ && [ -x sdk/scripts/feeds ]; then
+              echo "from=container" >> "$GITHUB_OUTPUT"
+              docker rm "$cid" >/dev/null
+              exit 0
+            fi
+            docker rm "$cid" >/dev/null
+            rm -rf sdk
+          fi
+          echo "::warning::no SDK in $img, downloading it from downloads.openwrt.org"
+          echo "from=mirror" >> "$GITHUB_OUTPUT"
+
       - name: Find the OpenWrt SDK
+        if: steps.box.outputs.from == 'mirror'
         id: sdk
         run: |
           base="https://downloads.openwrt.org/releases/${{ matrix.release }}/targets/x86/64"
@@ -93,13 +113,14 @@ jobs:
       # no end): after one good download the SDK comes from the Actions cache.
       # Tag builds can use what a build of main saved.
       - uses: actions/cache/restore@v4
+        if: steps.box.outputs.from == 'mirror'
         id: cache
         with:
           path: /tmp/sdk
           key: sdk-${{ steps.sdk.outputs.name }}-${{ steps.sdk.outputs.sha256 }}
 
       - name: Download the OpenWrt SDK
-        if: steps.cache.outputs.cache-hit != 'true'
+        if: steps.box.outputs.from == 'mirror' && steps.cache.outputs.cache-hit != 'true'
         timeout-minutes: 45
         run: |
           mkdir -p /tmp/sdk
@@ -128,12 +149,13 @@ jobs:
 
       # Saved right away, not at the end of the job: also when the build fails.
       - uses: actions/cache/save@v4
-        if: steps.cache.outputs.cache-hit != 'true'
+        if: steps.box.outputs.from == 'mirror' && steps.cache.outputs.cache-hit != 'true'
         with:
           path: /tmp/sdk
           key: sdk-${{ steps.sdk.outputs.name }}-${{ steps.sdk.outputs.sha256 }}
 
       - name: Unpack the OpenWrt SDK
+        if: steps.box.outputs.from == 'mirror'
         run: |
           f="/tmp/sdk/${{ steps.sdk.outputs.name }}"
           mkdir sdk
@@ -145,6 +167,12 @@ jobs:
       - name: Build
         working-directory: sdk
         run: |
+          # Feeds from the GitHub mirrors of git.openwrt.org, like the
+          # official SDK action does.
+          sed -e 's,https://git.openwrt.org/feed/,https://github.com/openwrt/,' \
+            -e 's,https://git.openwrt.org/openwrt/,https://github.com/openwrt/,' \
+            -e 's,https://git.openwrt.org/project/,https://github.com/openwrt/,' \
+            feeds.conf.default > feeds.conf
           ./scripts/feeds update base luci
           ./scripts/feeds install luci-base
           cp -r ../mayhem ../luci-app-mayhem package/
