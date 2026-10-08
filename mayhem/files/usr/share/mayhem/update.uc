@@ -81,25 +81,35 @@ function load() {
 	return cfg;
 }
 
-// Section to download through when the direct download fails.
+// The default section: downloads go through its active server, like the
+// remote DNS. The generator wrote which one it is.
 function route_section(cfg) {
-	if (cfg.geo.update_section)
-		return cfg.geo.update_section;
+	const st = read_json(`${C.RUN_DIR}/nodes.json`);
+
+	if (st?.default_section)
+		return st.default_section;
 
 	return filter(cfg.sections, (s) => (s.type ?? 'proxy') == 'proxy' && is_true(s.enabled ?? '1'))[0]?.['.name'];
 }
 
+// Download through Xray: older configs said so with update_via.
+function via_xray(o) {
+	if (o.via_xray != null && o.via_xray != '')
+		return is_true(o.via_xray);
+
+	return (o.update_via ?? 'auto') != 'direct';
+}
+
 // Download routes to try, in order: null = direct, else a proxy URL.
+// Through Xray first when that is on, direct as the fallback.
 function routes(cfg) {
-	const via = cfg.geo.update_via ?? 'auto';
 	const sec = route_section(cfg);
 	const out = [];
 
-	if (via != 'section')
-		push(out, null);
-
-	if (via != 'direct' && sec)
+	if (via_xray(cfg.geo) && sec)
 		push(out, `socks5h://sec-${sec}:${C.HELPER_PASS}@127.0.0.1:${C.HELPER_PORT}`);
+
+	push(out, null);
 
 	return out;
 }
@@ -223,7 +233,7 @@ function update_source(cfg, src, cats, state, now) {
 	for (let proxy in (local_path(src.url) ? [ null ] : routes(cfg))) {
 		try {
 			res = fetch_geo(src, cats, proxy, tmp);
-			via = proxy ? 'section' : 'direct';
+			via = proxy ? 'xray' : 'direct';
 			break;
 		}
 		catch (e) {
@@ -369,7 +379,7 @@ function fetch_list(cfg, url) {
 
 			fs.unlink(tmp);
 
-			return { data: data, via: proxy ? 'section' : 'direct' };
+			return { data: data, via: proxy ? 'xray' : 'direct' };
 		}
 
 		fs.unlink(tmp);

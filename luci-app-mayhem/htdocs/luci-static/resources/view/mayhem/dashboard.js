@@ -6,19 +6,21 @@
 'require mayhem.common as mh';
 'require mayhem.diag as diag';
 
-// The dashboard: three small widgets and every proxy section as a box of
-// server tiles grouped by where they come from (a subscription with its
-// traffic and expiry, links, interfaces), like Happ shows subscriptions. The
-// buttons sit together at the top right of the first section: checks,
-// updates, diagnostics and logs (in dialogs), restart, stop, autostart.
+// The dashboard: three small widgets and the servers like Happ shows them:
+// servers added by link in "Server list", every subscription in a box of its
+// own with its traffic and expiry, tunnels used as servers. The buttons sit
+// together at the side: checks, updates, diagnostics and logs (in dialogs),
+// restart, stop, autostart. The main section is chosen in the connection box.
 
 const callDashboard = rpc.declare({ object: 'luci.mayhem', method: 'dashboard', expect: { '': {} } });
 const callAction = rpc.declare({ object: 'luci.mayhem', method: 'action', params: [ 'name' ], expect: { '': {} } });
 const callSelect = rpc.declare({ object: 'luci.mayhem', method: 'select_node', params: [ 'section', 'tag' ], expect: { '': {} } });
 const callProbe = rpc.declare({ object: 'luci.mayhem', method: 'probe', params: [ 'tag', 'method' ], expect: { '': {} } });
 const callSubUpdate = rpc.declare({ object: 'luci.mayhem', method: 'sub_update', params: [ 'name' ], expect: { '': {} } });
+const callRefresh = rpc.declare({ object: 'luci.mayhem', method: 'refresh_servers', expect: { '': {} } });
 const callExitInfo = rpc.declare({ object: 'luci.mayhem', method: 'exit_info', params: [ 'section', 'lang' ], expect: { '': {} } });
 const callSetPing = rpc.declare({ object: 'luci.mayhem', method: 'set_ping_method', params: [ 'method' ], expect: { '': {} } });
+const callSetMain = rpc.declare({ object: 'luci.mayhem', method: 'set_main_section', params: [ 'section' ], expect: { '': {} } });
 
 const PROBE_PARALLEL = 4;
 const DAY = 86400;
@@ -51,8 +53,10 @@ const CSS = `
 .mh-tile-foot { display:flex; justify-content:space-between; margin-top:6px; gap:6px; }
 .mh-alert { display:grid; grid-template-columns:24px 1fr auto; grid-column-gap:10px; align-items:center; }
 .mh-alert ul { margin:4px 0 0; padding-left:18px; }
-.mh-ghead .btn { padding:0 8px; line-height:22px; min-height:0; }
+.mh-ghead .btn { padding:0 8px; line-height:22px; min-height:0; font-size:90%; }
 .mh-ghead > .btn:last-child { margin-left:auto; }
+.mh-ghead .mh-title { margin-right:4px; }
+.mh-whead select { width:auto; height:24px; line-height:22px; min-height:0; padding:0 4px; font-size:90%; }
 `;
 
 function rate(n) {
@@ -102,12 +106,6 @@ function geoLang() {
 	return known.indexOf(l) >= 0 ? l : (known.indexOf(l.split('-')[0]) >= 0 ? l.split('-')[0] : 'en');
 }
 
-const MODES = {
-	auto: _('Automatic: the fastest by URL test'),
-	manual: _('Manual choice'),
-	single: _('One server')
-};
-
 return view.extend({
 	data: null,
 	speed: null,
@@ -139,6 +137,11 @@ return view.extend({
 
 	redraw() {
 		const body = document.getElementById('mayhem-body');
+		const focus = document.activeElement;
+
+		// An open drop-down list would close under the user's hand.
+		if (body && focus && focus.tagName === 'SELECT' && body.contains(focus))
+			return;
 
 		if (body)
 			body.replaceChildren(...this.renderBody(this.data));
@@ -159,7 +162,9 @@ return view.extend({
 
 			return this.refresh();
 		}).then(() => {
-			if (section === this.data.default_section)
+			const main = mh.mainServer(this.data).section;
+
+			if (main && section === main.name)
 				this.checkConnection();
 		});
 	},
@@ -168,7 +173,8 @@ return view.extend({
 	// opens, after a server change and with the latency test. Never polled.
 	checkConnection() {
 		const d = this.data;
-		const sec = (d.sections || []).find((s) => s.name === d.default_section);
+		const main = mh.mainServer(d);
+		const sec = main.section;
 
 		if (!sec || !d.running) {
 			this.conn = null;
@@ -181,8 +187,8 @@ return view.extend({
 
 		this.redraw();
 
-		const ping = sec.active
-			? callProbe(sec.active, method).then((r) => { conn.ms = r.ms; conn.pingError = r.error; })
+		const ping = main.node
+			? callProbe(main.node.tag, method).then((r) => { conn.ms = r.ms; conn.pingError = r.error; })
 			: Promise.resolve();
 		const exit = callExitInfo(sec.name, geoLang()).then((r) => { conn.exit = r; });
 
@@ -191,6 +197,44 @@ return view.extend({
 
 			if (this.conn === conn)
 				this.redraw();
+		});
+	},
+
+	// The main section carries remote DNS, downloads and the rest of the
+	// traffic: changing it restarts xray, so it is asked first.
+	setMain(name) {
+		const d = this.data;
+
+		if (!name || name === (mh.mainServer(d).section || {}).name)
+			return Promise.resolve();
+
+		const label = name === 'pool' ? _('Server list') : name;
+
+		return new Promise((resolve) => {
+			const done = (ok) => {
+				ui.hideModal();
+				resolve(ok);
+			};
+
+			ui.showModal(_('Main section: %s').format(label), [
+				E('p', _('Remote DNS, downloads and the rest of the traffic go through the active server of %s. Xray restarts, connections break for a moment.').format(label)),
+				E('div', { 'class': 'right' }, [
+					E('button', { 'class': 'btn', 'click': () => done(false) }, _('Cancel')), ' ',
+					E('button', { 'class': 'btn cbi-button-action', 'click': () => done(true) }, _('Change'))
+				])
+			]);
+		}).then((ok) => {
+			if (!ok) {
+				this.redraw();
+				return;
+			}
+
+			return callSetMain(name).then((r) => {
+				if (r.error)
+					ui.addNotification(null, E('p', r.error), 'error');
+
+				return this.refresh();
+			}).then(() => this.checkConnection());
 		});
 	},
 
@@ -244,6 +288,22 @@ return view.extend({
 		});
 	},
 
+	// Downloads every subscription again and applies the servers, also those
+	// that did not get into xray for some reason.
+	refreshServers() {
+		this.busy.refresh = true;
+		this.redraw();
+
+		return callRefresh().then((r) => {
+			for (const res of (r.results || []))
+				if (!res.ok)
+					ui.addNotification(null, E('p', _('Subscription %s: %s').format(res.name, res.error)), 'error');
+		}).finally(() => {
+			delete this.busy.refresh;
+			return this.refresh();
+		});
+	},
+
 	// Downloads the given subscriptions again, one after another.
 	updateSubs(key, names) {
 		this.busy[key] = true;
@@ -269,17 +329,55 @@ return view.extend({
 
 	widget(title, rows, note) {
 		return E('div', { 'class': 'mh-box' }, [
-			E('div', { 'class': 'mh-whead' }, [ E('span', { 'class': 'mh-title' }, title), note ? E('span', { 'class': 'mh-muted mh-small' }, note) : '' ])
+			E('div', { 'class': 'mh-whead' }, [ E('span', { 'class': 'mh-title' }, title),
+				(note && typeof note === 'object') ? note : note ? E('span', { 'class': 'mh-muted mh-small' }, note) : '' ])
 		].concat(rows.map((r) => E('div', { 'class': 'mh-widget-row', 'title': r[0] + ': ' + (r[3] || r[1]) }, [
 			E('span', { 'class': 'mh-muted' }, r[0] + ': '),
 			E('span', { 'class': r[2] || '' }, r[1])
 		]))));
 	},
 
+	// The main section: the server list, or a tunnel or a section with servers
+	// of its own; a choice when there is more than the server list.
+	mainChoice(d) {
+		const targets = (d.sections || []).filter((s) => s.type === 'interface' || (s.type === 'proxy' && !s.pool));
+		const cur = (mh.mainServer(d).section || {}).name;
+
+		if (targets.length < 2)
+			return '';
+
+		return E('select', {
+			'class': 'cbi-input-select',
+			'title': _('Main section'),
+			'change': ui.createHandlerFn(this, (ev) => {
+				ev.target.blur();
+				return this.setMain(ev.target.value);
+			})
+		}, targets.map((s) => E('option', { 'value': s.name, 'selected': s.name === cur ? '' : null },
+			s.name === 'pool' ? _('Server list') : s.name)));
+	},
+
+	// The server the main traffic uses now and how it was chosen.
+	serverRow(d) {
+		const m = mh.mainServer(d);
+		const s = m.section;
+
+		if (!s)
+			return [ _('Server'), '—' ];
+
+		if (s.type === 'interface')
+			return [ _('Server'), _('Interface %s').format(s.interface || '?') ];
+
+		const how = s.mode === 'auto' ? (s.pinned ? _('pinned by hand') : _('automatic')) : null;
+
+		return [ _('Server'), m.node ? (how ? '%s (%s)'.format(m.node.name, how) : m.node.name) : '—' ];
+	},
+
 	connectionRows(d, working) {
 		const c = this.conn;
 		const sp = this.speed && working ? this.speed : null;
 		const rows = [
+			this.serverRow(d),
 			[ _('Incoming'), sp ? rate(sp.down) : '—' ],
 			[ _('Outgoing'), sp ? rate(sp.up) : '—' ]
 		];
@@ -323,7 +421,7 @@ return view.extend({
 			: [ '✘ ' + _('Does not work'), 'mh-fail' ];
 
 		return E('div', { 'class': 'mh-widgets' }, [
-			this.widget(_('Connection state'), this.connectionRows(d, working), this.conn ? this.conn.section : ''),
+			this.widget(_('Connection state'), this.connectionRows(d, working), this.mainChoice(d)),
 			this.widget(_('System'), [
 				[ _('Router'), d.model || '—' ],
 				[ _('OS'), d.system || '—' ],
@@ -410,12 +508,16 @@ return view.extend({
 		]);
 	},
 
-	// A subscription: title, traffic used of the limit, expiry, last update.
-	subHead(sub, now, loose) {
+	// A subscription: title, traffic used of the limit, expiry, last update and
+	// a button to download it again.
+	subHead(sub, now, note) {
 		const info = sub.info || {};
 		const u = info.userinfo || {};
 		const used = (u.upload || 0) + (u.download || 0);
-		const parts = [ E('b', info.title || sub.name) ];
+		const parts = [ E('span', { 'class': 'mh-title' }, info.title || sub.name) ];
+
+		if (note)
+			parts.push(E('span', { 'class': 'mh-muted mh-small' }, note));
 
 		if (!sub.enabled)
 			parts.push(E('span', { 'class': 'mh-muted mh-small' }, _('Disabled subscription')));
@@ -450,20 +552,29 @@ return view.extend({
 		else if (info.hwid && info.hwid.not_supported)
 			parts.push(E('span', { 'class': 'mh-warn mh-small' }, _('The provider expects an HWID: turn on "Send device data"')));
 
-		if (loose)
-			parts.push(mh.button({
-				icon: 'refresh', text: _('Update'), busy: this.busy['subs:' + sub.name],
-				click: ui.createHandlerFn(this, 'updateSubs', 'subs:' + sub.name, [ sub.name ])
-			}));
+		parts.push(mh.button({
+			icon: 'refresh', text: _('Update'), busy: this.busy['subs:' + sub.name],
+			click: ui.createHandlerFn(this, 'updateSubs', 'subs:' + sub.name, [ sub.name ])
+		}));
 
 		return E('div', { 'class': 'mh-ghead' }, parts);
 	},
 
-	groups(s, subs, now) {
+	// The servers of a proxy section as boxes by where they come from: links
+	// first ("Server list"), then every subscription, then tunnels. With
+	// several proxy sections each box names its section.
+	sourceBoxes(s, subs, now) {
 		const order = [];
 		const by = {};
+		const pool = s.name === 'pool';
 
-		for (const n of s.nodes) {
+		// The server list always has its box, empty or not.
+		if (pool) {
+			by.link = [];
+			order.push('link');
+		}
+
+		for (const n of s.nodes || []) {
 			const src = n.source || 'link';
 
 			if (!by[src]) {
@@ -474,53 +585,70 @@ return view.extend({
 			by[src].push(n);
 		}
 
-		const own = { link: _('Links'), json: _('JSON outbound'), interface: _('Interfaces') };
+		const keys = pool ? _('Server list') : _('Server keys');
+		const own = { link: keys, json: keys, interface: _('Tunnels') };
+		const rank = (src) => src === 'link' ? 0 : src === 'json' ? 1 : src === 'interface' ? 3 : 2;
+		const note = pool ? null : _('section %s').format(s.name);
 
-		order.sort((a, b) => (own[a] ? 1 : 0) - (own[b] ? 1 : 0));
+		order.sort((a, b) => rank(a) - rank(b));
+
+		// Links and JSON outbounds share one box.
+		if (by.json && by.link) {
+			by.link = by.link.concat(by.json);
+			order.splice(order.indexOf('json'), 1);
+		}
 
 		return order.map((src) => {
 			let head;
 
 			if (own[src]) {
-				head = E('div', { 'class': 'mh-ghead' }, E('b', own[src]));
+				head = E('div', { 'class': 'mh-ghead' }, [
+					E('span', { 'class': 'mh-title' }, own[src]),
+					note ? E('span', { 'class': 'mh-muted mh-small' }, note) : ''
+				]);
 			}
 			else {
 				const sub = subs[src] || { name: src, enabled: true };
 
 				sub.shown = true;
-				head = this.subHead(sub, now);
+				head = this.subHead(sub, now, note);
 			}
 
-			return E('div', { 'class': 'mh-group' }, [
+			return E('div', { 'class': 'mh-box mh-section' }, [
 				head,
-				E('div', { 'class': 'mh-grid' }, by[src].map((n) => this.tile(s, n)))
+				by[src].length ? E('div', { 'class': 'mh-grid' }, by[src].map((n) => this.tile(s, n)))
+					: E('div', { 'class': 'mh-muted mh-small' }, _('Add servers by key on the Server list page.'))
 			]);
 		});
 	},
 
+	// The server list when xray has none of it (nothing added yet).
+	emptyPool() {
+		return E('div', { 'class': 'mh-box mh-section' }, [
+			E('div', { 'class': 'mh-ghead' }, E('span', { 'class': 'mh-title' }, _('Server list'))),
+			E('div', { 'class': 'mh-muted mh-small' }, _('Add servers by key or a subscription on the Server list page.'))
+		]);
+	},
+
 	renderSection(s, subs, now) {
 		if (s.type === 'interface')
-			return this.renderTunnel(s, now);
+			return [ this.renderTunnel(s, now) ];
 
 		if (s.type !== 'proxy')
-			return '';
+			return [];
 
-		const current = (s.nodes || []).find((n) => n.tag === s.active);
-		const info = [ MODES[s.mode] || s.mode ];
+		const boxes = this.sourceBoxes(s, subs, now);
 
-		if (s.mode === 'auto' && s.pinned)
-			info.push(_('Pinned by hand'));
+		// Automatic choice with a server pinned by hand: the way back.
+		if (s.mode === 'auto' && s.pinned && boxes.length) {
+			const head = boxes[0].firstChild;
 
-		if (current)
-			info.push(_('Now: %s').format(current.name));
+			head.insertBefore(E('a', {
+				'href': '#', 'class': 'mh-small', 'click': ui.createHandlerFn(this, 'select', s.name, '')
+			}, _('Back to automatic')), head.querySelector('.btn'));
+		}
 
-		const head = [ E('span', { 'class': 'mh-title' }, s.name), ' ',
-			E('span', { 'class': 'mh-muted mh-small' }, info.join(' · ')) ];
-
-		if (s.mode === 'auto' && s.pinned)
-			head.push(' ', E('a', { 'href': '#', 'class': 'mh-small', 'click': ui.createHandlerFn(this, 'select', s.name, '') }, _('Back to automatic')));
-
-		return E('div', { 'class': 'mh-box mh-section' }, [ E('div', head) ].concat(this.groups(s, subs, now)));
+		return boxes;
 	},
 
 	// The box at the side: checks and updates of every section, then the
@@ -535,7 +663,10 @@ return view.extend({
 			side.push(E('select', {
 				'class': 'cbi-input-select',
 				'title': _('Check method'),
-				'change': (ev) => this.setMethod(ev.target.value)
+				'change': (ev) => {
+					ev.target.blur();
+					this.setMethod(ev.target.value);
+				}
 			}, PROBES.map((p) => E('option', { 'value': p[0], 'selected': p[0] === this.method ? '' : null }, p[1]))));
 
 			side.push(mh.button({
@@ -544,10 +675,10 @@ return view.extend({
 			}));
 		}
 
-		if (subNames.length)
+		if (proxies.length || subNames.length)
 			side.push(mh.button({
-				icon: 'refresh', text: _('Update'), busy: this.busy['subs:all'],
-				click: ui.createHandlerFn(this, 'updateSubs', 'subs:all', subNames)
+				icon: 'refresh', text: _('Update servers'), busy: this.busy.refresh,
+				click: ui.createHandlerFn(this, 'refreshServers')
 			}));
 
 		if (side.length)
@@ -577,19 +708,13 @@ return view.extend({
 		]);
 	},
 
-	// Subscriptions no section uses yet: their state is still worth seeing.
+	// Subscriptions xray has no servers of: turned off, not downloaded yet or
+	// failed. Their state is still worth seeing.
 	renderLoose(subs, now) {
-		const left = Object.values(subs).filter((s) => !s.shown);
-
-		if (!left.length)
-			return '';
-
-		return E('div', { 'class': 'mh-box mh-section' }, [
-			E('div', { 'class': 'mh-title' }, _('Subscriptions without a section'))
-		].concat(left.map((s) => E('div', { 'class': 'mh-group' }, [
-			this.subHead(s, now, true),
+		return Object.values(subs).filter((s) => !s.shown).map((s) => E('div', { 'class': 'mh-box mh-section' }, [
+			this.subHead(s, now),
 			E('div', { 'class': 'mh-muted mh-small' }, _('%d servers').format(s.nodes))
-		]))));
+		]));
 	},
 
 	renderBody(d) {
@@ -598,11 +723,15 @@ return view.extend({
 		for (const s of d.subscriptions || [])
 			subs[s.name] = Object.assign({}, s);
 
-		const sections = (d.sections || []).map((s) => this.renderSection(s, subs, d.time));
+		const sections = d.sections || [];
+		const boxes = [].concat(...sections.map((s) => this.renderSection(s, subs, d.time)));
 
-		// Sections on the left, the buttons in a box of their own on the right.
+		if (!sections.some((s) => s.name === 'pool'))
+			boxes.unshift(this.emptyPool());
+
+		// Servers on the left, the buttons in a box of their own on the right.
 		return [ this.renderAlert(d), this.renderWidgets(d), E('div', { 'class': 'mh-split' }, [
-			E('div', { 'class': 'mh-stack' }, sections.concat([ this.renderLoose(subs, d.time) ])),
+			E('div', { 'class': 'mh-stack' }, boxes.concat(this.renderLoose(subs, d.time))),
 			this.renderSide(d)
 		]) ];
 	},

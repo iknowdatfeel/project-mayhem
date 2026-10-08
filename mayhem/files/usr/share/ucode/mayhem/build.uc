@@ -148,8 +148,12 @@ function build_nft(S, v6, sets, tunnels, dns_redirect, fake_pool) {
 
 	s += `table inet ${C.NFT_TABLE} {\n`;
 	s += `\tset ifaces {\n\t\ttype ifname\n\t\telements = { ${join(', ', ifaces)} }\n\t}\n`;
-	s += nft_set('local4', 'ipv4_addr', C.LOCAL4);
-	s += nft_set('local6', 'ipv6_addr', C.LOCAL6);
+	// Local addresses stay on the router; without the option only what can
+	// never be routed (loopback, link-local, multicast) is left out.
+	const local = is_true(S.exclude_local ?? '1');
+
+	s += nft_set('local4', 'ipv4_addr', local ? C.LOCAL4 : C.LOCAL4_ALWAYS);
+	s += nft_set('local6', 'ipv6_addr', local ? C.LOCAL6 : C.LOCAL6_ALWAYS);
 	s += nft_set('block4', 'ipv4_addr', sets.block4);
 	s += nft_set('block6', 'ipv6_addr', sets.block6);
 	s += nft_set('direct4', 'ipv4_addr', sets.direct4);
@@ -692,6 +696,7 @@ export function build(model) {
 	const block_rules = [];
 	const section_rules = [];
 	const proxy_targets = {};
+	const iface_targets = {};		// tunnel sections: the rest of the traffic may go there
 	const node_tags = [];
 	const balancers = [];
 	const overrides = [];
@@ -723,6 +728,23 @@ export function build(model) {
 
 		switch (info.type) {
 		case 'proxy':
+			// No servers of its own: the active server of the server list.
+			if (sec.use_pool) {
+				target = proxy_targets.pool;
+
+				if (!target) {
+					info.error = 'the server list has no servers';
+					warn(`section "${name}": the server list has no working servers, section skipped`);
+					continue;
+				}
+
+				state.sections[name] = { type: 'proxy', pool: true };
+				proxy_targets[name] = target;
+				add_local(sec, target);
+				proxy_domains.add_all(domains);
+				break;
+			}
+
 			let nodes;
 
 			try {
@@ -736,7 +758,8 @@ export function build(model) {
 
 			if (!length(nodes)) {
 				info.error = 'no servers';
-				warn(`section "${name}": no servers (links or subscription nodes), skipped`);
+				warn(sec.pool ? 'the server list is empty: add a server or a subscription'
+					: `section "${name}": no servers (links or subscription nodes), skipped`);
 				continue;
 			}
 
@@ -889,6 +912,7 @@ export function build(model) {
 			push(outbounds, iface_outbound(tag, inf.device, tv6 ? F.sockopt : 'ForceIPv4'));
 			push(balancers, { tag: bal, selector: [ `i-${name}-` ], strategy: { type: 'random' } });
 			target = { balancerTag: bal };
+			iface_targets[name] = target;
 
 			const tinfo = {
 				type: 'interface', mode: kernel ? 'kernel' : 'xray', interface: iface, device: inf.device,
@@ -964,23 +988,29 @@ export function build(model) {
 
 	// --- default route ------------------------------------------------------
 
+	// The default section: the rest of the traffic in "everything through
+	// proxy" mode, remote DNS and downloads go through its active server.
+	const want = S.default_section;
+	const first_iface = keys(iface_targets)[0];
+	let default_name = null;
+
+	if (want && (proxy_targets[want] || iface_targets[want]))
+		default_name = want;
+	else {
+		default_name = first_proxy ?? first_iface;
+
+		if (want && default_name)
+			warn(`default section "${want}" does not work, using "${default_name}"`);
+	}
+
+	const default_target = default_name ? (proxy_targets[default_name] ?? iface_targets[default_name]) : null;
 	let final_target = { outboundTag: 'direct' };
 
 	if (mode == 'global') {
-		const want = S.default_section;
-
-		if (want && proxy_targets[want]) {
-			final_target = proxy_targets[want];
-		}
-		else if (first_proxy) {
-			if (want)
-				warn(`default section "${want}" is not a working proxy section, using "${first_proxy}"`);
-
-			final_target = proxy_targets[first_proxy];
-		}
-		else {
-			fail('"everything through proxy" mode needs at least one working proxy section');
-		}
+		if (default_target)
+			final_target = default_target;
+		else
+			fail('the rest of the traffic needs a server: add one or a subscription on the Server list page, or turn "The rest of the traffic through the tunnel" off');
 	}
 
 	// --- DNS ----------------------------------------------------------------
@@ -988,12 +1018,16 @@ export function build(model) {
 	const domestic = [];
 	const remote = [];
 
+	// The router's own address would send the queries back to dnsmasq and
+	// xray: it stands for the servers the router got from the provider.
+	const own = [ '127.0.0.1', '::1', 'localhost', ...(R.router_ips ?? []) ];
+
 	for (let s in entries(D.domestic)) {
 		const r = dns_server(s);
 
 		if (r.error)
 			warn(`domestic DNS: ${r.error}`);
-		else
+		else if (index(own, r.host) < 0)
 			push(domestic, r);
 	}
 
@@ -1112,9 +1146,9 @@ export function build(model) {
 	const helper_accounts = [];
 	const rules = [];
 
-	for (let sn in keys(proxy_targets)) {
+	for (let sn in [ ...keys(proxy_targets), ...keys(iface_targets) ]) {
 		push(helper_accounts, { user: `sec-${sn}`, pass: C.HELPER_PASS });
-		push(rules, { inboundTag: [ 'helper-in' ], user: [ `sec-${sn}` ], ...proxy_targets[sn] });
+		push(rules, { inboundTag: [ 'helper-in' ], user: [ `sec-${sn}` ], ...(proxy_targets[sn] ?? iface_targets[sn]) });
 	}
 
 	// Users of single servers come last, each rule with a tag: when the servers
@@ -1131,34 +1165,23 @@ export function build(model) {
 	if (is_true(D.hijack ?? '1'))
 		push(rules, { inboundTag: [ 'tproxy-in' ], port: '53', outboundTag: 'dns-out' });
 
-	if (is_true(D.via_proxy)) {
-		let dt = proxy_targets[D.proxy_section];
+	// Remote DNS goes through the active server of the main section unless
+	// turned off; otherwise, or with no working section, it goes direct
+	// (encrypted when it is DoH).
+	if (default_target && is_true(D.via_proxy ?? '1')) {
+		const ips = [], doms = [];
 
-		if (!dt && first_proxy) {
-			if (D.proxy_section)
-				warn(`DNS section "${D.proxy_section}" is not a working proxy section, using "${first_proxy}"`);
+		for (let r in remote)
+			if (is_ip(r.host))
+				uniq_push(ips, r.host);
+			else
+				uniq_push(doms, `full:${r.host}`);
 
-			dt = (mode == 'global') ? final_target : proxy_targets[first_proxy];
-		}
+		if (length(ips))
+			push(rules, { inboundTag: [ 'dns-module' ], ip: ips, ...default_target });
 
-		if (dt) {
-			const ips = [], doms = [];
-
-			for (let r in remote)
-				if (is_ip(r.host))
-					uniq_push(ips, r.host);
-				else
-					uniq_push(doms, `full:${r.host}`);
-
-			if (length(ips))
-				push(rules, { inboundTag: [ 'dns-module' ], ip: ips, ...dt });
-
-			if (length(doms))
-				push(rules, { inboundTag: [ 'dns-module' ], domain: doms, ...dt });
-		}
-		else {
-			warn('"DNS through proxy" is on, but there is no working proxy section');
-		}
+		if (length(doms))
+			push(rules, { inboundTag: [ 'dns-module' ], domain: doms, ...default_target });
 	}
 
 	push(rules, { inboundTag: [ 'dns-module' ], outboundTag: 'direct' });
@@ -1170,8 +1193,16 @@ export function build(model) {
 	// reach their own rules at the end.
 	const intercepted = (r) => ({ inboundTag: [ 'tproxy-in' ], ...r });
 
+	// Without QUIC browsers fall back to TCP, which proxies carry better.
+	if (is_true(S.block_quic))
+		push(rules, intercepted({ network: 'udp', port: '443', outboundTag: 'block' }));
+
 	for (let r in block_rules)
 		push(rules, intercepted(r));
+
+	// BitTorrent is recognized by sniffing its first packets.
+	if (is_true(S.torrent_direct))
+		push(rules, intercepted({ protocol: [ 'bittorrent' ], outboundTag: 'direct' }));
 
 	for (let r in tun_rules)
 		push(rules, intercepted(r));
@@ -1286,6 +1317,7 @@ export function build(model) {
 		for (let i = 0; i < length(domestic); i++)
 			key.dns.servers[i].domains = server_hosts;
 
+	state.default_section = default_name;
 	state.geo_pending = geo_pending;
 	state.lists_missing = lists_missing;
 	state.generated = R.now ?? time();

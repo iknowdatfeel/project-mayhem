@@ -18,6 +18,9 @@ Usage: mayhem <command>
   geo-update [SOURCE]        download geo data now (all sources or one)
   lists-update               download rule lists now
   xray-install [VERSION]     download the official xray build (default $MAYHEM_XRAY_VERSION)
+  self-update                install the latest release of Mayhem (the installer)
+  auto-update                self-update if a newer release is out and automatic
+                             updates are on (the scheduler runs it nightly)
   awg-install                install AmneziaWG (kernel module, tools, LuCI protocol)
                              from the awg-openwrt builds for this firmware
   dnsmasq-full               replace dnsmasq with dnsmasq-full (needed for tunnel
@@ -70,6 +73,17 @@ xray_asset() {
 		riscv64*)                     echo "linux-riscv64 xray" ;;
 		*) return 1 ;;
 	esac
+}
+
+version_newer() {
+	# $1 newer than $2: numbers separated by dots, compared one by one
+	awk -v a="$1" -v b="$2" 'BEGIN {
+		n = split(a, x, /[.-]/); m = split(b, y, /[.-]/)
+		for (i = 1; i <= (n > m ? n : m); i++)
+			if (x[i] + 0 != y[i] + 0)
+				exit !(x[i] + 0 > y[i] + 0)
+		exit 1
+	}'
 }
 
 fetch() {
@@ -364,6 +378,31 @@ case "$1" in
 		;;
 	dnsmasq-full)
 		cmd_dnsmasq_full
+		;;
+	auto-update)
+		# Run by the scheduler once a day: installs a newer release when
+		# automatic updates are on.
+		[ "$(uci -q get mayhem.settings.auto_update)" = 1 ] || exit 0
+		repo="${MAYHEM_REPO:-iknowdatfeel/project-mayhem}"
+		f=/tmp/mayhem-release.json
+		fetch "https://api.github.com/repos/$repo/releases/latest" "$f" ||
+			{ echo "Cannot ask GitHub for the latest release" >&2; exit 1; }
+		latest="$(sed -n 's/.*"tag_name": *"v\{0,1\}\([^"]*\)".*/\1/p' "$f" | head -n 1)"
+		rm -f "$f"
+		[ -n "$latest" ] || { echo "No release found" >&2; exit 1; }
+		version_newer "$latest" "$MAYHEM_VERSION" || { echo "Mayhem $MAYHEM_VERSION is up to date"; exit 0; }
+		mayhem_log "updating Mayhem $MAYHEM_VERSION to $latest"
+		exec "$0" self-update
+		;;
+	self-update)
+		# The installer of the latest release; it restarts Mayhem at the end.
+		f=/tmp/mayhem-install.sh
+		fetch "https://raw.githubusercontent.com/${MAYHEM_REPO:-iknowdatfeel/project-mayhem}/main/install.sh" "$f" ||
+			{ echo "Cannot download the installer" >&2; exit 1; }
+		sh "$f" </dev/null
+		rc=$?
+		rm -f "$f"
+		exit "$rc"
 		;;
 	version)
 		echo "mayhem $MAYHEM_VERSION"

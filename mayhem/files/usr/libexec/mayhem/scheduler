@@ -3,7 +3,8 @@
 # geo data (missing categories at once, the rest nightly) and rule lists;
 # reloads the service when something changed. A reload only restarts xray
 # when its generated config or the geo files it uses really changed.
-# Then checks the tunnels and runs the watchdog (xray memory, dnsmasq).
+# Then checks the tunnels, runs the watchdog (xray memory, dnsmasq) and, when
+# turned on, the nightly update of Mayhem itself.
 
 . "${MAYHEM_LIB_DIR:-/usr/share/mayhem}/lib.sh"
 
@@ -28,6 +29,7 @@ while :; do
 
 	mayhem_tunnels_check
 	mayhem_watchdog
+	mayhem_auto_update
 
 	sleep 60
 done

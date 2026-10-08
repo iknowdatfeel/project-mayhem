@@ -21,7 +21,7 @@ fi
 if ! uci -q get mayhem.geo >/dev/null; then
 	uci set mayhem.geo=geo
 	uci set mayhem.geo.update_hour='4'
-	uci set mayhem.geo.update_via='auto'
+	uci set mayhem.geo.via_xray='1'
 	uci set mayhem.geo.lists_interval='24'
 fi
 
@@ -36,4 +36,8 @@ if ! uci -q show mayhem | grep -q '=geo_source$'; then
 fi
 
 uci commit mayhem
+
+# Older configurations: the server list (0.12) and what comes after.
+ucode /usr/share/mayhem/migrate.uc >/dev/null 2>&1
+
 exit 0

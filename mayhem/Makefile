@@ -35,6 +35,7 @@ define Package/mayhem/install
 	$(INSTALL_DIR) $(1)/etc/config $(1)/etc/init.d $(1)/etc/uci-defaults $(1)/usr/bin $(1)/usr/libexec/mayhem
 	$(INSTALL_DIR) $(1)/usr/share/mayhem $(1)/usr/share/ucode/mayhem $(1)/lib/upgrade/keep.d
 	$(INSTALL_CONF) ./files/etc/config/mayhem $(1)/etc/config/mayhem
+	$(INSTALL_DATA) ./files/etc/config/mayhem $(1)/usr/share/mayhem/defaults.conf
 	$(INSTALL_BIN) ./files/etc/init.d/mayhem $(1)/etc/init.d/mayhem
 	$(INSTALL_BIN) ./files/usr/bin/mayhem $(1)/usr/bin/mayhem
 	$(INSTALL_BIN) ./files/etc/uci-defaults/90-mayhem $(1)/etc/uci-defaults/90-mayhem

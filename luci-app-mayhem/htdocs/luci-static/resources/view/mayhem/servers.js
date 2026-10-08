@@ -5,12 +5,15 @@
 'require rpc';
 'require ui';
 'require mayhem.common as mh';
+'require mayhem.tunnels as tunnels';
 
-// Server list: servers added by key, subscriptions, and the device profile
-// that subscription requests carry. Keys go into the "link" list of a proxy
-// section, the same list the section editor on the Routing page shows.
+// Server list: servers added by key, subscriptions, tunnels and the options
+// of every server (Mux). Keys and subscriptions form one list, like in Happ:
+// the dashboard shows it and picks its active server. Keys go into the "link"
+// list of the "pool" section of the config.
 
 const callParse = rpc.declare({ object: 'luci.mayhem', method: 'parse_link', params: [ 'links' ], expect: { '': {} } });
+const callDashboard = rpc.declare({ object: 'luci.mayhem', method: 'dashboard', expect: { '': {} } });
 
 const LINK_RE = /^(vless|vmess|trojan|ss|socks5?|https?|hysteria2|hy2|wireguard|wg):\/\/\S+/i;
 
@@ -60,23 +63,27 @@ function linksOf(sid) {
 	return out;
 }
 
-// Proxy sections that take servers from links.
-function linkSections() {
-	return uci.sections('mayhem', 'section').filter((s) =>
-		(s.type || 'proxy') === 'proxy' && (s.proxy_type || 'link') === 'link');
+// The server list in the config; older configs get one when a key is added.
+function ensurePool() {
+	if (!uci.get('mayhem', 'pool')) {
+		uci.add('mayhem', 'pool', 'pool');
+		uci.set('mayhem', 'pool', 'select', 'auto');
+	}
 }
 
 return view.extend({
-	keys: [],		// [{ section, link, info }]
+	keys: [],		// [{ link, info }]
 
 	load() {
-		return uci.load('mayhem').then(() => this.loadKeys());
+		return Promise.all([
+			uci.load('mayhem').then(() => this.loadKeys()),
+			tunnels.info(),
+			L.resolveDefault(callDashboard(), {})
+		]);
 	},
 
 	loadKeys() {
-		const list = [];
-
-		linkSections().forEach((s) => linksOf(s['.name']).forEach((l) => list.push({ section: s['.name'], link: l })));
+		const list = linksOf('pool').map((l) => ({ link: l }));
 
 		if (!list.length) {
 			this.keys = [];
@@ -96,7 +103,7 @@ return view.extend({
 		return this.handleSaveApply(null, '0');
 	},
 
-	addKeys(text, target, newName) {
+	addKeys(text) {
 		const lines = text.split('\n').map((l) => l.trim()).filter((l) => l && l.charAt(0) !== '#');
 
 		if (!lines.length) {
@@ -111,20 +118,6 @@ return view.extend({
 			return Promise.resolve();
 		}
 
-		let sid = target;
-
-		if (target === '') {
-			if (!/^[A-Za-z0-9_]+$/.test(newName || '')) {
-				ui.addNotification(null, E('p', _('The section name may only contain letters, digits and _')), 'error');
-				return Promise.resolve();
-			}
-
-			if (uci.get('mayhem', newName)) {
-				ui.addNotification(null, E('p', _('There is already a section named %s').format(newName)), 'error');
-				return Promise.resolve();
-			}
-		}
-
 		return callParse(lines).then((r) => {
 			const res = r.results || [];
 			const errors = res.map((x, i) => x.ok ? null : '%s: %s'.format(x.name || lines[i].slice(0, 40), x.error || '?')).filter((x) => x);
@@ -134,29 +127,23 @@ return view.extend({
 				return;
 			}
 
-			if (target === '') {
-				sid = uci.add('mayhem', 'section', newName);
-				uci.set('mayhem', sid, 'enabled', '1');
-				uci.set('mayhem', sid, 'type', 'proxy');
-				uci.set('mayhem', sid, 'proxy_type', 'link');
-				uci.set('mayhem', sid, 'select', 'auto');
-			}
+			ensurePool();
 
-			const have = linksOf(sid);
+			const have = linksOf('pool');
 
-			uci.set('mayhem', sid, 'link', have.concat(lines.filter((l) => have.indexOf(l) < 0)));
+			uci.set('mayhem', 'pool', 'link', have.concat(lines.filter((l) => have.indexOf(l) < 0)));
 
 			return this.apply();
 		});
 	},
 
 	removeKey(k) {
-		const left = linksOf(k.section).filter((l) => l !== k.link);
+		const left = linksOf('pool').filter((l) => l !== k.link);
 
 		if (left.length)
-			uci.set('mayhem', k.section, 'link', left);
+			uci.set('mayhem', 'pool', 'link', left);
 		else
-			uci.unset('mayhem', k.section, 'link');
+			uci.unset('mayhem', 'pool', 'link');
 
 		return this.apply();
 	},
@@ -166,15 +153,6 @@ return view.extend({
 			'class': 'cbi-input-textarea', 'rows': 4,
 			'placeholder': 'vless://…\nss://…'
 		});
-		const sections = linkSections();
-		const target = E('select', { 'class': 'cbi-input-select' }, sections.map((s) => E('option', { 'value': s['.name'] }, s['.name']))
-			.concat([ E('option', { 'value': '' }, _('New section…')) ]));
-		const name = E('input', {
-			'class': 'cbi-input-text', 'placeholder': _('Section name'), 'value': sections.length ? '' : 'main',
-			'style': sections.length ? 'display:none' : ''
-		});
-
-		target.addEventListener('change', () => name.style.display = target.value === '' ? '' : 'none');
 
 		const rows = this.keys.map((k) => {
 			const i = k.info || {};
@@ -188,7 +166,6 @@ return view.extend({
 				]),
 				E('td', { 'class': 'td' }, proto),
 				E('td', { 'class': 'td' }, addr),
-				E('td', { 'class': 'td' }, k.section),
 				E('td', { 'class': 'td cbi-section-actions' }, E('button', {
 					'class': 'btn cbi-button cbi-button-remove',
 					'click': ui.createHandlerFn(this, 'removeKey', k)
@@ -201,26 +178,27 @@ return view.extend({
 				_('Paste a server key: vless://, vmess://, trojan://, ss://, hysteria2://, socks://, http(s)://, wireguard://. Several keys go one per line.')),
 			text,
 			E('div', { 'class': 'mh-add-row' }, [
-				E('label', _('Section')), target, name,
 				E('button', {
 					'class': 'btn cbi-button cbi-button-add',
-					'click': ui.createHandlerFn(this, () => this.addKeys(text.value, target.value, name.value))
+					'click': ui.createHandlerFn(this, () => this.addKeys(text.value))
 				}, _('Add'))
 			]),
-			E('p', { 'class': 'mh-muted mh-small' }, _('Servers are added to the chosen proxy section and applied at once.')),
+			E('p', { 'class': 'mh-muted mh-small' }, _('Servers go into the server list on the dashboard and are applied at once.')),
 			rows.length ? E('table', { 'class': 'table mh-keys' }, [
 				E('tr', { 'class': 'tr table-titles' }, [
 					E('th', { 'class': 'th' }, _('Server name')), E('th', { 'class': 'th' }, _('Protocol')), E('th', { 'class': 'th' }, _('Address')),
-					E('th', { 'class': 'th' }, _('Section')), E('th', { 'class': 'th' })
+					E('th', { 'class': 'th' })
 				])
 			].concat(rows)) : E('p', { 'class': 'mh-muted' }, _('No servers added by key yet.'))
 		]);
 	},
 
-	render() {
-		const proxies = uci.sections('mayhem', 'section')
-			.filter((s) => (s.type || 'proxy') === 'proxy')
-			.map((s) => s['.name']);
+	render(data) {
+		const info = data[1] || {};
+		const dash = data[2] || {};
+		const main = (dash.sections || []).find((x) => x.name === dash.default_section);
+		const current = main && (main.nodes || []).find((n) => n.tag === main.active);
+		const now = current ? current.name : (main && main.name !== 'pool' ? main.name : null);
 		const dev = uci.get('mayhem', 'device') || {};
 		const self = this;
 
@@ -229,9 +207,9 @@ return view.extend({
 
 		m.tabbed = true;
 
-		// --- servers by key ---
+		// --- servers by key (the tab shows no options of its own) ---
 
-		s = m.section(form.NamedSection, 'settings', 'settings', _('Add server'));
+		s = m.section(form.NamedSection, 'geo', 'geo', _('Add server'));
 		s.render = function() {
 			return self.renderAdd(this);
 		};
@@ -239,7 +217,7 @@ return view.extend({
 		// --- subscriptions ---
 
 		s = m.section(form.GridSection, 'subscription', _('Subscriptions'),
-			_('Subscription servers are added to sections on the Routing page. Downloads repeat by the interval the provider sets, or every 12 hours.'));
+			_('Servers of every enabled subscription go into the server list on the dashboard.'));
 		s.addremove = true;
 		s.anonymous = false;
 		s.sortable = true;
@@ -255,54 +233,38 @@ return view.extend({
 		o.editable = true;
 		o.rmempty = false;
 
-		o = s.taboption('main', form.Value, 'url', _('URL'));
+		o = s.taboption('main', form.Value, 'url', _('URL'),
+			_('Any format: a list of keys (plain or base64) or an Xray JSON config. A link to a file page on GitHub works too.'));
 		o.rmempty = false;
 		o.validate = function(section_id, value) {
 			return (/^https?:\/\/\S+$/).test(value || '') ? true : _('Expected an http(s):// address');
 		};
 
-		o = s.taboption('main', form.ListValue, 'format', _('Format'));
-		o.value('auto', _('Detect'));
-		o.value('uri', _('List of links (plain or base64)'));
-		o.value('xray_json', _('Xray JSON'));
-		o.default = 'auto';
-		o.modalonly = true;
-
-		o = s.taboption('main', form.Value, 'update_interval', _('Update every, hours'),
-			_('Empty: as the provider says, otherwise 12 hours.'));
+		o = s.taboption('main', form.Value, 'update_interval', _('Update every, hours'));
 		o.datatype = 'range(1,720)';
-		o.placeholder = _('Auto');
+		o.default = '12';
+		o.rmempty = false;
 
-		o = s.taboption('main', form.ListValue, 'update_via', _('Download route'),
-			_('If the subscription server is blocked, it can be downloaded through a section.'));
-		o.value('auto', _('Direct, then through a section if that fails'));
-		o.value('direct', _('Direct only'));
-		o.value('section', _('Through a section only'));
-		o.default = 'auto';
+		o = s.taboption('main', form.Flag, 'via_xray', _('Download through Xray'),
+			now ? _('Through the active server, now %s; when that fails, direct.').format(now)
+				: _('Through the active server; when that fails, direct.'));
+		o.default = '1';
+		o.rmempty = false;
 		o.modalonly = true;
+		o.cfgvalue = function(sid) {
+			const v = this.map.data.get('mayhem', sid, 'via_xray');
 
-		o = s.taboption('main', form.ListValue, 'update_section', _('Section for downloading'));
-		o.value('', _('The first section that uses this subscription'));
-		proxies.forEach((n) => o.value(n));
-		o.depends('update_via', 'auto');
-		o.depends('update_via', 'section');
-		o.modalonly = true;
-
-		o = s.taboption('main', form.DynamicList, 'header', _('Extra headers'),
-			_('In the form "Name: value".'));
-		o.modalonly = true;
-		o.validate = function(section_id, value) {
-			return (!value || /^[A-Za-z0-9-]+:\s*\S/.test(value)) ? true : _('Expected "Name: value"');
+			return v != null ? v : (this.map.data.get('mayhem', sid, 'update_via') === 'direct' ? '0' : '1');
 		};
 
 		o = s.taboption('device', form.Flag, 'send_hwid', _('Send device data'),
-			_('Needed by providers that limit the number of devices.'));
+			_('Needed by providers that limit the number of devices. The headers match the Happ client.'));
 		o.default = '1';
 		o.rmempty = false;
 		o.modalonly = true;
 
 		DEVICE_FIELDS.forEach((f) => {
-			o = s.taboption('device', form.Value, f[0], f[1], _('Empty: from the device profile.'));
+			o = s.taboption('device', form.Value, f[0], f[1], f[0] === 'hwid' ? _('Empty: the HWID of the router, %s.').format(dev.hwid || '—') : null);
 			o.placeholder = dev[f[0]] || f[2];
 			o.modalonly = true;
 
@@ -310,25 +272,48 @@ return view.extend({
 				o.depends('send_hwid', '1');
 		});
 
-		// --- device profile ---
-
-		s = m.section(form.NamedSection, 'device', 'device', _('Device profile generator'),
-			_('How the router presents itself to subscription servers. The headers match the Happ client: x-hwid, x-device-os, x-ver-os, x-device-model, x-device-locale.'));
-		s.addremove = false;
-
-		DEVICE_FIELDS.forEach((f) => {
-			o = s.option(form.Value, f[0], f[1]);
-			o.placeholder = f[2];
-		});
-
-		o = s.option(form.Button, '_new_hwid', ' ');
+		o = s.taboption('device', form.Button, '_new_hwid', ' ');
 		o.inputtitle = _('Generate a new HWID');
 		o.inputstyle = 'action';
+		o.modalonly = true;
+		o.depends('send_hwid', '1');
 		o.onclick = function(ev, section_id) {
 			const field = this.section.children.filter((c) => c.option === 'hwid')[0];
 
 			field.getUIElement(section_id).setValue(randomHwid());
 		};
+
+		// --- tunnels (the tab shows no options of its own) ---
+
+		s = m.section(form.NamedSection, 'device', 'device', _('Tunnels'));
+		s.render = function() {
+			return tunnels.render(info, { 'data-tab': this.section, 'data-tab-title': this.title });
+		};
+
+		// --- advanced ---
+
+		s = m.section(form.NamedSection, 'settings', 'settings', _('Advanced'));
+		s.addremove = false;
+
+		o = s.option(form.Flag, 'mux', _('Mux for VLESS'),
+			_('Several connections share one connection to the server. Applies to every VLESS server; with XTLS Vision only UDP is multiplexed.'));
+
+		o = s.option(form.Value, 'mux_concurrency', _('TCP connections per Mux connection'));
+		o.datatype = 'range(1,1024)';
+		o.placeholder = '8';
+		o.depends('mux', '1');
+
+		o = s.option(form.Value, 'mux_xudp_concurrency', _('UDP connections per Mux connection (XUDP)'));
+		o.datatype = 'range(1,1024)';
+		o.placeholder = '16';
+		o.depends('mux', '1');
+
+		o = s.option(form.ListValue, 'mux_xudp_udp443', _('QUIC (UDP 443) with Mux'));
+		o.value('reject', _('Drop: browsers fall back to TCP'));
+		o.value('allow', _('Send through Mux'));
+		o.value('skip', _('Send without Mux'));
+		o.default = 'reject';
+		o.depends('mux', '1');
 
 		return m.render().then((node) => {
 			node.insertBefore(mh.style(), node.firstChild);

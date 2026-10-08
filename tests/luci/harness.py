@@ -46,9 +46,10 @@ STATIC = [
 
 # Methods the pages may call that would change the system: never run them.
 SIDE_EFFECTS = {'action', 'system_install', 'data_update', 'awg_import', 'geo_import', 'set_log_level', 'sub_update', 'select_node',
-                'set_ping_method', 'backup_import'}
+                'set_ping_method', 'backup_import', 'reset_config', 'rename_section', 'refresh_servers', 'set_main_section'}
 
 calls = []
+uci_writes = []
 unknown = []
 DEMO = bool(os.environ.get('MAYHEM_DEMO'))
 METRICS_PORT = 12781
@@ -151,6 +152,9 @@ def call(obj, method, args):
             return {'section': 'main', 'ip': '185.132.132.192', 'country_code': 'NL', 'country': 'Netherlands', 'city': 'Amsterdam'}
         if DEMO and method == 'probe':
             return {'ms': random.choice([48, 63, 95, 142])}
+        # The latest releases come from GitHub: no network in tests.
+        if method == 'components' and (args or {}).get('check'):
+            return {'mayhem': '0.11.0', 'xray': '26.9.30', 'xray_latest': '26.9.30', 'mayhem_latest': '0.12.0'}
         if method in SIDE_EFFECTS:
             return {'started': True} if method in ('system_install', 'data_update') else {'ok': True}
         return ucode(os.path.join(os.path.dirname(__file__), 'rpc.uc'), PLUGIN, method, json.dumps(args or {}))
@@ -158,6 +162,8 @@ def call(obj, method, args):
     if obj == 'uci':
         if method == 'get':
             return {'values': uci_get(args['config'])}
+        if method in ('set', 'add', 'delete'):
+            uci_writes.append((method, args))
         if method == 'changes':
             return {'changes': {}}
         return {}
@@ -281,7 +287,7 @@ def main():
         browser = p.chromium.launch(executable_path=os.environ.get('CHROMIUM') or None)
 
         def open_view(view, actions=None):
-            ctx = browser.new_context()
+            ctx = browser.new_context(viewport={'width': 1280, 'height': int(os.environ.get('SHOTS_HEIGHT', '720'))})
             pg = ctx.new_page()
             errors = []
             pg.on('pageerror', lambda e: errors.append('page error: %s' % e))
@@ -307,7 +313,8 @@ def main():
 
         def shot(pg, name):
             if os.environ.get('SHOTS'):
-                pg.screenshot(path=os.path.join(os.environ['SHOTS'], name + '.png'))
+                pg.wait_for_timeout(600)  # modals fade in
+                pg.screenshot(path=os.path.join(os.environ['SHOTS'], name + '.png'), full_page=True)
 
         def close_modal(pg):
             pg.evaluate('L.ui.hideModal()')
@@ -324,9 +331,51 @@ def main():
                 pg.wait_for_timeout(300)
                 close_modal(pg)
 
+        def section_text(pg):
+            # own domains and addresses as text: added lines go to the
+            # domain and ip lists, geo categories stay where they were
+            # dialogs closed with hideModal leave the grid's stack behind: start clean
+            pg.reload()
+            pg.wait_for_selector('#view .cbi-map', timeout=15000)
+            pg.wait_for_timeout(500)
+            pg.query_selector_all('[data-tab="settings"] .cbi-section-table-row .cbi-button-edit')[0].click()
+            pg.wait_for_selector('.modal [data-name="_text"] textarea', timeout=5000)
+            area = pg.query_selector('.modal [data-name="_text"] textarea')
+            if not area or 'youtube.test' not in area.input_value():
+                raise RuntimeError('own domains are not shown as text')
+            shot(pg, 'section_modal')
+            js = pg.query_selector('.modal [data-name="outbound_json"]')
+            if js and js.is_visible():
+                raise RuntimeError('the outbound JSON field is shown for a section with keys')
+            # a section without servers of its own uses the server list
+            if pg.eval_on_selector('.modal select[id$=".servers"]', 'e => e.value') != 'pool':
+                raise RuntimeError('the main section does not use the server list')
+            keys = pg.query_selector('.modal [data-name="_links"]')
+            if keys and keys.is_visible():
+                raise RuntimeError('server keys are shown for a section that uses the server list')
+            area.fill(area.input_value() + '\n91.108.4.0/22\nexample.org # comment')
+            # the dialog's Save already sends the changes to the router
+            n = len(uci_writes)
+            pg.click('.modal .cbi-button-positive')
+            pg.wait_for_timeout(1500)
+            got = {}
+            for method, args in uci_writes[n:]:
+                if method == 'set' and args.get('section') == 'main':
+                    got.update(args.get('values', {}))
+            if got.get('domain') != ['geosite:youtube', 'youtube.test', 'example.org'] or got.get('ip') != ['geoip:telegram', '91.108.4.0/22']:
+                raise RuntimeError('text rules were saved as %s' % got)
+
+        def main_section(pg):
+            # the main section is chosen on the dashboard, not here; the switch
+            # for the rest of the traffic names the active server
+            if pg.query_selector('select[id$=".default_section"]'):
+                raise RuntimeError('the main section is still chosen on the Routing page')
+            if 'DE' not in pg.inner_text('[data-name="mode"]'):
+                raise RuntimeError('the active server is not shown at the rest of the traffic')
+
         def type_tunnel(pg):
             # switch the first section to a tunnel to render its options
-            pg.query_selector_all('[data-tab="section"] .cbi-section-table-row .cbi-button-edit')[0].click()
+            pg.query_selector_all('[data-tab="settings"] .cbi-section-table-row .cbi-button-edit')[0].click()
             pg.wait_for_selector('.modal', timeout=5000)
             pg.select_option('.modal select[id$=".type"]', 'interface')
             pg.wait_for_timeout(300)
@@ -336,7 +385,10 @@ def main():
             close_modal(pg)
 
         def import_modal(pg):
-            pg.click('text=Import AmneziaWG / WireGuard…')
+            pg.click('.cbi-tabmenu [data-tab="device"] a')
+            pg.wait_for_timeout(300)
+            shot(pg, 'servers_tunnels')
+            pg.click('[data-tab="device"] .cbi-button-add')
             pg.wait_for_selector('.modal textarea', timeout=5000)
             shot(pg, 'sections_import')
             close_modal(pg)
@@ -366,34 +418,38 @@ def main():
             close_modal(pg)
 
         def servers_tabs(pg):
-            if not pg.query_selector('[data-tab="settings"] .mh-keys'):
+            if not pg.query_selector('[data-tab="geo"] .mh-keys'):
                 raise RuntimeError('no table of servers added by key')
             shot(pg, 'servers_add')
             # a key into a new section: checked by the backend, then saved
-            pg.fill('[data-tab="settings"] textarea', 'ss://YWVzLTI1Ni1nY206cHc@1.2.3.6:8388#FI 3')
-            pg.select_option('[data-tab="settings"] select', '')
-            pg.fill('[data-tab="settings"] input.cbi-input-text', 'extra')
+            pg.fill('[data-tab="geo"] textarea', 'ss://YWVzLTI1Ni1nY206cHc@1.2.3.6:8388#FI 3')
+            if pg.query_selector('[data-tab="geo"] select'):
+                raise RuntimeError('keys are added to a section, not to the server list')
             # applying needs the router: only note that it was asked for
             pg.evaluate('L.ui.changes.apply = function() { window.mhApplied = true; return Promise.resolve(); }')
             n = len(calls)
-            pg.click('[data-tab="settings"] .cbi-button-add')
+            w = len(uci_writes)
+            pg.click('[data-tab="geo"] .cbi-button-add')
             pg.wait_for_timeout(1500)
-            if 'luci.mayhem.parse_link' not in calls[n:] or 'uci.add' not in calls[n:] or not pg.evaluate('window.mhApplied === true'):
+            if 'luci.mayhem.parse_link' not in calls[n:] or not pg.evaluate('window.mhApplied === true'):
                 raise RuntimeError('adding a key did not save and apply it: %s' % calls[n:])
+            links = [a.get('values', {}).get('link') for m, a in uci_writes[w:] if m == 'set' and a.get('section') == 'pool']
+            if not links or not any('1.2.3.6' in ' '.join(x or []) for x in links):
+                raise RuntimeError('the key did not go into the server list: %s' % uci_writes[w:])
             pg.click('.cbi-tabmenu [data-tab="subscription"] a')
             pg.wait_for_timeout(300)
             shot(pg, 'servers_subscriptions')
             open_modals(pg, '[data-tab="subscription"]')
-            pg.click('.cbi-tabmenu [data-tab="device"] a')
+            pg.click('.cbi-tabmenu [data-tab="settings"] a')
             pg.wait_for_timeout(300)
-            shot(pg, 'servers_device')
+            shot(pg, 'servers_advanced')
 
         def geo_tab(pg):
             pg.click('.cbi-tabmenu [data-tab="geo"] a')
             pg.wait_for_timeout(300)
             shot(pg, 'routing_geo')
             open_modals(pg, '[data-tab="geo"]')
-            pg.click('.cbi-tabmenu [data-tab="section"] a')
+            pg.click('.cbi-tabmenu [data-tab="settings"] a')
 
         def dns_tab(pg):
             pg.click('.cbi-tabmenu [data-tab="dns"] a')
@@ -406,9 +462,34 @@ def main():
             pg.wait_for_selector('.modal input', timeout=5000)
             close_modal(pg)
 
+        def components_page(pg):
+            pg.wait_for_timeout(1500)
+            if not pg.query_selector('#view table') or not pg.query_selector('[data-name="auto_update"]'):
+                raise RuntimeError('no component table or automatic update')
+            shot(pg, 'components')
+
+        def settings_tabs(pg):
+            pg.click('[data-name="_reset"] button')
+            pg.wait_for_selector('.modal input[type="checkbox"]', timeout=5000)
+            shot(pg, 'settings_reset')
+            close_modal(pg)
+
         def dashboard_buttons(pg):
             if not pg.query_selector('#mayhem-body .mh-tile'):
                 raise RuntimeError('no servers on the dashboard')
+            # like Happ: servers by link in one box, every subscription in its own
+            titles = pg.eval_on_selector_all('#mayhem-body .mh-section .mh-ghead > .mh-title', 'es => es.map(e => e.textContent)')
+            if not any(x in ('Server list', 'Список серверов') for x in titles) or len(titles) < 2:
+                raise RuntimeError('server boxes: %s' % titles)
+            # several proxy or tunnel sections: the main one is chosen here
+            n = len(calls)
+            pg.select_option('#mayhem-body .mh-whead select', 'awg')
+            pg.wait_for_selector('.modal .cbi-button-action', timeout=5000)
+            shot(pg, 'dashboard_main')
+            pg.click('.modal .cbi-button-action')
+            pg.wait_for_timeout(1000)
+            if 'luci.mayhem.set_main_section' not in calls[n:]:
+                raise RuntimeError('choosing the main section did not reach the router: %s' % calls[n:])
             if not pg.query_selector('#mayhem-body .mh-ghead .mh-bar'):
                 raise RuntimeError('no subscription traffic on the dashboard')
             if not DEMO:  # a screenshot shows the demo delays, not failed checks
@@ -419,11 +500,12 @@ def main():
 
         pages = [
             ('mayhem/dashboard', [('buttons', dashboard_buttons), ('logs dialog', logs_modal), ('backup dialog', backup_modal), ('run diagnostics', run_diag)]),
-            ('mayhem/sections', [('sections tab', lambda pg: shot(pg, 'routing_sections')),
-                                 ('edit sections', lambda pg: open_modals(pg, '[data-tab="section"]')), ('tunnel options', type_tunnel),
-                                 ('import dialog', import_modal), ('DNS tab', dns_tab), ('edit geo sources', geo_tab), ('upload dialog', upload_modal)]),
-            ('mayhem/servers', [('server list tabs', servers_tabs)]),
-            ('mayhem/settings', []),
+            ('mayhem/sections', [('sections tab', lambda pg: shot(pg, 'routing_sections')), ('main section', main_section),
+                                 ('edit sections', lambda pg: open_modals(pg, '[data-tab="settings"]')), ('domains as text', section_text),
+                                 ('tunnel options', type_tunnel), ('DNS tab', dns_tab), ('edit geo sources', geo_tab), ('upload dialog', upload_modal)]),
+            ('mayhem/servers', [('server list tabs', servers_tabs), ('import dialog', import_modal)]),
+            ('mayhem/components', [('components', components_page)]),
+            ('mayhem/settings', [('reset dialog', settings_tabs)]),
         ]
 
         for view, actions in pages:

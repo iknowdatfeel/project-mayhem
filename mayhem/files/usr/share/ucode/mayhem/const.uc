@@ -42,6 +42,10 @@ export const LOCAL4 = [
 	'198.51.100.0/24', '203.0.113.0/24', '224.0.0.0/4', '240.0.0.0/4'
 ];
 
+// What is never routed, even when local addresses are (settings.exclude_local).
+export const LOCAL4_ALWAYS = [ '0.0.0.0/8', '127.0.0.0/8', '169.254.0.0/16', '224.0.0.0/4', '240.0.0.0/4' ];
+export const LOCAL6_ALWAYS = [ '::/127', 'fe80::/10', 'ff00::/8' ];
+
 export const LOCAL6 = [
 	'::/127', '64:ff9b:1::/48', '100::/64', '2001:db8::/32',
 	'fc00::/7', 'fe80::/10', 'ff00::/8'
