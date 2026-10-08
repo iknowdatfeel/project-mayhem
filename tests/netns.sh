@@ -472,10 +472,11 @@ print([n["tag"] for n in s["nodes"] if n["name"] == sys.argv[2]][0])' "$MAYHEM_R
 }
 
 # lib.sh runs "ucode" like on the router, where the modules are in place.
+# The wrapper is first in PATH, so it calls ucode by its full path.
 mkdir -p "$WORK/bin"
 cat > "$WORK/bin/ucode" <<EOF
 #!/bin/sh
-exec "$UCODE" -L '$FILES/usr/share/ucode/*.uc' ${UCODE_LIB:+-L "$UCODE_LIB"} "\$@"
+exec "$(command -v "$UCODE")" -L '$FILES/usr/share/ucode/*.uc' ${UCODE_LIB:+-L "$UCODE_LIB"} "\$@"
 EOF
 chmod +x "$WORK/bin/ucode"
 
