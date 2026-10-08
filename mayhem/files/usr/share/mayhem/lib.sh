@@ -334,6 +334,18 @@ mayhem_apply_overrides() {
 	done < "$MAYHEM_RUN_DIR/overrides"
 }
 
+# A reload with new servers and nothing else changed: swap them in running
+# xray (live.uc). Connections keep going through the servers they use. When
+# that fails, the restart key changes and procd restarts xray.
+mayhem_live_update() {
+	[ -f "$MAYHEM_RUN_DIR/active" ] || return 0
+
+	ucode "$MAYHEM_LIB_DIR/live.uc" && return 0
+
+	mayhem_log "could not change the servers in running xray, restarting it" warn
+	echo "restart $(date +%s)" >> "$MAYHEM_RUN_DIR/xray.key"
+}
+
 # Pin a balancer to a server; an empty tag returns it to automatic choice.
 mayhem_select() {
 	if [ -n "$2" ]; then

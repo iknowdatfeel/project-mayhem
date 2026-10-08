@@ -580,7 +580,7 @@ const methods = {
 
 			for (let tag in keys(m.stats)) {
 				const t = m.stats[tag];
-				const k = substr(tag, 0, 2) == 'n-' ? 'proxy' : (tag == 'direct' ? 'direct' : null);
+				const k = index([ 'n-', 'f-' ], substr(tag, 0, 2)) >= 0 ? 'proxy' : (tag == 'direct' ? 'direct' : null);
 
 				if (k) {
 					totals[k].up += t.uplink ?? 0;

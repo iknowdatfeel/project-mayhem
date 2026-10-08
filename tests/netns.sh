@@ -36,6 +36,7 @@ SS_KEY='AAECAwQFBgcICQoLDA0ODw=='
 SS_LINK='ss://2022-blake3-aes-128-gcm:AAECAwQFBgcICQoLDA0ODw%3D%3D@45.0.0.3:8443#srv'
 SS_LINK_A='ss://2022-blake3-aes-128-gcm:AAECAwQFBgcICQoLDA0ODw%3D%3D@45.0.0.3:8443#A'
 SS_LINK_B='ss://2022-blake3-aes-128-gcm:AAECAwQFBgcICQoLDA0ODw%3D%3D@45.0.0.3:8444#B'
+SS_LINK_C='ss://2022-blake3-aes-128-gcm:AAECAwQFBgcICQoLDA0ODw%3D%3D@45.0.0.3:8445#C'
 
 ok() { printf 'ok   %s\n' "$1"; }
 bad() {
@@ -172,7 +173,7 @@ ip -n router link set br-lan up
 ip -n router addr add 45.0.0.1/24 dev wan0
 ip -n router link set wan0 up
 ip -n router route add default via 45.0.0.2
-for a in 2 3 4 6 7 8; do ip -n wan addr add "45.0.0.$a/24" dev w0; done
+for a in 2 3 4 6 7 8 9; do ip -n wan addr add "45.0.0.$a/24" dev w0; done
 ip -n wan link set w0 up
 ip -n wan route add 192.168.1.0/24 via 45.0.0.1
 ip netns exec router sysctl -qw net.ipv4.ip_forward=1
@@ -216,12 +217,18 @@ EOF
 chmod +x "$MAYHEM_DNSMASQ_INIT"
 
 cat > "$WORK/web.py" <<'PY'
-import http.server, sys
+import http.server, sys, time
 WORK = sys.argv[1]
 class H(http.server.BaseHTTPRequestHandler):
     def do_GET(self):
         if self.path == '/204':
             self.send_response(204); self.end_headers(); return
+        if self.path == '/slow':
+            # 10 KB over 5 seconds: a connection that lasts through a reload
+            self.send_response(200); self.send_header('Content-Length', '10240'); self.end_headers()
+            for i in range(10):
+                self.wfile.write(b'x' * 1024); self.wfile.flush(); time.sleep(0.5)
+            return
         if self.path.startswith('/files/'):
             try:
                 b = open(WORK + '/files/' + self.path[7:].replace('/', ''), 'rb').read()
@@ -274,11 +281,14 @@ cat > "$WORK/server.json" <<EOF
     { "tag": "a", "listen": "45.0.0.3", "port": 8443, "protocol": "shadowsocks",
       "settings": { "method": "2022-blake3-aes-128-gcm", "password": "$SS_KEY", "network": "tcp,udp" } },
     { "tag": "b", "listen": "45.0.0.3", "port": 8444, "protocol": "shadowsocks",
+      "settings": { "method": "2022-blake3-aes-128-gcm", "password": "$SS_KEY", "network": "tcp,udp" } },
+    { "tag": "c", "listen": "45.0.0.3", "port": 8445, "protocol": "shadowsocks",
       "settings": { "method": "2022-blake3-aes-128-gcm", "password": "$SS_KEY", "network": "tcp,udp" } } ],
   "outbounds": [
     { "tag": "out-a", "protocol": "freedom", "sendThrough": "45.0.0.3" },
-    { "tag": "out-b", "protocol": "freedom", "sendThrough": "45.0.0.8" } ],
-  "routing": { "rules": [ { "inboundTag": [ "b" ], "outboundTag": "out-b" } ] } }
+    { "tag": "out-b", "protocol": "freedom", "sendThrough": "45.0.0.8" },
+    { "tag": "out-c", "protocol": "freedom", "sendThrough": "45.0.0.9" } ],
+  "routing": { "rules": [ { "inboundTag": [ "b" ], "outboundTag": "out-b" }, { "inboundTag": [ "c" ], "outboundTag": "out-c" } ] } }
 EOF
 
 ip netns exec wan python3 "$WORK/web.py" "$WORK" >/dev/null 2>&1 &
@@ -454,6 +464,30 @@ sub_update() {
 		"$FILES/usr/share/mayhem/sub.uc" update --force
 }
 
+tag_of() {
+	# $1 server name in section main -> its tag
+	python3 -c 'import json, sys; s = json.load(open(sys.argv[1]))["sections"]["main"]
+print([n["tag"] for n in s["nodes"] if n["name"] == sys.argv[2]][0])' "$MAYHEM_RUN_DIR/nodes.json" "$1" 2>/dev/null
+}
+
+# lib.sh runs "ucode" like on the router, where the modules are in place.
+mkdir -p "$WORK/bin"
+cat > "$WORK/bin/ucode" <<EOF
+#!/bin/sh
+exec "$UCODE" -L '$FILES/usr/share/ucode/*.uc' ${UCODE_LIB:+-L "$UCODE_LIB"} "\$@"
+EOF
+chmod +x "$WORK/bin/ucode"
+
+reload_live() {
+	# what /etc/init.d/mayhem reload does before procd looks at the files
+	uc "$FILES/usr/share/mayhem/gen.uc" --out "$MAYHEM_RUN_DIR" 2>/dev/null &&
+		ip netns exec router env PATH="$WORK/bin:$PATH" sh -c ". '$FILES/usr/share/mayhem/lib.sh'; mayhem_live_update"
+}
+
+outbounds() {
+	ip netns exec router "$XRAY" api lso --server=127.0.0.1:12780 2>/dev/null
+}
+
 echo "== subscriptions and server choice"
 write_uci "	option select 'auto'" direct
 out="$(sub_update)"
@@ -494,10 +528,10 @@ if start_mayhem uci; then
 		*) bad "dashboard subscription info" ;;
 	esac
 
-	if rpc select_node '{"section":"main","tag":"n-main-1"}' | grep -q '"ok": true'; then ok "pin server B"; else bad "pin server B"; fi
+	if rpc select_node "{\"section\":\"main\",\"tag\":\"$(tag_of B)\"}" | grep -q '"ok": true'; then ok "pin server B"; else bad "pin server B"; fi
 	expect "pinned server is used at once" 45.0.0.8 -H 'Host: youtube.test' http://45.0.0.2:8080/
 	if grep -q "option override 'B'" "$MAYHEM_UCI_DIR/mayhem"; then ok "pinned server saved by name"; else bad "pinned server saved"; fi
-	rpc select_node '{"section":"main","tag":"n-main-0"}' >/dev/null
+	rpc select_node "{\"section\":\"main\",\"tag\":\"$(tag_of A)\"}" >/dev/null
 	expect "switch to server A" 45.0.0.3 -H 'Host: youtube.test' http://45.0.0.2:8080/
 	if rpc select_node '{"section":"main","tag":""}' | grep -q '"ok": true' && ! grep -q "option override" "$MAYHEM_UCI_DIR/mayhem"; then
 		ok "back to automatic"
@@ -505,15 +539,91 @@ if start_mayhem uci; then
 		bad "back to automatic"
 	fi
 
-	if rpc probe '{"tag":"n-main-1","method":"url"}' | grep -q '"ms": [0-9]'; then ok "URL test through one server"; else bad "URL test"; fi
-	if rpc probe '{"tag":"n-main-1","method":"tcp"}' | grep -q '"ms": [0-9]'; then ok "TCP ping"; else bad "TCP ping"; fi
-	out="$(rpc probe '{"tag":"n-main-1","method":"icmp"}')"
+	if rpc probe "{\"tag\":\"$(tag_of B)\",\"method\":\"url\"}" | grep -q '"ms": [0-9]'; then ok "URL test through one server"; else bad "URL test"; fi
+	if rpc probe "{\"tag\":\"$(tag_of B)\",\"method\":\"tcp\"}" | grep -q '"ms": [0-9]'; then ok "TCP ping"; else bad "TCP ping"; fi
+	out="$(rpc probe "{\"tag\":\"$(tag_of B)\",\"method\":\"icmp\"}")"
 	case "$out" in
 		*'"ms": '*) ok "ICMP ping" ;;
 		*) if command -v ping >/dev/null 2>&1; then bad "ICMP ping: $out"; else ok "ICMP ping skipped (no ping here)"; fi ;;
 	esac
 fi
 stop_mayhem
+
+# --- new servers in running xray ----------------------------------------------------
+
+echo "== new servers without a restart"
+write_uci "	option select 'auto'" direct
+printf '%s\n%s\n' "$SS_LINK_A" "$SS_LINK_B" | base64 | tr -d '\n' > "$WORK/sub.txt"
+sub_update >/dev/null
+if start_mayhem uci; then
+	pid="$(proc_in router xray)"
+	b="$(tag_of B)"
+	rpc select_node "{\"section\":\"main\",\"tag\":\"$b\"}" >/dev/null
+	expect "pinned to server B" 45.0.0.8 -H 'Host: youtube.test' http://45.0.0.2:8080/
+
+	# A download through server B goes on while B leaves the subscription
+	# and server C comes in.
+	ip netns exec client curl -s -m 20 -H 'Host: youtube.test' -o "$WORK/slow.out" http://45.0.0.2:8080/slow &
+	slow=$!
+	sleep 1
+	printf '%s\n%s\n' "$SS_LINK_C" "$SS_LINK_A" | base64 | tr -d '\n' > "$WORK/sub.txt"
+	sub_update >/dev/null
+	if [ "$?" = 3 ]; then ok "new server list asks for a reload"; else bad "new server list exit code"; fi
+	if reload_live && cmp -s "$MAYHEM_RUN_DIR/xray.key" "$MAYHEM_RUN_DIR/running.xray.key"; then
+		ok "new servers need no restart"
+	else
+		bad "new servers: xray would be restarted"
+	fi
+	c="$(tag_of C)"
+
+	if [ "$(proc_in router xray)" = "$pid" ]; then ok "xray was not restarted"; else bad "xray was restarted"; fi
+	wait "$slow"
+	if [ "$(wc -c < "$WORK/slow.out" 2>/dev/null)" = 10240 ]; then
+		ok "a download through the removed server finished"
+	else
+		bad "download through the removed server broke: $(wc -c < "$WORK/slow.out" 2>/dev/null) of 10240 bytes"
+	fi
+	out="$(outbounds)"
+	case "$out" in
+		*"$b"*) bad "removed server B is still in xray" ;;
+		*"$c"*'f-main'*|*'f-main'*"$c"*) ok "running xray has server C and not B" ;;
+		*) bad "running xray outbounds: $out" ;;
+	esac
+	if cmp -s "$MAYHEM_RUN_DIR/xray.json" "$MAYHEM_RUN_DIR/running.xray.json"; then
+		ok "running config is the new one"
+	else
+		bad "running config was not updated"
+	fi
+	if rpc probe "{\"tag\":\"$c\",\"method\":\"url\"}" | grep -q '"ms": [0-9]'; then ok "URL test through the new server"; else bad "URL test through the new server"; fi
+	rpc select_node "{\"section\":\"main\",\"tag\":\"$c\"}" >/dev/null
+	expect "new server can be pinned" 45.0.0.9 -H 'Host: youtube.test' http://45.0.0.2:8080/
+	expect "domain rules still apply" 45.0.0.1 http://45.0.0.2:8080/
+
+	# Pinned server, its name changes: by name it is gone, so automatic again;
+	# the same tag stays.
+	printf '%s\n%s\n' "${SS_LINK_C%#C}#C2" "$SS_LINK_A" | base64 | tr -d '\n' > "$WORK/sub.txt"
+	sub_update >/dev/null
+	reload_live >/dev/null
+	if [ "$(tag_of C2)" = "$c" ] && [ "$(proc_in router xray)" = "$pid" ]; then
+		ok "renamed server keeps its tag"
+	else
+		bad "renamed server: tag $(tag_of C2), was $c"
+	fi
+
+	# A new rule is not a server: xray has to restart (procd does it on the
+	# router, here only the key tells it).
+	write_uci "	option select 'auto'
+	list domain 'other.test'" direct
+	reload_live
+	if ! cmp -s "$MAYHEM_RUN_DIR/xray.key" "$MAYHEM_RUN_DIR/running.xray.key" && [ "$(proc_in router xray)" = "$pid" ]; then
+		ok "other changes leave xray to procd"
+	else
+		bad "a rule change did not change the restart key"
+	fi
+fi
+stop_mayhem
+printf '%s\n%s\n' "$SS_LINK_A" "$SS_LINK_B" | base64 | tr -d '\n' > "$WORK/sub.txt"
+sub_update >/dev/null
 
 write_uci "	option select 'manual'
 	option selected 'B'
