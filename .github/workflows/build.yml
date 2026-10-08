@@ -76,21 +76,70 @@ jobs:
           if [[ "$GITHUB_REF" == refs/tags/v* ]]; then v="${GITHUB_REF#refs/tags/v}"; else v="0.0.$GITHUB_RUN_NUMBER"; fi
           echo "version=$v" >> "$GITHUB_OUTPUT"
 
-      - name: Fetch OpenWrt SDK
+      - name: Find the OpenWrt SDK
+        id: sdk
         run: |
           base="https://downloads.openwrt.org/releases/${{ matrix.release }}/targets/x86/64"
-          sdk=$(curl -fsSL "$base/" | grep -o 'openwrt-sdk-[^"]*\.tar\.\(xz\|zst\)' | head -n1)
-          # The mirror drops long transfers now and then (curl exit 92):
-          # HTTP/1.1, resumed retries.
-          for i in 1 2 3 4 5; do
-            curl -fsSL --http1.1 -C - --retry 3 --retry-all-errors -o "/tmp/$sdk" "$base/$sdk" && break
-            sleep 10
+          get() { curl -fsSL --connect-timeout 20 -m 120 --retry 5 --retry-all-errors "$1"; }
+          idx="$(get "$base/")"
+          sdk="$(printf '%s\n' "$idx" | grep -o 'openwrt-sdk-[^"]*\.tar\.\(xz\|zst\)' | awk 'NR == 1')"
+          [ -n "$sdk" ] || { echo "::error::no SDK at $base"; exit 1; }
+          sum="$(get "$base/sha256sums" | awk -v f="*$sdk" '$2 == f { print $1 }')" || sum=""
+          echo "name=$sdk" >> "$GITHUB_OUTPUT"
+          echo "url=$base/$sdk" >> "$GITHUB_OUTPUT"
+          echo "sha256=$sum" >> "$GITHUB_OUTPUT"
+
+      # The mirror crawls or stalls now and then (25 minutes for one SDK, or
+      # no end): after one good download the SDK comes from the Actions cache.
+      # Tag builds can use what a build of main saved.
+      - uses: actions/cache/restore@v4
+        id: cache
+        with:
+          path: /tmp/sdk
+          key: sdk-${{ steps.sdk.outputs.name }}-${{ steps.sdk.outputs.sha256 }}
+
+      - name: Download the OpenWrt SDK
+        if: steps.cache.outputs.cache-hit != 'true'
+        timeout-minutes: 45
+        run: |
+          mkdir -p /tmp/sdk
+          f="/tmp/sdk/${{ steps.sdk.outputs.name }}"
+          want="${{ steps.sdk.outputs.sha256 }}"
+          ok=0
+          # Under 30 KB/s for a minute counts as stalled: curl gives up and
+          # the next attempt resumes where it stopped. HTTP/1.1: the mirror
+          # drops long transfers (curl exit 92).
+          for i in $(seq 1 20); do
+            rc=0
+            curl -fsSL --http1.1 --connect-timeout 20 --speed-limit 30720 --speed-time 60 \
+              -C - -o "$f" "${{ steps.sdk.outputs.url }}" || rc=$?
+            if [ -n "$want" ]; then
+              if echo "$want  $f" | sha256sum -c --status 2>/dev/null; then ok=1; break; fi
+              # Whole but wrong, or refused to resume (HTTP error): from the start.
+              if [ "$rc" = 0 ] || [ "$rc" = 22 ]; then rm -f "$f"; fi
+            elif [ "$rc" = 0 ]; then
+              ok=1
+              break
+            fi
+            echo "attempt $i: curl exit $rc, trying again"
+            sleep 5
           done
-          [ -s "/tmp/$sdk" ]
+          [ "$ok" = 1 ] || { echo "::error::the OpenWrt SDK did not download"; exit 1; }
+
+      # Saved right away, not at the end of the job: also when the build fails.
+      - uses: actions/cache/save@v4
+        if: steps.cache.outputs.cache-hit != 'true'
+        with:
+          path: /tmp/sdk
+          key: sdk-${{ steps.sdk.outputs.name }}-${{ steps.sdk.outputs.sha256 }}
+
+      - name: Unpack the OpenWrt SDK
+        run: |
+          f="/tmp/sdk/${{ steps.sdk.outputs.name }}"
           mkdir sdk
-          case "$sdk" in
-            *.zst) tar --zstd -xf "/tmp/$sdk" -C sdk --strip-components=1 ;;
-            *) tar -xf "/tmp/$sdk" -C sdk --strip-components=1 ;;
+          case "$f" in
+            *.zst) tar --zstd -xf "$f" -C sdk --strip-components=1 ;;
+            *) tar -xf "$f" -C sdk --strip-components=1 ;;
           esac
 
       - name: Build
