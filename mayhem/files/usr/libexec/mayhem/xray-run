@@ -25,15 +25,23 @@ if [ ! -x "$MAYHEM_XRAY_BIN" ]; then
 	exit 1
 fi
 
-# What this xray runs with: reloads compare the new config with it.
+# What this xray runs with: reloads compare the new config with it. Hard
+# links, not copies: the generator replaces its files (rename), so the links
+# keep the old content, and /var/run is RAM.
 for f in xray.json xray.key overrides; do
-	cp "$MAYHEM_RUN_DIR/$f" "$MAYHEM_RUN_DIR/running.$f" 2>/dev/null || : > "$MAYHEM_RUN_DIR/running.$f"
+	ln -f "$MAYHEM_RUN_DIR/$f" "$MAYHEM_RUN_DIR/running.$f" 2>/dev/null ||
+		cp "$MAYHEM_RUN_DIR/$f" "$MAYHEM_RUN_DIR/running.$f" 2>/dev/null || : > "$MAYHEM_RUN_DIR/running.$f"
 done
 
 "$MAYHEM_XRAY_BIN" run -c "$MAYHEM_RUN_DIR/running.xray.json" &
 xray_pid=$!
 echo "$xray_pid" > "$MAYHEM_RUN_DIR/xray.pid"
-mayhem_xray_version > "$MAYHEM_RUN_DIR/xray.version" 2>/dev/null
+# `xray version` is a second xray process (20 MB) next to the starting one:
+# only when the binary is newer than what was noted (busybox test has -nt).
+# shellcheck disable=SC3013
+if [ ! -s "$MAYHEM_RUN_DIR/xray.version" ] || [ "$MAYHEM_XRAY_BIN" -nt "$MAYHEM_RUN_DIR/xray.version" ]; then
+	mayhem_xray_version > "$MAYHEM_RUN_DIR/xray.version" 2>/dev/null
+fi
 
 ready=0
 i=0

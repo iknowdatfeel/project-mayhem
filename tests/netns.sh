@@ -93,6 +93,25 @@ rpc() {
 		"$WORK/rpc.uc" "$ROOT/luci-app-mayhem/root/usr/share/rpcd/ucode/luci.mayhem" "$1" "${2:-null}"
 }
 
+udp() {
+	# $1 number of UDP flows from the client, each from a new port, to the
+	# echo server -> prints the first answer
+	ip netns exec client python3 - "$1" <<'PY'
+import socket, sys
+first = None
+for i in range(int(sys.argv[1])):
+    s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM); s.settimeout(3)
+    s.sendto(b'hi', ('45.0.0.2', 9999))
+    try:
+        d = s.recv(64).decode()
+    except Exception:
+        d = 'timeout'
+    first = first or d
+    s.close()
+print(first)
+PY
+}
+
 expect_dns() {
 	local got
 	got="$(dns "$2" "$3" "$4" "$5")"
@@ -291,7 +310,17 @@ cat > "$WORK/server.json" <<EOF
   "routing": { "rules": [ { "inboundTag": [ "b" ], "outboundTag": "out-b" }, { "inboundTag": [ "c" ], "outboundTag": "out-c" } ] } }
 EOF
 
+# UDP echo: answers with the source address it sees, like the web server.
+cat > "$WORK/echo.py" <<'PY'
+import socket
+s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM); s.bind(('45.0.0.2', 9999))
+while True:
+    data, addr = s.recvfrom(512)
+    s.sendto(addr[0].encode(), addr)
+PY
+
 ip netns exec wan python3 "$WORK/web.py" "$WORK" >/dev/null 2>&1 &
+ip netns exec wan python3 "$WORK/echo.py" >/dev/null 2>&1 &
 ip netns exec wan python3 "$WORK/dns.py" 45.0.0.2 45.0.0.2 >/dev/null 2>&1 &
 ip netns exec wan python3 "$WORK/dns.py" 45.0.0.4 45.0.0.7 >/dev/null 2>&1 &
 ip netns exec wan "$XRAY" run -c "$WORK/server.json" > "$WORK/server.log" 2>&1 &
@@ -326,6 +355,29 @@ if start_mayhem "$WORK/lists.json"; then
 	expect_dns "other domain -> domestic DNS" router 127.0.0.1 12753 other.test 45.0.0.2
 	expect_dns "DNS to 1.2.3.4:53 is intercepted" client 1.2.3.4 53 youtube.test 45.0.0.7
 	expect_dns "DNS to 8.8.8.8:53 is intercepted" client 8.8.8.8 53 vk.test 45.0.0.2
+
+	got="$(udp 1)"
+	if [ "$got" = 45.0.0.1 ]; then ok "UDP, no rule -> xray direct"; else bad "UDP, no rule -> xray direct: got $got"; fi
+
+	# Every UDP flow is a session in xray: the ones that go direct close soon
+	# after their last packet, not 2-3 minutes later. Each session answers
+	# the client from a socket bound to the server's address (TPROXY).
+	udp_sessions() {
+		ip netns exec router ss -Huan src 45.0.0.2:9999 2>/dev/null | wc -l
+	}
+	udp 30 >/dev/null
+	open="$(udp_sessions)"
+	waited=0
+	while [ "$waited" -lt 130 ] && [ "$(udp_sessions)" -gt 0 ]; do sleep 5; waited=$((waited + 5)); done
+	left="$(udp_sessions)"
+	if [ "$open" -lt 20 ]; then
+		bad "UDP sessions are not counted: $open open after 30 flows"
+	# 45-90 s by the config; before, xray kept them 120-180 s.
+	elif [ "$left" = 0 ] && [ "$waited" -le 110 ]; then
+		ok "direct UDP sessions close soon after their last packet ($open -> 0 in $waited s)"
+	else
+		bad "direct UDP sessions stay open: $left of $open after $waited s"
+	fi
 
 	kill -9 "$(proc_in router xray)" 2>/dev/null
 	sleep 2

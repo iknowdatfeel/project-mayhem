@@ -56,6 +56,62 @@ function write_json(path, v) {
 	write_file(path, sprintf('%J\n', v));
 }
 
+// Geo files and lists reach tens of megabytes: they are compared and copied
+// a piece at a time, never held in RAM whole (twice, for a comparison).
+const CHUNK = 65536;
+
+function same_file(a, b) {
+	const sa = fs.stat(a), sb = fs.stat(b);
+
+	if (!sa || !sb || sa.size != sb.size)
+		return false;
+
+	const fa = fs.open(a, 'r'), fb = fs.open(b, 'r');
+	let same = fa != null && fb != null;
+
+	while (same) {
+		const x = fa.read(CHUNK), y = fb.read(CHUNK);
+
+		if (x == null || y == null || x != y)
+			same = false;
+		else if (x == '')
+			break;
+	}
+
+	if (fa) fa.close();
+	if (fb) fb.close();
+
+	return same;
+}
+
+// Copies src to dst (through dst.tmp, like write_file).
+function copy_file(src, dst) {
+	const tmp = `${dst}.tmp`;
+	const i = fs.open(src, 'r'), o = fs.open(tmp, 'w');
+	let ok = i != null && o != null;
+
+	while (ok) {
+		const d = i.read(CHUNK);
+
+		if (d == null)
+			ok = false;
+		else if (d == '')
+			break;
+		else if (o.write(d) != length(d))
+			ok = false;
+	}
+
+	if (i) i.close();
+	if (o && !o.close()) ok = false;
+
+	if (!ok || !fs.rename(tmp, dst)) {
+		const err = fs.error();
+
+		fs.unlink(tmp);
+		die(`cannot write ${dst}: ${err ?? 'write failed'}`);
+	}
+}
+
 // --- configuration ----------------------------------------------------------------
 
 function load() {
@@ -249,15 +305,21 @@ function update_source(cfg, src, cats, state, now) {
 	}
 
 	const dat = `${C.GEO_DIR}/${src.name}.dat`;
-	const fresh = fs.readfile(tmp) ?? '';
-	const changed_dat = fresh != (fs.readfile(dat) ?? null);
+	const changed_dat = !same_file(tmp, dat);
 
-	fs.unlink(tmp);
 	fs.mkdir(fs.dirname(C.GEO_DIR), 0755);
 	fs.mkdir(C.GEO_DIR, 0755);
 
-	if (changed_dat)
-		write_file(dat, fresh);
+	try {
+		if (changed_dat)
+			copy_file(tmp, dat);
+	}
+	catch (e) {
+		fs.unlink(tmp);
+		die(e.message);
+	}
+
+	fs.unlink(tmp);
 
 	const copied = sort(res.copied);
 	const old = src.index;
@@ -374,12 +436,13 @@ function fetch_list(cfg, url) {
 		const err = p ? trim(p.read('all') ?? '') : 'cannot run curl';
 		const rc = p ? p.close() : -1;
 
+		// The caller compares and keeps the file, then removes it. curl does
+		// not create it for an empty answer: an empty list.
 		if (rc == 0) {
-			const data = fs.readfile(tmp) ?? '';
+			if (!fs.stat(tmp))
+				fs.writefile(tmp, '');
 
-			fs.unlink(tmp);
-
-			return { data: data, via: proxy ? 'xray' : 'direct' };
+			return { file: tmp, via: proxy ? 'xray' : 'direct' };
 		}
 
 		fs.unlink(tmp);
@@ -419,15 +482,25 @@ function run_lists(cfg, state, force) {
 
 		try {
 			const r = fetch_list(cfg, url);
-			const changed = r.data != (fs.readfile(path) ?? null);
+			const bytes = fs.stat(r.file)?.size ?? 0;
+			let changed;
 
-			if (changed)
-				write_file(path, r.data);
+			try {
+				changed = !same_file(r.file, path);
 
+				if (changed)
+					copy_file(r.file, path);
+			}
+			catch (e) {
+				fs.unlink(r.file);
+				die(e.message);
+			}
+
+			fs.unlink(r.file);
 			st.last_ok = now;
 			st.via = r.via;
 			delete st.error;
-			push(results, { url: url, ok: true, via: r.via, changed: changed, bytes: length(r.data) });
+			push(results, { url: url, ok: true, via: r.via, changed: changed, bytes: bytes });
 		}
 		catch (e) {
 			st.error = e.message;
