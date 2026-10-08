@@ -30,4 +30,4 @@ MAYHEM_DNSMASQ_INIT="${MAYHEM_DNSMASQ_INIT:-/etc/init.d/dnsmasq}"
 MAYHEM_DNSMASQ_FILE=mayhem.conf
 
 # Services that intercept traffic the same way; Mayhem refuses to start next to them.
-MAYHEM_CONFLICTS="podkop forkop passwall passwall2 homeproxy openclash nikki mihomo ssclash v2raya"
+MAYHEM_CONFLICTS="passwall passwall2 homeproxy openclash nikki mihomo ssclash v2raya"
