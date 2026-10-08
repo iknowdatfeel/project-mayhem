@@ -2,8 +2,8 @@
 'require baseclass';
 
 // Shared look of the Mayhem pages: bordered boxes, status colors and small
-// line icons, in the spirit of podkop's LuCI app. Colors come from the theme
-// where it defines them (bootstrap), with plain fallbacks for other themes.
+// line icons. Colors come from the theme where it defines them (bootstrap),
+// with plain fallbacks for other themes.
 
 const CSS = `
 .mh-page { width:100%; --mh-cols:4; }
