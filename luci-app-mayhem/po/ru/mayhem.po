@@ -14,11 +14,11 @@ msgstr "%d дн. назад"
 
 #: htdocs/luci-static/resources/view/mayhem/sections.js
 msgid "%d domains, %d addresses"
-msgstr "доменов: %d, адресов: %d"
+msgstr "Доменов: %d, адресов: %d"
 
 #: htdocs/luci-static/resources/view/mayhem/diagnostics.js
 msgid "%d fine, %d warnings, %d problems"
-msgstr "в порядке: %d, предупреждений: %d, проблем: %d"
+msgstr "В порядке: %d, предупреждений: %d, проблем: %d"
 
 #: htdocs/luci-static/resources/view/mayhem/dashboard.js
 msgid "%d h ago"
@@ -26,7 +26,7 @@ msgstr "%d ч назад"
 
 #: htdocs/luci-static/resources/view/mayhem/sections.js
 msgid "%d links"
-msgstr "ссылок: %d"
+msgstr "Ссылок: %d"
 
 #: htdocs/luci-static/resources/view/mayhem/sections.js
 msgid "%d lists"
@@ -1198,11 +1198,11 @@ msgstr "никогда"
 
 #: htdocs/luci-static/resources/view/mayhem/sections.js
 msgid "none"
-msgstr "нет"
+msgstr "Нет"
 
 #: htdocs/luci-static/resources/view/mayhem/settings.js
 msgid "not downloaded yet"
-msgstr "ещё не скачано"
+msgstr "Ещё не скачано"
 
 #: htdocs/luci-static/resources/view/mayhem/dashboard.js
 msgid "not installed — run \"mayhem xray-install\""
@@ -1388,3 +1388,207 @@ msgstr "Выключить автозапуск"
 
 msgid "Turn autostart on"
 msgstr "Включить автозапуск"
+
+msgid "Nftables and routing"
+msgstr "Nftables и маршрутизация"
+
+msgid "The router did not return a backup."
+msgstr "Роутер не вернул резервную копию."
+
+msgid "Settings restored; the subscriptions and server keys of this router are kept. Mayhem applies them now."
+msgstr "Настройки восстановлены, подписки и ключи серверов этого роутера сохранены. Mayhem применяет их."
+
+msgid "Settings restored. Mayhem applies them now."
+msgstr "Настройки восстановлены. Mayhem применяет их."
+
+msgid "This file is not a Mayhem backup."
+msgstr "Это не резервная копия Mayhem."
+
+msgid "Made %s, Mayhem %s."
+msgstr "Создана %s, Mayhem %s."
+
+msgid "With subscriptions and server keys."
+msgstr "С подписками и ключами серверов."
+
+msgid "Without subscriptions and server keys: the ones of this router stay."
+msgstr "Без подписок и ключей серверов: останутся те, что есть на этом роутере."
+
+msgid "All current settings of Mayhem are replaced."
+msgstr "Все текущие настройки Mayhem будут заменены."
+
+msgid "Restore"
+msgstr "Восстановить"
+
+msgid "Import and export"
+msgstr "Импорт и экспорт"
+
+msgid "Export"
+msgstr "Экспорт"
+
+msgid "One file with every setting of Mayhem: sections and their rules, DNS, geo sources, settings and rule list files. Downloaded data is fetched again after a restore."
+msgstr "Один файл со всеми настройками Mayhem: секции и их правила, DNS, geo-источники, настройки и файлы списков. Скачиваемые данные после восстановления загрузятся заново."
+
+msgid "With connections: subscriptions, server keys and HWID"
+msgstr "С подключениями: подписки, ключи серверов и HWID"
+
+msgid "Download the backup"
+msgstr "Скачать копию"
+
+msgid "Restores a backup file. A backup without connections keeps the subscriptions and server keys this router has."
+msgstr "Восстанавливает настройки из файла. Копия без подключений оставляет подписки и ключи серверов, которые уже есть на роутере."
+
+msgid "Choose a file…"
+msgstr "Выбрать файл…"
+
+msgid "Import / export"
+msgstr "Импорт / экспорт"
+
+msgid "Incoming"
+msgstr "Входящее соединение"
+
+msgid "Outgoing"
+msgstr "Исходящее соединение"
+
+msgid "Ping"
+msgstr "Пинг"
+
+msgid "External IP"
+msgstr "Внешний IP"
+
+msgid "Location"
+msgstr "Местоположение"
+
+msgid "%d ms"
+msgstr "%d мс"
+
+msgid "No answer"
+msgstr "Нет ответа"
+
+msgid "Turned off"
+msgstr "Выключен"
+
+msgid "Does not work"
+msgstr "Не работает"
+
+msgid "Not installed"
+msgstr "Не установлен"
+
+msgid "Connection state"
+msgstr "Состояние подключения"
+
+msgid "Router"
+msgstr "Роутер"
+
+msgid "Xray memory"
+msgstr "Память Xray"
+
+msgid "Xray is not installed: run \"mayhem xray-install\""
+msgstr "Xray не установлен: выполните «mayhem xray-install»"
+
+msgid "Disabled subscription"
+msgstr "Выключена"
+
+msgid "Expired %s"
+msgstr "Истекла %s"
+
+msgid "Until %s"
+msgstr "До %s"
+
+msgid "Updated %s"
+msgstr "Обновлено %s"
+
+msgid "Pinned by hand"
+msgstr "Закреплён вручную"
+
+msgid "Now: %s"
+msgstr "Сейчас: %s"
+
+msgid "Interface %s"
+msgstr "Интерфейс %s"
+
+msgid "Through Xray"
+msgstr "Через Xray"
+
+msgid "Kernel mode"
+msgstr "Режим ядра"
+
+msgid "Last handshake %s"
+msgstr "Последний handshake %s"
+
+msgid "No subscriptions yet: add them on the Server list page."
+msgstr "Подписок пока нет: добавьте их на странице «Список серверов»."
+
+msgid "Paste a server key first."
+msgstr "Сначала вставьте ключ сервера."
+
+msgid "Not a server key: %s"
+msgstr "Это не ключ сервера: %s"
+
+msgid "The section name may only contain letters, digits and _"
+msgstr "Имя секции может состоять только из латинских букв, цифр и _"
+
+msgid "There is already a section named %s"
+msgstr "Секция %s уже есть"
+
+msgid "These keys cannot be added:"
+msgstr "Эти ключи добавить нельзя:"
+
+msgid "New section…"
+msgstr "Новая секция…"
+
+msgid "Section name"
+msgstr "Имя секции"
+
+msgid "Skipped: %s"
+msgstr "Пропущен: %s"
+
+msgid "Delete"
+msgstr "Удалить"
+
+msgid "Paste a server key: vless://, vmess://, trojan://, ss://, hysteria2://, socks://, http(s)://, wireguard://. Several keys go one per line."
+msgstr "Вставьте ключ сервера: vless://, vmess://, trojan://, ss://, hysteria2://, socks://, http(s)://, wireguard://. Несколько ключей — по одному в строке."
+
+msgid "Add"
+msgstr "Добавить"
+
+msgid "Servers are added to the chosen proxy section and applied at once."
+msgstr "Серверы добавляются в выбранную прокси-секцию и сразу применяются."
+
+msgid "Name"
+msgstr "Название"
+
+msgid "Address"
+msgstr "Адрес"
+
+msgid "No servers added by key yet."
+msgstr "Серверов, добавленных по ключу, пока нет."
+
+msgid "Add server"
+msgstr "Добавить сервер"
+
+msgid "Auto"
+msgstr "Авто"
+
+msgid "Device profile generator"
+msgstr "Генератор профиля устройства"
+
+msgid "Server list"
+msgstr "Список серверов"
+
+msgid "B"
+msgstr "Б"
+
+msgid "KB"
+msgstr "КБ"
+
+msgid "MB"
+msgstr "МБ"
+
+msgid "GB"
+msgstr "ГБ"
+
+msgid "TB"
+msgstr "ТБ"
+
+msgid "%s/s"
+msgstr "%s/с"

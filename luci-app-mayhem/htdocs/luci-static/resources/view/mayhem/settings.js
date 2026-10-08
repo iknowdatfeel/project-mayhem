@@ -58,7 +58,7 @@ return view.extend({
 		o = s.option(form.Value, 'memlimit', _('xray memory limit, MiB'),
 			_('Soft limit: xray frees memory more often when it gets close. Empty means a quarter of the router RAM.'));
 		o.datatype = 'range(16,4096)';
-		o.placeholder = _('auto');
+		o.placeholder = _('Auto');
 
 		o = s.option(form.Flag, 'watchdog', _('Watchdog'),
 			_('Restarts xray when it holds too much memory for 3 minutes in a row, and dnsmasq when it is gone.'));

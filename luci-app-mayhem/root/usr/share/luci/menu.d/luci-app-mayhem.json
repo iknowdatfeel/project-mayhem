@@ -30,12 +30,12 @@
 			"path": "mayhem/sections"
 		}
 	},
-	"admin/services/mayhem/subscriptions": {
-		"title": "Subscriptions",
+	"admin/services/mayhem/servers": {
+		"title": "Server list",
 		"order": 25,
 		"action": {
 			"type": "view",
-			"path": "mayhem/subscriptions"
+			"path": "mayhem/servers"
 		}
 	},
 	"admin/services/mayhem/settings": {

@@ -328,7 +328,7 @@ return view.extend({
 
 		o = s.option(form.MultiValue, 'subscription', _('Subscriptions'),
 			subs.length ? _('Servers of these subscriptions are added to the section.')
-				: _('No subscriptions yet: add them on the Subscriptions page.'));
+				: _('No subscriptions yet: add them on the Server list page.'));
 		subs.forEach((n) => o.value(n));
 		o.depends({ type: 'proxy', proxy_type: 'link' });
 		o.modalonly = true;
