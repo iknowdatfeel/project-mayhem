@@ -80,7 +80,13 @@ jobs:
         run: |
           base="https://downloads.openwrt.org/releases/${{ matrix.release }}/targets/x86/64"
           sdk=$(curl -fsSL "$base/" | grep -o 'openwrt-sdk-[^"]*\.tar\.\(xz\|zst\)' | head -n1)
-          curl -fsSL -o "/tmp/$sdk" "$base/$sdk"
+          # The mirror drops long transfers now and then (curl exit 92):
+          # HTTP/1.1, resumed retries.
+          for i in 1 2 3 4 5; do
+            curl -fsSL --http1.1 -C - --retry 3 --retry-all-errors -o "/tmp/$sdk" "$base/$sdk" && break
+            sleep 10
+          done
+          [ -s "/tmp/$sdk" ]
           mkdir sdk
           case "$sdk" in
             *.zst) tar --zstd -xf "/tmp/$sdk" -C sdk --strip-components=1 ;;
