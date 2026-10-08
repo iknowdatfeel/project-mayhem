@@ -136,7 +136,7 @@ mayhem_tunnel_ok() {
 # Brings each tunnel section's routes and xray balancer in line with the
 # state of its tunnel. Runs every minute from the scheduler.
 mayhem_tunnels_check() {
-	local name dev mark table v6 state was
+	local name dev mark table v6 state was xpid
 
 	[ -s "$MAYHEM_RUN_DIR/tunnels" ] || return 0
 	[ -f "$MAYHEM_RUN_DIR/active" ] || [ "$1" = force ] || [ -f "$MAYHEM_RUN_DIR/xray.pid" ] || return 0
@@ -164,8 +164,14 @@ mayhem_tunnels_check() {
 				ip -6 route flush table "$table" 2>/dev/null
 			fi
 
-			# Repeated while down: xray may have restarted meanwhile.
-			mayhem_select "bal-$name" direct
+			# Again only when xray is another process now: every call is
+			# one more xray (`xray api`, ~30 MB for a moment).
+			xpid="$(cat "$MAYHEM_RUN_DIR/xray.pid" 2>/dev/null)"
+
+			if [ "$was" != down ] || [ "$(cat "$MAYHEM_RUN_DIR/tunnel.$name.sel" 2>/dev/null)" != "$xpid" ]; then
+				mayhem_select "bal-$name" direct && echo "$xpid" > "$MAYHEM_RUN_DIR/tunnel.$name.sel"
+			fi
+
 			[ "$was" != down ] && mayhem_log "tunnel $dev of section $name does not work, its traffic goes direct" warn
 		fi
 
@@ -290,8 +296,13 @@ mayhem_dnsmasq_dirs() {
 mayhem_dns_up() {
 	local d
 
+	# A hard link when the conf-dir is on the same tmpfs: with tunnel sections
+	# the file holds every domain of their lists and would take RAM twice.
 	for d in $(mayhem_dnsmasq_dirs); do
-		mkdir -p "$d" && cp "$MAYHEM_RUN_DIR/dnsmasq.conf" "$d/$MAYHEM_DNSMASQ_FILE"
+		mkdir -p "$d" || continue
+		rm -f "$d/$MAYHEM_DNSMASQ_FILE"
+		ln "$MAYHEM_RUN_DIR/dnsmasq.conf" "$d/$MAYHEM_DNSMASQ_FILE" 2>/dev/null ||
+			cp "$MAYHEM_RUN_DIR/dnsmasq.conf" "$d/$MAYHEM_DNSMASQ_FILE"
 	done
 
 	"$MAYHEM_DNSMASQ_INIT" restart >/dev/null 2>&1

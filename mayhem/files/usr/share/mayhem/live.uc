@@ -210,9 +210,17 @@ if (failed) {
 	exit(1);
 }
 
-// From now on running xray has the new servers.
-for (let f in [ 'xray.json', 'overrides' ])
-	fs.writefile(`${RUN_DIR}/running.${f}.tmp`, read(f)) != null && fs.rename(`${RUN_DIR}/running.${f}.tmp`, `${RUN_DIR}/running.${f}`);
+// From now on running xray has the new servers. A hard link where it works:
+// the generator replaces these files, so the link keeps this content, and
+// the config does not take RAM twice.
+for (let f in [ 'xray.json', 'overrides' ]) {
+	const tmp = `${RUN_DIR}/running.${f}.tmp`;
+
+	fs.unlink(tmp);
+
+	if (system([ 'ln', '-f', `${RUN_DIR}/${f}`, tmp ]) == 0 || fs.writefile(tmp, read(f)) != null)
+		fs.rename(tmp, `${RUN_DIR}/running.${f}`);
+}
 
 const n_add = length(filter(add, (o) => match(o.tag, /^n-/)));
 

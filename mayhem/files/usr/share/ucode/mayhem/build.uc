@@ -6,7 +6,7 @@
 
 import { parse_link, outbound_host, outbound_port, outbound_udp, refused_by_xray } from 'mayhem.links';
 import { is_true, entries, norm_domain, norm_ip, is_ip, dns_server, split_list, list_key } from 'mayhem.rules';
-import { resolve, HEAVY } from 'mayhem.geo';
+import { resolve, HEAVY, KERNEL_DOMAINS_MAX } from 'mayhem.geo';
 import * as C from 'mayhem.const';
 
 const LOG_LEVELS = [ 'debug', 'info', 'warning', 'error', 'none' ];
@@ -28,6 +28,17 @@ const SERVICE_PROTOCOLS = [ 'freedom', 'direct', 'blackhole', 'block', 'dns', 'l
 // timeouts after its last packet.
 const DNS_LEVEL = 1;
 const DNS_IDLE = 10;
+
+// Every UDP flow that reaches xray is a session (2 sockets, 3 goroutines,
+// ~35 KB), and in "lists" mode that is every flow of the network: a torrent
+// client's DHT alone opens thousands, each living 2-3 minutes after its last
+// packet. UDP that goes direct leaves through an outbound of its own whose
+// sessions close 45-90 s after their last packet (xray checks for activity
+// once per connIdle); TCP keeps the default 300 s, idle push connections must
+// live. UDP that is alive sends more often: NAT mappings on home routers
+// expire after 30-60 s, so apps keep them warm.
+const UDP_LEVEL = 2;
+const UDP_IDLE = 45;
 
 function int_opt(v, def, min, max) {
 	if (v == null || v == '' || !match(`${v}`, /^-?[0-9]+$/))
@@ -436,7 +447,7 @@ function collect_rules(sec, model, warn, G) {
 
 		if (g.kind == 'geosite') {
 			domains.add(`ext:${x.file}:${x.cat}${g.attr}`);
-			push(sites, { key: `${x.source}:${x.cat}`, attr: g.attr, text: text });
+			push(sites, { key: `${x.source}:${x.cat}`, attr: g.attr, text: text, count: x.count });
 			return;
 		}
 
@@ -548,6 +559,11 @@ function kernel_domains(name, RL, model, warn) {
 	for (let g in RL.sites) {
 		const list = model.geo?.domains?.[g.key];
 
+		if ((g.count ?? 0) > KERNEL_DOMAINS_MAX) {
+			warn(`section "${name}": ${g.text} has ${g.count} domains, too many for dnsmasq: they work through xray only`);
+			continue;
+		}
+
 		if (g.attr != '' || list == null) {
 			warn(`section "${name}": ${g.text} works through xray only`);
 			continue;
@@ -559,6 +575,11 @@ function kernel_domains(name, RL, model, warn) {
 
 	if (skipped)
 		warn(`section "${name}": ${skipped} keyword/regexp rules work through xray only`);
+
+	if (length(out.items) > KERNEL_DOMAINS_MAX) {
+		warn(`section "${name}": ${length(out.items)} domains are too many for dnsmasq (at most ${KERNEL_DOMAINS_MAX}): they work through xray only`);
+		return [];
+	}
 
 	return out.items;
 }
@@ -632,7 +653,8 @@ export function build(model) {
 	// never sent direct by mistake.
 	const outbounds = [
 		{ tag: 'block', protocol: 'blackhole', settings: {} },
-		{ tag: 'direct', protocol: 'freedom', settings: {}, streamSettings: { sockopt: { domainStrategy: F.freedom } } }
+		{ tag: 'direct', protocol: 'freedom', settings: {}, streamSettings: { sockopt: { domainStrategy: F.freedom } } },
+		{ tag: 'direct-udp', protocol: 'freedom', settings: { userLevel: UDP_LEVEL }, streamSettings: { sockopt: { domainStrategy: F.freedom } } }
 	];
 
 	const sets = { block4: uset(), block6: uset(), direct4: uset(), direct6: uset() };
@@ -1199,6 +1221,14 @@ export function build(model) {
 	// reach their own rules at the end.
 	const intercepted = (r) => ({ inboundTag: [ 'tproxy-in' ], ...r });
 
+	// Direct UDP leaves through "direct-udp" (short idle timeout, see UDP_IDLE).
+	const direct_udp = (r) => {
+		if (r.outboundTag == 'direct')
+			push(rules, intercepted({ ...r, network: 'udp', outboundTag: 'direct-udp' }));
+
+		push(rules, intercepted(r));
+	};
+
 	// Without QUIC browsers fall back to TCP, which proxies carry better.
 	if (is_true(S.block_quic))
 		push(rules, intercepted({ network: 'udp', port: '443', outboundTag: 'block' }));
@@ -1208,7 +1238,7 @@ export function build(model) {
 
 	// BitTorrent is recognized by sniffing its first packets.
 	if (is_true(S.torrent_direct))
-		push(rules, intercepted({ protocol: [ 'bittorrent' ], outboundTag: 'direct' }));
+		direct_udp({ protocol: [ 'bittorrent' ], outboundTag: 'direct' });
 
 	for (let r in tun_rules)
 		push(rules, intercepted(r));
@@ -1216,7 +1246,7 @@ export function build(model) {
 	for (let r in section_rules)
 		push(rules, intercepted(r));
 
-	push(rules, intercepted({ network: 'tcp,udp', ...final_target }));
+	direct_udp({ network: 'tcp,udp', ...final_target });
 
 	for (let r in helper_rules)
 		push(rules, r);
@@ -1271,7 +1301,8 @@ export function build(model) {
 		metrics: { tag: 'metrics', listen: `127.0.0.1:${C.METRICS_PORT}` },
 		stats: {},
 		policy: {
-			levels: { '1': { connIdle: DNS_IDLE } },	// '1' is DNS_LEVEL
+			// '1' is DNS_LEVEL, '2' is UDP_LEVEL
+			levels: { '1': { connIdle: DNS_IDLE }, '2': { connIdle: UDP_IDLE } },
 			system: { statsOutboundUplink: true, statsOutboundDownlink: true }
 		}
 	};
@@ -1288,11 +1319,20 @@ export function build(model) {
 	for (let ib in local_inbounds)
 		push(xray.inbounds, ib);
 
+	// Automatic choice: each server is checked once per interval, at a random
+	// moment of it. The plain observatory checks all of them at once: with 150
+	// servers xray took up to 20 MB more at every interval (37 MB instead of
+	// 16). At start every server is checked at once, for a quick choice.
+	// The same checks: GET, 5 s timeout; a server counts as working when its
+	// last check passed, and leastPing picks the fastest such.
 	if (length(observe)) {
 		const iv = match(S.probe_interval ?? '', /^[0-9]+[smh]$/) ? S.probe_interval : C.DEFAULT_PROBE_INTERVAL;
 		const url = match(S.probe_url ?? '', /^https?:\/\//) ? S.probe_url : C.DEFAULT_PROBE_URL;
 
-		xray.observatory = { subjectSelector: observe, probeURL: url, probeInterval: iv, enableConcurrency: true };
+		xray.burstObservatory = {
+			subjectSelector: observe,
+			pingConfig: { destination: url, interval: iv, sampling: 1, timeout: '5s', httpMethod: 'GET' }
+		};
 	}
 
 	if (fakedns)
@@ -1328,7 +1368,7 @@ export function build(model) {
 	state.lists_missing = lists_missing;
 	state.generated = R.now ?? time();
 	state.mode = mode;
-	state.probe_url = xray.observatory?.probeURL ?? (match(S.probe_url ?? '', /^https?:\/\//) ? S.probe_url : C.DEFAULT_PROBE_URL);
+	state.probe_url = xray.burstObservatory?.pingConfig?.destination ?? (match(S.probe_url ?? '', /^https?:\/\//) ? S.probe_url : C.DEFAULT_PROBE_URL);
 
 	return {
 		ok: !length(st.errors),

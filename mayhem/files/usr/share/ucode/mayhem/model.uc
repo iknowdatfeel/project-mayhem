@@ -8,7 +8,7 @@ import { cursor } from 'uci';
 import { readfile, writefile, access, stat, mkdir, lsdir, unlink, popen } from 'fs';
 import { SUBS_DIR, UCI_DIR, GEO_DIR, LISTS_DIR, RUN_DIR } from 'mayhem.const';
 import { is_true, entries, list_key, norm_ip, norm_domain, is_ip } from 'mayhem.rules';
-import { resolve, geoip_cidrs, geosite_domains } from 'mayhem.geo';
+import { resolve, geoip_cidrs, geosite_domains, KERNEL_DOMAINS_MAX } from 'mayhem.geo';
 
 const RESOLV_FILES = [ '/tmp/resolv.conf.d/resolv.conf.auto', '/tmp/resolv.conf.auto' ];
 
@@ -255,7 +255,9 @@ function geo_domains(sections, sources) {
 
 			const x = resolve(sources, r.geo);
 
-			if (x.state == 'ready') {
+			// Not spelled out at all when too big for dnsmasq (the generator
+			// says so): a million domains would not fit in RAM here either.
+			if (x.state == 'ready' && (x.count ?? 0) <= KERNEL_DOMAINS_MAX) {
 				per_source[x.source] ??= [];
 				push(per_source[x.source], x.cat);
 			}

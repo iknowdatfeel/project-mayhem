@@ -296,6 +296,60 @@ else
 	ok "model plaintext: refused servers are skipped with a warning"
 fi
 
+# Memory: direct UDP leaves through an outbound with a short idle timeout,
+# servers are checked one at a time over the interval, the config is compact.
+if ! uc -e "
+	const x = json(require('fs').readfile('$OUT/lists/xray.json'));
+	const du = filter(x.outbounds, (o) => o.tag == 'direct-udp')[0];
+	const lvl = du?.settings?.userLevel;
+	const r = x.routing.rules;
+	const fin = filter(r, (q) => q.network == 'tcp,udp' && q.inboundTag?.[0] == 'tproxy-in');
+	const udp = filter(r, (q) => q.network == 'udp' && q.outboundTag == 'direct-udp');
+	exit((du && lvl && x.policy.levels[sprintf('%d', lvl)]?.connIdle < 300 && length(fin) == 1 && length(udp) == 1 &&
+		index(r, udp[0]) == index(r, fin[0]) - 1 && fin[0].outboundTag == 'direct') ? 0 : 1);
+" 2>/dev/null; then
+	bad "model lists: direct UDP does not leave through direct-udp"
+elif ! uc -e "
+	const x = json(require('fs').readfile('$OUT/global/xray.json'));
+	const r = x.routing.rules;
+	const fin = filter(r, (q) => q.network == 'tcp,udp' && q.inboundTag?.[0] == 'tproxy-in')[0];
+	const torrent = filter(r, (q) => q.protocol?.[0] == 'bittorrent' && q.network == 'udp')[0];
+	exit((fin?.balancerTag && r[index(r, fin) - 1].outboundTag != 'direct-udp' && torrent?.outboundTag == 'direct-udp') ? 0 : 1);
+" 2>/dev/null; then
+	bad "model global: the rest of the UDP must go through the proxy, torrent UDP through direct-udp"
+elif ! uc -e "
+	const x = json(require('fs').readfile('$OUT/subs/xray.json'));
+	const b = x.burstObservatory;
+	exit((x.observatory == null && b?.pingConfig?.sampling == 1 && length(b.subjectSelector) > 0) ? 0 : 1);
+" 2>/dev/null; then
+	bad "model subs: servers are not checked one at a time (burstObservatory)"
+elif [ "$(wc -l < "$OUT/lists/xray.json")" != 1 ]; then
+	bad "model lists: xray.json is not compact"
+else
+	ok "memory: direct UDP idle timeout, spread server checks, compact config"
+fi
+
+# A kernel tunnel section does not hand dnsmasq more domains than it can hold.
+cat > "$OUT/bigtun.json" <<'JSON'
+{ "settings": { "mode": "lists", "interface": ["br-lan"] },
+  "dns": { "remote": ["https://1.1.1.1/dns-query"] },
+  "geo": { "sources": [ { "name": "site", "kind": "geosite", "enabled": true,
+    "index": { "categories": { "huge": 1400000, "small": 2 }, "copied": ["huge", "small"] } } ],
+    "domains": { "site:small": ["domain:a.test", "full:b.test"] } },
+  "sections": [ { ".name": "awg", "type": "interface", "enabled": "1", "interface": "awg0",
+    "domain": ["geosite:huge", "geosite:small"] } ],
+  "runtime": { "wan_dns": ["192.168.100.1"], "ipv6": false, "dnsmasq_nftset": true,
+    "ifaces": { "awg0": { "device": "awg0", "up": true, "v6": false } } } }
+JSON
+mkdir -p "$OUT/bigtun"
+if ! uc "$FILES/usr/share/mayhem/gen.uc" --model "$OUT/bigtun.json" --out "$OUT/bigtun" 2>/dev/null; then
+	bad "huge category in a kernel tunnel: generator failed"
+elif ! grep -q 'too many for dnsmasq' "$OUT/bigtun/status.json" || ! grep -q '/a.test/b.test/' "$OUT/bigtun/dnsmasq.conf"; then
+	bad "huge category in a kernel tunnel: no warning, or the small category is lost: $(cat "$OUT/bigtun/dnsmasq.conf")"
+else
+	ok "huge category in a kernel tunnel goes through xray, small ones through dnsmasq"
+fi
+
 if command -v shellcheck >/dev/null 2>&1; then
 	if out="$(shellcheck -s sh -f gcc -e SC1091,SC2034,SC3043,SC2086,SC2046,SC2317,SC2329 \
 		"$FILES/usr/bin/mayhem" "$FILES/usr/libexec/mayhem/xray-run" "$FILES/usr/libexec/mayhem/scheduler" \

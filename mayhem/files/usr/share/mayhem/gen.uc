@@ -84,7 +84,9 @@ if (!res.ok) {
 	exit(1);
 }
 
-put('xray.json', sprintf('%.J\n', res.xray));
+// Compact: the file lives in RAM (tmpfs), with rule lists it can take
+// megabytes; `mayhem show-config` prints it readable.
+put('xray.json', sprintf('%J\n', res.xray));
 // procd restarts xray when this changes; new servers alone go in live.
 put('xray.key', sprintf('%J\n', res.key));
 put('nft.conf', res.nft);

@@ -21,6 +21,11 @@ const CHUNK = 65536;
 // Categories bigger than this make xray use a lot of memory.
 export const HEAVY = 50000;
 
+// Domains a kernel-mode tunnel section may hand to dnsmasq (nftset): dnsmasq
+// takes ~65 bytes per domain, the generator and its cache in /tmp much more
+// while they spell them out. Above it the section's domains go through xray.
+export const KERNEL_DOMAINS_MAX = 200000;
+
 // Streaming reader over a handle with read(n). Bytes between capture()
 // and release() are written to `out` as they go by.
 function reader(fh) {
