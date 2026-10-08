@@ -401,7 +401,7 @@ msgstr ""
 msgid "Download the category list"
 msgstr ""
 
-#: htdocs/luci-static/resources/view/mayhem/sections.js
+#: htdocs/luci-static/resources/view/mayhem/components.js
 msgid "Download through Xray"
 msgstr ""
 
@@ -1503,6 +1503,10 @@ msgstr ""
 
 #: htdocs/luci-static/resources/view/mayhem/sections.js
 msgid "Xray recognizes BitTorrent by its first packets and sends it direct, past the proxy."
+msgstr ""
+
+#: htdocs/luci-static/resources/view/mayhem/components.js
+msgid "Xray, Mayhem, geo data and lists are downloaded through the active server; when that fails, direct."
 msgstr ""
 
 #: htdocs/luci-static/resources/view/mayhem/dashboard.js

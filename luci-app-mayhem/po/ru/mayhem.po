@@ -404,7 +404,7 @@ msgstr "Скачать копию"
 msgid "Download the category list"
 msgstr "Скачать список категорий"
 
-#: htdocs/luci-static/resources/view/mayhem/sections.js
+#: htdocs/luci-static/resources/view/mayhem/components.js
 msgid "Download through Xray"
 msgstr "Скачивать через Xray"
 
@@ -1092,7 +1092,7 @@ msgstr "Сервер"
 msgid "Server by default"
 msgstr "Сервер по умолчанию"
 
-#: htdocs/luci-static/resources/view/mayhem/sections.js
+#: htdocs/luci-static/resources/view/mayhem/dashboard.js
 msgid "Server keys"
 msgstr "Ключи серверов"
 
@@ -1507,6 +1507,10 @@ msgstr "Outbound Xray в JSON"
 #: htdocs/luci-static/resources/view/mayhem/sections.js
 msgid "Xray recognizes BitTorrent by its first packets and sends it direct, past the proxy."
 msgstr "Xray распознаёт BitTorrent по первым пакетам и отправляет его напрямую, минуя прокси."
+
+#: htdocs/luci-static/resources/view/mayhem/components.js
+msgid "Xray, Mayhem, geo data and lists are downloaded through the active server; when that fails, direct."
+msgstr "Xray, Mayhem, геоданные и списки скачиваются через активный сервер, а если не получится — напрямую."
 
 #: htdocs/luci-static/resources/view/mayhem/dashboard.js
 msgid "automatic"

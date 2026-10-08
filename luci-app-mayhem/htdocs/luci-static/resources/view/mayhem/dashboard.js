@@ -742,7 +742,13 @@ return view.extend({
 		if (PROBES.some((p) => p[0] === d.ping_method))
 			this.method = d.ping_method;
 
-		window.setTimeout(() => this.checkConnection(), 0);
+		// A ping method other than the URL test that xray runs by itself: the
+		// servers are checked with it once when the page opens.
+		window.setTimeout(() => {
+			const proxies = (d.sections || []).filter((s) => s.type === 'proxy' && (s.nodes || []).length);
+
+			return (this.method !== 'url' && proxies.length) ? this.probeAll(proxies) : this.checkConnection();
+		}, 0);
 
 		poll.add(() => document.hidden ? Promise.resolve() : this.refresh(), 2);
 

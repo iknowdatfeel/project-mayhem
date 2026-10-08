@@ -87,7 +87,15 @@ version_newer() {
 }
 
 fetch() {
-	# $1 url, $2 output file
+	# $1 url, $2 output file; through Xray first when downloads go through it
+	local px
+
+	px="$(mayhem_download_proxy)"
+
+	if [ -n "$px" ] && command -v curl >/dev/null 2>&1 && curl -fsSL -m 300 -x "$px" -o "$2" "$1" 2>/dev/null; then
+		return 0
+	fi
+
 	if command -v curl >/dev/null 2>&1; then
 		curl -fsSL --retry 2 -o "$2" "$1"
 	else
@@ -399,7 +407,7 @@ case "$1" in
 		f=/tmp/mayhem-install.sh
 		fetch "https://raw.githubusercontent.com/${MAYHEM_REPO:-iknowdatfeel/project-mayhem}/main/install.sh" "$f" ||
 			{ echo "Cannot download the installer" >&2; exit 1; }
-		sh "$f" </dev/null
+		MAYHEM_PROXY="$(mayhem_download_proxy)" sh "$f" </dev/null
 		rc=$?
 		rm -f "$f"
 		exit "$rc"

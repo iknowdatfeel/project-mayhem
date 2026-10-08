@@ -107,6 +107,17 @@ return view.extend({
 			return Promise.resolve(self.renderComponents(comp, geo));
 		};
 
+		o = s.option(form.Flag, 'via_xray', _('Download through Xray'),
+			_('Xray, Mayhem, geo data and lists are downloaded through the active server; when that fails, direct.'));
+		o.ucisection = 'geo';
+		o.default = '1';
+		o.rmempty = false;
+		o.cfgvalue = function() {
+			const v = uci.get('mayhem', 'geo', 'via_xray');
+
+			return v != null ? v : (uci.get('mayhem', 'geo', 'update_via') === 'direct' ? '0' : '1');
+		};
+
 		o = s.option(form.Flag, 'auto_update', _('Update Mayhem automatically'),
 			_('Once a day, at the nightly update time, Mayhem looks for a new release on GitHub and installs it together with the Xray version it is made for. Connections break for a moment while it updates.'));
 		o.rmempty = false;

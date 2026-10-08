@@ -185,6 +185,19 @@ mayhem_watchdog_note() {
 		mv "$MAYHEM_RUN_DIR/watchdog.log.tmp" "$MAYHEM_RUN_DIR/watchdog.log"
 }
 
+# The helper proxy of the main section when downloads go through Xray (the
+# "Download through Xray" switch); empty otherwise. Callers fall back to a
+# direct download when it does not work, e.g. while xray is stopped.
+mayhem_download_proxy() {
+	local sec
+
+	[ "$(uci -q get mayhem.geo.via_xray)" = 0 ] && return 0
+	[ -z "$(uci -q get mayhem.geo.via_xray)" ] && [ "$(uci -q get mayhem.geo.update_via)" = direct ] && return 0
+
+	sec="$(grep -o '"default_section": *"[A-Za-z0-9_]*"' "$MAYHEM_RUN_DIR/nodes.json" 2>/dev/null | head -n 1 | sed 's/.*"\([A-Za-z0-9_]*\)"$/\1/')"
+	[ -n "$sec" ] && echo "socks5h://sec-$sec:mayhem@127.0.0.1:$MAYHEM_HELPER_PORT"
+}
+
 # Once a day, half an hour into the nightly update hour: Mayhem's own update
 # when it is turned on. It runs apart from the scheduler, in a session of its
 # own: the installer stops and starts the service.
