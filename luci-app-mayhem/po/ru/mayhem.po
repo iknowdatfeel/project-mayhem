@@ -24,7 +24,7 @@ msgstr "%d мин назад"
 msgid "%d ms"
 msgstr "%d мс"
 
-#: htdocs/luci-static/resources/view/mayhem/dashboard.js
+#: htdocs/luci-static/resources/mayhem/diag.js
 msgid "%d servers"
 msgstr "серверов: %d"
 
@@ -227,6 +227,10 @@ msgstr "Категории появятся в списке после перв�
 #: htdocs/luci-static/resources/view/mayhem/sections.js
 msgid "Categories of geo data: geosite for domains, geoip for addresses. Categories marked as heavy hold more than %s rules and make Xray use a lot of memory."
 msgstr "Категории геоданных: geosite — для доменов, geoip — для адресов. Категории с пометкой «Тяжёлая» содержат больше %s правил, и Xray тратит на них много памяти."
+
+#: htdocs/luci-static/resources/mayhem/diag.js
+msgid "Categories: %d"
+msgstr "Категорий: %d"
 
 #: htdocs/luci-static/resources/view/mayhem/sections.js
 msgid "Categories: %d, in use: %d. Updated %s"
@@ -560,6 +564,10 @@ msgstr "Источники геоданных"
 msgid "Geo data, lists and subscriptions"
 msgstr "Геоданные, списки и подписки"
 
+#: htdocs/luci-static/resources/mayhem/diag.js
+msgid "Geo source"
+msgstr "Источник геоданных"
+
 #: htdocs/luci-static/resources/view/mayhem/servers.js
 msgid "HWID"
 msgstr "HWID"
@@ -716,6 +724,10 @@ msgstr "Последний handshake %s"
 msgid "Latin letters, digits and _. The settings that name the section change too. Xray restarts once, so connections break for a moment."
 msgstr "Латинские буквы, цифры и _. Настройки, где упоминается секция, изменятся тоже. Xray один раз перезапустится, и соединения ненадолго прервутся."
 
+#: htdocs/luci-static/resources/mayhem/diag.js
+msgid "List"
+msgstr "Список"
+
 #: htdocs/luci-static/resources/view/mayhem/sections.js
 msgid "List updates"
 msgstr "Обновление списков"
@@ -836,9 +848,13 @@ msgstr "Туннелей пока нет."
 msgid "Not a server key: %s"
 msgstr "Это не ключ сервера: %s"
 
-#: htdocs/luci-static/resources/view/mayhem/sections.js
+#: htdocs/luci-static/resources/mayhem/diag.js
 msgid "Not downloaded yet"
 msgstr "Ещё не скачан"
+
+#: htdocs/luci-static/resources/mayhem/diag.js
+msgid "Not downloaded: no section uses it yet"
+msgstr "Не скачан: пока не используется в секциях"
 
 #: htdocs/luci-static/resources/view/mayhem/dashboard.js
 msgid "Not installed"
@@ -1096,7 +1112,7 @@ msgstr "Сервер по умолчанию"
 msgid "Server keys"
 msgstr "Ключи серверов"
 
-#: htdocs/luci-static/resources/view/mayhem/dashboard.js
+#: htdocs/luci-static/resources/mayhem/diag.js
 msgid "Server list"
 msgstr "Список серверов"
 
@@ -1176,7 +1192,7 @@ msgstr "Состояние"
 msgid "Stop Mayhem"
 msgstr "Остановить Mayhem"
 
-#: htdocs/luci-static/resources/view/mayhem/servers.js
+#: htdocs/luci-static/resources/mayhem/diag.js
 msgid "Subscription"
 msgstr "Подписка"
 
@@ -1424,7 +1440,7 @@ msgstr "Обновить сервера"
 msgid "Update to %s"
 msgstr "Обновить до %s"
 
-#: htdocs/luci-static/resources/view/mayhem/components.js
+#: htdocs/luci-static/resources/mayhem/diag.js
 msgid "Updated %s"
 msgstr "Обновлено %s"
 
@@ -1539,3 +1555,7 @@ msgstr "закреплён вручную"
 #: htdocs/luci-static/resources/view/mayhem/dashboard.js
 msgid "section %s"
 msgstr "секция %s"
+
+#: htdocs/luci-static/resources/mayhem/diag.js
+msgid "updated %s"
+msgstr "обновлено %s"

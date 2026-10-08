@@ -32,6 +32,41 @@ const GROUPS = [
 const ITEM_ICON = { ok: 'check', warn: 'alert', fail: 'x', info: 'circle-idle' };
 
 // Check names come from the router in English; known ones are translated here.
+// Names and details of data checks come with the name of the thing checked.
+function checkName(n) {
+	if (NAMES[n])
+		return NAMES[n];
+
+	const m = /^(Geo source|Subscription|List) (.+)$/.exec(n || '');
+
+	return m ? '%s %s'.format({ 'Geo source': _('Geo source'), 'Subscription': _('Subscription'), 'List': _('List') }[m[1]], m[2]) : n;
+}
+
+function checkAgo(s) {
+	return String(s).replace(/(\d+) min ago/, (x, n) => _('%d min ago').format(+n))
+		.replace(/(\d+) h ago/, (x, n) => _('%d h ago').format(+n))
+		.replace(/(\d+) d ago/, (x, n) => _('%d d ago').format(+n));
+}
+
+function checkDetail(d) {
+	let m;
+
+	if ((m = /^(\d+) (categories|servers)(, updated (.+))?$/.exec(d || '')))
+		return (m[2] === 'categories' ? _('Categories: %d') : _('%d servers')).format(+m[1]) +
+			(m[4] ? ', ' + _('updated %s').format(checkAgo(m[4])) : '');
+
+	if ((m = /^updated (.+)$/.exec(d || '')))
+		return _('Updated %s').format(checkAgo(m[1]));
+
+	if (d === 'not downloaded yet')
+		return _('Not downloaded yet');
+
+	if (d === 'not downloaded: no section uses it yet')
+		return _('Not downloaded: no section uses it yet');
+
+	return d;
+}
+
 const NAMES = {
 	'Routing': _('Routing'),
 	'Other proxy clients': _('Other proxy clients'),
@@ -48,6 +83,7 @@ const NAMES = {
 	'Clock': _('Clock'),
 	'Watchdog': _('Watchdog'),
 	'Direct': _('Direct'),
+	'pool': _('Server list'),
 	'Domain outside the lists (openwrt.org)': _('Domain outside the lists (openwrt.org)')
 };
 
@@ -243,7 +279,7 @@ return baseclass.extend({
 			]),
 			E('div', { 'class': 'mh-drow-items mh-small' }, items.map((c) => E('div', {
 				'class': 'mh-item ' + ({ ok: 'mh-ok', warn: 'mh-warn', fail: 'mh-fail' }[c.status] || 'mh-muted')
-			}, [ mh.icon(ITEM_ICON[c.status] || 'circle-idle', true), E('b', NAMES[c.name] || c.name), E('div', c.detail) ])))
+			}, [ mh.icon(ITEM_ICON[c.status] || 'circle-idle', true), E('b', checkName(c.name)), E('div', checkDetail(c.detail)) ])))
 		]);
 	},
 

@@ -393,19 +393,43 @@ function diag_local() {
 	// Data
 	const data = data_status(false);
 
-	for (let x in data.sources)
-		if (x.enabled && x.error)
+	const ago = (ts) => {
+		const s = time() - ts;
+
+		return s < 3600 ? sprintf('%d min ago', s / 60) : s < 86400 ? sprintf('%d h ago', s / 3600) : sprintf('%d d ago', s / 86400);
+	};
+
+	for (let x in data.sources) {
+		if (!x.enabled)
+			continue;
+
+		if (x.error)
 			check(res, 'data', `Geo source ${x.name}`, 'warn', x.error);
+		else if (x.categories != null)
+			check(res, 'data', `Geo source ${x.name}`, 'ok',
+				sprintf('%d categories', x.categories) + (x.updated ? `, updated ${ago(x.updated)}` : ''));
+		else
+			check(res, 'data', `Geo source ${x.name}`, 'info', 'not downloaded: no section uses it yet');
+	}
 
 	for (let l in data.lists)
 		if (l.error)
 			check(res, 'data', `List ${l.url}`, 'warn', l.error);
+		else
+			check(res, 'data', `List ${l.url}`, l.updated ? 'ok' : 'info', l.updated ? `updated ${ago(l.updated)}` : 'not downloaded yet');
 
-	for (let sub in subscriptions())
+	for (let sub in subscriptions()) {
+		if (!sub.enabled)
+			continue;
+
 		if (sub.error)
 			check(res, 'data', `Subscription ${sub.name}`, 'warn', sub.error);
 		else if (sub.info?.hwid?.limit)
 			check(res, 'data', `Subscription ${sub.name}`, 'fail', 'device limit reached');
+		else
+			check(res, 'data', `Subscription ${sub.name}`, sub.updated ? 'ok' : 'info',
+				sprintf('%d servers', sub.nodes) + (sub.updated ? `, updated ${ago(sub.updated)}` : ''));
+	}
 
 	// System
 	const year = localtime(time()).year;
@@ -570,6 +594,47 @@ function exit_geo(via, lang) {
 	return null;
 }
 
+// curl options that pin the host of a URL to its address from the provider's
+// DNS servers, past dnsmasq and xray. Empty when that does not work.
+function resolve_direct(url) {
+	const m = match(url ?? '', /^(https?):\/\/([^\/:?#]+)(:([0-9]+))?/);
+
+	if (!m || match(m[2], /^[0-9.]+$|:/))
+		return '';
+
+	const port = m[4] ?? (m[1] == 'https' ? '443' : '80');
+	let servers = [];
+
+	for (let f in [ '/tmp/resolv.conf.d/resolv.conf.auto', '/tmp/resolv.conf.auto' ]) {
+		for (let line in split(fs.readfile(f) ?? '', '\n')) {
+			const n = match(line, /^[[:space:]]*nameserver[[:space:]]+([0-9.]+)/);
+
+			if (n && !match(n[1], /^127\./))
+				push(servers, n[1]);
+		}
+
+		if (length(servers))
+			break;
+	}
+
+	for (let ns in servers) {
+		const out = run(`nslookup ${q(m[2])} ${q(ns)} 2>/dev/null`) ?? '';
+		let seen_name = false;
+
+		for (let line in split(out, '\n')) {
+			if (match(line, /^Name:/))
+				seen_name = true;
+
+			const a = seen_name ? match(line, /^Address( [0-9]+)?:[[:space:]]*([0-9]+\.[0-9]+\.[0-9]+\.[0-9]+)/) : null;
+
+			if (a)
+				return `--resolve ${q(`${m[2]}:${port}:${a[2]}`)}`;
+		}
+	}
+
+	return '';
+}
+
 // External address and response time through a section (or direct).
 function diag_exit(target) {
 	const res = [];
@@ -580,7 +645,9 @@ function diag_exit(target) {
 	if (v.error)
 		return { checks: [ { group: 'exit', name: target, status: 'fail', detail: v.error } ] };
 
-	const via = v.via;
+	// Directly means with the provider's DNS too: with FakeDNS the router's own
+	// lookups get fake addresses that lead into xray.
+	const via = target == 'direct' ? resolve_direct(url) : v.via;
 	const out = trim(run(`curl -s -m 10 ${via} -w ' %{http_code} %{time_total}' ${q(url)} 2>/dev/null`) ?? '');
 	const m = match(out, /^([0-9a-fA-F:.]+) ([0-9]+) ([0-9.]+)$/);
 
