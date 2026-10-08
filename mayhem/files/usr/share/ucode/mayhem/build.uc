@@ -307,6 +307,7 @@ function iface_outbound(tag, dev, strategy) {
 // subscriptions that pass the name filters. Returns [{ name, outbound, source }].
 function collect_nodes(sec, model, warn) {
 	const name = sec['.name'];
+	const label = sec.pool ? 'server list' : `section "${name}"`;
 	const nodes = [];
 
 	if (sec.proxy_type == 'json') {
@@ -314,7 +315,7 @@ function collect_nodes(sec, model, warn) {
 		const why = refused_by_xray(ob);
 
 		if (why)
-			warn(`section "${name}": the JSON outbound is ${why}; skipped`);
+			warn(`${label}: the JSON outbound is ${why}; skipped`);
 		else
 			push(nodes, { name: 'JSON', outbound: ob, source: 'json' });
 
@@ -330,12 +331,12 @@ function collect_nodes(sec, model, warn) {
 			const r = parse_link(l);
 
 			for (let w in r.warnings)
-				warn(`section "${name}": ${w}`);
+				warn(`${label}: ${w}`);
 
 			push(nodes, { name: r.name != '' ? r.name : `${name} ${n}`, outbound: r.outbound, source: 'link' });
 		}
 		catch (e) {
-			warn(`section "${name}": link ${n}: ${e.message}; skipped`);
+			warn(`${label}: link ${n}: ${e.message}; skipped`);
 		}
 	}
 
@@ -347,14 +348,14 @@ function collect_nodes(sec, model, warn) {
 		push(nodes, { name: iface, outbound: iface_outbound(null, inf.device, inf.v6 ? null : 'ForceIPv4'), source: 'interface', iface: iface });
 	}
 
-	const inc = name_regexp(sec.filter, `section "${name}" filter`, warn);
-	const exc = name_regexp(sec.exclude, `section "${name}" exclude`, warn);
+	const inc = name_regexp(sec.filter, `${label} filter`, warn);
+	const exc = name_regexp(sec.exclude, `${label} exclude`, warn);
 
 	for (let sub in entries(sec.subscription)) {
 		const cache = model.subscriptions?.[sub];
 
 		if (!cache) {
-			warn(`section "${name}": subscription "${sub}" has not been downloaded yet`);
+			warn(`${label}: subscription "${sub}" has not been downloaded yet`);
 			continue;
 		}
 
@@ -370,7 +371,7 @@ function collect_nodes(sec, model, warn) {
 				push(nodes, { name: nn, outbound: ob, source: sub });
 			}
 			catch (e) {
-				warn(`section "${name}": server "${nn}" from "${sub}": ${e.message}; skipped`);
+				warn(`${label}: server "${nn}" from "${sub}": ${e.message}; skipped`);
 			}
 		}
 	}
@@ -382,7 +383,7 @@ function collect_nodes(sec, model, warn) {
 		const why = refused_by_xray(nd.outbound);
 
 		if (why)
-			warn(`section "${name}": server "${nd.name}": ${why}; skipped`);
+			warn(`${label}: server "${nd.name}": ${why}; skipped`);
 		else
 			push(usable, nd);
 	}
@@ -994,13 +995,18 @@ export function build(model) {
 	const first_iface = keys(iface_targets)[0];
 	let default_name = null;
 
-	if (want && (proxy_targets[want] || iface_targets[want]))
+	// A main section without servers of its own means the server list itself.
+	const pooled = filter(model.sections ?? [], (x) => x['.name'] == want && x.use_pool)[0];
+
+	if (pooled && proxy_targets.pool)
+		default_name = 'pool';
+	else if (want && (proxy_targets[want] || iface_targets[want]))
 		default_name = want;
 	else {
 		default_name = first_proxy ?? first_iface;
 
-		if (want && default_name)
-			warn(`default section "${want}" does not work, using "${default_name}"`);
+		if (want && default_name && want != 'pool')
+			warn(`the main section "${want}" does not work, using ${default_name == 'pool' ? 'the server list' : `"${default_name}"`}`);
 	}
 
 	const default_target = default_name ? (proxy_targets[default_name] ?? iface_targets[default_name]) : null;

@@ -21,7 +21,7 @@ msgstr ""
 msgid "%d ms"
 msgstr ""
 
-#: htdocs/luci-static/resources/view/mayhem/dashboard.js
+#: htdocs/luci-static/resources/mayhem/diag.js
 msgid "%d servers"
 msgstr ""
 
@@ -223,6 +223,10 @@ msgstr ""
 
 #: htdocs/luci-static/resources/view/mayhem/sections.js
 msgid "Categories of geo data: geosite for domains, geoip for addresses. Categories marked as heavy hold more than %s rules and make Xray use a lot of memory."
+msgstr ""
+
+#: htdocs/luci-static/resources/mayhem/diag.js
+msgid "Categories: %d"
 msgstr ""
 
 #: htdocs/luci-static/resources/view/mayhem/sections.js
@@ -557,6 +561,10 @@ msgstr ""
 msgid "Geo data, lists and subscriptions"
 msgstr ""
 
+#: htdocs/luci-static/resources/mayhem/diag.js
+msgid "Geo source"
+msgstr ""
+
 #: htdocs/luci-static/resources/view/mayhem/servers.js
 msgid "HWID"
 msgstr ""
@@ -713,6 +721,10 @@ msgstr ""
 msgid "Latin letters, digits and _. The settings that name the section change too. Xray restarts once, so connections break for a moment."
 msgstr ""
 
+#: htdocs/luci-static/resources/mayhem/diag.js
+msgid "List"
+msgstr ""
+
 #: htdocs/luci-static/resources/view/mayhem/sections.js
 msgid "List updates"
 msgstr ""
@@ -833,8 +845,12 @@ msgstr ""
 msgid "Not a server key: %s"
 msgstr ""
 
-#: htdocs/luci-static/resources/view/mayhem/sections.js
+#: htdocs/luci-static/resources/mayhem/diag.js
 msgid "Not downloaded yet"
+msgstr ""
+
+#: htdocs/luci-static/resources/mayhem/diag.js
+msgid "Not downloaded: no section uses it yet"
 msgstr ""
 
 #: htdocs/luci-static/resources/view/mayhem/dashboard.js
@@ -1093,7 +1109,7 @@ msgstr ""
 msgid "Server keys"
 msgstr ""
 
-#: htdocs/luci-static/resources/view/mayhem/dashboard.js
+#: htdocs/luci-static/resources/mayhem/diag.js
 msgid "Server list"
 msgstr ""
 
@@ -1173,7 +1189,7 @@ msgstr ""
 msgid "Stop Mayhem"
 msgstr ""
 
-#: htdocs/luci-static/resources/view/mayhem/servers.js
+#: htdocs/luci-static/resources/mayhem/diag.js
 msgid "Subscription"
 msgstr ""
 
@@ -1421,7 +1437,7 @@ msgstr ""
 msgid "Update to %s"
 msgstr ""
 
-#: htdocs/luci-static/resources/view/mayhem/components.js
+#: htdocs/luci-static/resources/mayhem/diag.js
 msgid "Updated %s"
 msgstr ""
 
@@ -1535,4 +1551,8 @@ msgstr ""
 
 #: htdocs/luci-static/resources/view/mayhem/dashboard.js
 msgid "section %s"
+msgstr ""
+
+#: htdocs/luci-static/resources/mayhem/diag.js
+msgid "updated %s"
 msgstr ""
