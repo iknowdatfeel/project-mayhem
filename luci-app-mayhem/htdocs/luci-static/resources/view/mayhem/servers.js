@@ -210,7 +210,7 @@ return view.extend({
 			E('p', { 'class': 'mh-muted mh-small' }, _('Servers are added to the chosen proxy section and applied at once.')),
 			rows.length ? E('table', { 'class': 'table mh-keys' }, [
 				E('tr', { 'class': 'tr table-titles' }, [
-					E('th', { 'class': 'th' }, _('Name')), E('th', { 'class': 'th' }, _('Protocol')), E('th', { 'class': 'th' }, _('Address')),
+					E('th', { 'class': 'th' }, _('Server name')), E('th', { 'class': 'th' }, _('Protocol')), E('th', { 'class': 'th' }, _('Address')),
 					E('th', { 'class': 'th' }, _('Section')), E('th', { 'class': 'th' })
 				])
 			].concat(rows)) : E('p', { 'class': 'mh-muted' }, _('No servers added by key yet.'))
@@ -273,7 +273,7 @@ return view.extend({
 		o.datatype = 'range(1,720)';
 		o.placeholder = _('Auto');
 
-		o = s.taboption('main', form.ListValue, 'update_via', _('Download'),
+		o = s.taboption('main', form.ListValue, 'update_via', _('Download route'),
 			_('If the subscription server is blocked, it can be downloaded through a section.'));
 		o.value('auto', _('Direct, then through a section if that fails'));
 		o.value('direct', _('Direct only'));

@@ -205,6 +205,10 @@ msgstr ""
 msgid "Back to automatic"
 msgstr ""
 
+#: htdocs/luci-static/resources/mayhem/diag.js
+msgid "Backup"
+msgstr ""
+
 #: htdocs/luci-static/resources/view/mayhem/sections.js
 msgid "Block"
 msgstr ""
@@ -378,11 +382,11 @@ msgid "Down, traffic goes direct"
 msgstr ""
 
 #: htdocs/luci-static/resources/view/mayhem/sections.js
-msgid "Download"
+msgid "Download geo data"
 msgstr ""
 
 #: htdocs/luci-static/resources/view/mayhem/sections.js
-msgid "Download geo data"
+msgid "Download route"
 msgstr ""
 
 #: htdocs/luci-static/resources/mayhem/diag.js
@@ -557,20 +561,12 @@ msgstr ""
 msgid "Import"
 msgstr ""
 
-#: htdocs/luci-static/resources/mayhem/diag.js
-msgid "Import / export"
-msgstr ""
-
 #: htdocs/luci-static/resources/view/mayhem/sections.js
 msgid "Import AmneziaWG / WireGuard…"
 msgstr ""
 
 #: htdocs/luci-static/resources/view/mayhem/sections.js
 msgid "Import a tunnel"
-msgstr ""
-
-#: htdocs/luci-static/resources/mayhem/diag.js
-msgid "Import and export"
 msgstr ""
 
 #: htdocs/luci-static/resources/view/mayhem/servers.js
@@ -766,10 +762,6 @@ msgid "Mux: UDP connections per tunnel (XUDP)"
 msgstr ""
 
 #: htdocs/luci-static/resources/view/mayhem/servers.js
-msgid "Name"
-msgstr ""
-
-#: htdocs/luci-static/resources/view/mayhem/servers.js
 msgid "Needed by providers that limit the number of devices."
 msgstr ""
 
@@ -797,6 +789,10 @@ msgstr ""
 msgid "No messages yet."
 msgstr ""
 
+#: htdocs/luci-static/resources/view/mayhem/sections.js
+msgid "No servers"
+msgstr ""
+
 #: htdocs/luci-static/resources/view/mayhem/servers.js
 msgid "No servers added by key yet."
 msgstr ""
@@ -811,6 +807,10 @@ msgstr ""
 
 #: htdocs/luci-static/resources/view/mayhem/dashboard.js
 msgid "Not installed"
+msgstr ""
+
+#: htdocs/luci-static/resources/view/mayhem/sections.js
+msgid "Not used"
 msgstr ""
 
 #: htdocs/luci-static/resources/mayhem/diag.js
@@ -882,7 +882,7 @@ msgid "Paste a server key: vless://, vmess://, trojan://, ss://, hysteria2://, s
 msgstr ""
 
 #: htdocs/luci-static/resources/view/mayhem/dashboard.js
-msgid "Ping"
+msgid "Ping time"
 msgstr ""
 
 #: htdocs/luci-static/resources/view/mayhem/dashboard.js
@@ -1043,6 +1043,10 @@ msgstr ""
 
 #: root/usr/share/luci/menu.d/luci-app-mayhem.json
 msgid "Server list"
+msgstr ""
+
+#: htdocs/luci-static/resources/view/mayhem/servers.js
+msgid "Server name"
 msgstr ""
 
 #: htdocs/luci-static/resources/view/mayhem/sections.js
@@ -1426,15 +1430,7 @@ msgid "never"
 msgstr ""
 
 #: htdocs/luci-static/resources/view/mayhem/sections.js
-msgid "none"
-msgstr ""
-
-#: htdocs/luci-static/resources/view/mayhem/sections.js
 msgid "not downloaded yet"
-msgstr ""
-
-#: htdocs/luci-static/resources/view/mayhem/sections.js
-msgid "off"
 msgstr ""
 
 #: htdocs/luci-static/resources/view/mayhem/sections.js
