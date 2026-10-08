@@ -89,6 +89,11 @@ check_tproxy() {
 }
 
 fetch() {
+	# MAYHEM_PROXY: an update run by Mayhem downloads through Xray first.
+	if [ -n "${MAYHEM_PROXY:-}" ] && command -v curl >/dev/null 2>&1 && curl -fsSL -m 300 -x "$MAYHEM_PROXY" -o "$2" "$1" 2>/dev/null; then
+		return 0
+	fi
+
 	if command -v curl >/dev/null 2>&1; then
 		curl -fsSL -o "$2" "$1"
 	else

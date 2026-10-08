@@ -532,9 +532,17 @@ if start_mayhem uci; then
 
 	if rpc select_node "{\"section\":\"main\",\"tag\":\"$(tag_of B)\"}" | grep -q '"ok": true'; then ok "pin server B"; else bad "pin server B"; fi
 	expect "pinned server is used at once" 45.0.0.8 -H 'Host: youtube.test' http://45.0.0.2:8080/
+	case "$(rpc exit_info '{}')" in
+		*'"ip": "45.0.0.8"'*) ok "external address follows the pinned server" ;;
+		*) bad "external address after pinning B: $(rpc exit_info '{}')" ;;
+	esac
 	if grep -q "option override 'B'" "$MAYHEM_UCI_DIR/mayhem"; then ok "pinned server saved by name"; else bad "pinned server saved"; fi
 	rpc select_node "{\"section\":\"main\",\"tag\":\"$(tag_of A)\"}" >/dev/null
 	expect "switch to server A" 45.0.0.3 -H 'Host: youtube.test' http://45.0.0.2:8080/
+	case "$(rpc exit_info '{}')" in
+		*'"ip": "45.0.0.3"'*) ok "external address follows the switch" ;;
+		*) bad "external address after switching to A: $(rpc exit_info '{}')" ;;
+	esac
 	if rpc select_node '{"section":"main","tag":""}' | grep -q '"ok": true' && ! grep -q "option override" "$MAYHEM_UCI_DIR/mayhem"; then
 		ok "back to automatic"
 	else
