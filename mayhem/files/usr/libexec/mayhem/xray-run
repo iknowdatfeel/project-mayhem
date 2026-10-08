@@ -25,7 +25,12 @@ if [ ! -x "$MAYHEM_XRAY_BIN" ]; then
 	exit 1
 fi
 
-"$MAYHEM_XRAY_BIN" run -c "$MAYHEM_RUN_DIR/xray.json" &
+# What this xray runs with: reloads compare the new config with it.
+for f in xray.json xray.key overrides; do
+	cp "$MAYHEM_RUN_DIR/$f" "$MAYHEM_RUN_DIR/running.$f" 2>/dev/null || : > "$MAYHEM_RUN_DIR/running.$f"
+done
+
+"$MAYHEM_XRAY_BIN" run -c "$MAYHEM_RUN_DIR/running.xray.json" &
 xray_pid=$!
 echo "$xray_pid" > "$MAYHEM_RUN_DIR/xray.pid"
 mayhem_xray_version > "$MAYHEM_RUN_DIR/xray.version" 2>/dev/null

@@ -67,6 +67,14 @@ else
 	bad "plaintext servers: $list"
 fi
 
+# A new server list goes into running xray without a restart: stable tags and
+# a restart key without the servers.
+if out="$(uc "$ROOT/tests/live.uc" 2>&1)"; then
+	ok "new servers: stable tags and restart key"
+else
+	bad "new servers: $out"
+fi
+
 # subscription responses
 sub_check() {
 	# $1 file, $2 jq-free expectation: substring that must appear in the output

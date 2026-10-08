@@ -5,7 +5,7 @@
 'use strict';
 
 import { parse_link, outbound_host, outbound_port, outbound_udp, refused_by_xray } from 'mayhem.links';
-import { is_true, entries, norm_domain, norm_ip, is_ip, dns_server, split_list } from 'mayhem.rules';
+import { is_true, entries, norm_domain, norm_ip, is_ip, dns_server, split_list, list_key } from 'mayhem.rules';
 import { resolve, HEAVY } from 'mayhem.geo';
 import * as C from 'mayhem.const';
 
@@ -559,6 +559,41 @@ function kernel_domains(name, RL, model, warn) {
 }
 
 
+// Tag of a server: section and a hash of its outbound. It stays the same while
+// the server does, whatever the order or the names in the subscription, so a
+// new server list can be applied to running xray server by server.
+function node_tag(section, ob, used) {
+	const body = { ...ob };
+
+	delete body.tag;
+
+	const base = `n-${section}-${substr(list_key(sprintf('%J', body)), 0, 8)}`;
+	let tag = base, k = 1;
+
+	while (used[tag])
+		tag = `${base}-${++k}`;
+
+	used[tag] = true;
+
+	return tag;
+}
+
+// Second-level public suffixes under country domains: example.co.uk, site.com.ru.
+const SLD = [ 'ac', 'co', 'com', 'edu', 'gov', 'net', 'org', 'or', 'ne', 'go', 'mil', 'nom', 'ltd', 'plc', 'msk', 'spb' ];
+
+// The registered domain of a server host: provider.com for nl1.provider.com.
+function base_domain(host) {
+	const l = split(host, '.');
+	const n = length(l);
+
+	if (n <= 2)
+		return host;
+
+	const take = (length(l[n - 1]) == 2 && index(SLD, l[n - 2]) >= 0) ? 3 : 2;
+
+	return join('.', slice(l, n - take));
+}
+
 function memlimit_mib(S, R) {
 	const v = int_opt(S.memlimit, 0, 16, 4096);
 
@@ -587,9 +622,12 @@ export function build(model) {
 	const fakedns = is_true(D.fakedns);
 	const log_level = index(LOG_LEVELS, S.log_level) >= 0 ? S.log_level : 'warning';
 
+	// The first outbound takes traffic that no rule names and traffic routed
+	// to a tag that does not exist (a server being replaced): it is dropped,
+	// never sent direct by mistake.
 	const outbounds = [
-		{ tag: 'direct', protocol: 'freedom', settings: {}, streamSettings: { sockopt: { domainStrategy: F.freedom } } },
-		{ tag: 'block', protocol: 'blackhole', settings: {} }
+		{ tag: 'block', protocol: 'blackhole', settings: {} },
+		{ tag: 'direct', protocol: 'freedom', settings: {}, streamSettings: { sockopt: { domainStrategy: F.freedom } } }
 	];
 
 	const sets = { block4: uset(), block6: uset(), direct4: uset(), direct6: uset() };
@@ -649,7 +687,8 @@ export function build(model) {
 		push(local_inbounds, ib);
 		push(local_rules, { inboundTag: [ ib.tag ], ...target });
 	};
-	const server_hosts = [];
+	const server_hosts = [];		// DoH hosts
+	const node_hosts = [];			// server hosts (or their domains)
 	const block_rules = [];
 	const section_rules = [];
 	const proxy_targets = {};
@@ -708,19 +747,23 @@ export function build(model) {
 
 			const smode = sec.select == 'manual' ? 'manual' : 'auto';
 			const sinfo = { type: 'proxy', mode: length(nodes) > 1 ? smode : 'single', nodes: [] };
+			const used = {};
 
 			for (let i = 0; i < length(nodes); i++) {
 				const ob = nodes[i].outbound;
 				const host = outbound_host(ob);
 
-				ob.tag = `n-${name}-${i}`;
 				apply_sockopt(ob, F.sockopt);
 				apply_mux(ob, S);
+				ob.tag = node_tag(name, ob, used);
 				push(outbounds, ob);
 				push(node_tags, ob.tag);
 
+				// In "everything through proxy" mode a new server of the same
+				// provider must resolve the same way without a restart: the
+				// whole domain of the provider goes to the domestic DNS.
 				if (host && !is_ip(host))
-					uniq_push(server_hosts, `full:${host}`);
+					uniq_push(node_hosts, mode == 'global' ? `domain:${base_domain(host)}` : `full:${host}`);
 
 				push(sinfo.nodes, {
 					tag: ob.tag,
@@ -734,8 +777,11 @@ export function build(model) {
 				});
 			}
 
+			// Even one server goes through a balancer: the routing does not
+			// name servers, so they can change in running xray.
 			if (length(nodes) == 1) {
-				target = { outboundTag: sinfo.nodes[0].tag };
+				push(balancers, { tag: `bal-${name}`, selector: [ `n-${name}-` ], strategy: { type: 'random' } });
+				target = { balancerTag: `bal-${name}` };
 				info.node = sinfo.nodes[0].name;
 			}
 			else {
@@ -770,8 +816,15 @@ export function build(model) {
 					strategy: { type: smode == 'auto' ? 'leastPing' : 'random' }
 				};
 
-				if (smode == 'auto')
-					balancer.fallbackTag = (pick ?? sinfo.nodes[0]).tag;
+				// The fallback (no server checked yet, or none answers) is a
+				// copy of the pinned or first server under a tag of its own:
+				// the balancer stays the same when the servers change.
+				if (smode == 'auto') {
+					const src = filter(outbounds, (o) => o.tag == (pick ?? sinfo.nodes[0]).tag)[0];
+
+					push(outbounds, { ...copy(src), tag: `f-${name}` });
+					balancer.fallbackTag = `f-${name}`;
+				}
 
 				push(balancers, balancer);
 
@@ -988,10 +1041,11 @@ export function build(model) {
 	};
 
 	const servers = [];
+	const host_rules = [ ...server_hosts, ...node_hosts ];
 
-	if (length(server_hosts))
+	if (length(host_rules))
 		for (let d in domestic)
-			push(servers, ns(d, { domains: server_hosts, skipFallback: true }));
+			push(servers, ns(d, { domains: host_rules, skipFallback: true }));
 
 	if (mode == 'lists') {
 		if (length(proxy_domains.items)) {
@@ -1063,13 +1117,14 @@ export function build(model) {
 		push(rules, { inboundTag: [ 'helper-in' ], user: [ `sec-${sn}` ], ...proxy_targets[sn] });
 	}
 
+	// Users of single servers come last, each rule with a tag: when the servers
+	// change, these rules are replaced in running xray.
+	const helper_rules = [];
+
 	for (let t in node_tags) {
 		push(helper_accounts, { user: t, pass: C.HELPER_PASS });
-		push(rules, { inboundTag: [ 'helper-in' ], user: [ t ], outboundTag: t });
+		push(helper_rules, { ruleTag: `h-${t}`, inboundTag: [ 'helper-in' ], user: [ t ], outboundTag: t });
 	}
-
-	if (length(helper_accounts))
-		push(rules, { inboundTag: [ 'helper-in' ], outboundTag: 'direct' });
 
 	push(rules, { inboundTag: [ 'dns-in' ], outboundTag: 'dns-out' });
 
@@ -1111,16 +1166,23 @@ export function build(model) {
 	for (let r in local_rules)
 		push(rules, r);
 
+	// Section rules are for intercepted traffic only, so that helper users
+	// reach their own rules at the end.
+	const intercepted = (r) => ({ inboundTag: [ 'tproxy-in' ], ...r });
+
 	for (let r in block_rules)
-		push(rules, r);
+		push(rules, intercepted(r));
 
 	for (let r in tun_rules)
-		push(rules, r);
+		push(rules, intercepted(r));
 
 	for (let r in section_rules)
-		push(rules, r);
+		push(rules, intercepted(r));
 
-	push(rules, { network: 'tcp,udp', ...final_target });
+	push(rules, intercepted({ network: 'tcp,udp', ...final_target }));
+
+	for (let r in helper_rules)
+		push(rules, r);
 
 	// --- assemble -----------------------------------------------------------
 
@@ -1168,7 +1230,7 @@ export function build(model) {
 		],
 		outbounds: outbounds,
 		routing: { domainStrategy: ip_strategy, rules: rules, balancers: balancers },
-		api: { tag: 'api', listen: `127.0.0.1:${C.API_PORT}`, services: [ 'RoutingService' ] },
+		api: { tag: 'api', listen: `127.0.0.1:${C.API_PORT}`, services: [ 'RoutingService', 'HandlerService' ] },
 		metrics: { tag: 'metrics', listen: `127.0.0.1:${C.METRICS_PORT}` },
 		stats: {},
 		policy: {
@@ -1207,6 +1269,23 @@ export function build(model) {
 	if (length(tunnels) && !nftset)
 		warn('kernel mode needs dnsmasq-full (nftset support): domains of tunnel sections go through xray until it is installed');
 
+	// What running xray cannot change: everything but the servers. procd
+	// restarts xray when this changes; otherwise live.uc swaps the servers in
+	// place. With "only matched lists" a new server host needs nothing from
+	// DNS: names outside the lists go to the domestic DNS anyway.
+	const key = copy(xray);
+
+	key.outbounds = filter(key.outbounds, (o) => !match(o.tag, /^[nf]-/));
+	key.routing.rules = filter(key.routing.rules, (r) => !match(r.ruleTag ?? '', /^h-/));
+
+	for (let ib in key.inbounds)
+		if (ib.tag == 'helper-in')
+			ib.settings.accounts = filter(ib.settings.accounts, (a) => !match(a.user, /^n-/));
+
+	if (mode == 'lists' && length(host_rules))
+		for (let i = 0; i < length(domestic); i++)
+			key.dns.servers[i].domains = server_hosts;
+
 	state.geo_pending = geo_pending;
 	state.lists_missing = lists_missing;
 	state.generated = R.now ?? time();
@@ -1227,6 +1306,7 @@ export function build(model) {
 		// "section device mark table v6" per tunnel section; mark and table are
 		// "-" in xray mode.
 		tunnels: join('', map(tun_all, (t) => `${t.name} ${t.device} ${t.mark} ${t.table} ${t.v6 ? 1 : 0}\n`)),
+		key: key,
 		memlimit_mib: memlimit_mib(S, R),
 		ipv6: v6,
 		state: state,

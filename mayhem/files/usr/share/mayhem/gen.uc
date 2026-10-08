@@ -85,6 +85,8 @@ if (!res.ok) {
 }
 
 put('xray.json', sprintf('%.J\n', res.xray));
+// procd restarts xray when this changes; new servers alone go in live.
+put('xray.key', sprintf('%J\n', res.key));
 put('nft.conf', res.nft);
 put('dnsmasq.conf', res.dnsmasq);
 put('env', `GOMEMLIMIT=${res.memlimit_mib}MiB\nMAYHEM_IPV6=${res.ipv6 ? 1 : 0}\nXRAY_LOCATION_ASSET=${GEO_DIR}\n`);
