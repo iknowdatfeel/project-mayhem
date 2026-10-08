@@ -20,6 +20,15 @@ const FAMILY = {
 
 const SERVICE_PROTOCOLS = [ 'freedom', 'direct', 'blackhole', 'block', 'dns', 'loopback' ];
 
+// dnsmasq asks every query from a new source port, and xray keeps each such
+// UDP session open for connIdle (300 s by default) with a few goroutines:
+// about a thousand idle DNS sessions on a home network, 20-30 MB of RAM.
+// DNS sessions get their own level with a short idle timeout. An answer takes
+// a few seconds at most, and xray closes a session between one and two
+// timeouts after its last packet.
+const DNS_LEVEL = 1;
+const DNS_IDLE = 10;
+
 function int_opt(v, def, min, max) {
 	if (v == null || v == '' || !match(`${v}`, /^-?[0-9]+$/))
 		return def;
@@ -1032,6 +1041,7 @@ export function build(model) {
 		settings: {
 			address: plain.address,
 			port: plain.port ?? 53,
+			userLevel: DNS_LEVEL,
 			rules: [
 				{ action: 'hijack', qType: '1,28' },
 				{ action: 'return', qType: '65', rCode: 0 },
@@ -1153,7 +1163,7 @@ export function build(model) {
 				listen: '127.0.0.1',
 				port: C.DNS_PORT,
 				protocol: 'dokodemo-door',
-				settings: { address: plain.address, port: 53, network: 'tcp,udp' }
+				settings: { address: plain.address, port: 53, network: 'tcp,udp', userLevel: DNS_LEVEL }
 			}
 		],
 		outbounds: outbounds,
@@ -1161,7 +1171,10 @@ export function build(model) {
 		api: { tag: 'api', listen: `127.0.0.1:${C.API_PORT}`, services: [ 'RoutingService' ] },
 		metrics: { tag: 'metrics', listen: `127.0.0.1:${C.METRICS_PORT}` },
 		stats: {},
-		policy: { system: { statsOutboundUplink: true, statsOutboundDownlink: true } }
+		policy: {
+			levels: { '1': { connIdle: DNS_IDLE } },	// '1' is DNS_LEVEL
+			system: { statsOutboundUplink: true, statsOutboundDownlink: true }
+		}
 	};
 
 	if (length(helper_accounts))

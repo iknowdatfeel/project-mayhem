@@ -349,6 +349,26 @@ if start_mayhem "$WORK/global.json"; then
 	expect "exclusion IP -> kernel direct" 192.168.1.2 http://45.0.0.6:8080/
 	expect_dns "exclusion domain -> domestic DNS" client 1.1.1.1 53 gosuslugi.test 45.0.0.2
 	expect_dns "other domain -> remote DNS" client 1.1.1.1 53 anything.test 45.0.0.7
+
+	# Every query comes from a new port, like dnsmasq's: each is a DNS session
+	# in xray that has to go away soon after its answer, not after 5 minutes.
+	dns_sessions() {
+		ip netns exec router curl -s '127.0.0.1:12781/debug/pprof/goroutine?debug=1' |
+			awk '/^[0-9]+ @/ { n = $1 } /proxy\/dns\.\(\*outboundConn\)\.Read/ { s += n } END { print s + 0 }'
+	}
+	i=0
+	while [ "$i" -lt 40 ]; do dns router 127.0.0.1 12753 "q$i.test" >/dev/null; i=$((i + 1)); done
+	open="$(dns_sessions)"
+	waited=0
+	while [ "$waited" -lt 30 ] && [ "$(dns_sessions)" -gt 5 ]; do sleep 5; waited=$((waited + 5)); done
+	left="$(dns_sessions)"
+	if [ "$open" -lt 30 ]; then
+		bad "DNS sessions are not counted: $open open after 40 queries"
+	elif [ "$left" -le 5 ]; then
+		ok "DNS sessions close after their answer ($open -> $left in $waited s)"
+	else
+		bad "DNS sessions pile up: $left of $open still open $waited s after 40 queries"
+	fi
 fi
 stop_mayhem
 
