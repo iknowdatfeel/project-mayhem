@@ -79,7 +79,6 @@ return baseclass.extend({
 		});
 		const file = E('input', { 'type': 'file', 'accept': '.conf,.txt' });
 		const label = E('input', { 'class': 'cbi-input-text', 'placeholder': _('For example, Netherlands') });
-		const pool = E('input', { 'type': 'checkbox', 'checked': '' });
 		const section = E('input', { 'type': 'checkbox' });
 
 		file.addEventListener('change', () => {
@@ -99,7 +98,7 @@ return baseclass.extend({
 
 			const conf = vpnkey.isKey(raw) ? vpnkey.decode(raw) : Promise.resolve(raw);
 
-			return conf.then((c) => callImport(name.value, c, section.checked, pool.checked, label.value.trim())).then((r) => {
+			return conf.then((c) => callImport(name.value, c, section.checked, true, label.value.trim())).then((r) => {
 				if (r.error) {
 					ui.addNotification(null, E('p', r.error), 'error');
 					return;
@@ -120,7 +119,6 @@ return baseclass.extend({
 			E('div', { 'class': 'cbi-value' }, [ E('label', { 'class': 'cbi-value-title' }, _('Interface name')), E('div', { 'class': 'cbi-value-field' }, name) ]),
 			E('div', { 'class': 'cbi-value' }, [ E('label', { 'class': 'cbi-value-title' }, _('Config or key')), E('div', { 'class': 'cbi-value-field' }, [ text, E('br'), file ]) ]),
 			E('div', { 'class': 'cbi-value' }, [ E('label', { 'class': 'cbi-value-title' }, _('Tunnel name')), E('div', { 'class': 'cbi-value-field' }, label) ]),
-			E('div', { 'class': 'cbi-value' }, [ E('label', { 'class': 'cbi-value-title' }, _('In the server list')), E('div', { 'class': 'cbi-value-field' }, pool) ]),
 			E('div', { 'class': 'cbi-value' }, [ E('label', { 'class': 'cbi-value-title' }, _('Create a routing section')), E('div', { 'class': 'cbi-value-field' }, [ section, ' ',
 				E('span', { 'class': 'mh-muted' }, _('Only to route chosen sites into this tunnel; to use it for all traffic, choose it on the dashboard instead.')) ]) ]),
 			E('div', { 'class': 'right' }, [
@@ -187,31 +185,12 @@ return baseclass.extend({
 				E('button', { 'class': 'btn cbi-button', 'click': ui.createHandlerFn(this, 'install', 'protos') }, _('Restart the network'))
 			]));
 
-		if (kernel && info.nftset === false)
-			notes.push(E('p', { 'class': 'mh-warn' }, [
-				_('Tunnel sections in kernel mode need dnsmasq-full: until it is installed, their domains go through Xray.'), ' ',
+		if (info.nftset === false)
+			notes.push(E('p', { 'class': kernel ? 'mh-warn' : '' }, [
+				kernel ? _('Tunnel sections in kernel mode need dnsmasq-full: until it is installed, their domains go through Xray.')
+					: _('dnsmasq-full is needed only for tunnel sections in kernel mode; tunnels in the server list work without it.'), ' ',
 				E('button', { 'class': 'btn cbi-button', 'click': ui.createHandlerFn(this, 'install', 'dnsmasq') }, _('Install dnsmasq-full'))
 			]));
-
-		// A tunnel can be a server of the server list: then it is chosen on
-		// the dashboard like any other server. Saved with the page.
-		const inPool = () => L.toArray(uci.get('mayhem', 'pool', 'iface_node'));
-		const poolBox = (iface) => E('input', {
-			'type': 'checkbox',
-			'title': _('In the server list'),
-			'checked': inPool().indexOf(iface) >= 0 ? '' : null,
-			'change': (ev) => {
-				if (!uci.get('mayhem', 'pool'))
-					uci.add('mayhem', 'pool', 'pool');
-
-				const list = inPool().filter((n) => n !== iface);
-
-				if (ev.target.checked)
-					list.push(iface);
-
-				uci.set('mayhem', 'pool', 'iface_node', list.length ? list : null);
-			}
-		});
 
 		// The name shown on the dashboard and in the server list; saved with
 		// the page.
@@ -235,21 +214,19 @@ return baseclass.extend({
 				E('button', { 'class': 'btn cbi-button', 'title': _('Rename the interface'), 'click': ui.createHandlerFn(this, 'renameDialog', t.name) }, '✎') ]),
 			E('td', { 'class': 'td' }, NAMES[t.proto] || t.proto),
 			E('td', { 'class': 'td' }, t.up ? E('span', { 'class': 'mh-ok' }, '✔ ' + _('Works')) : E('span', { 'class': 'mh-fail' }, '✘ ' + _('Does not work'))),
-			E('td', { 'class': 'td' }, usedBy(t.name).join(', ') || E('span', { 'class': 'mh-muted' }, _('Not used'))),
-			E('td', { 'class': 'td' }, poolBox(t.name))
+			E('td', { 'class': 'td' }, usedBy(t.name).join(', ') || E('span', { 'class': 'mh-muted' }, _('Not used')))
 		]));
 
 		return E('div', Object.assign({ 'class': 'cbi-section' }, attrs || {}), [
 			E('div', { 'class': 'cbi-section-descr' },
 				_('A tunnel is a network interface: AmneziaWG, WireGuard, OpenVPN or another one. A tunnel section sends its traffic into it, and a proxy section can use it as one of its servers.')),
 			E('div', { 'class': 'cbi-section-descr' },
-				_('A tunnel marked "In the server list" becomes one of its servers: it can be chosen on the dashboard or win the automatic choice by ping. Its traffic goes through Xray.')),
+				_('Every tunnel is also a server of the server list: choose it on the dashboard like any other server, or let the automatic choice by ping take it.')),
 			...notes,
 			rows.length ? E('table', { 'class': 'table' }, [
 				E('tr', { 'class': 'tr table-titles' }, [
 					E('th', { 'class': 'th' }, _('Tunnel name')), E('th', { 'class': 'th' }, _('Interface')), E('th', { 'class': 'th' }, _('Protocol')),
-					E('th', { 'class': 'th' }, _('State')), E('th', { 'class': 'th' }, _('Sections')),
-					E('th', { 'class': 'th' }, _('In the server list'))
+					E('th', { 'class': 'th' }, _('State')), E('th', { 'class': 'th' }, _('Sections'))
 				])
 			].concat(rows)) : E('p', { 'class': 'mh-muted' }, _('No tunnels yet.')),
 			E('button', { 'class': 'btn cbi-button-add', 'click': ui.createHandlerFn(this, 'importDialog', info) }, _('Import AmneziaWG / WireGuard…'))

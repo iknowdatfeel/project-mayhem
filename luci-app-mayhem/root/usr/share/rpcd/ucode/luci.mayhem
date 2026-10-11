@@ -258,6 +258,75 @@ function tunnel_state(name, device) {
 	return { state: st != '' ? st : null, handshake: hs };
 }
 
+function try_link_name(link) {
+	try {
+		return parse_link(link).name;
+	}
+	catch (e) {
+		return null;
+	}
+}
+
+function uri_escape(s) {
+	let out = '';
+
+	for (let i = 0; i < length(s); i++) {
+		const c = ord(s, i);
+
+		out += (match(chr(c), /[A-Za-z0-9._~-]/) ? chr(c) : sprintf('%%%02X', c));
+	}
+
+	return out;
+}
+
+// The key with a new name: the part after "#", or "ps" inside a vmess key.
+// null when the key keeps its name elsewhere.
+function rename_link(link, name) {
+	let out = null;
+
+	if (match(link, /^vmess:\/\/[A-Za-z0-9+\/=_-]+$/)) {
+		try {
+			const j = json(b64dec(replace(replace(substr(link, 8), '-', '+'), '_', '/')));
+
+			j.ps = name;
+			out = 'vmess://' + b64enc(sprintf('%J', j));
+		}
+		catch (e) {
+			out = null;
+		}
+	}
+	else {
+		const h = index(link, '#');
+
+		out = (h >= 0 ? substr(link, 0, h) : link) + '#' + uri_escape(name);
+	}
+
+	return (out != null && try_link_name(out) == name) ? out : null;
+}
+
+// A host to reach through a tunnel for its checks: answers TCP on port 80
+// and ICMP from anywhere.
+const TUNNEL_PROBE_URL = 'http://1.1.1.1/';
+const TUNNEL_PING_HOST = '1.1.1.1';
+
+// The server of a tunnel: the endpoint of its first peer.
+function tunnel_endpoint(iface) {
+	const c = require('uci').cursor(C.UCI_DIR);
+	let ep = null;
+
+	if (!c.load('network'))
+		return null;
+
+	const proto = c.get('network', iface, 'proto');
+
+	if (proto)
+		c.foreach('network', `${proto}_${iface}`, (p) => {
+			ep ??= p.endpoint_host;
+		});
+
+	return (ep && match(ep, /^[A-Za-z0-9.:_-]+$/)) ? ep : null;
+}
+
 function find_node(state, tag) {
 	for (let sn in keys(state?.sections ?? {}))
 		for (let n in state.sections[sn].nodes ?? [])
@@ -1080,7 +1149,7 @@ const methods = {
 
 					push(nodes, {
 						tag: n.tag, name: n.name, protocol: n.protocol, address: n.address,
-						port: n.port, udp: n.udp, source: n.source,
+						port: n.port, udp: n.udp, source: n.source, iface: n.iface, tproto: n.tproto,
 						delay: o ? o.delay : null, alive: o ? o.alive : null,
 						up: t.uplink ?? 0, down: t.downlink ?? 0
 					});
@@ -1091,6 +1160,21 @@ const methods = {
 					active: s.type == 'proxy' ? active_tag(s, m.observatory) : null,
 					pinned: s.override ?? null, nodes: nodes, traffic: traffic
 				};
+
+				// A tunnel chosen among the section's servers carries the rest
+				// of the traffic in the kernel: its interface counts it.
+				if (s.kernel) {
+					const kn = filter(s.nodes ?? [], (n) => n.iface == s.kernel)[0];
+					const dev = kn?.device ?? s.kernel;
+
+					if (match(dev, /^[A-Za-z0-9_.@-]+$/)) {
+						const b = (f) => +trim(fs.readfile(`${SYS_NET}/${dev}/statistics/${f}`) ?? '0') || 0;
+
+						sec.kernel = s.kernel;
+						totals.all.up += b('tx_bytes');
+						totals.all.down += b('rx_bytes');
+					}
+				}
 
 				if (s.type == 'interface') {
 					sec.interface = s.interface;
@@ -1203,6 +1287,33 @@ const methods = {
 			c.commit('mayhem');
 			write_json(`${RUN}/nodes.json`, state);
 
+			// The choice for the next start of xray as well.
+			for (let f in [ 'overrides', 'running.overrides' ]) {
+				const lines = filter(split(fs.readfile(`${RUN}/${f}`) ?? '', '\n'),
+					(l) => l != '' && split(l, ' ')[0] != s.balancer);
+
+				if (tag != '')
+					push(lines, `${s.balancer} ${tag}`);
+
+				fs.writefile(`${RUN}/${f}.tmp`, length(lines) ? join('\n', lines) + '\n' : '');
+				fs.rename(`${RUN}/${f}.tmp`, `${RUN}/${f}`);
+			}
+
+			// A tunnel of the main section takes the rest of the traffic in
+			// the kernel: choosing it, or leaving it, changes the kernel rules,
+			// and procd restarts xray with them.
+			if (sn == state.default_section && state.mode == 'global' && (node?.iface || s.kernel))
+				system('/etc/init.d/mayhem reload >/dev/null 2>&1 &');
+			// A server chosen by hand: open connections stay with the old one
+			// until they close, so xray is restarted under the same rules and
+			// apps reconnect through the new server at once.
+			else if (tag != '') {
+				const rp = trim(fs.readfile(`${RUN}/xray-run.pid`) ?? '');
+
+				if (match(rp, /^[0-9]+$/))
+					system(`kill -HUP ${rp} 2>/dev/null`);
+			}
+
 			return { ok: true };
 		}
 	},
@@ -1218,11 +1329,38 @@ const methods = {
 
 			const n = f.node;
 			const addr = n.address ?? '';
+			let out, m;
+
+			// A tunnel has no address or TCP port of its own: ICMP pings its
+			// server (the peer's endpoint), or through the tunnel when the
+			// server does not answer; TCP times a connection through it.
+			if (n.iface && req.args?.method != 'url') {
+				const dev = n.device ?? n.iface;
+
+				if (!match(dev, /^[A-Za-z0-9_.@-]+$/))
+					return { error: 'no interface' };
+
+				if (req.args?.method == 'tcp') {
+					out = trim(run(`curl -s -o /dev/null --interface ${q(dev)} --connect-timeout 5 -m 6 -w '%{time_connect}' ${q(TUNNEL_PROBE_URL)}`) ?? '');
+
+					return (out != '' && out * 1 > 0) ? { ms: int(out * 1000) } : { error: 'no connection' };
+				}
+
+				const ep = tunnel_endpoint(n.iface);
+
+				out = (ep ? run(`ping -c 1 -W 3 ${q(ep)} 2>&1`) : '') ?? '';
+				m = match(out, /time=([0-9.]+)/);
+
+				if (!m) {
+					out = run(`ping -c 1 -W 3 -I ${q(dev)} ${TUNNEL_PING_HOST} 2>&1`) ?? '';
+					m = match(out, /time=([0-9.]+)/);
+				}
+
+				return m ? { ms: int(m[1] * 1) || 1 } : { error: 'no reply' };
+			}
 
 			if (req.args?.method != 'url' && !match(addr, /^[A-Za-z0-9.:_-]+$/))
 				return { error: 'no address' };
-
-			let out, m;
 
 			switch (req.args?.method) {
 			case 'tcp':
@@ -1524,21 +1662,19 @@ const methods = {
 
 			c.set('firewall', zone, 'network', [ ...(type(nets) == 'array' ? nets : [ nets ]), name ]);
 
-			// A tunnel is a server of the server list unless asked otherwise:
-			// it is chosen on the dashboard like any other server.
-			if (req.args?.pool !== false) {
-				if (c.get('mayhem', 'pool') == null)
-					c.set('mayhem', 'pool', 'pool');
-
-				const nodes = c.get('mayhem', 'pool', 'iface_node') ?? [];
-
-				c.set('mayhem', 'pool', 'iface_node', [ ...(type(nodes) == 'array' ? nodes : [ nodes ]), name ]);
+			// Every tunnel is a server of the server list (chosen on the
+			// dashboard like any other server); this one may opt out.
+			if (req.args?.pool === false) {
+				c.set('mayhem', name, 'tunnel');
+				c.set('mayhem', name, 'server', '0');
 			}
 
 			const label = trim(req.args?.label ?? '');
 
 			if (label != '') {
-				c.set('mayhem', name, 'tunnel');
+				if (c.get('mayhem', name) == null)
+					c.set('mayhem', name, 'tunnel');
+
 				c.set('mayhem', name, 'label', label);
 			}
 
@@ -1564,6 +1700,87 @@ const methods = {
 			system(`(/etc/init.d/network reload; /etc/init.d/firewall reload; /etc/init.d/mayhem reload) >/dev/null 2>&1 &`);
 
 			return { ok: true, interface: name, proto: proto, section: section, pool: req.args?.pool !== false, v6: cfg.v6 };
+		}
+	},
+
+	// Renames a server: a key by the name in the key itself, a subscription
+	// server by an alias kept with the subscription, a tunnel by its name.
+	// The dashboard names it by section and tag, the key list by the key.
+	rename_server: {
+		args: { section: '', tag: '', link: '', name: '' },
+		call: function(req) {
+			const name = trim(req.args?.name ?? '');
+
+			if (name == '' || length(name) > 64 || match(name, /[\t\n\r]/))
+				return { error: 'the name must have 1 to 64 characters on one line' };
+
+			const c = uci_cursor();
+			let sec = req.args?.section ?? '', link = req.args?.link ?? '', old = null;
+			let node = null;
+
+			if (link == '') {
+				const f = find_node(read_json(`${RUN}/nodes.json`), req.args?.tag ?? '');
+
+				if (!f || f.section != sec)
+					return { error: 'unknown server' };
+
+				node = f.node;
+				old = node.name;
+			}
+			else
+				sec = 'pool';
+
+			const usec = sec;
+
+			if (node?.iface) {
+				if (c.get('mayhem', node.iface) == null)
+					c.set('mayhem', node.iface, 'tunnel');
+
+				c.set('mayhem', node.iface, 'label', name);
+			}
+			else if (node && node.source != 'link' && node.source != 'json') {
+				if (c.get('mayhem', node.source) != 'subscription')
+					return { error: 'this server cannot be renamed' };
+
+				const orig = node.orig ?? node.name;
+				const list = filter(c.get('mayhem', node.source, 'alias') ?? [], (a) => substr(a, 0, length(orig) + 1) != `${orig}\t`);
+
+				push(list, `${orig}\t${name}`);
+				c.set('mayhem', node.source, 'alias', list);
+			}
+			else {
+				const links = c.get('mayhem', usec, 'link') ?? [];
+				const all = type(links) == 'array' ? links : [ links ];
+				let i = -1;
+
+				for (let k = 0; k < length(all) && i < 0; k++) {
+					if (link != '' ? all[k] == link : (try_link_name(all[k]) == old))
+						i = k;
+				}
+
+				if (i < 0)
+					return { error: node?.source == 'json' ? 'a JSON server is renamed in its JSON' : 'the server key was not found' };
+
+				old ??= try_link_name(all[i]);
+
+				const renamed = rename_link(all[i], name);
+
+				if (!renamed)
+					return { error: 'this key has no place for a name' };
+
+				all[i] = renamed;
+				c.set('mayhem', usec, 'link', all);
+			}
+
+			// The chosen or pinned server keeps being chosen.
+			for (let k in [ 'selected', 'override' ])
+				if (old != null && c.get('mayhem', usec, k) == old)
+					c.set('mayhem', usec, k, name);
+
+			c.commit('mayhem');
+			system('/etc/init.d/mayhem reload >/dev/null 2>&1 &');
+
+			return { ok: true, name: name };
 		}
 	},
 

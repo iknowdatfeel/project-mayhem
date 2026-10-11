@@ -85,10 +85,6 @@ msgstr ""
 msgid "A tunnel is a network interface: AmneziaWG, WireGuard, OpenVPN or another one. A tunnel section sends its traffic into it, and a proxy section can use it as one of its servers."
 msgstr ""
 
-#: htdocs/luci-static/resources/mayhem/tunnels.js
-msgid "A tunnel marked \"In the server list\" becomes one of its servers: it can be chosen on the dashboard or win the automatic choice by ping. Its traffic goes through Xray."
-msgstr ""
-
 #: htdocs/luci-static/resources/view/mayhem/sections.js
 msgid "Active server of the server list"
 msgstr ""
@@ -485,6 +481,10 @@ msgstr ""
 msgid "Every setting of Mayhem goes back to how it was after installation: sections, rules, DNS, geo sources. Xray restarts."
 msgstr ""
 
+#: htdocs/luci-static/resources/mayhem/tunnels.js
+msgid "Every tunnel is also a server of the server list: choose it on the dashboard like any other server, or let the automatic choice by ping take it."
+msgstr ""
+
 #: htdocs/luci-static/resources/mayhem/diag.js
 msgid "Everything"
 msgstr ""
@@ -623,10 +623,6 @@ msgstr ""
 
 #: htdocs/luci-static/resources/view/mayhem/sections.js
 msgid "In sections a category is written as geosite:category or geosite:source:category. When several sources have the category, it is taken from the one higher in this list."
-msgstr ""
-
-#: htdocs/luci-static/resources/mayhem/tunnels.js
-msgid "In the server list"
 msgstr ""
 
 #: htdocs/luci-static/resources/view/mayhem/dashboard.js
@@ -1057,6 +1053,10 @@ msgstr ""
 msgid "Rename the interface %s"
 msgstr ""
 
+#: htdocs/luci-static/resources/view/mayhem/dashboard.js
+msgid "Rename the server"
+msgstr ""
+
 #: htdocs/luci-static/resources/view/mayhem/settings.js
 msgid "Reset settings"
 msgstr ""
@@ -1321,8 +1321,20 @@ msgstr ""
 msgid "The name \"pool\" is taken by the server list"
 msgstr ""
 
+#: htdocs/luci-static/resources/view/mayhem/dashboard.js
+msgid "The name is kept for this server of the subscription and survives its updates."
+msgstr ""
+
+#: htdocs/luci-static/resources/view/mayhem/dashboard.js
+msgid "The name is saved in the server key."
+msgstr ""
+
 #: htdocs/luci-static/resources/view/mayhem/sections.js
 msgid "The name may only contain letters, digits and _"
+msgstr ""
+
+#: htdocs/luci-static/resources/view/mayhem/dashboard.js
+msgid "The name of tunnel %s."
 msgstr ""
 
 #: htdocs/luci-static/resources/view/mayhem/sections.js
@@ -1583,6 +1595,10 @@ msgstr ""
 
 #: htdocs/luci-static/resources/view/mayhem/dashboard.js
 msgid "automatic"
+msgstr ""
+
+#: htdocs/luci-static/resources/mayhem/tunnels.js
+msgid "dnsmasq-full is needed only for tunnel sections in kernel mode; tunnels in the server list work without it."
 msgstr ""
 
 #: htdocs/luci-static/resources/view/mayhem/sections.js

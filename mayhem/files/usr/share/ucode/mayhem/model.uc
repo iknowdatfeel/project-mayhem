@@ -57,6 +57,9 @@ function command(cmd) {
 // State of the network interfaces that tunnel sections use (netifd names).
 function ifaces(names) {
 	const out = {};
+	const net = cursor(UCI_DIR);
+	const has_net = net.load('network');
+	const proto = (n) => has_net ? net.get('network', n, 'proto') : null;
 
 	for (let n in names) {
 		if (!match(n, /^[A-Za-z0-9_.-]+$/))
@@ -73,14 +76,16 @@ function ifaces(names) {
 
 		if (type(st) != 'object') {
 			// Not a netifd interface: maybe a plain device name.
-			out[n] = { device: n, up: access(`/sys/class/net/${n}`) == true, v6: false };
+			out[n] = { device: n, up: access(`/sys/class/net/${n}`) == true, v6: false, proto: proto(n) };
 			continue;
 		}
 
 		out[n] = {
 			device: st.l3_device ?? st.device ?? n,
 			up: st.up == true,
-			v6: length(st['ipv6-address'] ?? []) > 0
+			v6: length(st['ipv6-address'] ?? []) > 0,
+			// From the config: a protocol netifd has not loaded runs as "none".
+			proto: proto(n) ?? st.proto
 		};
 	}
 
@@ -341,6 +346,33 @@ function own_servers(s) {
 // The server list as a proxy section of its own, first, without rules: the
 // servers added by key, those of every enabled subscription and the tunnels
 // chosen to be servers too.
+// Protocols of network interfaces that are tunnels to somewhere else.
+const TUNNEL_PROTOS = [ 'amneziawg', 'wireguard', 'openvpn', 'openconnect', 'vpnc', 'l2tp', 'pptp' ];
+
+// Every tunnel interface is a server of the server list, unless its
+// "config tunnel '<interface>'" says "option server '0'"; plus any named in
+// the list's own iface_node.
+function pool_tunnels(c, p) {
+	const out = [];
+	const add = (n) => {
+		if (index(out, n) < 0 && c.get('mayhem', n, 'server') != '0')
+			push(out, n);
+	};
+
+	const net = cursor(UCI_DIR);
+
+	if (net.load('network'))
+		net.foreach('network', 'interface', (i) => {
+			if (index(TUNNEL_PROTOS, i.proto) >= 0 && i.disabled != '1')
+				add(i['.name']);
+		});
+
+	for (let n in entries(p.iface_node))
+		add(n);
+
+	return out;
+}
+
 function pool_section(c) {
 	const p = c.get_all('mayhem', 'pool');
 
@@ -356,7 +388,7 @@ function pool_section(c) {
 
 	return {
 		'.name': 'pool', '.type': 'pool', type: 'proxy', enabled: '1', pool: true,
-		link: p.link, subscription: subs, iface_node: p.iface_node,
+		link: p.link, subscription: subs, iface_node: pool_tunnels(c, p),
 		select: p.select, selected: p.selected, override: p.override
 	};
 }
@@ -380,6 +412,20 @@ function load_model() {
 			s = { ...s, use_pool: true };
 
 		push(sections, s);
+	});
+
+	// Servers of a subscription the user renamed: "original<TAB>new name".
+	const aliases = {};
+
+	c.foreach('mayhem', 'subscription', (s) => {
+		for (let a in entries(s.alias)) {
+			const i = index(a, '\t');
+
+			if (i > 0) {
+				aliases[s['.name']] ??= {};
+				aliases[s['.name']][substr(a, 0, i)] = substr(a, i + 1);
+			}
+		}
 	});
 
 	// Downloaded subscriptions, keyed by the subscription section name.
@@ -421,6 +467,7 @@ function load_model() {
 		lists: lists(sections),
 		settings: settings,
 		tunnel_labels: tunnel_labels,
+		aliases: aliases,
 		dns: c.get_all('mayhem', 'dns') ?? {},
 		sections: sections,
 		runtime: runtime(sections)

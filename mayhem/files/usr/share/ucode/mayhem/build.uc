@@ -364,7 +364,8 @@ function iface_info(model, iface) {
 	return {
 		device: r?.device ?? iface,
 		up: r ? r.up !== false : true,
-		v6: r?.v6 === true
+		v6: r?.v6 === true,
+		proto: r?.proto ?? null
 	};
 }
 
@@ -422,7 +423,7 @@ function collect_nodes(sec, model, warn) {
 
 		push(nodes, {
 			name: model.tunnel_labels?.[iface] ?? iface, outbound: iface_outbound(null, inf.device, inf.v6 ? null : 'ForceIPv4'),
-			source: 'interface', iface: iface
+			source: 'interface', iface: iface, tproto: inf.proto, device: inf.device
 		});
 	}
 
@@ -446,7 +447,8 @@ function collect_nodes(sec, model, warn) {
 			try {
 				const ob = node.outbound ? copy(node.outbound) : parse_link(node.link).outbound;
 
-				push(nodes, { name: nn, outbound: ob, source: sub });
+				// Filters see the provider's name; the user's name is shown.
+				push(nodes, { name: model.aliases?.[sub]?.[nn] ?? nn, orig: nn, outbound: ob, source: sub });
 			}
 			catch (e) {
 				warn(`${label}: server "${nn}" from "${sub}": ${e.message}; skipped`);
@@ -887,7 +889,10 @@ export function build(model) {
 					port: outbound_port(ob),
 					udp: outbound_udp(ob),
 					source: nodes[i].source,
-					iface: nodes[i].iface
+					iface: nodes[i].iface,
+					tproto: nodes[i].tproto,
+					device: nodes[i].device,
+					orig: nodes[i].orig
 				});
 			}
 
@@ -902,7 +907,7 @@ export function build(model) {
 				const bal = `bal-${name}`;
 				// A tunnel is also found by its interface: renaming it keeps the choice.
 				const byname = (n) => filter(sinfo.nodes, (x) => x.name == n)[0] ??
-					filter(sinfo.nodes, (x) => x.iface != null && x.iface == n)[0];
+					filter(sinfo.nodes, (x) => (x.iface != null && x.iface == n) || (x.orig != null && x.orig == n))[0];
 				let pick = null;
 
 				if (smode == 'manual') {
@@ -1110,6 +1115,32 @@ export function build(model) {
 			final_target = default_target;
 		else
 			fail('the rest of the traffic needs a server: add one or a subscription on the Server list page, or turn "The rest of the traffic through the tunnel" off');
+	}
+
+	// A tunnel chosen by hand among the servers of the main section takes
+	// the rest of the traffic in the kernel as well: xray then carries only
+	// what the rules send to it, and keeps far less memory. The watchdog
+	// sets its route and leaves the balancer (and the choice) alone.
+	if (mode == 'global' && default_name && !iface_targets[default_name]) {
+		const ds = state.sections[default_name];
+		const pick = ds?.selected ?? ds?.override;
+		const n = pick ? filter(ds.nodes ?? [], (x) => x.tag == pick)[0] : null;
+
+		if (n?.iface && R.dnsmasq_nftset === false)
+			warn(`tunnel ${n.iface} carries the rest of the traffic through xray; with dnsmasq-full it would go in the kernel and xray would need far less memory`);
+		else if (n?.iface) {
+			const inf = iface_info(model, n.iface);
+
+			if (++tun_index > C.TUN_MAX)
+				warn(`tunnel ${n.iface}: at most ${C.TUN_MAX} tunnels can work in kernel mode, it works through xray`);
+			else {
+				const t = { name: default_name, index: tun_index, device: inf.device, v6: v6 && inf.v6, ip4: [], ip6: [], domains: [] };
+
+				push(tunnels, t);
+				push(tun_all, { name: default_name, device: inf.device, mark: tun_mark(t.index), table: C.TUN_TABLE + t.index, v6: t.v6, keep_bal: true });
+				ds.kernel = n.iface;
+			}
+		}
 	}
 
 	// Without nftset support in dnsmasq, kernel sections only get the
@@ -1504,7 +1535,7 @@ export function build(model) {
 				nftset_lines(kdef.pxd, 'px_d4', 'px_d6') : ''),
 		// "section device mark table v6" per tunnel section; mark and table are
 		// "-" in xray mode.
-		tunnels: join('', map(tun_all, (t) => `${t.name} ${t.device} ${t.mark} ${t.table} ${t.v6 ? 1 : 0}\n`)),
+		tunnels: join('', map(tun_all, (t) => `${t.name} ${t.device} ${t.mark} ${t.table} ${t.v6 ? 1 : 0}${t.keep_bal ? ' 0' : ''}\n`)),
 		key: key,
 		memlimit_mib: memlimit_mib(S, R),
 		ipv6: v6,
