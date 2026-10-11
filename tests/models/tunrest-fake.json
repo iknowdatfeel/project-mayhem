@@ -1,0 +1,77 @@
+{
+  "settings": {
+    "mode": "global",
+    "default_section": "awg",
+    "interface": [
+      "br-lan"
+    ],
+    "ip_family": "prefer_ipv4",
+    "torrent_direct": "1"
+  },
+  "dns": {
+    "remote": [
+      "https://1.1.1.1/dns-query"
+    ],
+    "fakedns": "1"
+  },
+  "sections": [
+    {
+      ".name": "ru",
+      "type": "exclusion",
+      "enabled": "1",
+      "domain": [
+        "ru.test",
+        "domain:yandex.test"
+      ],
+      "ip": [
+        "5.0.0.0/8",
+        "2a00:1::/32"
+      ]
+    },
+    {
+      ".name": "ads",
+      "type": "block",
+      "enabled": "1",
+      "domain": [
+        "ads.test"
+      ]
+    },
+    {
+      ".name": "vless",
+      "type": "proxy",
+      "enabled": "1",
+      "select": "auto",
+      "link": [
+        "trojan://pw@de.example:443?sni=de.example#DE"
+      ],
+      "domain": [
+        "instagram.com",
+        "keyword:insta"
+      ],
+      "ip": [
+        "149.154.160.0/20"
+      ]
+    },
+    {
+      ".name": "awg",
+      "type": "interface",
+      "enabled": "1",
+      "interface": "awg0"
+    }
+  ],
+  "runtime": {
+    "wan_dns": [
+      "192.168.1.1"
+    ],
+    "ipv6": true,
+    "mem_total_kb": 262144,
+    "dnsmasq_nftset": true,
+    "ifaces": {
+      "awg0": {
+        "device": "awg0",
+        "up": true,
+        "v6": false
+      }
+    }
+  }
+}

@@ -890,6 +890,67 @@ else
 	ok "tunnel rules removed on stop"
 fi
 
+echo "== the rest of the traffic into a kernel tunnel"
+
+cat > "$MAYHEM_UCI_DIR/mayhem" <<EOF
+config settings 'settings'
+	option enabled '1'
+	option mode 'global'
+	option default_section 'awg'
+	list interface 'br-lan'
+	option ip_family 'ipv4_only'
+
+config dns 'dns'
+	list domestic '45.0.0.2'
+	list remote '45.0.0.4'
+	option hijack '1'
+
+config section 'ru'
+	option type 'exclusion'
+	list ip '45.0.0.6/32'
+	list domain 'excl.test'
+
+config section 'px'
+	option type 'proxy'
+	list link '$SS_LINK_A'
+	list domain 'prox.test'
+
+config section 'awg'
+	option type 'interface'
+	option interface 'tun0'
+	option route_mode 'kernel'
+EOF
+
+rest_hits() {
+	ip netns exec router nft list chain inet mayhem prerouting 2>/dev/null |
+		sed -n 's/.*meta nfproto ipv4 meta mark set .* | 0x0*4000001 counter packets \([0-9]*\).*/\1/p'
+}
+
+if start_mayhem uci; then
+	expect "excluded subnet -> kernel direct" 192.168.1.2 http://45.0.0.6:8080/
+	before="$(rest_hits)"
+	expect "any other address -> tunnel" 45.0.1.1 http://45.0.0.7:8080/
+	if [ "$(rest_hits)" -gt "${before:-0}" ] 2>/dev/null; then
+		ok "the rest goes into the tunnel in the kernel, past xray"
+	else
+		bad "the kernel rule for the rest did not count the packets: $before -> $(rest_hits)"
+	fi
+	expect_dns "excluded domain -> domestic DNS through dnsmasq" client 192.168.1.1 53 excl.test 45.0.0.2
+	expect "address of an excluded domain -> kernel direct" 192.168.1.2 http://45.0.0.2:8080/
+	expect_dns "proxy domain -> remote DNS through dnsmasq" client 192.168.1.1 53 prox.test 45.0.0.7
+	expect "proxy section still goes through xray" 45.0.0.3 -H 'Host: prox.test' http://45.0.0.7:8080/
+
+	ip -n router link set tun0 down
+	tunnels_check
+	expect "tunnel down: the rest goes direct" 192.168.1.2 http://45.0.0.8:8080/
+	ip -n router link set tun0 up
+	ip -n router addr add 10.99.0.1/24 dev tun0 2>/dev/null
+	sleep 1
+	tunnels_check
+	expect "tunnel back: the rest goes into it again" 45.0.1.1 http://45.0.0.8:8080/
+fi
+stop_mayhem
+
 echo "== watchdog"
 if start_mayhem uci; then
 	for i in 1 2; do

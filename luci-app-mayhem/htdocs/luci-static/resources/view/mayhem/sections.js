@@ -302,9 +302,15 @@ return view.extend({
 		// The active server is chosen on the dashboard; here it is shown.
 		const now = mh.mainServerText(dash);
 
+		// A kernel tunnel as the main section takes the rest in the kernel.
+		const mainSec = uci.get('mayhem', 'settings', 'default_section');
+		const kernelMain = mainSec && uci.get('mayhem', mainSec, 'type') === 'interface' &&
+			(uci.get('mayhem', mainSec, 'route_mode') || 'kernel') === 'kernel';
+
 		o = s.option(form.Flag, 'mode', _('The rest of the traffic through the tunnel'),
-			now ? _('Traffic that matches no rule goes through the active server, now %s. When this is off, it goes direct.').format(now)
-				: _('Traffic that matches no rule goes through the active server. When this is off, it goes direct.'));
+			(now ? _('Traffic that matches no rule goes through the active server, now %s. When this is off, it goes direct.').format(now)
+				: _('Traffic that matches no rule goes through the active server. When this is off, it goes direct.')) +
+			(kernelMain ? ' ' + _('The main section is a tunnel in kernel mode: the rest goes into it in the kernel, past Xray. Exclusions and proxy sections by domain need dnsmasq-full; torrents go into the tunnel too.') : ''));
 		o.enabled = 'global';
 		o.disabled = 'lists';
 		o.default = 'lists';
