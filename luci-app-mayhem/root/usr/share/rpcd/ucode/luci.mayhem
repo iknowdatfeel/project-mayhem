@@ -1582,7 +1582,18 @@ const methods = {
 	awg_import: {
 		args: { name: '', conf: '', section: false, pool: true, label: '' },
 		call: function(req) {
-			const name = req.args?.name ?? '';
+			let name = req.args?.name ?? '';
+
+			// No name: the first free awgN.
+			if (name == '') {
+				const nc = require('uci').cursor(C.UCI_DIR);
+
+				nc.load('network');
+
+				for (let i = 0; i < 100 && name == ''; i++)
+					if (nc.get('network', `awg${i}`) == null)
+						name = `awg${i}`;
+			}
 
 			if (!match(name, /^[a-z][a-z0-9_]{0,14}$/))
 				return { error: 'the name must start with a letter and have at most 15 lower-case letters, digits or _' };

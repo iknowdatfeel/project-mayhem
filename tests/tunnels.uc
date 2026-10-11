@@ -75,6 +75,11 @@ expect('rename: firewall zone', zone_ok);
 expect('rename: the pinned server', in_pool('awg_nl') && !in_pool('awgnl') && c.get('mayhem', 'pool', 'override') == 'awg_nl');
 expect('rename: the name of the tunnel stays', c.get('mayhem', 'awg_nl', 'label') == 'Нидерланды' && c.get('mayhem', 'awgnl') == null);
 expect('rename to an existing interface is refused', call('rename_interface', { from: 'awg_nl', to: 'lan' }).error != null);
+// A key added without a name gets the first free awgN (awg0 is taken here).
+r = call('awg_import', { name: '', conf: conf });
+c = cursor();
+expect(`import without a name: ${r.error}`, r.ok === true && r.interface == 'awg1' && c.get('network', 'awg1', 'proto') == 'amneziawg');
+
 expect('rename to a bad name is refused', call('rename_interface', { from: 'awg_nl', to: 'Bad-Name' }).error != null);
 
 exit(fails ? 1 : 0);

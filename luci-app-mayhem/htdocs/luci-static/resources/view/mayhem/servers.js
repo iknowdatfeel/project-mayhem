@@ -6,6 +6,7 @@
 'require ui';
 'require mayhem.common as mh';
 'require mayhem.tunnels as tunnels';
+'require mayhem.vpnkey as vpnkey';
 
 // Server list: servers added by key, subscriptions, tunnels and the options
 // of every server (Mux). Keys and subscriptions form one list, like in Happ:
@@ -15,6 +16,7 @@
 const callParse = rpc.declare({ object: 'luci.mayhem', method: 'parse_link', params: [ 'links' ], expect: { '': {} } });
 const callDashboard = rpc.declare({ object: 'luci.mayhem', method: 'dashboard', expect: { '': {} } });
 const callRename = rpc.declare({ object: 'luci.mayhem', method: 'rename_server', params: [ 'section', 'tag', 'link', 'name' ], expect: { '': {} } });
+const callImport = rpc.declare({ object: 'luci.mayhem', method: 'awg_import', params: [ 'name', 'conf', 'section', 'pool', 'label' ], expect: { '': {} } });
 
 const LINK_RE = /^(vless|vmess|trojan|ss|socks5?|https?|hysteria2|hy2|wireguard|wg):\/\/\S+/i;
 
@@ -104,18 +106,61 @@ return view.extend({
 		return this.handleSaveApply(null, '0');
 	},
 
-	addKeys(text) {
+	// AmneziaVPN keys (vpn://) and WireGuard/AmneziaWG configs become tunnel
+	// interfaces, servers of the list like the others.
+	addTunnels(confs, say) {
+		const next = (i, done) => {
+			if (i >= confs.length)
+				return Promise.resolve(done);
+
+			const c = confs[i];
+			const read = c.key ? vpnkey.read(c.key) : Promise.resolve({ conf: c.conf, name: '' });
+
+			return read.then((r) => callImport('', r.conf, false, true, r.name)).then((r) => {
+				if (r.error)
+					throw new Error(r.error);
+
+				done.push(r.interface);
+				return next(i + 1, done);
+			});
+		};
+
+		say(_('Unpacking the key…'), '');
+
+		return next(0, []).then((names) => {
+			say(_('Tunnel %s is added to the server list. The page reloads…').format(names.join(', ')), 'mh-ok');
+			window.setTimeout(() => window.location.reload(), 2500);
+		}).catch((e) => say(e.message, 'mh-fail'));
+	},
+
+	addKeys(text, say) {
+		say = say || ((m, cls) => ui.addNotification(null, E('p', m), cls === 'mh-fail' ? 'error' : 'info'));
+
+		if (text.indexOf('[Interface]') >= 0)
+			return this.addTunnels([ { conf: text } ], say);
+
 		const lines = text.split('\n').map((l) => l.trim()).filter((l) => l && l.charAt(0) !== '#');
 
 		if (!lines.length) {
-			ui.addNotification(null, E('p', _('Paste a server key first.')), 'warning');
+			say(_('Paste a server key first.'), 'mh-fail');
 			return Promise.resolve();
+		}
+
+		const keys = lines.filter((l) => vpnkey.isKey(l));
+
+		if (keys.length) {
+			if (keys.length !== lines.length) {
+				say(_('Add vpn:// keys and other keys separately.'), 'mh-fail');
+				return Promise.resolve();
+			}
+
+			return this.addTunnels(keys.map((k) => ({ key: k })), say);
 		}
 
 		const bad = lines.filter((l) => !LINK_RE.test(l));
 
 		if (bad.length) {
-			ui.addNotification(null, E('p', _('Not a server key: %s').format(bad[0].slice(0, 60))), 'error');
+			say(_('Not a server key: %s').format(bad[0].slice(0, 60)), 'mh-fail');
 			return Promise.resolve();
 		}
 
@@ -124,7 +169,7 @@ return view.extend({
 			const errors = res.map((x, i) => x.ok ? null : '%s: %s'.format(x.name || lines[i].slice(0, 40), x.error || '?')).filter((x) => x);
 
 			if (errors.length) {
-				ui.addNotification(null, E('div', [ E('p', _('These keys cannot be added:')), E('ul', errors.map((e) => E('li', e))) ]), 'error');
+				say(_('These keys cannot be added:') + ' ' + errors.join('; '), 'mh-fail');
 				return;
 			}
 
@@ -182,8 +227,13 @@ return view.extend({
 	renderAdd(section) {
 		const text = E('textarea', {
 			'class': 'cbi-input-textarea', 'rows': 4,
-			'placeholder': 'vless://…\nss://…'
+			'placeholder': 'vless://…\nss://…\nvpn://…'
 		});
+		const msg = E('div', { 'class': 'mh-small', 'style': 'margin-top:.5em' });
+		const say = (m, cls) => {
+			msg.className = 'mh-small ' + (cls || 'mh-muted');
+			msg.textContent = m;
+		};
 
 		const rows = this.keys.map((k) => {
 			const i = k.info || {};
@@ -212,14 +262,15 @@ return view.extend({
 
 		return E('div', { 'class': 'cbi-section mh-add', 'data-tab': section.section, 'data-tab-title': section.title }, [
 			E('div', { 'class': 'cbi-section-descr' },
-				_('Paste a server key: vless://, vmess://, trojan://, ss://, hysteria2://, socks://, http(s)://, wireguard://. Several keys go one per line.')),
+				_('Paste a server key: vless://, vmess://, trojan://, ss://, hysteria2://, socks://, http(s)://, wireguard://, or an AmneziaVPN key (vpn://) or a WireGuard/AmneziaWG config. Several keys go one per line.')),
 			text,
 			E('div', { 'class': 'mh-add-row' }, [
 				E('button', {
 					'class': 'btn cbi-button cbi-button-add',
-					'click': ui.createHandlerFn(this, () => this.addKeys(text.value))
+					'click': ui.createHandlerFn(this, () => this.addKeys(text.value, say))
 				}, _('Add'))
 			]),
+			msg,
 			E('p', { 'class': 'mh-muted mh-small' }, _('Servers go into the server list on the dashboard and are applied at once.')),
 			rows.length ? E('table', { 'class': 'table mh-keys' }, [
 				E('tr', { 'class': 'tr table-titles' }, [

@@ -43,6 +43,48 @@ const want = fs.readFileSync(path.join(__dirname, 'awg/client.conf'), 'utf8')
 		}
 	}
 
+	// The name of the key, and other ways the JSON may be packed.
+	const zlib = require('zlib');
+	const raw = key.trim().replace(/^vpn:\/\//, '').replace(/-/g, '+').replace(/_/g, '/');
+	const json = zlib.inflateSync(Buffer.from(raw, 'base64').subarray(4));
+	const enc = (b) => 'vpn://' + b.toString('base64').replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+	const r = await mod.read(key);
+
+	if (r.name !== 'Test' || r.conf !== want) {
+		console.log('FAIL read(): name "' + r.name + '"');
+		failed++;
+	}
+
+	for (const [ what, k ] of [ [ 'bare zlib', enc(zlib.deflateSync(json)) ], [ 'raw deflate', enc(Buffer.concat([ Buffer.alloc(4), zlib.deflateRawSync(json) ])) ],
+		[ 'plain JSON', enc(json) ] ]) {
+		try {
+			if (await mod.decode(k) !== want) {
+				console.log('FAIL ' + what + ': wrong config');
+				failed++;
+			}
+		}
+		catch (e) {
+			console.log('FAIL ' + what + ': ' + e.message);
+			failed++;
+		}
+	}
+
+	// A key cut short is an error, not a page that waits forever.
+	const cut = key.trim().slice(0, Math.floor(key.trim().length * 0.6));
+	const t0 = Date.now();
+
+	try {
+		await mod.decode(cut);
+		console.log('FAIL a cut key was accepted');
+		failed++;
+	}
+	catch (e) {
+		if (Date.now() - t0 > 25000) {
+			console.log('FAIL a cut key took ' + (Date.now() - t0) + ' ms');
+			failed++;
+		}
+	}
+
 	console.log(failed ? 'vpnkey: failed' : 'vpnkey: ok');
 	process.exit(failed ? 1 : 0);
 })();

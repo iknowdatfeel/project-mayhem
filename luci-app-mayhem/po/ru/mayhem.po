@@ -937,9 +937,6 @@ msgid "Paste a server key first."
 msgstr "Сначала вставьте ключ сервера."
 
 #: htdocs/luci-static/resources/view/mayhem/servers.js
-msgid "Paste a server key: vless://, vmess://, trojan://, ss://, hysteria2://, socks://, http(s)://, wireguard://. Several keys go one per line."
-msgstr "Вставьте ключ сервера: vless://, vmess://, trojan://, ss://, hysteria2://, socks://, http(s)://, wireguard://. Несколько ключей — по одному в строке."
-
 #: htdocs/luci-static/resources/view/mayhem/dashboard.js
 msgid "Ping time"
 msgstr "Пинг"
@@ -1622,3 +1619,18 @@ msgstr "Название сохраняется в ключе сервера."
 
 msgid "The name is kept for this server of the subscription and survives its updates."
 msgstr "Название запоминается для этого сервера подписки и сохраняется при её обновлениях."
+
+msgid "The key could not be unpacked: it may be cut short. Copy it again, or paste the .conf text instead."
+msgstr "Ключ не распаковывается: возможно, он скопирован не целиком. Скопируйте его ещё раз или вставьте текст .conf."
+
+msgid "Unpacking the key…"
+msgstr "Распаковываю ключ…"
+
+msgid "Tunnel %s is added to the server list. The page reloads…"
+msgstr "Туннель %s добавлен в список серверов. Страница перезагружается…"
+
+msgid "Add vpn:// keys and other keys separately."
+msgstr "Добавляйте ключи vpn:// отдельно от остальных."
+
+msgid "Paste a server key: vless://, vmess://, trojan://, ss://, hysteria2://, socks://, http(s)://, wireguard://, or an AmneziaVPN key (vpn://) or a WireGuard/AmneziaWG config. Several keys go one per line."
+msgstr "Вставьте ключ сервера: vless://, vmess://, trojan://, ss://, hysteria2://, socks://, http(s)://, wireguard://, ключ AmneziaVPN (vpn://) или конфиг WireGuard/AmneziaWG. Несколько ключей — по одному в строке."
