@@ -100,6 +100,21 @@ else
 	bad "dnsmasq nftset support: no-nftset is taken for nftset"
 fi
 
+# The same check in the shell (mayhem dnsmasq-full uses it).
+mkdir -p "$OUT/dnsm/plain" "$OUT/dnsm/full"
+printf '#!/bin/sh\necho "Compile time options: IPv6 GNU-getopt no-DBus UBus no-ipset no-nftset no-auth"\n' > "$OUT/dnsm/plain/dnsmasq"
+printf '#!/bin/sh\necho "Compile time options: IPv6 GNU-getopt no-DBus UBus no-ipset nftset auth"\n' > "$OUT/dnsm/full/dnsmasq"
+chmod +x "$OUT/dnsm/plain/dnsmasq" "$OUT/dnsm/full/dnsmasq"
+nftset_sh() {
+	PATH="$OUT/dnsm/$1:$PATH" MAYHEM_LIB_DIR="$FILES/usr/share/mayhem" sh -c \
+		'. "$MAYHEM_LIB_DIR/lib.sh"; mayhem_dnsmasq_nftset && echo yes || echo no'
+}
+if [ "$(nftset_sh plain)" = no ] && [ "$(nftset_sh full)" = yes ]; then
+	ok "dnsmasq-full install: plain dnsmasq is not taken for dnsmasq-full"
+else
+	bad "dnsmasq-full install: plain=$(nftset_sh plain) full=$(nftset_sh full)"
+fi
+
 # A tunnel in the server list is one of its servers (chosen on the dashboard).
 pool_tunnel_check() {
 	mkdir -p "$OUT/uci-pooltun"
@@ -403,6 +418,24 @@ else
 	ok "the rest of the traffic into a kernel tunnel: exclusions, blocking and proxy sections kept"
 fi
 
+# A tunnel picked by hand in the server list takes the rest in the kernel;
+# the watchdog keeps the choice (bal 0). Without dnsmasq-full it stays in xray.
+if ! grep -q 'meta nfproto ipv4 meta mark set meta mark & 0x[0-9a-f]* | 0x4000001 counter return' "$OUT/pooltun/nft.conf" 2>/dev/null ||
+   ! grep -q '^pool awg0 0x4000001 111 0 0$' "$OUT/pooltun/tunnels" 2>/dev/null ||
+   ! grep -q 'nftset=/ru.test/.*#dir_d4' "$OUT/pooltun/dnsmasq.conf" 2>/dev/null; then
+	bad "model pooltun: the picked tunnel does not take the rest in the kernel: $(cat "$OUT/pooltun/tunnels" 2>/dev/null)"
+elif grep -q '0x4000001' "$OUT/pooltun-plain/nft.conf" 2>/dev/null || ! grep -q 'with dnsmasq-full it would go in the kernel' "$OUT/pooltun-plain/status.json"; then
+	bad "model pooltun-plain: without dnsmasq-full the tunnel must stay in xray, with a hint"
+elif ! uc -e "
+	const n = json(require('fs').readfile('$OUT/pooltun/nodes.json'));
+	const t = filter(n.sections.pool.nodes, (x) => x.iface == 'awg0')[0];
+	exit((n.sections.pool.kernel == 'awg0' && t?.tproto == 'amneziawg' && t?.device == 'awg0') ? 0 : 1);
+" 2>/dev/null; then
+	bad "model pooltun: nodes.json does not tell the dashboard about the kernel tunnel"
+else
+	ok "a tunnel picked in the server list takes the rest in the kernel"
+fi
+
 # A kernel tunnel section does not hand dnsmasq more domains than it can hold.
 cat > "$OUT/bigtun.json" <<'JSON'
 { "settings": { "mode": "lists", "interface": ["br-lan"] },
@@ -534,6 +567,16 @@ if out="$(MAYHEM_UCI_DIR="$OUT/tun-uci" MAYHEM_RUN_DIR="$OUT/tun-run" MAYHEM_NET
 	ok "tunnel import into the server list, interface rename"
 else
 	bad "tunnels: $out"
+fi
+
+# Renaming servers: keys, subscription servers, tunnels.
+mkdir -p "$OUT/ren-uci"
+cp "$ROOT/tests/uci/mayhem" "$OUT/ren-uci/"
+if out="$(MAYHEM_UCI_DIR="$OUT/ren-uci" MAYHEM_RUN_DIR="$OUT/ren-run" \
+	uc "$ROOT/tests/rename.uc" "$ROOT/luci-app-mayhem/root/usr/share/rpcd/ucode/luci.mayhem" 2>&1)"; then
+	ok "renaming servers: keys, vmess, subscription servers, tunnels"
+else
+	bad "renaming servers: $out"
 fi
 
 # Backup and restore of the config, with and without subscriptions and keys.

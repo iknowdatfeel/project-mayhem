@@ -14,12 +14,13 @@
 
 const callParse = rpc.declare({ object: 'luci.mayhem', method: 'parse_link', params: [ 'links' ], expect: { '': {} } });
 const callDashboard = rpc.declare({ object: 'luci.mayhem', method: 'dashboard', expect: { '': {} } });
+const callRename = rpc.declare({ object: 'luci.mayhem', method: 'rename_server', params: [ 'section', 'tag', 'link', 'name' ], expect: { '': {} } });
 
 const LINK_RE = /^(vless|vmess|trojan|ss|socks5?|https?|hysteria2|hy2|wireguard|wg):\/\/\S+/i;
 
 const PROTOCOLS = {
 	vless: 'VLESS', vmess: 'VMess', trojan: 'Trojan', shadowsocks: 'Shadowsocks', socks: 'SOCKS', http: 'HTTP',
-	hysteria: 'Hysteria2', hysteria2: 'Hysteria2', wireguard: 'WireGuard'
+	hysteria: 'Hysteria 2', hysteria2: 'Hysteria 2', wireguard: 'WireGuard'
 };
 
 const CSS = `
@@ -148,6 +149,36 @@ return view.extend({
 		return this.apply();
 	},
 
+	// A new name for a key: written into the key itself, applied at once.
+	renameKey(k) {
+		const input = E('input', { 'class': 'cbi-input-text', 'value': (k.info || {}).name || '', 'maxlength': 64, 'style': 'width:100%' });
+		const submit = () => {
+			const name = input.value.trim();
+
+			if (!name)
+				return Promise.resolve();
+
+			return callRename('', '', k.link, name).then((r) => {
+				if (r.error) {
+					ui.addNotification(null, E('p', r.error), 'error');
+					return;
+				}
+
+				ui.hideModal();
+				window.setTimeout(() => window.location.reload(), 1000);
+			});
+		};
+
+		ui.showModal(_('Rename the server'), [
+			E('p', _('The name is saved in the server key.')),
+			input,
+			E('div', { 'class': 'right', 'style': 'margin-top:1em' }, [
+				E('button', { 'class': 'btn', 'click': ui.hideModal }, _('Cancel')), ' ',
+				E('button', { 'class': 'btn cbi-button-action', 'click': ui.createHandlerFn(this, submit) }, _('Rename'))
+			])
+		]);
+	},
+
 	renderAdd(section) {
 		const text = E('textarea', {
 			'class': 'cbi-input-textarea', 'rows': 4,
@@ -166,10 +197,16 @@ return view.extend({
 				]),
 				E('td', { 'class': 'td' }, proto),
 				E('td', { 'class': 'td' }, addr),
-				E('td', { 'class': 'td cbi-section-actions' }, E('button', {
-					'class': 'btn cbi-button cbi-button-remove',
-					'click': ui.createHandlerFn(this, 'removeKey', k)
-				}, _('Delete')))
+				E('td', { 'class': 'td cbi-section-actions' }, [
+					E('button', {
+						'class': 'btn cbi-button',
+						'click': ui.createHandlerFn(this, 'renameKey', k)
+					}, _('Rename')), ' ',
+					E('button', {
+						'class': 'btn cbi-button cbi-button-remove',
+						'click': ui.createHandlerFn(this, 'removeKey', k)
+					}, _('Delete'))
+				])
 			]);
 		});
 

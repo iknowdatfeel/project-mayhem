@@ -538,6 +538,22 @@ reload_live() {
 		ip netns exec router env PATH="$WORK/bin:$PATH" sh -c ". '$FILES/usr/share/mayhem/lib.sh'; mayhem_live_update"
 }
 
+select_node() {
+	# $1 section, $2 tag: a server picked on the dashboard. Picking one by hand
+	# restarts xray under the same rules; this waits for the new one.
+	local old new i=0
+	old="$(proc_in router xray)"
+	rpc select_node "{\"section\":\"$1\",\"tag\":\"$2\"}"
+	[ -n "$2" ] || return 0
+	while [ "$i" -lt 40 ]; do
+		new="$(proc_in router xray)"
+		[ -n "$new" ] && [ "$new" != "$old" ] && outbounds >/dev/null 2>&1 && break
+		sleep 0.5
+		i=$((i + 1))
+	done
+	sleep 1
+}
+
 outbounds() {
 	ip netns exec router "$XRAY" api lso --server=127.0.0.1:12780 2>/dev/null
 }
@@ -582,20 +598,20 @@ if start_mayhem uci; then
 		*) bad "dashboard subscription info" ;;
 	esac
 
-	if rpc select_node "{\"section\":\"main\",\"tag\":\"$(tag_of B)\"}" | grep -q '"ok": true'; then ok "pin server B"; else bad "pin server B"; fi
+	if select_node main "$(tag_of B)" | grep -q '"ok": true'; then ok "pin server B"; else bad "pin server B"; fi
 	expect "pinned server is used at once" 45.0.0.8 -H 'Host: youtube.test' http://45.0.0.2:8080/
 	case "$(rpc exit_info '{}')" in
 		*'"ip": "45.0.0.8"'*) ok "external address follows the pinned server" ;;
 		*) bad "external address after pinning B: $(rpc exit_info '{}')" ;;
 	esac
 	if grep -q "option override 'B'" "$MAYHEM_UCI_DIR/mayhem"; then ok "pinned server saved by name"; else bad "pinned server saved"; fi
-	rpc select_node "{\"section\":\"main\",\"tag\":\"$(tag_of A)\"}" >/dev/null
+	select_node main "$(tag_of A)" >/dev/null
 	expect "switch to server A" 45.0.0.3 -H 'Host: youtube.test' http://45.0.0.2:8080/
 	case "$(rpc exit_info '{}')" in
 		*'"ip": "45.0.0.3"'*) ok "external address follows the switch" ;;
 		*) bad "external address after switching to A: $(rpc exit_info '{}')" ;;
 	esac
-	if rpc select_node '{"section":"main","tag":""}' | grep -q '"ok": true' && ! grep -q "option override" "$MAYHEM_UCI_DIR/mayhem"; then
+	if select_node main "" | grep -q '"ok": true' && ! grep -q "option override" "$MAYHEM_UCI_DIR/mayhem"; then
 		ok "back to automatic"
 	else
 		bad "back to automatic"
@@ -629,9 +645,10 @@ write_uci "	option select 'auto'" direct
 printf '%s\n%s\n' "$SS_LINK_A" "$SS_LINK_B" | base64 | tr -d '\n' > "$WORK/sub.txt"
 sub_update >/dev/null
 if start_mayhem uci; then
-	pid="$(proc_in router xray)"
 	b="$(tag_of B)"
-	rpc select_node "{\"section\":\"main\",\"tag\":\"$b\"}" >/dev/null
+	select_node main "$b" >/dev/null
+	# the xray that runs from here on (picking B by hand restarted it)
+	pid="$(proc_in router xray)"
 	expect "pinned to server B" 45.0.0.8 -H 'Host: youtube.test' http://45.0.0.2:8080/
 
 	# A download through server B goes on while B leaves the subscription
@@ -668,7 +685,8 @@ if start_mayhem uci; then
 		bad "running config was not updated"
 	fi
 	if rpc probe "{\"tag\":\"$c\",\"method\":\"url\"}" | grep -q '"ms": [0-9]'; then ok "URL test through the new server"; else bad "URL test through the new server"; fi
-	rpc select_node "{\"section\":\"main\",\"tag\":\"$c\"}" >/dev/null
+	select_node main "$c" >/dev/null
+	pid="$(proc_in router xray)"
 	expect "new server can be pinned" 45.0.0.9 -H 'Host: youtube.test' http://45.0.0.2:8080/
 	expect "domain rules still apply" 45.0.0.1 http://45.0.0.2:8080/
 
@@ -948,6 +966,84 @@ if start_mayhem uci; then
 	sleep 1
 	tunnels_check
 	expect "tunnel back: the rest goes into it again" 45.0.1.1 http://45.0.0.8:8080/
+fi
+stop_mayhem
+
+echo "== a tunnel picked in the server list"
+
+cat > "$MAYHEM_UCI_DIR/mayhem" <<EOF
+config settings 'settings'
+	option enabled '1'
+	option mode 'global'
+	list interface 'br-lan'
+	option ip_family 'ipv4_only'
+
+config dns 'dns'
+	list domestic '45.0.0.2'
+	list remote '45.0.0.4'
+	option hijack '1'
+
+config pool 'pool'
+	list link '$SS_LINK_A'
+	list link '$SS_LINK_B'
+	list iface_node 'tun0'
+	option select 'auto'
+	option override 'tun0'
+
+config section 'ru'
+	option type 'exclusion'
+	list ip '45.0.0.6/32'
+EOF
+
+if start_mayhem uci; then
+	before="$(rest_hits)"
+	expect "picked tunnel: the rest goes into it" 45.0.1.1 http://45.0.0.7:8080/
+	if [ "$(rest_hits)" -gt "${before:-0}" ] 2>/dev/null; then
+		ok "picked tunnel: in the kernel, past xray"
+	else
+		bad "picked tunnel: the kernel rule did not count the packets: $before -> $(rest_hits)"
+	fi
+	expect "picked tunnel: exclusions stay direct" 192.168.1.2 http://45.0.0.6:8080/
+
+	tunnels_check
+	if [ ! -e "$MAYHEM_RUN_DIR/tunnel.pool.sel" ] && grep -q '"override": "n-pool-' "$MAYHEM_RUN_DIR/nodes.json"; then
+		ok "picked tunnel: the watchdog keeps the choice"
+	else
+		bad "picked tunnel: the watchdog changed the choice"
+	fi
+
+	# Server A on the dashboard: the choice is saved, and after the reload
+	# (procd restarts xray: the kernel rules changed) the rest goes through it.
+	tag="$(tr '{' '\n' < "$MAYHEM_RUN_DIR/nodes.json" | sed -n 's/.*"tag": "\(n-pool-[^"]*\)", "name": "A".*/\1/p' | head -n 1)"
+	rpc select_node "{\"section\":\"pool\",\"tag\":\"$tag\"}" >/dev/null
+	if grep -q "option override 'A'" "$MAYHEM_UCI_DIR/mayhem"; then ok "server A picked on the dashboard is saved"; else bad "server A was not saved: $(grep override "$MAYHEM_UCI_DIR/mayhem")"; fi
+	stop_mayhem
+	if start_mayhem uci; then
+		if ip netns exec router nft list chain inet mayhem prerouting | grep -q '0x0*4000001 counter'; then
+			bad "server A picked: the tunnel rules are still there"
+		else
+			expect "server A picked: the rest goes through it" 45.0.0.3 http://45.0.0.7:8080/
+
+			# Server B by hand: connections through A are closed at once (a
+			# balancer choice alone would leave them on A), the rules stay.
+			xpid="$(proc_in router xray)"
+			ip netns exec client curl -s -m 20 -o /dev/null -w '%{size_download}' http://45.0.0.7:8080/slow > "$WORK/slow2.out" 2>/dev/null &
+			cpid=$!
+			sleep 1.5
+			tag="$(tr '{' '\n' < "$MAYHEM_RUN_DIR/nodes.json" | sed -n 's/.*"tag": "\(n-pool-[^"]*\)", "name": "B".*/\1/p' | head -n 1)"
+			rpc select_node "{\"section\":\"pool\",\"tag\":\"$tag\"}" >/dev/null
+			kept=1
+			for i in 1 2 3 4 5 6; do
+				ip netns exec router nft list table inet mayhem >/dev/null 2>&1 || kept=0
+				sleep 0.5
+			done
+			wait "$cpid"
+			if [ "$(cat "$WORK/slow2.out" 2>/dev/null)" != 10240 ]; then ok "server B by hand: the open connection through A is closed"; else bad "server B by hand: the download through A went on"; fi
+			if [ "$kept" = 1 ] && [ -f "$MAYHEM_RUN_DIR/active" ]; then ok "server B by hand: the interception stays while xray restarts"; else bad "server B by hand: the interception was removed"; fi
+			if [ -n "$(proc_in router xray)" ] && [ "$(proc_in router xray)" != "$xpid" ]; then ok "server B by hand: a new xray"; else bad "server B by hand: xray was not restarted"; fi
+			expect "server B by hand: new connections go through it" 45.0.0.8 http://45.0.0.7:8080/
+		fi
+	fi
 fi
 stop_mayhem
 

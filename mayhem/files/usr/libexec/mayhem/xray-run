@@ -12,13 +12,24 @@ export GOMEMLIMIT XRAY_LOCATION_ASSET
 
 xray_pid=""
 stopping=0
+swap=0
 
 on_term() {
 	stopping=1
 	[ -n "$xray_pid" ] && kill -TERM "$xray_pid" 2>/dev/null
 }
 
+# HUP: a new xray with the same config, the interception stays. Every
+# connection through xray is closed, so apps reconnect through the servers
+# chosen now (a choice in a balancer only applies to new connections).
+on_hup() {
+	swap=1
+	[ -n "$xray_pid" ] && kill -TERM "$xray_pid" 2>/dev/null
+}
+
 trap on_term TERM INT
+trap on_hup HUP
+echo "$$" > "$MAYHEM_RUN_DIR/xray-run.pid"
 
 if [ ! -x "$MAYHEM_XRAY_BIN" ]; then
 	mayhem_log "xray is not installed, run: mayhem xray-install" err
@@ -33,9 +44,42 @@ for f in xray.json xray.key overrides; do
 		cp "$MAYHEM_RUN_DIR/$f" "$MAYHEM_RUN_DIR/running.$f" 2>/dev/null || : > "$MAYHEM_RUN_DIR/running.$f"
 done
 
-"$MAYHEM_XRAY_BIN" run -c "$MAYHEM_RUN_DIR/running.xray.json" &
-xray_pid=$!
-echo "$xray_pid" > "$MAYHEM_RUN_DIR/xray.pid"
+start_xray() {
+	"$MAYHEM_XRAY_BIN" run -c "$MAYHEM_RUN_DIR/running.xray.json" &
+	xray_pid=$!
+	echo "$xray_pid" > "$MAYHEM_RUN_DIR/xray.pid"
+}
+
+# Checks five times a second where sleep takes fractions (busybox usually
+# does): after a HUP the saved choices must be in before much traffic is.
+if sleep 0.01 2>/dev/null; then
+	tick=0.2
+	ticks=200
+else
+	tick=1
+	ticks=40
+fi
+
+# Waits until xray listens on its ports; 1 when it does not.
+xray_ready() {
+	local i=0
+
+	while [ "$i" -lt "$ticks" ] && [ "$stopping" = 0 ]; do
+		kill -0 "$xray_pid" 2>/dev/null || return 1
+
+		if mayhem_port_listening "$MAYHEM_TPROXY_PORT" && mayhem_port_listening "$MAYHEM_DNS_PORT" &&
+		   mayhem_port_listening "$MAYHEM_API_PORT"; then
+			return 0
+		fi
+
+		sleep "$tick"
+		i=$((i + 1))
+	done
+
+	return 1
+}
+
+start_xray
 # `xray version` is a second xray process (20 MB) next to the starting one:
 # only when the binary is newer than what was noted (busybox test has -nt).
 # shellcheck disable=SC3013
@@ -44,19 +88,7 @@ if [ ! -s "$MAYHEM_RUN_DIR/xray.version" ] || [ "$MAYHEM_XRAY_BIN" -nt "$MAYHEM_
 fi
 
 ready=0
-i=0
-while [ "$i" -lt 40 ] && [ "$stopping" = 0 ]; do
-	kill -0 "$xray_pid" 2>/dev/null || break
-
-	if mayhem_port_listening "$MAYHEM_TPROXY_PORT" && mayhem_port_listening "$MAYHEM_DNS_PORT" &&
-	   mayhem_port_listening "$MAYHEM_API_PORT"; then
-		ready=1
-		break
-	fi
-
-	sleep 1
-	i=$((i + 1))
-done
+xray_ready && ready=1
 
 if [ "$ready" = 1 ]; then
 	# Saved server choices go in before any traffic does.
@@ -76,13 +108,30 @@ fi
 
 # `wait` returns early when a trapped signal arrives, so loop until xray is
 # gone. Wait at least once: xray that failed at start is already gone here.
+# After a HUP a new xray takes over with the rules still in place: while it
+# starts, connections wait instead of going direct.
 while :; do
-	wait "$xray_pid"
-	rc=$?
-	kill -0 "$xray_pid" 2>/dev/null || break
+	while :; do
+		wait "$xray_pid"
+		rc=$?
+		kill -0 "$xray_pid" 2>/dev/null || break
+	done
+
+	[ "$swap" = 1 ] && [ "$stopping" = 0 ] && [ "$ready" = 1 ] || break
+	swap=0
+	start_xray
+
+	if ! xray_ready; then
+		mayhem_log "xray did not start listening again, see the log above" err
+		kill -TERM "$xray_pid" 2>/dev/null
+		continue
+	fi
+
+	mayhem_apply_overrides
+	mayhem_log "xray restarted, connections reopen through the chosen servers (pid $xray_pid)"
 done
 
-rm -f "$MAYHEM_RUN_DIR/active" "$MAYHEM_RUN_DIR/xray.pid" "$MAYHEM_RUN_DIR/watchdog.mem"
+rm -f "$MAYHEM_RUN_DIR/active" "$MAYHEM_RUN_DIR/xray.pid" "$MAYHEM_RUN_DIR/xray-run.pid" "$MAYHEM_RUN_DIR/watchdog.mem"
 mayhem_net_down
 mayhem_dns_down
 

@@ -285,17 +285,13 @@ first_file() {
 	done
 }
 
-dnsmasq_nftset() {
-	dnsmasq --version 2>/dev/null | grep -q nftset
-}
-
 # Swaps dnsmasq for dnsmasq-full. Both packages are downloaded before anything
 # is removed, and the old one is put back if the new one does not install or
 # does not start: the router must never be left without DNS and DHCP.
 cmd_dnsmasq_full() {
 	local dir="/tmp/mayhem-dnsmasq" full old
 
-	if dnsmasq_nftset; then
+	if mayhem_dnsmasq_nftset; then
 		echo "dnsmasq already supports nftset"
 		return 0
 	fi
@@ -339,7 +335,7 @@ cmd_dnsmasq_full() {
 	/etc/init.d/dnsmasq restart >/dev/null 2>&1
 	sleep 2
 
-	if dnsmasq_nftset && pidof dnsmasq >/dev/null 2>&1; then
+	if mayhem_dnsmasq_nftset && pidof dnsmasq >/dev/null 2>&1; then
 		rm -rf "$dir"
 		echo "dnsmasq-full is installed"
 		return 0

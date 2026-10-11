@@ -1,0 +1,58 @@
+{
+  "settings": {
+    "mode": "global",
+    "interface": [
+      "br-lan"
+    ],
+    "ip_family": "prefer_ipv4",
+    "block_quic": "1"
+  },
+  "dns": {
+    "remote": [
+      "https://1.1.1.1/dns-query"
+    ]
+  },
+  "sections": [
+    {
+      ".name": "pool",
+      "type": "proxy",
+      "enabled": "1",
+      "pool": true,
+      "select": "auto",
+      "override": "awg0",
+      "link": [
+        "trojan://pw@de.example:443?sni=de.example#DE"
+      ],
+      "iface_node": [
+        "awg0"
+      ]
+    },
+    {
+      ".name": "ru",
+      "type": "exclusion",
+      "enabled": "1",
+      "domain": [
+        "ru.test"
+      ],
+      "ip": [
+        "5.0.0.0/8"
+      ]
+    }
+  ],
+  "runtime": {
+    "wan_dns": [
+      "192.168.1.1"
+    ],
+    "ipv6": false,
+    "mem_total_kb": 262144,
+    "dnsmasq_nftset": false,
+    "ifaces": {
+      "awg0": {
+        "device": "awg0",
+        "up": true,
+        "v6": false,
+        "proto": "amneziawg"
+      }
+    }
+  }
+}

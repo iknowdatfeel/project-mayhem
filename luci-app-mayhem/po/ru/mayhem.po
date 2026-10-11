@@ -1604,3 +1604,21 @@ msgstr "Переименуются сетевой интерфейс, его з�
 
 msgid "Rename the interface"
 msgstr "Переименовать интерфейс"
+
+msgid "dnsmasq-full is needed only for tunnel sections in kernel mode; tunnels in the server list work without it."
+msgstr "dnsmasq-full нужен только для секций-туннелей в режиме ядра; туннели в списке серверов работают без него."
+
+msgid "Every tunnel is also a server of the server list: choose it on the dashboard like any other server, or let the automatic choice by ping take it."
+msgstr "Каждый туннель — ещё и сервер в списке серверов: выберите его на дашборде, как любой другой сервер, или доверьте выбор автовыбору по пингу."
+
+msgid "Rename the server"
+msgstr "Переименовать сервер"
+
+msgid "The name of tunnel %s."
+msgstr "Название туннеля %s."
+
+msgid "The name is saved in the server key."
+msgstr "Название сохраняется в ключе сервера."
+
+msgid "The name is kept for this server of the subscription and survives its updates."
+msgstr "Название запоминается для этого сервера подписки и сохраняется при её обновлениях."

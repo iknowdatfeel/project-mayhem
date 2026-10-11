@@ -21,6 +21,7 @@ const callRefresh = rpc.declare({ object: 'luci.mayhem', method: 'refresh_server
 const callExitInfo = rpc.declare({ object: 'luci.mayhem', method: 'exit_info', params: [ 'section', 'lang' ], expect: { '': {} } });
 const callSetPing = rpc.declare({ object: 'luci.mayhem', method: 'set_ping_method', params: [ 'method' ], expect: { '': {} } });
 const callSetMain = rpc.declare({ object: 'luci.mayhem', method: 'set_main_section', params: [ 'section' ], expect: { '': {} } });
+const callRename = rpc.declare({ object: 'luci.mayhem', method: 'rename_server', params: [ 'section', 'tag', 'link', 'name' ], expect: { '': {} } });
 
 const PROBE_PARALLEL = 4;
 const DAY = 86400;
@@ -47,6 +48,10 @@ const CSS = `
 .mh-bar.mh-full > span { background:var(--error-color-medium, red); }
 .mh-tile { border:2px solid var(--background-color-low, lightgray); border-radius:4px; padding:8px 10px; transition:border .2s ease; min-width:0; }
 .mh-tile b { display:block; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.mh-tile-head { display:flex; align-items:center; gap:4px; }
+.mh-tile-head b { flex:1; }
+.mh-ren { border:0; background:none; padding:0 2px; cursor:pointer; opacity:.35; color:inherit; font-size:.9em; }
+.mh-tile:hover .mh-ren { opacity:.8; }
 .mh-tile--pick { cursor:pointer; }
 .mh-tile--pick:hover { border-color:var(--primary-color-high, dodgerblue); }
 .mh-tile--active { border-color:var(--success-color-medium, green); }
@@ -65,10 +70,14 @@ function rate(n) {
 
 const PROTOCOLS = {
 	vless: 'VLESS', vmess: 'VMess', trojan: 'Trojan', shadowsocks: 'Shadowsocks', socks: 'SOCKS', http: 'HTTP',
-	hysteria: 'Hysteria2', hysteria2: 'Hysteria2', wireguard: 'WireGuard', freedom: 'Freedom'
+	hysteria: 'Hysteria 2', hysteria2: 'Hysteria 2', wireguard: 'WireGuard', freedom: 'Freedom',
+	amneziawg: 'AmneziaWG', openvpn: 'OpenVPN', openconnect: 'OpenConnect', vpnc: 'VPNC', l2tp: 'L2TP', pptp: 'PPTP'
 };
 
-function protocolName(p) {
+// The kind of a server: its protocol, or for a tunnel the interface's one.
+function protocolName(n) {
+	const p = n.tproto || n.protocol;
+
 	return p === 'interface' ? _('Tunnel') : (PROTOCOLS[p] || (p ? p.charAt(0).toUpperCase() + p.slice(1) : '?'));
 }
 
@@ -167,6 +176,48 @@ return view.extend({
 			if (main && section === main.name)
 				this.checkConnection();
 		});
+	},
+
+	// A new name for a server, saved where the server comes from.
+	renameDialog(section, n) {
+		const input = E('input', { 'class': 'cbi-input-text', 'value': n.name, 'maxlength': 64, 'style': 'width:100%' });
+		const submit = () => {
+			const name = input.value.trim();
+
+			if (!name || name === n.name) {
+				ui.hideModal();
+				return Promise.resolve();
+			}
+
+			return callRename(section, n.tag, '', name).then((r) => {
+				if (r.error) {
+					ui.addNotification(null, E('p', r.error), 'error');
+					return;
+				}
+
+				ui.hideModal();
+				window.setTimeout(() => this.refresh(), 2000);
+			});
+		};
+
+		input.addEventListener('keydown', (ev) => {
+			if (ev.key === 'Enter')
+				submit();
+		});
+
+		ui.showModal(_('Rename the server'), [
+			E('p', n.iface ? _('The name of tunnel %s.').format(n.iface)
+				: n.source === 'link' ? _('The name is saved in the server key.')
+				: _('The name is kept for this server of the subscription and survives its updates.')),
+			input,
+			E('div', { 'class': 'right', 'style': 'margin-top:1em' }, [
+				E('button', { 'class': 'btn', 'click': ui.hideModal }, _('Cancel')), ' ',
+				E('button', { 'class': 'btn cbi-button-action', 'click': ui.createHandlerFn(this, submit) }, _('Rename'))
+			])
+		]);
+
+		input.focus();
+		input.select();
 	},
 
 	// Ping and external address of the default section: once when the page
@@ -493,16 +544,26 @@ return view.extend({
 		const pick = s.balancer && !active;
 		const attrs = {
 			'class': 'mh-tile' + (active ? ' mh-tile--active' : '') + (pick ? ' mh-tile--pick' : ''),
-			'title': '%s:%s · ↓ %s ↑ %s'.format(n.address || '?', n.port || '?', mh.bytes(n.down), mh.bytes(n.up))
+			'title': '%s · ↓ %s ↑ %s'.format(n.iface ? _('Interface %s').format(n.iface) : '%s:%s'.format(n.address || '?', n.port || '?'),
+				mh.bytes(n.down), mh.bytes(n.up))
 		};
 
 		if (pick)
 			attrs.click = ui.createHandlerFn(this, 'select', s.name, n.tag);
 
 		return E('div', attrs, [
-			E('b', n.name),
+			E('div', { 'class': 'mh-tile-head' }, [
+				E('b', n.name),
+				E('button', {
+					'class': 'mh-ren', 'title': _('Rename'),
+					'click': (ev) => {
+						ev.stopPropagation();
+						this.renameDialog(s.name, n);
+					}
+				}, '✎')
+			]),
 			E('div', { 'class': 'mh-tile-foot mh-small' }, [
-				E('span', { 'class': 'mh-muted' }, protocolName(n.protocol)),
+				E('span', { 'class': 'mh-muted' }, protocolName(n)),
 				this.latency(n)
 			])
 		]);
@@ -586,16 +647,25 @@ return view.extend({
 		}
 
 		const keys = pool ? _('Server list') : _('Server keys');
-		const own = { link: keys, json: keys, interface: _('Tunnels') };
-		const rank = (src) => src === 'link' ? 0 : src === 'json' ? 1 : src === 'interface' ? 3 : 2;
+		const own = { link: keys, json: keys };
+		const rank = (src) => src === 'link' ? 0 : src === 'json' ? 1 : 2;
 		const note = pool ? null : _('section %s').format(s.name);
 
 		order.sort((a, b) => rank(a) - rank(b));
 
-		// Links and JSON outbounds share one box.
-		if (by.json && by.link) {
-			by.link = by.link.concat(by.json);
-			order.splice(order.indexOf('json'), 1);
+		// Keys, JSON outbounds and tunnels share one box: the section's own
+		// servers.
+		for (const src of [ 'json', 'interface' ]) {
+			if (!by[src])
+				continue;
+
+			if (!by.link) {
+				by.link = [];
+				order.unshift('link');
+			}
+
+			by.link = by.link.concat(by[src]);
+			order.splice(order.indexOf(src), 1);
 		}
 
 		return order.map((src) => {
@@ -723,7 +793,16 @@ return view.extend({
 		for (const s of d.subscriptions || [])
 			subs[s.name] = Object.assign({}, s);
 
-		const sections = d.sections || [];
+		// A tunnel section whose interface is a server of a proxy section is
+		// shown there, not twice.
+		const served = {};
+
+		for (const s of d.sections || [])
+			for (const n of s.nodes || [])
+				if (n.iface)
+					served[n.iface] = true;
+
+		const sections = (d.sections || []).filter((s) => !(s.type === 'interface' && served[s.interface]));
 		const boxes = [].concat(...sections.map((s) => this.renderSection(s, subs, d.time)));
 
 		if (!sections.some((s) => s.name === 'pool'))

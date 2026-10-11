@@ -60,7 +60,7 @@ mayhem_net_down() {
 }
 
 # --- tunnel sections ---------------------------------------------------------
-# $MAYHEM_RUN_DIR/tunnels: "section device mark table v6" per line. In kernel
+# $MAYHEM_RUN_DIR/tunnels: "section device mark table v6 [bal]" per line. In kernel
 # mode, marked packets use the section's routing table, which holds a default
 # route into the device only while the tunnel works: otherwise the lookup
 # falls through to the main table and the traffic goes direct. The xray path
@@ -71,7 +71,7 @@ mayhem_tunnels_up() {
 
 	[ -s "$MAYHEM_RUN_DIR/tunnels" ] || return 0
 
-	while read -r name dev mark table v6; do
+	while read -r name dev mark table v6 bal; do
 		[ "$mark" = - ] && continue
 		ip rule add fwmark "$mark/$MAYHEM_TUN_MASK" table "$table" priority "$MAYHEM_TUN_RULE_PRIO"
 		[ "$v6" = 1 ] && ip -6 rule add fwmark "$mark/$MAYHEM_TUN_MASK" table "$table" priority "$MAYHEM_TUN_RULE_PRIO"
@@ -141,7 +141,7 @@ mayhem_tunnels_check() {
 	[ -s "$MAYHEM_RUN_DIR/tunnels" ] || return 0
 	[ -f "$MAYHEM_RUN_DIR/active" ] || [ "$1" = force ] || [ -f "$MAYHEM_RUN_DIR/xray.pid" ] || return 0
 
-	while read -r name dev mark table v6; do
+	while read -r name dev mark table v6 bal; do
 		was="$(cat "$MAYHEM_RUN_DIR/tunnel.$name" 2>/dev/null)"
 
 		if mayhem_tunnel_ok "$dev"; then
@@ -152,7 +152,9 @@ mayhem_tunnels_check() {
 				[ "$v6" = 1 ] && ip -6 route replace default dev "$dev" table "$table" 2>/dev/null
 			fi
 
-			if [ "$was" != up ]; then
+			# bal 0: a server of a proxy section, chosen by hand; its
+			# balancer keeps the choice.
+			if [ "$was" != up ] && [ "${bal:-1}" != 0 ]; then
 				mayhem_select "bal-$name" ""
 				[ -n "$was" ] && mayhem_log "tunnel $dev of section $name works again"
 			fi
@@ -168,7 +170,9 @@ mayhem_tunnels_check() {
 			# one more xray (`xray api`, ~30 MB for a moment).
 			xpid="$(cat "$MAYHEM_RUN_DIR/xray.pid" 2>/dev/null)"
 
-			if [ "$was" != down ] || [ "$(cat "$MAYHEM_RUN_DIR/tunnel.$name.sel" 2>/dev/null)" != "$xpid" ]; then
+			if [ "${bal:-1}" = 0 ]; then
+				:
+			elif [ "$was" != down ] || [ "$(cat "$MAYHEM_RUN_DIR/tunnel.$name.sel" 2>/dev/null)" != "$xpid" ]; then
 				mayhem_select "bal-$name" direct && echo "$xpid" > "$MAYHEM_RUN_DIR/tunnel.$name.sel"
 			fi
 
@@ -431,4 +435,10 @@ mayhem_fw_release() {
 	fi
 
 	[ -n "$FW_VERSION" ] && [ -n "$FW_TARGET" ] && [ -n "$FW_ARCH" ]
+}
+
+mayhem_dnsmasq_nftset() {
+	# Whether dnsmasq can fill nftables sets. A build without it lists
+	# "no-nftset" among its options: the option must be a whole word.
+	dnsmasq --version 2>/dev/null | grep -qE '(^|[[:space:]])nftset([[:space:]]|$)'
 }

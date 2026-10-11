@@ -33,7 +33,7 @@ const conf = '[Interface]\nPrivateKey = cGFzc3Bhc3NwYXNzcGFzc3Bhc3NwYXNzcGFzc3Bh
 
 let r = call('awg_import', { name: 'awgnl', conf: conf, label: 'Нидерланды' });
 let c = cursor();
-const in_pool = (n) => index(c.get('mayhem', 'pool', 'iface_node') ?? [], n) >= 0;
+const in_pool = (n) => c.get('mayhem', n, 'server') != '0' && c.get('network', n) == 'interface';
 let peers = 0;
 
 c.foreach('network', 'amneziawg_awgnl', () => peers++);
@@ -44,6 +44,9 @@ expect('import: no routing section unless asked', r.section == null && c.get('ma
 expect('import: the name of the tunnel', c.get('mayhem', 'awgnl', 'label') == 'Нидерланды');
 
 // pinned on the dashboard by its interface
+if (c.get('mayhem', 'pool') == null)
+	c.set('mayhem', 'pool', 'pool');
+
 c.set('mayhem', 'pool', 'override', 'awgnl');
 c.commit('mayhem');
 
@@ -69,7 +72,7 @@ expect('rename: interface moved with its options',
 	c.get('network', 'awg_nl', 'private_key') == 'cGFzc3Bhc3NwYXNzcGFzc3Bhc3NwYXNzcGFzc3Bhc3M=');
 expect('rename: peers moved', peers == 1 && old_peers == 0);
 expect('rename: firewall zone', zone_ok);
-expect('rename: server list and the pinned server', in_pool('awg_nl') && !in_pool('awgnl') && c.get('mayhem', 'pool', 'override') == 'awg_nl');
+expect('rename: the pinned server', in_pool('awg_nl') && !in_pool('awgnl') && c.get('mayhem', 'pool', 'override') == 'awg_nl');
 expect('rename: the name of the tunnel stays', c.get('mayhem', 'awg_nl', 'label') == 'Нидерланды' && c.get('mayhem', 'awgnl') == null);
 expect('rename to an existing interface is refused', call('rename_interface', { from: 'awg_nl', to: 'lan' }).error != null);
 expect('rename to a bad name is refused', call('rename_interface', { from: 'awg_nl', to: 'Bad-Name' }).error != null);
