@@ -49,6 +49,7 @@ SIDE_EFFECTS = {'action', 'system_install', 'data_update', 'awg_import', 'geo_im
                 'set_ping_method', 'backup_import', 'reset_config', 'rename_section', 'refresh_servers', 'set_main_section'}
 
 calls = []
+installs = []
 uci_writes = []
 unknown = []
 DEMO = bool(os.environ.get('MAYHEM_DEMO'))
@@ -184,6 +185,8 @@ def call(obj, method, args):
         # The latest releases come from GitHub: no network in tests.
         if method == 'components' and (args or {}).get('check'):
             return {'mayhem': '0.11.0', 'xray': '26.9.30', 'xray_latest': '26.9.30', 'mayhem_latest': '0.12.0'}
+        if method == 'system_install':
+            installs.append((args or {}).get('what'))
         if method in SIDE_EFFECTS:
             return {'started': True} if method in ('system_install', 'data_update') else {'ok': True}
         return ucode(os.path.join(os.path.dirname(__file__), 'rpc.uc'), PLUGIN, method, json.dumps(args or {}))
@@ -421,8 +424,15 @@ def main():
             text = pg.inner_text('div[data-tab="device"]')
             if 'awg0' not in text or 'AmneziaWG' not in text:
                 raise RuntimeError('awg0 running as "none" is not listed as an AmneziaWG tunnel')
-            if not pg.locator('div[data-tab="device"] button', has_text=TRANSLATIONS.get('Restart the network', 'Restart the network')).count():
+            btn = pg.locator('div[data-tab="device"] button', has_text=TRANSLATIONS.get('Restart the network', 'Restart the network'))
+            if not btn.count():
                 raise RuntimeError('no button to restart the network for the unloaded protocol')
+            n = len(installs)
+            btn.first.click()
+            pg.wait_for_timeout(800)
+            if 'protos' not in installs[n:]:
+                raise RuntimeError('the button does not start the network restart: %s' % installs[n:])
+            close_modal(pg)
             pg.click('[data-tab="device"] .cbi-button-add')
             pg.wait_for_selector('.modal textarea', timeout=5000)
             shot(pg, 'sections_import')
