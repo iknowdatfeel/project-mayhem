@@ -132,8 +132,17 @@ def ucode(script, *args):
     return json.loads(out.stdout)
 
 
+# Set by a test to show the router as one without subscriptions.
+HIDE = {'subscription': False}
+
+
 def uci_get(config):
-    return ucode(os.path.join(os.path.dirname(__file__), 'uci_get.uc'), os.path.join(FIX, 'uci'), config)
+    values = ucode(os.path.join(os.path.dirname(__file__), 'uci_get.uc'), os.path.join(FIX, 'uci'), config)
+    if config == 'mayhem' and HIDE['subscription']:
+        values = {k: v for k, v in values.items() if v.get('.type') != 'subscription'}
+        for v in values.values():
+            v.pop('subscription', None)
+    return values
 
 
 NETWORK_DUMP = {'interface': [
@@ -498,11 +507,35 @@ def main():
             else:
                 pg.wait_for_timeout(4500)  # two polls: the speed widget has numbers
 
+        def add_section(pg, no_subs=False):
+            # the dialog of a new section opens, also on a router without
+            # subscriptions (an empty dropdown used to throw in LuCI)
+            HIDE['subscription'] = no_subs
+            try:
+                pg.reload()
+                pg.wait_for_selector('#view .cbi-map', timeout=15000)
+                pg.wait_for_timeout(500)
+                pg.click('.cbi-tabmenu li[data-tab="settings"] a')  # earlier actions leave another tab open
+                inp = pg.locator('[data-tab="settings"] .cbi-section-create input[type=text]').first
+                inp.click()
+                inp.press_sequentially('newsec')
+                pg.locator('[data-tab="settings"] .cbi-section-create .cbi-button-add').first.click()
+                pg.wait_for_selector('.modal', timeout=5000)
+                pg.wait_for_timeout(500)
+                n = len(uci_writes)
+                pg.click('.modal .cbi-button-positive')
+                pg.wait_for_timeout(1500)
+                if not any(m == 'add' and a.get('name') == 'newsec' for m, a in uci_writes[n:]):
+                    raise RuntimeError('the new section was not saved: %s' % uci_writes[n:])
+            finally:
+                HIDE['subscription'] = False
+
         pages = [
             ('mayhem/dashboard', [('buttons', dashboard_buttons), ('logs dialog', logs_modal), ('backup dialog', backup_modal), ('run diagnostics', run_diag)]),
             ('mayhem/sections', [('sections tab', lambda pg: shot(pg, 'routing_sections')), ('main section', main_section),
                                  ('edit sections', lambda pg: open_modals(pg, '[data-tab="settings"]')), ('domains as text', section_text),
-                                 ('tunnel options', type_tunnel), ('DNS tab', dns_tab), ('edit geo sources', geo_tab), ('upload dialog', upload_modal)]),
+                                 ('tunnel options', type_tunnel), ('DNS tab', dns_tab), ('edit geo sources', geo_tab), ('upload dialog', upload_modal),
+                                 ('add a section', add_section), ('add a section without subscriptions', lambda pg: add_section(pg, True))]),
             ('mayhem/servers', [('server list tabs', servers_tabs), ('import dialog', import_modal)]),
             ('mayhem/components', [('components', components_page)]),
             ('mayhem/settings', [('reset dialog', settings_tabs)]),

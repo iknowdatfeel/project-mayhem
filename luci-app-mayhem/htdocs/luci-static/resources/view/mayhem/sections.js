@@ -407,13 +407,20 @@ return view.extend({
 			setList(this, sid, 'link', String(value || '').split('\n').map((l) => l.trim()).filter((l) => l && l.charAt(0) !== '#'));
 		});
 
-		o = ss.option(form.MultiValue, 'subscription', _('Subscriptions'),
-			subs.length ? _('Servers of these subscriptions are added to the section.')
-				: _('No subscriptions yet: add them on the Server list page.'));
-		subs.forEach((n) => o.value(n));
+		// LuCI's dropdown throws on an empty choice list: without subscriptions
+		// the field is only a hint and leaves the option as it is.
+		if (subs.length) {
+			o = ss.option(form.MultiValue, 'subscription', _('Subscriptions'),
+				_('Servers of these subscriptions are added to the section.'));
+			subs.forEach((n) => o.value(n));
+			keepHidden(o);
+		}
+		else {
+			o = ss.option(form.DummyValue, 'subscription', _('Subscriptions'));
+			o.cfgvalue = () => _('No subscriptions yet: add them on the Server list page.');
+		}
 		o.depends('type', 'proxy');
 		notJson(o);
-		keepHidden(o);
 		o.modalonly = true;
 
 		o = ss.option(form.ListValue, 'override', _('Server by default'),
