@@ -1568,3 +1568,6 @@ msgstr "%s установлен, но сеть его ещё не загрузи
 
 msgid "Restart the network"
 msgstr "Перезапустить сеть"
+
+msgid "The main section is a tunnel in kernel mode: the rest goes into it in the kernel, past Xray. Exclusions and proxy sections by domain need dnsmasq-full; torrents go into the tunnel too."
+msgstr "Основная секция — туннель в режиме ядра: остальной трафик идёт в него на уровне ядра, мимо Xray. Для исключений и прокси-секций по доменам нужен dnsmasq-full; торренты тоже идут в туннель."

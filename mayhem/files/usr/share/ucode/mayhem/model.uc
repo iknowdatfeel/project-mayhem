@@ -236,15 +236,20 @@ function geo_cidrs(sections, sources) {
 }
 
 // Domains of the geosite categories that kernel-mode tunnel sections use:
-// dnsmasq needs them spelled out. Cached in RAM like the subnets.
-function geo_domains(sections, sources) {
+// dnsmasq needs them spelled out. Cached in RAM like the subnets. With the
+// rest of the traffic going into a kernel tunnel (all), the categories of
+// every section: their addresses must be told apart in the kernel.
+function geo_domains(sections, sources, all) {
 	const per_source = {};
 	const out = {};
 	const used = {};
 	const cache_dir = `${RUN_DIR}/geo-cache`;
 
 	for (let sec in sections) {
-		if (!is_true(sec.enabled ?? '1') || sec.type != 'interface' || (sec.route_mode ?? 'kernel') == 'xray')
+		if (!is_true(sec.enabled ?? '1'))
+			continue;
+
+		if (!all && (sec.type != 'interface' || (sec.route_mode ?? 'kernel') == 'xray'))
 			continue;
 
 		for (let d in entries(sec.domain)) {
@@ -392,12 +397,20 @@ function load_model() {
 	});
 
 	const sources = geo_sources(c);
+	const settings = c.get_all('mayhem', 'settings') ?? {};
+
+	// The rest of the traffic may go into a kernel tunnel: the main section
+	// (or, without one, the first tunnel the generator would fall back to)
+	// is a tunnel section in kernel mode.
+	const kernel_rest = settings.mode == 'global' && length(filter(sections, (s) =>
+		is_true(s.enabled ?? '1') && s.type == 'interface' && (s.route_mode ?? 'kernel') != 'xray' &&
+		(settings.default_section == null || settings.default_section == s['.name']))) > 0;
 
 	return {
 		subscriptions: subscriptions,
-		geo: { sources: sources, cidrs: geo_cidrs(sections, sources), domains: geo_domains(sections, sources) },
+		geo: { sources: sources, cidrs: geo_cidrs(sections, sources), domains: geo_domains(sections, sources, kernel_rest) },
 		lists: lists(sections),
-		settings: c.get_all('mayhem', 'settings') ?? {},
+		settings: settings,
 		dns: c.get_all('mayhem', 'dns') ?? {},
 		sections: sections,
 		runtime: runtime(sections)

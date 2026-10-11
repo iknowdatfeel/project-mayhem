@@ -151,7 +151,7 @@ function tun_mark(idx) {
 	return sprintf('0x%x', C.TUN_MARK | idx);
 }
 
-function build_nft(S, v6, sets, tunnels, dns_redirect, fake_pool) {
+function build_nft(S, v6, sets, tunnels, dns_redirect, fake_pool, kdef) {
 	const ifaces = map(length(sets.ifaces) ? sets.ifaces : [ 'br-lan' ], (i) => sprintf('%J', i));
 	const mark = sprintf('0x%x', C.FWMARK);
 	const keep = sprintf('0x%x', 0xffffffff & ~C.TUN_MASK);
@@ -179,6 +179,19 @@ function build_nft(S, v6, sets, tunnels, dns_redirect, fake_pool) {
 		s += `\tset tun_${t.name}_d6 {\n\t\ttype ipv6_addr\n\t}\n`;
 	}
 
+	// The rest of the traffic into a kernel tunnel: what still has to reach
+	// xray (proxy sections) or stay out of the tunnel (exclusions, blocking)
+	// is told by subnets and by addresses dnsmasq adds for their domains.
+	if (kdef) {
+		s += nft_set('px_4', 'ipv4_addr', kdef.px4);
+		s += nft_set('px_6', 'ipv6_addr', kdef.px6);
+
+		for (let n in [ 'px_d', 'dir_d', 'blk_d' ]) {
+			s += `\tset ${n}4 {\n\t\ttype ipv4_addr\n\t}\n`;
+			s += `\tset ${n}6 {\n\t\ttype ipv6_addr\n\t}\n`;
+		}
+	}
+
 	s += '\n\tchain prerouting {\n';
 	s += '\t\ttype filter hook prerouting priority mangle; policy accept;\n';
 
@@ -194,6 +207,11 @@ function build_nft(S, v6, sets, tunnels, dns_redirect, fake_pool) {
 	s += '\t\tip daddr @block4 counter drop\n';
 	s += '\t\tip6 daddr @block6 counter drop\n';
 
+	if (kdef) {
+		s += '\t\tip daddr @blk_d4 counter drop\n';
+		s += '\t\tip6 daddr @blk_d6 counter drop\n';
+	}
+
 	// Kernel tunnels go before everything else: the mark selects their
 	// routing table, and the packet never reaches xray.
 	for (let t in tunnels) {
@@ -203,6 +221,38 @@ function build_nft(S, v6, sets, tunnels, dns_redirect, fake_pool) {
 		s += `\t\tip daddr @tun_${t.name}_d4 ${m} counter return\n`;
 		s += `\t\tip6 daddr @tun_${t.name}_6 ${m} counter return\n`;
 		s += `\t\tip6 daddr @tun_${t.name}_d6 ${m} counter return\n`;
+	}
+
+	if (kdef) {
+		const m = `meta mark set meta mark & ${keep} | ${kdef.mark}`;
+		const tp4 = `meta l4proto { tcp, udp } meta mark set meta mark | ${mark} tproxy ip to 127.0.0.1:${C.TPROXY_PORT} counter accept`;
+		const tp6 = `meta l4proto { tcp, udp } meta mark set meta mark | ${mark} tproxy ip6 to [::1]:${C.TPROXY_PORT} counter accept`;
+
+		s += '\t\tip daddr @direct4 counter return\n';
+		s += '\t\tip6 daddr @direct6 counter return\n';
+		s += '\t\tip daddr @dir_d4 counter return\n';
+		s += '\t\tip6 daddr @dir_d6 counter return\n';
+
+		if (fake_pool)
+			s += `\t\tip daddr ${fake_pool} ${tp4}\n`;
+
+		s += `\t\tip daddr @px_4 ${tp4}\n`;
+		s += `\t\tip daddr @px_d4 ${tp4}\n`;
+
+		if (v6) {
+			s += `\t\tip6 daddr @px_6 ${tp6}\n`;
+			s += `\t\tip6 daddr @px_d6 ${tp6}\n`;
+		}
+
+		// DNS goes to dnsmasq (chain dstnat), which fills the sets.
+		if (dns_redirect)
+			s += '\t\tmeta l4proto { tcp, udp } th dport 53 return\n';
+
+		s += `\t\tmeta nfproto ipv4 ${m} counter return\n`;
+
+		// A tunnel without IPv6: IPv6 goes on through xray as before.
+		if (kdef.v6)
+			s += `\t\tmeta nfproto ipv6 ${m} counter return\n`;
 	}
 
 	s += '\t\tmeta l4proto != { tcp, udp } return\n';
@@ -240,13 +290,13 @@ function build_nft(S, v6, sets, tunnels, dns_redirect, fake_pool) {
 	return s + '}\n';
 }
 
-// dnsmasq lines that put the addresses of a tunnel section's domains into its
-// nftables sets. dnsmasq matches a domain together with its subdomains.
-function nftset_lines(t) {
-	const sets = `4#inet#${C.NFT_TABLE}#tun_${t.name}_d4,6#inet#${C.NFT_TABLE}#tun_${t.name}_d6`;
+// dnsmasq lines that put the addresses of the domains into two nftables sets
+// (IPv4, IPv6). dnsmasq matches a domain together with its subdomains.
+function nftset_lines(domains, set4, set6) {
+	const sets = `4#inet#${C.NFT_TABLE}#${set4},6#inet#${C.NFT_TABLE}#${set6}`;
 	let out = '', line = '';
 
-	for (let d in t.domains) {
+	for (let d in domains) {
 		if (length(line) + length(d) > 900) {
 			out += `nftset=/${line}/${sets}\n`;
 			line = '';
@@ -539,7 +589,7 @@ function collect_rules(sec, model, warn, G) {
 // Domains of a kernel-mode tunnel section in the form dnsmasq understands:
 // domain: and full: rules and geosite categories (full: matches subdomains as
 // well there). keyword: and regexp: only work through xray.
-function kernel_domains(name, RL, model, warn) {
+function kernel_domains(name, RL, model, warn, fallback) {
 	const out = uset();
 	let skipped = 0;
 
@@ -560,12 +610,12 @@ function kernel_domains(name, RL, model, warn) {
 		const list = model.geo?.domains?.[g.key];
 
 		if ((g.count ?? 0) > KERNEL_DOMAINS_MAX) {
-			warn(`section "${name}": ${g.text} has ${g.count} domains, too many for dnsmasq: they work through xray only`);
+			warn(`section "${name}": ${g.text} has ${g.count} domains, too many for dnsmasq: ${fallback ?? 'they work through xray only'}`);
 			continue;
 		}
 
 		if (g.attr != '' || list == null) {
-			warn(`section "${name}": ${g.text} works through xray only`);
+			warn(`section "${name}": ${g.text} ${fallback ? `cannot be spelled out for dnsmasq: ${fallback}` : 'works through xray only'}`);
 			continue;
 		}
 
@@ -574,10 +624,10 @@ function kernel_domains(name, RL, model, warn) {
 	}
 
 	if (skipped)
-		warn(`section "${name}": ${skipped} keyword/regexp rules work through xray only`);
+		warn(`section "${name}": ${skipped} keyword/regexp rules ${fallback ? `cannot be spelled out for dnsmasq: ${fallback}` : 'work through xray only'}`);
 
 	if (length(out.items) > KERNEL_DOMAINS_MAX) {
-		warn(`section "${name}": ${length(out.items)} domains are too many for dnsmasq (at most ${KERNEL_DOMAINS_MAX}): they work through xray only`);
+		warn(`section "${name}": ${length(out.items)} domains are too many for dnsmasq (at most ${KERNEL_DOMAINS_MAX}): ${fallback ?? 'they work through xray only'}`);
 		return [];
 	}
 
@@ -670,6 +720,7 @@ export function build(model) {
 	const tun_all = [];			// every tunnel section, for the watchdog
 	const tun_rules = [];
 	let tun_index = 0;
+	const routed = [];			// sections the rest-into-a-kernel-tunnel mode must respect
 
 	// Local SOCKS/HTTP ports that lead into a section.
 	const local_inbounds = [];
@@ -1006,6 +1057,7 @@ export function build(model) {
 		if (length(ips))
 			push(list, { ip: ips, ...target });
 
+		push(routed, { type: info.type, name: name, RL: RL });
 		info.ok = true;
 	}
 
@@ -1039,6 +1091,57 @@ export function build(model) {
 			final_target = default_target;
 		else
 			fail('the rest of the traffic needs a server: add one or a subscription on the Server list page, or turn "The rest of the traffic through the tunnel" off');
+	}
+
+	// Without nftset support in dnsmasq, kernel sections only get the
+	// subnets from their rules; domains go through xray.
+	const nftset = length(tunnels) && R.dnsmasq_nftset !== false;
+	const dns_redirect = nftset && is_true(D.hijack ?? '1');
+
+	if (length(tunnels) && !nftset)
+		warn('kernel mode needs dnsmasq-full (nftset support): domains of tunnel sections go through xray until it is installed');
+
+	// The main section is a tunnel in kernel mode: the rest of the traffic
+	// goes into it in the kernel, past xray. Proxy sections still reach xray
+	// and exclusions stay out by subnets and by the addresses of their
+	// domains (dnsmasq), which is why it needs dnsmasq-full.
+	let kdef = null;
+	const kdef_tun = mode == 'global' ? filter(tunnels, (t) => t.name == default_name)[0] : null;
+
+	if (kdef_tun && !nftset)
+		warn(`the rest of the traffic goes into "${default_name}" through xray until dnsmasq-full is installed`);
+	else if (kdef_tun) {
+		const px4 = uset(), px6 = uset(), pxd = uset(), dird = uset(), blkd = uset();
+		const into = `they go into "${default_name}"`;
+
+		for (let r in routed) {
+			const toxray = r.type == 'proxy' || r.type == 'interface';
+
+			if (toxray) {
+				px4.add_all(r.RL.ip4);
+				px4.add_all(r.RL.geo4);
+				px6.add_all(r.RL.ip6);
+				px6.add_all(r.RL.geo6);
+			}
+
+			// FakeDNS answers proxy domains with its own addresses: the
+			// pool is sent to xray as a whole.
+			if (toxray && fakedns)
+				continue;
+
+			const doms = kernel_domains(r.name, r.RL, model, warn,
+				r.type == 'block' ? `they are not blocked, ${into}` : into);
+
+			(toxray ? pxd : r.type == 'block' ? blkd : dird).add_all(doms);
+		}
+
+		kdef = {
+			name: default_name, mark: kdef_tun.mark ?? tun_mark(kdef_tun.index), v6: kdef_tun.v6,
+			px4: px4.items, px6: px6.items, pxd: pxd.items, dird: dird.items, blkd: blkd.items
+		};
+
+		if (is_true(S.torrent_direct ?? '0'))
+			warn(`torrents cannot be told apart in the kernel: they go into "${default_name}" too`);
 	}
 
 	// --- DNS ----------------------------------------------------------------
@@ -1140,7 +1243,13 @@ export function build(model) {
 			for (let r in remote)
 				push(servers, ns(r, { domains: tun_domains4.items, skipFallback: true, queryStrategy: 'UseIPv4' }));
 
-		if (fakedns)
+		// The rest into a kernel tunnel needs real addresses: FakeDNS only
+		// for proxy domains, whose fake addresses go to xray.
+		if (fakedns && kdef) {
+			if (length(proxy_domains.items))
+				push(servers, { address: 'fakedns', domains: proxy_domains.items, skipFallback: true });
+		}
+		else if (fakedns)
 			push(servers, { address: 'fakedns' });
 
 		for (let r in remote)
@@ -1338,14 +1447,6 @@ export function build(model) {
 	if (fakedns)
 		xray.fakedns = [ { ipPool: C.FAKEDNS_POOL, poolSize: C.FAKEDNS_POOL_SIZE } ];
 
-	// Without nftset support in dnsmasq, kernel sections only get the
-	// subnets from their rules; domains go through xray.
-	const nftset = length(tunnels) && R.dnsmasq_nftset !== false;
-	const dns_redirect = nftset && is_true(D.hijack ?? '1');
-
-	if (length(tunnels) && !nftset)
-		warn('kernel mode needs dnsmasq-full (nftset support): domains of tunnel sections go through xray until it is installed');
-
 	// What running xray cannot change: everything but the servers. procd
 	// restarts xray when this changes; otherwise live.uc swaps the servers in
 	// place. With "only matched lists" a new server host needs nothing from
@@ -1364,6 +1465,7 @@ export function build(model) {
 			key.dns.servers[i].domains = server_hosts;
 
 	state.default_section = default_name;
+	state.kernel_default = kdef ? kdef.name : null;
 	state.geo_pending = geo_pending;
 	state.lists_missing = lists_missing;
 	state.generated = R.now ?? time();
@@ -1378,9 +1480,11 @@ export function build(model) {
 			ifaces: entries(S.interface),
 			block4: sets.block4.items, block6: sets.block6.items,
 			direct4: sets.direct4.items, direct6: sets.direct6.items
-		}, tunnels, dns_redirect, fakedns ? C.FAKEDNS_POOL : null),
+		}, tunnels, dns_redirect, fakedns ? C.FAKEDNS_POOL : null, kdef),
 		dnsmasq: `server=127.0.0.1#${C.DNS_PORT}\nno-resolv\n` +
-			(nftset ? join('', map(tunnels, (t) => nftset_lines(t))) : ''),
+			(nftset ? join('', map(tunnels, (t) => nftset_lines(t.domains, `tun_${t.name}_d4`, `tun_${t.name}_d6`))) : '') +
+			(kdef ? nftset_lines(kdef.blkd, 'blk_d4', 'blk_d6') + nftset_lines(kdef.dird, 'dir_d4', 'dir_d6') +
+				nftset_lines(kdef.pxd, 'px_d4', 'px_d6') : ''),
 		// "section device mark table v6" per tunnel section; mark and table are
 		// "-" in xray mode.
 		tunnels: join('', map(tun_all, (t) => `${t.name} ${t.device} ${t.mark} ${t.table} ${t.v6 ? 1 : 0}\n`)),

@@ -329,6 +329,41 @@ else
 	ok "memory: direct UDP idle timeout, spread server checks, compact config"
 fi
 
+# The rest of the traffic into a kernel tunnel (main section, global mode):
+# exclusions and blocked domains stay out of it, proxy sections still reach
+# xray, everything else gets the tunnel's mark before xray.
+nft_rest() {
+	# $1 model dir: line numbers of the rules, "-" when missing
+	for re in '@blk_d4 counter drop' '@direct4 counter return' '@dir_d4 counter return' '@px_d4 meta l4proto' \
+		'meta nfproto ipv4 meta mark set meta mark & 0x[0-9a-f]* | 0x4000001 counter return' \
+		'meta nfproto ipv4 meta l4proto { tcp, udp } meta mark set meta mark | 0x2000000 tproxy'; do
+		n="$(grep -n -- "$re" "$1/nft.conf" | head -n 1 | cut -d: -f1)"
+		printf '%s ' "${n:--}"
+	done
+}
+set -- $(nft_rest "$OUT/tunrest")
+if [ "$#" != 6 ] || [ "$1" = - ] || [ "$2" = - ] || [ "$3" = - ] || [ "$4" = - ] || [ "$5" = - ] || [ "$6" = - ] || \
+   [ "$1" -gt "$2" ] || [ "$2" -gt "$3" ] || [ "$3" -gt "$4" ] || [ "$4" -gt "$5" ] || [ "$5" -gt "$6" ]; then
+	bad "model tunrest: rules out of order (block, direct, exclusions, proxy, tunnel, xray): $*"
+elif ! grep -q 'nftset=/ru.test/yandex.test/.*#dir_d4' "$OUT/tunrest/dnsmasq.conf" || \
+     ! grep -q 'nftset=/instagram.com/.*#px_d4' "$OUT/tunrest/dnsmasq.conf" || \
+     ! grep -q 'nftset=/ads.test/.*#blk_d4' "$OUT/tunrest/dnsmasq.conf"; then
+	bad "model tunrest: dnsmasq does not fill the sets: $(cat "$OUT/tunrest/dnsmasq.conf")"
+elif grep -q 'meta nfproto ipv6 meta mark set meta mark & 0x[0-9a-f]* | 0x4000001' "$OUT/tunrest/nft.conf"; then
+	bad "model tunrest: IPv6 goes into a tunnel without IPv6"
+elif grep -q '#px_d4' "$OUT/tunrest-fake/dnsmasq.conf" || ! grep -q '198.18.0.0/15 meta l4proto' "$OUT/tunrest-fake/nft.conf" || \
+     ! uc -e "
+	const x = json(require('fs').readfile('$OUT/tunrest-fake/xray.json'));
+	const f = filter(x.dns.servers, (s) => s.address == 'fakedns');
+	exit((length(f) == 1 && index(f[0].domains, 'domain:instagram.com') >= 0) ? 0 : 1);
+" 2>/dev/null; then
+	bad "model tunrest-fake: FakeDNS must answer only proxy domains, its pool goes to xray"
+elif grep -q 'px_4\|0x4000001 counter return$' "$OUT/global/nft.conf" 2>/dev/null; then
+	bad "model global: the rest goes into a tunnel without a tunnel main section"
+else
+	ok "the rest of the traffic into a kernel tunnel: exclusions, blocking and proxy sections kept"
+fi
+
 # A kernel tunnel section does not hand dnsmasq more domains than it can hold.
 cat > "$OUT/bigtun.json" <<'JSON'
 { "settings": { "mode": "lists", "interface": ["br-lan"] },

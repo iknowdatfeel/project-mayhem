@@ -1282,6 +1282,10 @@ msgid "The key is not valid base64"
 msgstr ""
 
 #: htdocs/luci-static/resources/view/mayhem/sections.js
+msgid "The main section is a tunnel in kernel mode: the rest goes into it in the kernel, past Xray. Exclusions and proxy sections by domain need dnsmasq-full; torrents go into the tunnel too."
+msgstr ""
+
+#: htdocs/luci-static/resources/view/mayhem/sections.js
 msgid "The name \"pool\" is taken by the server list"
 msgstr ""
 
