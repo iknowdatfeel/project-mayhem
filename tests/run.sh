@@ -350,6 +350,52 @@ else
 	ok "huge category in a kernel tunnel goes through xray, small ones through dnsmasq"
 fi
 
+# Firmware version, target and package arch for the AmneziaWG builds.
+# `ubus call system board` has no arch, so it must come from the release file.
+mkdir -p "$OUT/fw/bin"
+cat > "$OUT/fw/openwrt_release" <<'EOF'
+DISTRIB_ID='OpenWrt'
+DISTRIB_RELEASE='25.12.5'
+DISTRIB_TARGET='mediatek/filogic'
+DISTRIB_ARCH='aarch64_cortex-a53'
+EOF
+cat > "$OUT/fw/bin/ubus" <<'EOF'
+#!/bin/sh
+echo '{"release":{"distribution":"OpenWrt","version":"24.10.8","target":"ramips/mt7621"}}'
+EOF
+printf '#!/bin/sh\necho mipsel_24kc\n' > "$OUT/fw/bin/apk"
+printf '#!/bin/sh\nexit 1\n' > "$OUT/fw/bin/jsonfilter"
+chmod +x "$OUT/fw/bin/ubus" "$OUT/fw/bin/apk" "$OUT/fw/bin/jsonfilter"
+fw_info() {
+	# $1 release file; prints "version target arch" or "fail"
+	PATH="$OUT/fw/bin:$PATH" MAYHEM_LIB_DIR="$FILES/usr/share/mayhem" MAYHEM_RELEASE_FILE="$1" sh -c \
+		'. "$MAYHEM_LIB_DIR/lib.sh"; if mayhem_fw_release; then echo "$FW_VERSION $FW_TARGET $FW_ARCH"; else echo fail; fi'
+}
+got="$(fw_info "$OUT/fw/openwrt_release")"
+if [ "$got" = "25.12.5 mediatek/filogic aarch64_cortex-a53" ]; then
+	ok "firmware version, target and arch from the release file"
+else
+	bad "firmware version, target and arch from the release file: $got"
+fi
+# without the release file: version and target from ubus, arch from apk
+cat > "$OUT/fw/bin/jsonfilter" <<'EOF'
+#!/bin/sh
+key="${2#@.release.}"
+sed -n "s/.*\"$key\":\"\([^\"]*\)\".*/\1/p"
+EOF
+got="$(fw_info "$OUT/fw/missing")"
+if [ "$got" = "24.10.8 ramips/mt7621 mipsel_24kc" ]; then
+	ok "firmware version and target from ubus, arch from apk"
+else
+	bad "firmware version and target from ubus, arch from apk: $got"
+fi
+rm -f "$OUT/fw/bin/apk"
+if [ "$(fw_info "$OUT/fw/missing")" = fail ] || command -v opkg >/dev/null 2>&1; then
+	ok "no arch anywhere is an error"
+else
+	bad "no arch anywhere is an error"
+fi
+
 if command -v shellcheck >/dev/null 2>&1; then
 	if out="$(shellcheck -s sh -f gcc -e SC1091,SC2034,SC3043,SC2086,SC2046,SC2317,SC2329 \
 		"$FILES/usr/bin/mayhem" "$FILES/usr/libexec/mayhem/xray-run" "$FILES/usr/libexec/mayhem/scheduler" \
