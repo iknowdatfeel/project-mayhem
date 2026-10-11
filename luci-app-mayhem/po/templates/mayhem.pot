@@ -29,6 +29,10 @@ msgstr ""
 msgid "%d%% of memory"
 msgstr ""
 
+#: htdocs/luci-static/resources/mayhem/tunnels.js
+msgid "%s is installed, but the network has not loaded it yet: its tunnels do not start."
+msgstr ""
+
 #: htdocs/luci-static/resources/view/mayhem/dashboard.js
 msgid "%s of %s"
 msgstr ""
@@ -1035,6 +1039,14 @@ msgstr ""
 
 #: htdocs/luci-static/resources/view/mayhem/settings.js
 msgid "Restart Xray above"
+msgstr ""
+
+#: htdocs/luci-static/resources/mayhem/tunnels.js
+msgid "Restart the network"
+msgstr ""
+
+#: htdocs/luci-static/resources/mayhem/tunnels.js
+msgid "Restarting the network"
 msgstr ""
 
 #: htdocs/luci-static/resources/view/mayhem/settings.js

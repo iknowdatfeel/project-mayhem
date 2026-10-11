@@ -1559,3 +1559,12 @@ msgstr "секция %s"
 #: htdocs/luci-static/resources/mayhem/diag.js
 msgid "updated %s"
 msgstr "обновлено %s"
+
+msgid "Restarting the network"
+msgstr "Перезапуск сети"
+
+msgid "%s is installed, but the network has not loaded it yet: its tunnels do not start."
+msgstr "%s установлен, но сеть его ещё не загрузила: туннели не запускаются."
+
+msgid "Restart the network"
+msgstr "Перезапустить сеть"

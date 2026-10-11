@@ -23,6 +23,8 @@ Usage: mayhem <command>
                              updates are on (the scheduler runs it nightly)
   awg-install                install AmneziaWG (kernel module, tools, LuCI protocol)
                              from the awg-openwrt builds for this firmware
+  tunnel-protos              restart the network if it has not loaded an installed
+                             tunnel protocol (AmneziaWG, WireGuard) yet
   dnsmasq-full               replace dnsmasq with dnsmasq-full (needed for tunnel
                              sections in kernel mode); rolls back on failure
   version                    print versions
@@ -182,11 +184,35 @@ pkg_add_file() {
 
 AWG_RELEASES="https://github.com/Slava-Shchipunov/awg-openwrt/releases/download"
 
+tunnel_protos_load() {
+	# netifd loads protocol handlers only when it starts: a reload does not
+	# see one installed later, and its interfaces stay "unsupported protocol"
+	# (proto "none"). Restarts the network if an installed one is missing.
+	local handlers p missing=""
+
+	handlers="$(ubus call network get_proto_handlers 2>/dev/null)" || return 0
+	[ -n "$handlers" ] || return 0
+
+	for p in amneziawg wireguard; do
+		[ -e "/lib/netifd/proto/$p.sh" ] || continue
+		echo "$handlers" | grep -q "\"$p\"" || missing="$missing $p"
+	done
+
+	if [ -z "$missing" ]; then
+		echo "The network knows all installed tunnel protocols"
+		return 0
+	fi
+
+	echo "Restarting the network so that it loads:$missing"
+	/etc/init.d/network restart
+}
+
 cmd_awg_install() {
 	local arch target ver postfix dir="/tmp/mayhem-awg" p file got
 
 	if pkg_has kmod-amneziawg && pkg_has amneziawg-tools; then
 		echo "AmneziaWG is already installed"
+		tunnel_protos_load
 		return 0
 	fi
 
@@ -247,8 +273,7 @@ cmd_awg_install() {
 		return 1
 	fi
 
-	# netifd learns the new protocol on restart.
-	/etc/init.d/network reload >/dev/null 2>&1
+	tunnel_protos_load
 	echo "AmneziaWG is installed"
 }
 
@@ -380,6 +405,9 @@ case "$1" in
 		;;
 	xray-install)
 		cmd_xray_install "$2"
+		;;
+	tunnel-protos)
+		tunnel_protos_load
 		;;
 	awg-install)
 		cmd_awg_install
