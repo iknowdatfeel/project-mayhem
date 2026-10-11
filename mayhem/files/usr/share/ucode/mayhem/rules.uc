@@ -277,3 +277,9 @@ export function list_key(url) {
 
 	return sprintf('%08x%08x', a, b);
 };
+
+// Whether `dnsmasq --version` lists nftset among its compile-time options.
+// A build without it says "no-nftset", which must not count.
+export function dnsmasq_nftset(version) {
+	return match(version ?? '', /(^|[ \t\n])nftset([ \t\n]|$)/) != null;
+};

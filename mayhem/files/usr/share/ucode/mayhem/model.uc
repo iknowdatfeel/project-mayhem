@@ -7,7 +7,7 @@
 import { cursor } from 'uci';
 import { readfile, writefile, access, stat, mkdir, lsdir, unlink, popen } from 'fs';
 import { SUBS_DIR, UCI_DIR, GEO_DIR, LISTS_DIR, RUN_DIR } from 'mayhem.const';
-import { is_true, entries, list_key, norm_ip, norm_domain, is_ip } from 'mayhem.rules';
+import { is_true, entries, list_key, norm_ip, norm_domain, is_ip, dnsmasq_nftset } from 'mayhem.rules';
 import { resolve, geoip_cidrs, geosite_domains, KERNEL_DOMAINS_MAX } from 'mayhem.geo';
 
 const RESOLV_FILES = [ '/tmp/resolv.conf.d/resolv.conf.auto', '/tmp/resolv.conf.auto' ];
@@ -132,7 +132,7 @@ function runtime(sections) {
 		mem_total_kb: mem_total_kb(),
 		router_ips: router_ips(),
 		ifaces: ifaces(names),
-		dnsmasq_nftset: length(names) ? index(command('dnsmasq --version 2>/dev/null') ?? '', 'nftset') >= 0 : null
+		dnsmasq_nftset: length(names) ? dnsmasq_nftset(command('dnsmasq --version 2>/dev/null')) : null
 	};
 }
 
@@ -339,7 +339,8 @@ function own_servers(s) {
 }
 
 // The server list as a proxy section of its own, first, without rules: the
-// servers added by key and those of every enabled subscription.
+// servers added by key, those of every enabled subscription and the tunnels
+// chosen to be servers too.
 function pool_section(c) {
 	const p = c.get_all('mayhem', 'pool');
 
@@ -355,7 +356,7 @@ function pool_section(c) {
 
 	return {
 		'.name': 'pool', '.type': 'pool', type: 'proxy', enabled: '1', pool: true,
-		link: p.link, subscription: subs,
+		link: p.link, subscription: subs, iface_node: p.iface_node,
 		select: p.select, selected: p.selected, override: p.override
 	};
 }
@@ -399,6 +400,14 @@ function load_model() {
 	const sources = geo_sources(c);
 	const settings = c.get_all('mayhem', 'settings') ?? {};
 
+	// Names the user gave tunnels ("config tunnel '<interface>'").
+	const tunnel_labels = {};
+
+	c.foreach('mayhem', 'tunnel', (t) => {
+		if (t.label != null && t.label != '')
+			tunnel_labels[t['.name']] = t.label;
+	});
+
 	// The rest of the traffic may go into a kernel tunnel: the main section
 	// (or, without one, the first tunnel the generator would fall back to)
 	// is a tunnel section in kernel mode.
@@ -411,6 +420,7 @@ function load_model() {
 		geo: { sources: sources, cidrs: geo_cidrs(sections, sources), domains: geo_domains(sections, sources, kernel_rest) },
 		lists: lists(sections),
 		settings: settings,
+		tunnel_labels: tunnel_labels,
 		dns: c.get_all('mayhem', 'dns') ?? {},
 		sections: sections,
 		runtime: runtime(sections)

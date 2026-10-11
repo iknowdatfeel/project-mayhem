@@ -85,6 +85,10 @@ msgstr ""
 msgid "A tunnel is a network interface: AmneziaWG, WireGuard, OpenVPN or another one. A tunnel section sends its traffic into it, and a proxy section can use it as one of its servers."
 msgstr ""
 
+#: htdocs/luci-static/resources/mayhem/tunnels.js
+msgid "A tunnel marked \"In the server list\" becomes one of its servers: it can be chosen on the dashboard or win the automatic choice by ping. Its traffic goes through Xray."
+msgstr ""
+
 #: htdocs/luci-static/resources/view/mayhem/sections.js
 msgid "Active server of the server list"
 msgstr ""
@@ -310,7 +314,7 @@ msgid "Copy the report and attach it to a question or a bug report. It holds no 
 msgstr ""
 
 #: htdocs/luci-static/resources/mayhem/tunnels.js
-msgid "Create a section"
+msgid "Create a routing section"
 msgstr ""
 
 #: htdocs/luci-static/resources/mayhem/diag.js
@@ -533,6 +537,10 @@ msgstr ""
 msgid "Files on the router in the same format, for example /etc/mayhem/my.lst."
 msgstr ""
 
+#: htdocs/luci-static/resources/mayhem/tunnels.js
+msgid "For example, Netherlands"
+msgstr ""
+
 #: htdocs/luci-static/resources/mayhem/common.js
 msgid "GB"
 msgstr ""
@@ -617,6 +625,10 @@ msgstr ""
 msgid "In sections a category is written as geosite:category or geosite:source:category. When several sources have the category, it is taken from the one higher in this list."
 msgstr ""
 
+#: htdocs/luci-static/resources/mayhem/tunnels.js
+msgid "In the server list"
+msgstr ""
+
 #: htdocs/luci-static/resources/view/mayhem/dashboard.js
 msgid "Incoming"
 msgstr ""
@@ -662,7 +674,15 @@ msgid "Interface %s and section %s are created. Add rules to the section on the 
 msgstr ""
 
 #: htdocs/luci-static/resources/mayhem/tunnels.js
+msgid "Interface %s is created and added to the server list: choose it on the dashboard."
+msgstr ""
+
+#: htdocs/luci-static/resources/mayhem/tunnels.js
 msgid "Interface %s is created."
+msgstr ""
+
+#: htdocs/luci-static/resources/mayhem/tunnels.js
+msgid "Interface %s is now %s. The tunnel reconnects."
 msgstr ""
 
 #: htdocs/luci-static/resources/mayhem/tunnels.js
@@ -909,6 +929,10 @@ msgstr ""
 msgid "One per line, or separated by commas or spaces; \"#\" starts a comment. example.com matches the domain and its subdomains; full: is the exact name, keyword: a substring, regexp: a regular expression. Addresses and subnets: 91.108.4.0/22, 2001:db8::/32."
 msgstr ""
 
+#: htdocs/luci-static/resources/mayhem/tunnels.js
+msgid "Only to route chosen sites into this tunnel; to use it for all traffic, choose it on the dashboard instead."
+msgstr ""
+
 #: htdocs/luci-static/resources/mayhem/diag.js
 msgid "Other proxy clients"
 msgstr ""
@@ -1017,12 +1041,20 @@ msgstr ""
 msgid "Remote DNS, downloads and the rest of the traffic go through the active server of %s. Xray restarts, connections break for a moment."
 msgstr ""
 
-#: htdocs/luci-static/resources/view/mayhem/sections.js
+#: htdocs/luci-static/resources/mayhem/tunnels.js
 msgid "Rename"
 msgstr ""
 
 #: htdocs/luci-static/resources/view/mayhem/sections.js
 msgid "Rename section %s"
+msgstr ""
+
+#: htdocs/luci-static/resources/mayhem/tunnels.js
+msgid "Rename the interface"
+msgstr ""
+
+#: htdocs/luci-static/resources/mayhem/tunnels.js
+msgid "Rename the interface %s"
 msgstr ""
 
 #: htdocs/luci-static/resources/view/mayhem/settings.js
@@ -1282,7 +1314,7 @@ msgid "The key is not valid base64"
 msgstr ""
 
 #: htdocs/luci-static/resources/view/mayhem/sections.js
-msgid "The main section is a tunnel in kernel mode: the rest goes into it in the kernel, past Xray. Exclusions and proxy sections by domain need dnsmasq-full; torrents go into the tunnel too."
+msgid "The main section is a tunnel in kernel mode: the rest goes into it in the kernel, past Xray. Exclusions and proxy sections by domain need dnsmasq-full. With torrents direct, only web traffic goes into it in the kernel, the rest through Xray."
 msgstr ""
 
 #: htdocs/luci-static/resources/view/mayhem/sections.js
@@ -1295,6 +1327,10 @@ msgstr ""
 
 #: htdocs/luci-static/resources/view/mayhem/sections.js
 msgid "The network interface of the tunnel. When the tunnel stops working (no handshake for 3 minutes), its traffic goes direct until it is back."
+msgstr ""
+
+#: htdocs/luci-static/resources/mayhem/tunnels.js
+msgid "The network interface, its firewall zone and every Mayhem setting that names it are renamed. The tunnel reconnects."
 msgstr ""
 
 #: htdocs/luci-static/resources/view/mayhem/sections.js
@@ -1371,6 +1407,10 @@ msgstr ""
 
 #: htdocs/luci-static/resources/view/mayhem/dashboard.js
 msgid "Tunnel"
+msgstr ""
+
+#: htdocs/luci-static/resources/mayhem/tunnels.js
+msgid "Tunnel name"
 msgstr ""
 
 #: htdocs/luci-static/resources/mayhem/tunnels.js

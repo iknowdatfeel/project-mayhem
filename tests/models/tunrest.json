@@ -6,7 +6,8 @@
       "br-lan"
     ],
     "ip_family": "prefer_ipv4",
-    "torrent_direct": "1"
+    "torrent_direct": "1",
+    "block_quic": "1"
   },
   "dns": {
     "remote": [

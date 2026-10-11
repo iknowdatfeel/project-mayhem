@@ -310,7 +310,7 @@ return view.extend({
 		o = s.option(form.Flag, 'mode', _('The rest of the traffic through the tunnel'),
 			(now ? _('Traffic that matches no rule goes through the active server, now %s. When this is off, it goes direct.').format(now)
 				: _('Traffic that matches no rule goes through the active server. When this is off, it goes direct.')) +
-			(kernelMain ? ' ' + _('The main section is a tunnel in kernel mode: the rest goes into it in the kernel, past Xray. Exclusions and proxy sections by domain need dnsmasq-full; torrents go into the tunnel too.') : ''));
+			(kernelMain ? ' ' + _('The main section is a tunnel in kernel mode: the rest goes into it in the kernel, past Xray. Exclusions and proxy sections by domain need dnsmasq-full. With torrents direct, only web traffic goes into it in the kernel, the rest through Xray.') : ''));
 		o.enabled = 'global';
 		o.disabled = 'lists';
 		o.default = 'lists';

@@ -6,7 +6,7 @@
 
 import * as fs from 'fs';
 import { parse_link, outbound_host, outbound_port, refused_by_xray } from 'mayhem.links';
-import { list_key, entries } from 'mayhem.rules';
+import { list_key, entries, dnsmasq_nftset } from 'mayhem.rules';
 import { parse_conf, is_amnezia, uci_sections } from 'mayhem.awg';
 import * as C from 'mayhem.const';
 
@@ -209,6 +209,7 @@ function install_running() {
 }
 
 const NETIFD_PROTO = getenv('MAYHEM_NETIFD_PROTO_DIR') ?? '/lib/netifd/proto';
+const SYS_NET = getenv('MAYHEM_SYS_NET') ?? '/sys/class/net';
 
 function has_awg() {
 	return fs.access(`${NETIFD_PROTO}/amneziawg.sh`) == true && (NETIFD_PROTO != '/lib/netifd/proto' || fs.access('/usr/bin/awg') == true);
@@ -1063,6 +1064,7 @@ const methods = {
 			const c = uci_cursor();
 			const sections = [];
 			const totals = { proxy: { up: 0, down: 0 }, direct: { up: 0, down: 0 }, all: { up: 0, down: 0 } };
+			const kernel_tun = {};
 
 			for (let sn in keys(state.sections ?? {})) {
 				const s = state.sections[sn];
@@ -1092,8 +1094,20 @@ const methods = {
 
 				if (s.type == 'interface') {
 					sec.interface = s.interface;
+					sec.label = c.get('mayhem', s.interface) == 'tunnel' ? c.get('mayhem', s.interface, 'label') : null;
 					sec.device = s.device;
 					sec.tunnel = tunnel_state(sn, s.device);
+
+					// The kernel sends this traffic past xray: the interface
+					// counts it (what xray sends into it as well).
+					if (s.mode == 'kernel' && match(s.device ?? '', /^[A-Za-z0-9_.@-]+$/)) {
+						const b = (f) => +trim(fs.readfile(`${SYS_NET}/${s.device}/statistics/${f}`) ?? '0') || 0;
+
+						kernel_tun[sn] = true;
+						sec.traffic = { up: b('tx_bytes'), down: b('rx_bytes') };
+						totals.all.up += sec.traffic.up;
+						totals.all.down += sec.traffic.down;
+					}
 				}
 
 				push(sections, sec);
@@ -1110,7 +1124,9 @@ const methods = {
 
 				// Everything that leaves the router through xray: servers,
 				// tunnels in xray mode and direct; not DNS and not blocked.
-				if (k || substr(tag, 0, 2) == 'i-') {
+				const im = match(tag, /^i-(.+)-[0-9]+$/);
+
+				if (k || (im && !kernel_tun[im[1]])) {
 					totals.all.up += t.uplink ?? 0;
 					totals.all.down += t.downlink ?? 0;
 				}
@@ -1167,14 +1183,16 @@ const methods = {
 			}
 
 			// Remember the choice by name: tags change when the server list does.
+			// A tunnel by its interface, which its name can change without.
 			const c = uci_cursor();
+			const key = node?.iface ?? node?.name;
 
 			if (s.mode == 'manual') {
-				c.set('mayhem', sn, 'selected', node.name);
+				c.set('mayhem', sn, 'selected', key);
 				s.selected = tag;
 			}
 			else if (tag != '') {
-				c.set('mayhem', sn, 'override', node.name);
+				c.set('mayhem', sn, 'override', key);
 				s.override = tag;
 			}
 			else {
@@ -1377,7 +1395,7 @@ const methods = {
 				protos_missing: type(handlers) == 'object'
 					? filter([ awg ? 'amneziawg' : null, wireguard ? 'wireguard' : null ], (p) => p && !handlers[p])
 					: [],
-				nftset: index(run('dnsmasq --version 2>/dev/null') ?? '', 'nftset') >= 0,
+				nftset: dnsmasq_nftset(run('dnsmasq --version 2>/dev/null')),
 				install: {
 					running: install_running(),
 					what: trim(fs.readfile(`${RUN}/install.what`) ?? '') || null,
@@ -1424,7 +1442,7 @@ const methods = {
 	// Creates a network interface (and optionally a Mayhem section) from a
 	// WireGuard/AmneziaWG .conf. vpn:// keys are decoded in the browser.
 	awg_import: {
-		args: { name: '', conf: '', section: true },
+		args: { name: '', conf: '', section: false, pool: true, label: '' },
 		call: function(req) {
 			const name = req.args?.name ?? '';
 
@@ -1506,9 +1524,27 @@ const methods = {
 
 			c.set('firewall', zone, 'network', [ ...(type(nets) == 'array' ? nets : [ nets ]), name ]);
 
+			// A tunnel is a server of the server list unless asked otherwise:
+			// it is chosen on the dashboard like any other server.
+			if (req.args?.pool !== false) {
+				if (c.get('mayhem', 'pool') == null)
+					c.set('mayhem', 'pool', 'pool');
+
+				const nodes = c.get('mayhem', 'pool', 'iface_node') ?? [];
+
+				c.set('mayhem', 'pool', 'iface_node', [ ...(type(nodes) == 'array' ? nodes : [ nodes ]), name ]);
+			}
+
+			const label = trim(req.args?.label ?? '');
+
+			if (label != '') {
+				c.set('mayhem', name, 'tunnel');
+				c.set('mayhem', name, 'label', label);
+			}
+
 			let section = null;
 
-			if (req.args?.section !== false) {
+			if (req.args?.section === true) {
 				section = name;
 
 				for (let i = 2; c.get('mayhem', section) != null; i++)
@@ -1519,15 +1555,113 @@ const methods = {
 				c.set('mayhem', section, 'type', 'interface');
 				c.set('mayhem', section, 'interface', name);
 				c.set('mayhem', section, 'route_mode', 'kernel');
-				c.commit('mayhem');
+			}
+
+			c.commit('mayhem');
+			c.commit('network');
+			c.commit('firewall');
+
+			system(`(/etc/init.d/network reload; /etc/init.d/firewall reload; /etc/init.d/mayhem reload) >/dev/null 2>&1 &`);
+
+			return { ok: true, interface: name, proto: proto, section: section, pool: req.args?.pool !== false, v6: cfg.v6 };
+		}
+	},
+
+	// Renames a tunnel interface: the network interface and its peers (whose
+	// type carries the name), the firewall zone, and every Mayhem reference.
+	rename_interface: {
+		args: { from: '', to: '' },
+		call: function(req) {
+			const from = req.args?.from ?? '', to = req.args?.to ?? '';
+
+			if (!match(to, /^[a-z][a-z0-9_]{0,14}$/))
+				return { error: 'the name must start with a letter and have at most 15 lower-case letters, digits or _' };
+
+			const c = require('uci').cursor(C.UCI_DIR);
+
+			c.load('network');
+			c.load('firewall');
+			c.load('mayhem');
+
+			if (!match(from, /^[A-Za-z0-9_]+$/) || c.get('network', from) != 'interface')
+				return { error: `network interface ${from} does not exist` };
+
+			if (from == to)
+				return { ok: true, interface: to };
+
+			if (c.get('network', to) != null)
+				return { error: `network interface ${to} already exists` };
+
+			const copy_opts = (cfg, src, dst) => {
+				const all = c.get_all(cfg, src) ?? {};
+
+				for (let k in keys(all))
+					if (substr(k, 0, 1) != '.')
+						c.set(cfg, dst, k, all[k]);
+			};
+
+			c.set('network', to, 'interface');
+			copy_opts('network', from, to);
+
+			// Peers are sections of type "<proto>_<interface>".
+			const proto = c.get('network', from, 'proto') ?? '';
+			const peers = [];
+
+			c.foreach('network', `${proto}_${from}`, (p) => push(peers, p['.name']));
+
+			for (let p in peers) {
+				const sid = c.add('network', `${proto}_${to}`);
+
+				copy_opts('network', p, sid);
+				c.delete('network', p);
+			}
+
+			c.delete('network', from);
+
+			const swap = (v) => type(v) == 'array' ? map(v, (x) => x == from ? to : x) : (v == from ? to : v);
+
+			c.foreach('firewall', 'zone', (z) => {
+				if (z.network != null)
+					c.set('firewall', z['.name'], 'network', swap(z.network));
+			});
+
+			c.foreach('mayhem', 'section', (sec) => {
+				if (sec.interface == from)
+					c.set('mayhem', sec['.name'], 'interface', to);
+
+				if (sec.iface_node != null)
+					c.set('mayhem', sec['.name'], 'iface_node', swap(sec.iface_node));
+
+				for (let k in [ 'selected', 'override' ])
+					if (sec[k] == from)
+						c.set('mayhem', sec['.name'], k, to);
+			});
+
+			if (c.get('mayhem', 'pool') != null) {
+				const p = c.get_all('mayhem', 'pool');
+
+				if (p.iface_node != null)
+					c.set('mayhem', 'pool', 'iface_node', swap(p.iface_node));
+
+				for (let k in [ 'selected', 'override' ])
+					if (p[k] == from)
+						c.set('mayhem', 'pool', k, to);
+			}
+
+			// The tunnel's name lives under the interface name.
+			if (c.get('mayhem', from) == 'tunnel') {
+				c.set('mayhem', to, 'tunnel');
+				copy_opts('mayhem', from, to);
+				c.delete('mayhem', from);
 			}
 
 			c.commit('network');
 			c.commit('firewall');
+			c.commit('mayhem');
 
-			system(`(/etc/init.d/network reload; /etc/init.d/firewall reload) >/dev/null 2>&1 &`);
+			system(`(/etc/init.d/network reload; /etc/init.d/firewall reload; /etc/init.d/mayhem reload) >/dev/null 2>&1 &`);
 
-			return { ok: true, interface: name, proto: proto, section: section, v6: cfg.v6 };
+			return { ok: true, interface: to };
 		}
 	},
 
