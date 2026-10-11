@@ -433,6 +433,12 @@ def main():
             if 'protos' not in installs[n:]:
                 raise RuntimeError('the button does not start the network restart: %s' % installs[n:])
             close_modal(pg)
+            if not pg.locator('div[data-tab="device"] input[placeholder="awg0"]').count():
+                raise RuntimeError('no field for the name of the tunnel')
+            pg.click('div[data-tab="device"] button[title]:has-text("✎")')
+            pg.wait_for_selector('.modal input[maxlength="15"]', timeout=5000)
+            shot(pg, 'servers_tunnel_rename')
+            close_modal(pg)
             pg.click('[data-tab="device"] .cbi-button-add')
             pg.wait_for_selector('.modal textarea', timeout=5000)
             shot(pg, 'sections_import')

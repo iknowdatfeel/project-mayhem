@@ -1569,5 +1569,38 @@ msgstr "%s установлен, но сеть его ещё не загрузи
 msgid "Restart the network"
 msgstr "Перезапустить сеть"
 
-msgid "The main section is a tunnel in kernel mode: the rest goes into it in the kernel, past Xray. Exclusions and proxy sections by domain need dnsmasq-full; torrents go into the tunnel too."
-msgstr "Основная секция — туннель в режиме ядра: остальной трафик идёт в него на уровне ядра, мимо Xray. Для исключений и прокси-секций по доменам нужен dnsmasq-full; торренты тоже идут в туннель."
+msgid "In the server list"
+msgstr "В списке серверов"
+
+msgid "A tunnel marked \"In the server list\" becomes one of its servers: it can be chosen on the dashboard or win the automatic choice by ping. Its traffic goes through Xray."
+msgstr "Туннель с отметкой «В списке серверов» становится одним из его серверов: его можно выбрать на дашборде, и он участвует в автовыборе по пингу. Его трафик идёт через Xray."
+
+msgid "The main section is a tunnel in kernel mode: the rest goes into it in the kernel, past Xray. Exclusions and proxy sections by domain need dnsmasq-full. With torrents direct, only web traffic goes into it in the kernel, the rest through Xray."
+msgstr "Основная секция — туннель в режиме ядра: остальной трафик идёт в него на уровне ядра, мимо Xray. Для исключений и прокси-секций по доменам нужен dnsmasq-full. Если торренты идут напрямую, ядром в туннель идёт только веб-трафик, остальное — через Xray."
+
+msgid "For example, Netherlands"
+msgstr "Например, Нидерланды"
+
+msgid "Interface %s is created and added to the server list: choose it on the dashboard."
+msgstr "Интерфейс %s создан и добавлен в список серверов: выберите его на дашборде."
+
+msgid "Tunnel name"
+msgstr "Название"
+
+msgid "Create a routing section"
+msgstr "Создать секцию маршрутизации"
+
+msgid "Only to route chosen sites into this tunnel; to use it for all traffic, choose it on the dashboard instead."
+msgstr "Только чтобы отправлять в этот туннель выбранные сайты; чтобы пустить через него весь трафик, выберите его на дашборде."
+
+msgid "Interface %s is now %s. The tunnel reconnects."
+msgstr "Интерфейс %s переименован в %s. Туннель переподключается."
+
+msgid "Rename the interface %s"
+msgstr "Переименовать интерфейс %s"
+
+msgid "The network interface, its firewall zone and every Mayhem setting that names it are renamed. The tunnel reconnects."
+msgstr "Переименуются сетевой интерфейс, его зона файрвола и все настройки Mayhem, где он указан. Туннель переподключится."
+
+msgid "Rename the interface"
+msgstr "Переименовать интерфейс"

@@ -92,6 +92,36 @@ sub_check b64.txt '"limit": true'
 sub_check plain.txt '"name": "US"'
 sub_check xray.json '"name": "NL xray"'
 sub_check clash.yaml 'not supported'
+# nftset support of dnsmasq: a plain build says "no-nftset" (OpenWrt's
+# dnsmasq), which must not count, or dnsmasq refuses Mayhem's config.
+if uc "$ROOT/tests/nftset.uc" 2>/dev/null; then
+	ok "dnsmasq nftset support: no-nftset does not count"
+else
+	bad "dnsmasq nftset support: no-nftset is taken for nftset"
+fi
+
+# A tunnel in the server list is one of its servers (chosen on the dashboard).
+pool_tunnel_check() {
+	mkdir -p "$OUT/uci-pooltun"
+	sed "s/^config pool 'pool'$/config pool 'pool'\n\tlist iface_node 'awg0'/" "$OUT/uci-pool/mayhem" > "$OUT/uci-pooltun/mayhem"
+	if ! out="$(MAYHEM_UCI_DIR="$OUT/uci-pooltun" MAYHEM_SUBS_DIR="$OUT/uci-subs" \
+		uc "$FILES/usr/share/mayhem/gen.uc" --out "$OUT/uci-pooltun-run" 2>&1)"; then
+		bad "tunnel in the server list: $out"
+	elif ! uc -e "
+		const x = json(require('fs').readfile('$OUT/uci-pooltun-run/xray.json'));
+		const t = filter(x.outbounds, (o) => match(o.tag, /^n-pool-/) && o.streamSettings?.sockopt?.interface == 'awg0');
+		const n = json(require('fs').readfile('$OUT/uci-pooltun-run/nodes.json'));
+		const names = map(n.sections.pool.nodes, (x) => x.name);
+		exit((length(t) == 1 && index(names, 'awg0') >= 0) ? 0 : 1);
+	" 2>/dev/null; then
+		bad "tunnel in the server list: awg0 is not one of its servers"
+	elif ! out="$("$XRAY" run -test -c "$OUT/uci-pooltun-run/xray.json" 2>&1)"; then
+		bad "tunnel in the server list: $(printf '%s' "$out" | tail -n 5)"
+	else
+		ok "tunnel in the server list is one of its servers"
+	fi
+}
+
 # Comments and text around the keys are not servers; base64 may be wrapped.
 sub_check mixed-b64.txt '"name": "A server"'
 sub_check mixed-b64.txt '"skipped": 0'
@@ -159,6 +189,7 @@ elif ! out="$("$XRAY" run -test -c "$OUT/uci-pool-run/xray.json" 2>&1)"; then
 else
 	ok "server list: migration, sections without servers, subscriptions"
 fi
+pool_tunnel_check
 
 # WireGuard/AmneziaWG configs and AmneziaVPN keys
 if out="$(uc "$ROOT/tests/awg.uc" "$ROOT/tests/awg/client.conf" 2>&1)"; then
@@ -335,7 +366,7 @@ fi
 nft_rest() {
 	# $1 model dir: line numbers of the rules, "-" when missing
 	for re in '@blk_d4 counter drop' '@direct4 counter return' '@dir_d4 counter return' '@px_d4 meta l4proto' \
-		'meta nfproto ipv4 meta mark set meta mark & 0x[0-9a-f]* | 0x4000001 counter return' \
+		'meta nfproto ipv4 meta l4proto tcp th dport { 80, 443 } meta mark set meta mark & 0x[0-9a-f]* | 0x4000001 counter return' \
 		'meta nfproto ipv4 meta l4proto { tcp, udp } meta mark set meta mark | 0x2000000 tproxy'; do
 		n="$(grep -n -- "$re" "$1/nft.conf" | head -n 1 | cut -d: -f1)"
 		printf '%s ' "${n:--}"
@@ -349,8 +380,16 @@ elif ! grep -q 'nftset=/ru.test/yandex.test/.*#dir_d4' "$OUT/tunrest/dnsmasq.con
      ! grep -q 'nftset=/instagram.com/.*#px_d4' "$OUT/tunrest/dnsmasq.conf" || \
      ! grep -q 'nftset=/ads.test/.*#blk_d4' "$OUT/tunrest/dnsmasq.conf"; then
 	bad "model tunrest: dnsmasq does not fill the sets: $(cat "$OUT/tunrest/dnsmasq.conf")"
-elif grep -q 'meta nfproto ipv6 meta mark set meta mark & 0x[0-9a-f]* | 0x4000001' "$OUT/tunrest/nft.conf"; then
+elif grep -q 'meta nfproto ipv6 .*| 0x4000001' "$OUT/tunrest/nft.conf"; then
 	bad "model tunrest: IPv6 goes into a tunnel without IPv6"
+elif grep -q 'meta nfproto ipv4 meta mark set meta mark & 0x[0-9a-f]* | 0x4000001' "$OUT/tunrest/nft.conf" || \
+     ! grep -q 'meta nfproto ipv4 meta l4proto udp th dport 443 meta mark set' "$OUT/tunrest/nft.conf"; then
+	bad "model tunrest: with torrents direct only web traffic may go into the tunnel in the kernel"
+elif ! grep -q 'meta l4proto udp th dport 443 counter drop' "$OUT/tunrest/nft.conf" || \
+     grep -q 'udp th dport 443 counter drop' "$OUT/tunrest-fake/nft.conf"; then
+	bad "model tunrest: QUIC off must drop UDP 443 before the tunnel, and only then"
+elif ! grep -q 'meta nfproto ipv4 meta mark set meta mark & 0x[0-9a-f]* | 0x4000001 counter return' "$OUT/tunrest-fake/nft.conf"; then
+	bad "model tunrest-fake: without torrents direct all the rest goes into the tunnel in the kernel"
 elif grep -q '#px_d4' "$OUT/tunrest-fake/dnsmasq.conf" || ! grep -q '198.18.0.0/15 meta l4proto' "$OUT/tunrest-fake/nft.conf" || \
      ! uc -e "
 	const x = json(require('fs').readfile('$OUT/tunrest-fake/xray.json'));
@@ -484,6 +523,17 @@ if out="$(uc -e "loadfile('$ROOT/luci-app-mayhem/root/usr/share/rpcd/ucode/luci.
 	ok "rpcd backend compiles"
 else
 	bad "rpcd backend compiles: $out"
+fi
+
+# Tunnel import into the server list and renaming the interface.
+mkdir -p "$OUT/tun-uci" "$OUT/tun-proto"
+cp "$ROOT/tests/luci/uci/network" "$ROOT/tests/luci/uci/firewall" "$ROOT/tests/uci/mayhem" "$OUT/tun-uci/"
+: > "$OUT/tun-proto/amneziawg.sh"
+if out="$(MAYHEM_UCI_DIR="$OUT/tun-uci" MAYHEM_RUN_DIR="$OUT/tun-run" MAYHEM_NETIFD_PROTO_DIR="$OUT/tun-proto" \
+	uc "$ROOT/tests/tunnels.uc" "$ROOT/luci-app-mayhem/root/usr/share/rpcd/ucode/luci.mayhem" 2>&1)"; then
+	ok "tunnel import into the server list, interface rename"
+else
+	bad "tunnels: $out"
 fi
 
 # Backup and restore of the config, with and without subscriptions and keys.

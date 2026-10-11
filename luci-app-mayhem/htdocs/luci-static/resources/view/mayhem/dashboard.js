@@ -366,7 +366,7 @@ return view.extend({
 			return [ _('Server'), '—' ];
 
 		if (s.type === 'interface')
-			return [ _('Server'), _('Interface %s').format(s.interface || '?') ];
+			return [ _('Server'), s.label ? '%s (%s)'.format(s.label, s.interface) : _('Interface %s').format(s.interface || '?') ];
 
 		const how = s.mode === 'auto' ? (s.pinned ? _('pinned by hand') : _('automatic')) : null;
 

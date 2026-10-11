@@ -248,11 +248,25 @@ function build_nft(S, v6, sets, tunnels, dns_redirect, fake_pool, kdef) {
 		if (dns_redirect)
 			s += '\t\tmeta l4proto { tcp, udp } th dport 53 return\n';
 
-		s += `\t\tmeta nfproto ipv4 ${m} counter return\n`;
+		// QUIC off, as xray does it for the traffic it gets: browsers fall
+		// back to TCP. (Reject is not allowed in prerouting.)
+		if (kdef.no_quic)
+			s += '\t\tmeta l4proto udp th dport 443 counter drop\n';
 
-		// A tunnel without IPv6: IPv6 goes on through xray as before.
-		if (kdef.v6)
-			s += `\t\tmeta nfproto ipv6 ${m} counter return\n`;
+		// Torrents direct: only xray tells BitTorrent apart, so the kernel
+		// takes web traffic (TCP 80/443, QUIC) and the rest goes through
+		// xray, which sends torrents direct and the others into the tunnel.
+		const sel = kdef.torrent
+			? [ 'meta l4proto tcp th dport { 80, 443 } ', 'meta l4proto udp th dport 443 ', 'meta l4proto != { tcp, udp } ' ]
+			: [ '' ];
+
+		for (let x in sel) {
+			s += `\t\tmeta nfproto ipv4 ${x}${m} counter return\n`;
+
+			// A tunnel without IPv6: IPv6 goes on through xray as before.
+			if (kdef.v6)
+				s += `\t\tmeta nfproto ipv6 ${x}${m} counter return\n`;
+		}
 	}
 
 	s += '\t\tmeta l4proto != { tcp, udp } return\n';
@@ -406,7 +420,10 @@ function collect_nodes(sec, model, warn) {
 	for (let iface in entries(sec.iface_node)) {
 		const inf = iface_info(model, iface);
 
-		push(nodes, { name: iface, outbound: iface_outbound(null, inf.device, inf.v6 ? null : 'ForceIPv4'), source: 'interface', iface: iface });
+		push(nodes, {
+			name: model.tunnel_labels?.[iface] ?? iface, outbound: iface_outbound(null, inf.device, inf.v6 ? null : 'ForceIPv4'),
+			source: 'interface', iface: iface
+		});
 	}
 
 	const inc = name_regexp(sec.filter, `${label} filter`, warn);
@@ -883,7 +900,9 @@ export function build(model) {
 			}
 			else {
 				const bal = `bal-${name}`;
-				const byname = (n) => filter(sinfo.nodes, (x) => x.name == n)[0];
+				// A tunnel is also found by its interface: renaming it keeps the choice.
+				const byname = (n) => filter(sinfo.nodes, (x) => x.name == n)[0] ??
+					filter(sinfo.nodes, (x) => x.iface != null && x.iface == n)[0];
 				let pick = null;
 
 				if (smode == 'manual') {
@@ -1137,11 +1156,9 @@ export function build(model) {
 
 		kdef = {
 			name: default_name, mark: kdef_tun.mark ?? tun_mark(kdef_tun.index), v6: kdef_tun.v6,
-			px4: px4.items, px6: px6.items, pxd: pxd.items, dird: dird.items, blkd: blkd.items
+			px4: px4.items, px6: px6.items, pxd: pxd.items, dird: dird.items, blkd: blkd.items,
+			torrent: is_true(S.torrent_direct ?? '0'), no_quic: is_true(S.block_quic ?? '0')
 		};
-
-		if (is_true(S.torrent_direct ?? '0'))
-			warn(`torrents cannot be told apart in the kernel: they go into "${default_name}" too`);
 	}
 
 	// --- DNS ----------------------------------------------------------------
