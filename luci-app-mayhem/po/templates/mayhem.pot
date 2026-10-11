@@ -118,6 +118,10 @@ msgid "Add subscription"
 msgstr ""
 
 #: htdocs/luci-static/resources/view/mayhem/servers.js
+msgid "Add vpn:// keys and other keys separately."
+msgstr ""
+
+#: htdocs/luci-static/resources/view/mayhem/servers.js
 msgid "Address"
 msgstr ""
 
@@ -958,7 +962,7 @@ msgid "Paste a server key first."
 msgstr ""
 
 #: htdocs/luci-static/resources/view/mayhem/servers.js
-msgid "Paste a server key: vless://, vmess://, trojan://, ss://, hysteria2://, socks://, http(s)://, wireguard://. Several keys go one per line."
+msgid "Paste a server key: vless://, vmess://, trojan://, ss://, hysteria2://, socks://, http(s)://, wireguard://, or an AmneziaVPN key (vpn://) or a WireGuard/AmneziaWG config. Several keys go one per line."
 msgstr ""
 
 #: htdocs/luci-static/resources/view/mayhem/dashboard.js
@@ -1302,6 +1306,10 @@ msgid "The interface name must start with a letter: up to 15 lower-case letters,
 msgstr ""
 
 #: htdocs/luci-static/resources/mayhem/vpnkey.js
+msgid "The key could not be unpacked: it may be cut short. Copy it again, or paste the .conf text instead."
+msgstr ""
+
+#: htdocs/luci-static/resources/mayhem/vpnkey.js
 msgid "The key does not hold a configuration"
 msgstr ""
 
@@ -1421,6 +1429,10 @@ msgstr ""
 msgid "Tunnel"
 msgstr ""
 
+#: htdocs/luci-static/resources/view/mayhem/servers.js
+msgid "Tunnel %s is added to the server list. The page reloads…"
+msgstr ""
+
 #: htdocs/luci-static/resources/mayhem/tunnels.js
 msgid "Tunnel name"
 msgstr ""
@@ -1475,6 +1487,10 @@ msgstr ""
 
 #: htdocs/luci-static/resources/view/mayhem/components.js
 msgid "Unknown"
+msgstr ""
+
+#: htdocs/luci-static/resources/view/mayhem/servers.js
+msgid "Unpacking the key…"
 msgstr ""
 
 #: htdocs/luci-static/resources/view/mayhem/dashboard.js

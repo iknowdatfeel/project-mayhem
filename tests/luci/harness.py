@@ -50,6 +50,7 @@ SIDE_EFFECTS = {'action', 'system_install', 'data_update', 'awg_import', 'geo_im
 
 calls = []
 installs = []
+imports = []
 uci_writes = []
 unknown = []
 DEMO = bool(os.environ.get('MAYHEM_DEMO'))
@@ -187,6 +188,8 @@ def call(obj, method, args):
             return {'mayhem': '0.11.0', 'xray': '26.9.30', 'xray_latest': '26.9.30', 'mayhem_latest': '0.12.0'}
         if method == 'system_install':
             installs.append((args or {}).get('what'))
+        if method == 'awg_import':
+            imports.append(args or {})
         if method in SIDE_EFFECTS:
             return {'started': True} if method in ('system_install', 'data_update') else {'ok': True}
         return ucode(os.path.join(os.path.dirname(__file__), 'rpc.uc'), PLUGIN, method, json.dumps(args or {}))
@@ -417,6 +420,21 @@ def main():
             shot(pg, 'sections_tunnel')
             close_modal(pg)
 
+        def add_vpn_key(pg):
+            # A vpn:// key on the Add server tab becomes a tunnel, named after
+            # the key, with a message under the field (not a hang).
+            key = open(os.path.join(ROOT, 'tests/awg/key.txt')).read().strip()
+            pg.click('.cbi-tabmenu [data-tab="geo"] a')
+            pg.wait_for_timeout(300)
+            n = len(imports)
+            pg.fill('div[data-tab="geo"] textarea', key)
+            pg.click('div[data-tab="geo"] .cbi-button-add')
+            pg.wait_for_timeout(1500)
+            got = imports[n:]
+            if not got or '[Interface]' not in (got[0].get('conf') or '') or got[0].get('label') != 'Test':
+                raise RuntimeError('a vpn:// key is not imported as a tunnel: %s' % got)
+            shot(pg, 'servers_add_vpn')
+
         def import_modal(pg):
             pg.click('.cbi-tabmenu [data-tab="device"] a')
             pg.wait_for_timeout(300)
@@ -578,7 +596,7 @@ def main():
                                  ('edit sections', lambda pg: open_modals(pg, '[data-tab="settings"]')), ('domains as text', section_text),
                                  ('tunnel options', type_tunnel), ('DNS tab', dns_tab), ('edit geo sources', geo_tab), ('upload dialog', upload_modal),
                                  ('add a section', add_section), ('add a section without subscriptions', lambda pg: add_section(pg, True))]),
-            ('mayhem/servers', [('server list tabs', servers_tabs), ('import dialog', import_modal)]),
+            ('mayhem/servers', [('server list tabs', servers_tabs), ('import dialog', import_modal), ('vpn key as a server', add_vpn_key)]),
             ('mayhem/components', [('components', components_page)]),
             ('mayhem/settings', [('reset dialog', settings_tabs)]),
         ]
