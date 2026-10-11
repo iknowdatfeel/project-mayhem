@@ -183,22 +183,22 @@ pkg_add_file() {
 AWG_RELEASES="https://github.com/Slava-Shchipunov/awg-openwrt/releases/download"
 
 cmd_awg_install() {
-	local board arch target ver postfix dir="/tmp/mayhem-awg" p file got
+	local arch target ver postfix dir="/tmp/mayhem-awg" p file got
 
 	if pkg_has kmod-amneziawg && pkg_has amneziawg-tools; then
 		echo "AmneziaWG is already installed"
 		return 0
 	fi
 
-	board="$(ubus call system board 2>/dev/null)"
-	arch="$(echo "$board" | jsonfilter -e '@.release.arch' 2>/dev/null)"
-	target="$(echo "$board" | jsonfilter -e '@.release.target' 2>/dev/null)"
-	ver="$(echo "$board" | jsonfilter -e '@.release.version' 2>/dev/null)"
-
-	if [ -z "$arch" ] || [ -z "$target" ] || [ -z "$ver" ]; then
-		echo "Cannot read the firmware version and target" >&2
+	if ! mayhem_fw_release; then
+		echo "Cannot read the firmware version, target and architecture (version '$FW_VERSION', target '$FW_TARGET', arch '$FW_ARCH')" >&2
 		return 1
 	fi
+
+	ver="$FW_VERSION"
+	target="$FW_TARGET"
+	arch="$FW_ARCH"
+	echo "OpenWrt $ver, $target, $arch"
 
 	case "$ver" in
 		*SNAPSHOT*|*-rc*)
@@ -215,19 +215,19 @@ cmd_awg_install() {
 	for p in kmod-amneziawg amneziawg-tools luci-proto-amneziawg; do
 		got=""
 
-		for file in "$p$postfix.$PM_EXT" "$p$postfix.ipk" "$p$postfix.apk"; do
-			echo "Downloading $file..."
-			if fetch "$AWG_RELEASES/v$ver/$file" "$dir/$file" && [ -s "$dir/$file" ]; then
-				got="$dir/$file"
-				break
-			fi
+		# opkg installs only .ipk and apk only .apk
+		file="$p$postfix.$PM_EXT"
+		echo "Downloading $file..."
+		if fetch "$AWG_RELEASES/v$ver/$file" "$dir/$file" && [ -s "$dir/$file" ]; then
+			got="$dir/$file"
+		else
 			rm -f "$dir/$file"
-		done
+		fi
 
 		if [ -z "$got" ]; then
 			# The LuCI page for the protocol is a convenience, not a requirement.
 			[ "$p" = luci-proto-amneziawg ] && continue
-			echo "No $p build for OpenWrt $ver ($target, $arch)" >&2
+			echo "No $p build for OpenWrt $ver ($target, $arch): $AWG_RELEASES/v$ver/$file" >&2
 			rm -rf "$dir"
 			return 1
 		fi

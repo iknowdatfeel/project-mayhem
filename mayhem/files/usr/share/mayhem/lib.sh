@@ -401,3 +401,34 @@ mayhem_select() {
 		"$MAYHEM_XRAY_BIN" api bo --server="127.0.0.1:$MAYHEM_API_PORT" -b "$1" -r >/dev/null 2>&1
 	fi
 }
+
+mayhem_fw_release() {
+	# Sets FW_VERSION, FW_TARGET (target/subtarget) and FW_ARCH (package
+	# architecture). `ubus call system board` has no arch at all, so the
+	# release file comes first and the package manager fills the gaps.
+	local f="${MAYHEM_RELEASE_FILE:-/etc/openwrt_release}" board
+
+	# shellcheck source=/dev/null
+	FW_VERSION="$(. "$f" 2>/dev/null; echo "$DISTRIB_RELEASE")"
+	# shellcheck source=/dev/null
+	FW_TARGET="$(. "$f" 2>/dev/null; echo "$DISTRIB_TARGET")"
+	# shellcheck source=/dev/null
+	FW_ARCH="$(. "$f" 2>/dev/null; echo "$DISTRIB_ARCH")"
+
+	if [ -z "$FW_VERSION" ] || [ -z "$FW_TARGET" ]; then
+		board="$(ubus call system board 2>/dev/null)"
+		[ -n "$FW_VERSION" ] || FW_VERSION="$(echo "$board" | jsonfilter -e '@.release.version' 2>/dev/null)"
+		[ -n "$FW_TARGET" ] || FW_TARGET="$(echo "$board" | jsonfilter -e '@.release.target' 2>/dev/null)"
+	fi
+
+	if [ -z "$FW_ARCH" ]; then
+		if command -v apk >/dev/null 2>&1; then
+			FW_ARCH="$(apk --print-arch 2>/dev/null)"
+		elif command -v opkg >/dev/null 2>&1; then
+			# the architecture with the highest priority, not "all" or "noarch"
+			FW_ARCH="$(opkg print-architecture 2>/dev/null | awk '$3 > max { max = $3; a = $2 } END { print a }')"
+		fi
+	fi
+
+	[ -n "$FW_VERSION" ] && [ -n "$FW_TARGET" ] && [ -n "$FW_ARCH" ]
+}
