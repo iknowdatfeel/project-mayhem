@@ -67,6 +67,26 @@ def translations():
     return {k: v for k, v in po.items() if k and v}
 
 
+def fake_netifd():
+    """AmneziaWG is installed, but netifd started before it: awg0 runs as
+    "none" and the Tunnels tab offers to restart the network."""
+    shim = os.path.join(FIX, 'netifd-bin')
+    proto = os.path.join(FIX, 'netifd-proto')
+    os.makedirs(shim, exist_ok=True)
+    os.makedirs(proto, exist_ok=True)
+    open(os.path.join(proto, 'amneziawg.sh'), 'w').close()
+    os.environ['MAYHEM_NETIFD_PROTO_DIR'] = proto
+    os.environ['PATH'] = shim + ':' + os.environ['PATH']
+    with open(os.path.join(shim, 'ubus'), 'w') as f:
+        f.write('#!/bin/sh\n'
+                'case "$2 $3" in\n'
+                '"network get_proto_handlers") echo \'{"static":{},"dhcp":{},"wireguard":{}}\' ;;\n'
+                '"network.interface dump") echo \'{"interface":[{"interface":"awg0","proto":"none","up":false}]}\' ;;\n'
+                '*) exit 1 ;;\n'
+                'esac\n')
+    os.chmod(os.path.join(shim, 'ubus'), 0o755)
+
+
 def start_demo():
     """xray seems to run: a pid, the active flag, and /debug/vars with numbers."""
     run = os.path.join(FIX, 'run')
@@ -284,6 +304,7 @@ def main():
     global TRANSLATIONS
     TRANSLATIONS = translations()
 
+    fake_netifd()
     if DEMO:
         start_demo()
 
@@ -397,6 +418,11 @@ def main():
             pg.click('.cbi-tabmenu [data-tab="device"] a')
             pg.wait_for_timeout(300)
             shot(pg, 'servers_tunnels')
+            text = pg.inner_text('div[data-tab="device"]')
+            if 'awg0' not in text or 'AmneziaWG' not in text:
+                raise RuntimeError('awg0 running as "none" is not listed as an AmneziaWG tunnel')
+            if not pg.locator('div[data-tab="device"] button', has_text=TRANSLATIONS.get('Restart the network', 'Restart the network')).count():
+                raise RuntimeError('no button to restart the network for the unloaded protocol')
             pg.click('[data-tab="device"] .cbi-button-add')
             pg.wait_for_selector('.modal textarea', timeout=5000)
             shot(pg, 'sections_import')

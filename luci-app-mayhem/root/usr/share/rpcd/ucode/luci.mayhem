@@ -208,12 +208,34 @@ function install_running() {
 	return pid != '' && fs.access(`/proc/${pid}`) == true;
 }
 
+const NETIFD_PROTO = getenv('MAYHEM_NETIFD_PROTO_DIR') ?? '/lib/netifd/proto';
+
 function has_awg() {
-	return fs.access('/lib/netifd/proto/amneziawg.sh') == true && fs.access('/usr/bin/awg') == true;
+	return fs.access(`${NETIFD_PROTO}/amneziawg.sh`) == true && (NETIFD_PROTO != '/lib/netifd/proto' || fs.access('/usr/bin/awg') == true);
 }
 
 function has_wireguard() {
-	return fs.access('/lib/netifd/proto/wireguard.sh') == true;
+	return fs.access(`${NETIFD_PROTO}/wireguard.sh`) == true;
+}
+
+// Protocols the running netifd has loaded, null if it does not answer.
+// netifd reads them only when it starts: one installed later stays unknown
+// until the network restarts, and its interfaces get proto "none".
+function proto_handlers() {
+	try {
+		return json(run('ubus call network get_proto_handlers 2>/dev/null') ?? '');
+	}
+	catch (e) {
+		return null;
+	}
+}
+
+function network_cursor() {
+	const c = require('uci').cursor(C.UCI_DIR);
+
+	c.load('network');
+
+	return c;
 }
 
 // Tunnel sections: state from the watchdog and the latest handshake.
@@ -1344,9 +1366,17 @@ const methods = {
 				dump = null;
 			}
 
+			const handlers = proto_handlers();
+			const awg = has_awg(), wireguard = has_wireguard();
+			const net = network_cursor();
+
 			return {
-				awg: has_awg(),
-				wireguard: has_wireguard(),
+				awg: awg,
+				wireguard: wireguard,
+				// installed, but the network has not loaded it yet
+				protos_missing: type(handlers) == 'object'
+					? filter([ awg ? 'amneziawg' : null, wireguard ? 'wireguard' : null ], (p) => p && !handlers[p])
+					: [],
 				nftset: index(run('dnsmasq --version 2>/dev/null') ?? '', 'nftset') >= 0,
 				install: {
 					running: install_running(),
@@ -1354,8 +1384,12 @@ const methods = {
 					rc: trim(fs.readfile(`${RUN}/install.rc`) ?? '') || null,
 					log: fs.readfile(`${RUN}/install.log`)
 				},
+				// An interface of an unknown protocol runs as "none": its own
+				// protocol comes from the config.
 				interfaces: map(dump?.interface ?? [], (i) => ({
-					name: i.interface, proto: i.proto, up: i.up, device: i.l3_device ?? i.device
+					name: i.interface,
+					proto: (i.proto == 'none' ? net.get('network', i.interface, 'proto') : null) ?? i.proto,
+					up: i.up, device: i.l3_device ?? i.device
 				}))
 			};
 		}
@@ -1367,7 +1401,7 @@ const methods = {
 		args: { what: '', version: '' },
 		call: function(req) {
 			const ver = match(req.args?.version ?? '', /^[0-9][0-9A-Za-z.-]*$/) ? req.args.version : '';
-			const cmds = { awg: 'awg-install', dnsmasq: 'dnsmasq-full', xray: `xray-install ${ver}`, mayhem: 'self-update' };
+			const cmds = { awg: 'awg-install', protos: 'tunnel-protos', dnsmasq: 'dnsmasq-full', xray: `xray-install ${ver}`, mayhem: 'self-update' };
 			const cmd = cmds[req.args?.what];
 
 			if (!cmd)

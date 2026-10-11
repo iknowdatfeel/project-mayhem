@@ -23,6 +23,7 @@ const NAMES = {
 
 const TITLES = {
 	awg: _('Installing AmneziaWG'),
+	protos: _('Restarting the network'),
 	dnsmasq: _('Installing dnsmasq-full'),
 	xray: _('Updating Xray'),
 	mayhem: _('Updating Mayhem')
@@ -134,6 +135,13 @@ return baseclass.extend({
 			notes.push(E('p', [
 				_('AmneziaWG is not installed.'), ' ',
 				E('button', { 'class': 'btn cbi-button', 'click': ui.createHandlerFn(this, 'install', 'awg') }, _('Install AmneziaWG'))
+			]));
+
+		if ((info.protos_missing || []).length)
+			notes.push(E('p', { 'class': 'mh-warn' }, [
+				_('%s is installed, but the network has not loaded it yet: its tunnels do not start.').format(
+					info.protos_missing.map((p) => NAMES[p] || p).join(', ')), ' ',
+				E('button', { 'class': 'btn cbi-button', 'click': ui.createHandlerFn(this, 'install', 'protos') }, _('Restart the network'))
 			]));
 
 		if (kernel && info.nftset === false)
