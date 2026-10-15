@@ -1172,6 +1172,10 @@ msgstr "Перенаправление в Xray"
 msgid "Refresh every 5 seconds"
 msgstr "Обновлять каждые 5 секунд"
 
+#: htdocs/luci-static/resources/view/mayhem/dashboard.js
+msgid "Refresh the dashboard"
+msgstr "Обновить дашборд"
+
 #: htdocs/luci-static/resources/mayhem/page/sections.js
 msgid "Remote DNS"
 msgstr "Удалённый DNS"
@@ -1739,10 +1743,6 @@ msgstr "Интервал автообновления, ч"
 #: htdocs/luci-static/resources/mayhem/page/components.js
 msgid "Update now"
 msgstr "Обновить сейчас"
-
-#: htdocs/luci-static/resources/view/mayhem/dashboard.js
-msgid "Update servers"
-msgstr "Обновить сервера"
 
 #: htdocs/luci-static/resources/mayhem/page/components.js
 msgid "Update to %s"

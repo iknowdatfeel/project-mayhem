@@ -232,8 +232,23 @@ function formatCount(n) {
 
 // Dropdown choices for geo categories: "geosite:youtube" for the first source
 // that has a category, "geosite:source:category" for the others.
+// Well-known categories, offered until the router has the list of its source.
+const GEO_COMMON = {
+	geosite: [ 'ru-blocked', 'ru-blocked-all', 'youtube', 'google', 'telegram', 'discord', 'twitter', 'facebook', 'instagram', 'openai', 'category-ads-all' ],
+	geoip: [ 'ru-blocked', 'ru', 'telegram', 'google', 'facebook', 'twitter', 'private' ]
+};
+
 function geoChoices(o, kind, cats) {
 	const seen = {};
+
+	// Without a downloaded list the field is still a drop-down: the common
+	// categories, and anything else can be typed in.
+	if (!cats.length) {
+		for (const c of GEO_COMMON[kind])
+			o.value('%s:%s'.format(kind, c));
+
+		return;
+	}
 
 	for (const c of cats) {
 		const value = seen[c.name] ? '%s:%s:%s'.format(kind, c.source, c.name) : '%s:%s'.format(kind, c.name);
@@ -737,6 +752,9 @@ return baseclass.extend({
 
 		o = ss.option(form.Flag, '_more', _('Advanced settings'));
 		o.modalonly = true;
+		// Only proxy and tunnel sections have advanced options.
+		o.depends('type', 'proxy');
+		o.depends('type', 'interface');
 		o.write = o.remove = function() {};
 		o.cfgvalue = function(sid) {
 			const g = (k) => this.map.data.get('mayhem', sid, k);
