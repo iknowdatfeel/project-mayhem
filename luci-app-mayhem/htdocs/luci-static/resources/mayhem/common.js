@@ -31,6 +31,57 @@ const CSS = `
 .cbi-map-tabbed > .cbi-section > h3:first-child { display:none; }
 `;
 
+// A call to the router that drops before its answer (the browser reports
+// "XHR request aborted by browser": the router closed the connection while it
+// was busy) is sent again, up to two times, when everything in it only reads.
+// Calls that change something are never repeated: the first one may have
+// gone through. Every page of Mayhem loads this module, so it covers them all.
+const READ_ONLY = {
+	'uci': [ 'get', 'state', 'changes', 'configs' ],
+	'luci-rpc': true,
+	'luci': [ 'getVersion', 'getFeatures', 'getInitList', 'getLocaltime', 'getTimezones', 'getMountPoints', 'getRealtimeStats', 'getConntrackList', 'getProcessList', 'getUSBDevices', 'getSwconfigFeatures', 'getSwconfigPortState', 'getBlockDevices' ],
+	'network.interface': [ 'dump', 'status' ],
+	'network.device': [ 'status' ],
+	'network': [ 'get_proto_handlers' ],
+	'system': [ 'board', 'info' ],
+	'file': [ 'read', 'list', 'stat' ],
+	'luci.mayhem': [ 'dashboard', 'status', 'geo', 'sysinfo', 'logs', 'tunnel_info', 'tunnel_get', 'parse_link',
+		'probe', 'exit_info', 'diagnose', 'components', 'backup_export' ]
+};
+
+function readOnly(data) {
+	const calls = Array.isArray(data) ? data : [ data ];
+
+	return calls.length > 0 && calls.every((c) => {
+		const p = (c && c.method === 'call' && Array.isArray(c.params)) ? c.params : null;
+		const allowed = p ? READ_ONLY[p[1]] : null;
+
+		return allowed === true || (Array.isArray(allowed) && allowed.indexOf(p[2]) >= 0);
+	});
+}
+
+(function() {
+	const R = L.Request;
+
+	if (!R || R.mhRetry)
+		return;
+
+	const post = R.post;
+
+	R.mhRetry = true;
+	R.post = function(url, data, options) {
+		const args = arguments;
+		const again = (left) => post.apply(R, args).catch((e) => {
+			if (left > 0 && /aborted by browser/.test(String(e && e.message)) && /\/ubus\//.test(String(url)) && readOnly(data))
+				return new Promise((res) => window.setTimeout(res, 600)).then(() => again(left - 1));
+
+			throw e;
+		});
+
+		return again(2);
+	};
+})();
+
 // Line icons on a 24x24 grid: [ circles [cx, cy, r], paths ].
 const ICONS = {
 	check: [ [], [ 'M20 6 9 17l-5-5' ] ],

@@ -1169,6 +1169,10 @@ msgstr ""
 msgid "Refresh every 5 seconds"
 msgstr ""
 
+#: htdocs/luci-static/resources/view/mayhem/dashboard.js
+msgid "Refresh the dashboard"
+msgstr ""
+
 #: htdocs/luci-static/resources/mayhem/page/sections.js
 msgid "Remote DNS"
 msgstr ""
@@ -1735,10 +1739,6 @@ msgstr ""
 
 #: htdocs/luci-static/resources/mayhem/page/components.js
 msgid "Update now"
-msgstr ""
-
-#: htdocs/luci-static/resources/view/mayhem/dashboard.js
-msgid "Update servers"
 msgstr ""
 
 #: htdocs/luci-static/resources/mayhem/page/components.js

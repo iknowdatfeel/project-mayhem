@@ -1041,7 +1041,7 @@ return view.extend({
 
 		if (proxies.length || subNames.length)
 			side.push(mh.button({
-				icon: 'refresh', text: _('Update servers'), busy: this.busy.refresh,
+				icon: 'refresh', text: _('Refresh the dashboard'), busy: this.busy.refresh,
 				click: ui.createHandlerFn(this, 'refreshServers')
 			}));
 
