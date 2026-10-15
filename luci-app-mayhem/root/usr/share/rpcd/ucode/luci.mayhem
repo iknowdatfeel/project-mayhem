@@ -1144,6 +1144,18 @@ function xray_installed() {
 	return m ? m[1] : 'installed';
 }
 
+// TCP ping from curl's "namelookup connect" times. time_connect counts the
+// name lookup too: a server name missing from the dnsmasq cache adds the DNS
+// round trip (a second through a remote DNS) to the ping, so it is taken off.
+function tcp_time(out) {
+	const m = match(trim(out ?? ''), /^([0-9.]+) ([0-9.]+)$/);
+
+	if (!m || m[2] * 1 <= 0)
+		return { error: 'no connection' };
+
+	return { ms: int((m[2] * 1 - m[1] * 1) * 1000) || 1 };
+}
+
 const methods = {
 	status: {
 		call: function() {
@@ -1180,7 +1192,7 @@ const methods = {
 
 					push(nodes, {
 						tag: n.tag, name: n.name, protocol: n.protocol, address: n.address,
-						port: n.port, udp: n.udp, source: n.source, iface: n.iface, tproto: n.tproto,
+						port: n.port, udp: n.udp, source: n.source, iface: n.iface, tproto: n.tproto, link: n.link, usec: n.usec,
 						delay: o ? o.delay : null, alive: o ? o.alive : null,
 						up: t.uplink ?? 0, down: t.downlink ?? 0
 					});
@@ -1369,9 +1381,7 @@ const methods = {
 					return { error: 'no interface' };
 
 				if (req.args?.method == 'tcp') {
-					out = trim(run(`curl -s -o /dev/null --interface ${q(dev)} --connect-timeout 5 -m 6 -w '%{time_connect}' ${q(TUNNEL_PROBE_URL)}`) ?? '');
-
-					return (out != '' && out * 1 > 0) ? { ms: int(out * 1000) } : { error: 'no connection' };
+					return tcp_time(run(`curl -s -o /dev/null --interface ${q(dev)} --connect-timeout 5 -m 6 -w '%{time_namelookup} %{time_connect}' ${q(TUNNEL_PROBE_URL)}`));
 				}
 
 				const ep = tunnel_endpoint(n.iface);
@@ -1400,9 +1410,7 @@ const methods = {
 
 				const host = index(addr, ':') >= 0 ? `[${addr}]` : addr;
 
-				out = trim(run(`curl -s -o /dev/null --connect-timeout 5 -m 6 -w '%{time_connect}' ${q(`http://${host}:${n.port}/`)}`) ?? '');
-
-				return (out != '' && out * 1 > 0) ? { ms: int(out * 1000) } : { error: 'no connection' };
+				return tcp_time(run(`curl -s -o /dev/null --connect-timeout 5 -m 6 -w '%{time_namelookup} %{time_connect}' ${q(`http://${host}:${n.port}/`)}`));
 
 			case 'icmp':
 				out = run(`ping -c 1 -W 3 ${q(addr)} 2>&1`) ?? '';
@@ -2365,6 +2373,83 @@ const methods = {
 			system(mode == 'full'
 				? `(ifdown ${q(iface)}; /etc/init.d/network reload; /etc/init.d/firewall reload; /etc/init.d/mayhem reload) >/dev/null 2>&1 &`
 				: '/etc/init.d/mayhem reload >/dev/null 2>&1 &');
+
+			return { ok: true };
+		}
+	},
+
+	// A server off the dashboard. A key or a JSON server leaves its list; a
+	// subscription's server gets into the exclusions of its section, so it
+	// does not come back with the next update; a tunnel leaves the server
+	// list and stays a network interface. Mayhem reloads.
+	server_delete: {
+		args: { section: '', tag: '' },
+		call: function(req) {
+			const f = find_node(read_json(`${RUN}/nodes.json`), req.args?.tag ?? '');
+
+			if (!f || f.section != (req.args?.section ?? ''))
+				return { error: 'unknown server' };
+
+			const n = f.node;
+
+			const c = uci_cursor();
+
+			// Like tunnel_delete with mode "hide".
+			if (n.iface) {
+				if (c.get('mayhem', n.iface) == null)
+					c.set('mayhem', n.iface, 'tunnel');
+
+				c.set('mayhem', n.iface, 'server', '0');
+				c.commit('mayhem');
+				system('/etc/init.d/mayhem reload >/dev/null 2>&1 &');
+
+				return { ok: true };
+			}
+
+			const usec = n.usec ?? f.section;
+			let gone = n.name;
+
+			if (n.source == 'link' && n.link) {
+				const links = c.get('mayhem', usec, 'link') ?? [];
+				const all = type(links) == 'array' ? links : [ links ];
+				const left = filter(all, (l) => l != n.link);
+
+				if (length(left) == length(all))
+					return { error: 'the server key was not found' };
+
+				if (length(left))
+					c.set('mayhem', usec, 'link', left);
+				else
+					c.delete('mayhem', usec, 'link');
+			}
+			else if (n.source != 'link' && n.source != 'json' && c.get('mayhem', n.source) == 'subscription') {
+				const orig = n.orig ?? n.name;
+				const esc = replace(orig, /[][\\.*+?(){}|^$]/g, (m) => `\\${m}`);
+				const old = c.get('mayhem', usec, 'exclude') ?? '';
+
+				c.set('mayhem', usec, 'exclude', old != '' ? `${old}|^${esc}$` : `^${esc}$`);
+			}
+			else
+				return { error: 'this server cannot be deleted here' };
+
+			// A choice or a chain naming the server forgets it.
+			for (let k in [ 'selected', 'override' ])
+				if (c.get('mayhem', usec, k) == gone)
+					c.delete('mayhem', usec, k);
+
+			const chain = c.get('mayhem', usec, 'chain');
+
+			if (chain != null) {
+				const rest = filter(type(chain) == 'array' ? chain : [ chain ], (x) => x != gone);
+
+				if (length(rest))
+					c.set('mayhem', usec, 'chain', rest);
+				else
+					c.delete('mayhem', usec, 'chain');
+			}
+
+			c.commit('mayhem');
+			system('/etc/init.d/mayhem reload >/dev/null 2>&1 &');
 
 			return { ok: true };
 		}

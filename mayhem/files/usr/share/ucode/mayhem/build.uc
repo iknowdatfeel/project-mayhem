@@ -663,7 +663,7 @@ function collect_nodes(sec, model, warn) {
 			for (let w in r.warnings)
 				warn(`${label}: ${w}`);
 
-			push(nodes, { name: r.name != '' ? r.name : `${name} ${n}`, outbound: r.outbound, source: 'link' });
+			push(nodes, { name: r.name != '' ? r.name : `${name} ${n}`, outbound: r.outbound, source: 'link', link: l, usec: name });
 		}
 		catch (e) {
 			warn(`${label}: link ${n}: ${e.message}; skipped`);
@@ -1205,7 +1205,10 @@ export function build(model) {
 					iface: nodes[i].iface,
 					tproto: nodes[i].tproto,
 					device: nodes[i].device,
-					orig: nodes[i].orig
+					orig: nodes[i].orig,
+					// the key itself and its UCI section: LuCI edits it in place
+					link: nodes[i].link,
+					usec: nodes[i].usec
 				});
 			}
 

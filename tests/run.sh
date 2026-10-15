@@ -515,7 +515,7 @@ if command -v shellcheck >/dev/null 2>&1; then
 fi
 
 if command -v node >/dev/null 2>&1; then
-	for f in "$ROOT"/luci-app-mayhem/htdocs/luci-static/resources/view/mayhem/*.js "$ROOT"/luci-app-mayhem/htdocs/luci-static/resources/mayhem/*.js; do
+	for f in "$ROOT"/luci-app-mayhem/htdocs/luci-static/resources/view/mayhem/*.js "$ROOT"/luci-app-mayhem/htdocs/luci-static/resources/mayhem/*.js "$ROOT"/luci-app-mayhem/htdocs/luci-static/resources/mayhem/page/*.js; do
 		{ echo '(function(){'; cat "$f"; echo '})'; } > "$OUT/check.js"
 		if out="$(node --check "$OUT/check.js" 2>&1)"; then
 			ok "syntax $(basename "$f")"
@@ -527,7 +527,7 @@ if command -v node >/dev/null 2>&1; then
 	# The package ships these files minified by LuCI's jsmin.
 	if [ -n "${JSMIN:-}" ]; then
 		if out="$(node "$ROOT/tests/jsmin.js" "$ROOT"/luci-app-mayhem/htdocs/luci-static/resources/view/mayhem/*.js \
-			"$ROOT"/luci-app-mayhem/htdocs/luci-static/resources/mayhem/*.js 2>&1)"; then
+			"$ROOT"/luci-app-mayhem/htdocs/luci-static/resources/mayhem/*.js "$ROOT"/luci-app-mayhem/htdocs/luci-static/resources/mayhem/page/*.js 2>&1)"; then
 			ok "JS survives jsmin"
 		else
 			bad "JS survives jsmin: $out"

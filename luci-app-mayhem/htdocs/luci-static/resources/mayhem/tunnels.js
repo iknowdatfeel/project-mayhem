@@ -18,40 +18,6 @@ const callTunnelGet = rpc.declare({ object: 'luci.mayhem', method: 'tunnel_get',
 const callTunnelDelete = rpc.declare({ object: 'luci.mayhem', method: 'tunnel_delete', params: [ 'iface', 'mode' ], expect: { '': {} } });
 const callTunnelSet = rpc.declare({ object: 'luci.mayhem', method: 'tunnel_set', params: [ 'iface', 'conf' ], expect: { '': {} } });
 
-// Fields of the tunnel editor, in .conf names. AmneziaWG ones only show for
-// AmneziaWG tunnels.
-const IFACE_FIELDS = [ 'PrivateKey', 'Address', 'MTU', 'ListenPort' ];
-const AWG_FIELDS = [ 'Jc', 'Jmin', 'Jmax', 'S1', 'S2', 'S3', 'S4', 'H1', 'H2', 'H3', 'H4', 'I1', 'I2', 'I3', 'I4', 'I5' ];
-const PEER_FIELDS = [ 'PublicKey', 'PresharedKey', 'Endpoint', 'AllowedIPs', 'PersistentKeepalive' ];
-
-// [Interface]/[Peer] text as [{ name, keys: [[k, v]] }], comments dropped.
-function confParse(text) {
-	const out = [];
-	let cur = null;
-
-	String(text || '').replace(/\r/g, '').split('\n').forEach((line) => {
-		line = line.trim();
-
-		const sec = /^\[([A-Za-z]+)\]$/.exec(line);
-
-		if (sec) {
-			out.push(cur = { name: sec[1], keys: [] });
-			return;
-		}
-
-		const kv = /^([A-Za-z0-9]+)\s*=\s*(.*)$/.exec(line);
-
-		if (kv && cur)
-			cur.keys.push([ kv[1], kv[2] ]);
-	});
-
-	return out;
-}
-
-function confBuild(secs) {
-	return secs.map((s) => '[%s]\n'.format(s.name) + s.keys.filter((k) => k[1] !== '').map((k) => '%s = %s\n'.format(k[0], k[1])).join('')).join('\n');
-}
-
 const IFACE_RE = /^[a-z][a-z0-9_]{0,14}$/;
 
 const TUNNEL_PROTOS = [ 'amneziawg', 'wireguard', 'openvpn', 'openconnect', 'vpnc', 'l2tp', 'pptp' ];
@@ -93,7 +59,9 @@ return baseclass.extend({
 			// The installer starts a moment later, and it may restart the
 			// network or dnsmasq on its way (a call fails then): it is done only
 			// when it wrote its exit code.
-			const check = () => callTunnelInfo().then((t) => {
+			// One check at a time: rpcd answers calls one by one.
+			let checking = false;
+			const check = () => checking ? Promise.resolve() : (checking = true, callTunnelInfo().then((t) => {
 				const inst = t.install || {};
 
 				if (inst.log)
@@ -110,7 +78,7 @@ return baseclass.extend({
 						: _('Failed, see the log above. Nothing else was changed.')),
 					E('div', { 'class': 'right' }, E('button', { 'class': 'btn', 'click': () => window.location.reload() }, _('Close')))
 				]);
-			}).catch(() => {});
+			}).catch(() => {}).finally(() => { checking = false; }));
 
 			poll.add(check, 3);
 		});
@@ -151,7 +119,7 @@ return baseclass.extend({
 
 				ui.hideModal();
 				ui.addNotification(null, E('p', r.section
-					? _('Interface %s and section %s are created. Add rules to the section on the Routing page.').format(r.interface, r.section)
+					? _('Interface %s and section %s are created. Add rules to the section in Routing.').format(r.interface, r.section)
 					: r.pool ? _('Interface %s is created and added to the server list: choose it on the dashboard.').format(r.interface)
 					: _('Interface %s is created.').format(r.interface)), 'info');
 				window.setTimeout(() => window.location.reload(), 1500);
@@ -173,84 +141,51 @@ return baseclass.extend({
 		]);
 	},
 
-	// Keys, addresses, obfuscation parameters and peers of a tunnel: as fields
-	// or as the .conf text. Saved over the same interface; it reconnects.
-	editDialog(iface) {
+	// The tunnel as its .conf text, like a server as its Xray JSON. Saved
+	// over the same interface; it reconnects. done() runs after a save.
+	editDialog(iface, done) {
 		return callTunnelGet(iface).then((r) => {
 			if (r.error) {
 				ui.addNotification(null, E('p', r.error), 'error');
 				return;
 			}
 
-			const awg = r.proto === 'amneziawg';
-			const secs = confParse(r.conf);
-			const inputs = [];		// [section index, key, input]
-			const form = E('div');
-
-			secs.forEach((sec, si) => {
-				const known = sec.name === 'Interface' ? IFACE_FIELDS.concat(awg ? AWG_FIELDS : []) : PEER_FIELDS;
-				const have = {};
-
-				sec.keys.forEach((k) => have[k[0].toLowerCase()] = k);
-
-				form.appendChild(E('h4', sec.name === 'Interface' ? _('Interface') : _('Peer')));
-
-				known.concat(sec.keys.map((k) => k[0]).filter((k) => !known.some((x) => x.toLowerCase() === k.toLowerCase()))).forEach((k) => {
-					const cur = have[k.toLowerCase()];
-					const input = E('input', { 'class': 'cbi-input-text', 'style': 'width:100%', 'value': cur ? cur[1] : '' });
-
-					if (/key$/i.test(k))
-						input.setAttribute('spellcheck', 'false');
-
-					inputs.push([ si, k, input ]);
-					form.appendChild(E('div', { 'class': 'cbi-value' }, [
-						E('label', { 'class': 'cbi-value-title' }, k),
-						E('div', { 'class': 'cbi-value-field' }, input)
-					]));
-				});
-			});
-
+			const msg = E('div', { 'class': 'mh-small' });
 			const text = E('textarea', {
-				'class': 'cbi-input-textarea', 'rows': 18, 'spellcheck': 'false',
-				'style': 'width:100%;font-family:monospace;box-sizing:border-box'
+				'class': 'cbi-input-textarea', 'rows': 22, 'spellcheck': 'false',
+				'style': 'width:100%;font-family:monospace;font-size:90%;box-sizing:border-box'
 			}, r.conf);
-
-			const fromFields = () => confBuild(secs.map((sec, si) => ({
-				name: sec.name,
-				keys: inputs.filter((x) => x[0] === si).map((x) => [ x[1], x[2].value.trim() ])
-			})));
-
-			const panes = [ [ _('Parameters'), form, fromFields ], [ _('Config'), text, () => text.value ] ];
-			const head = E('ul', { 'class': 'cbi-tabmenu' });
-			const body = E('div');
-			let current = 0;
-			const show = (i) => {
-				current = i;
-				head.replaceChildren(...panes.map((p, k) => E('li', { 'class': 'cbi-tab' + (k === i ? '' : '-disabled') },
-					E('a', { 'href': '#', 'click': (ev) => { ev.preventDefault(); show(k); } }, p[0]))));
-				body.replaceChildren(panes[i][1]);
-			};
-
-			show(0);
 
 			ui.showModal(_('Edit tunnel %s').format(iface), [
 				E('p', { 'class': 'mh-muted mh-small' }, _('Saved over interface %s: its name, firewall zone and Mayhem settings stay. The tunnel reconnects.').format(iface)),
-				head, body,
+				text,
+				msg,
 				E('div', { 'class': 'right', 'style': 'margin-top:1em' }, [
 					E('button', { 'class': 'btn', 'click': ui.hideModal }, _('Cancel')), ' ',
 					E('button', { 'class': 'btn cbi-button-action', 'click': ui.createHandlerFn(this, () => {
-						return callTunnelSet(iface, panes[current][2]()).then((res) => {
+						if (text.value.trim() === String(r.conf).trim()) {
+							ui.hideModal();
+							return;
+						}
+
+						return callTunnelSet(iface, text.value).then((res) => {
 							if (res.error) {
-								ui.addNotification(null, E('p', res.error), 'error');
+								msg.className = 'mh-small mh-fail';
+								msg.textContent = res.error;
 								return;
 							}
 
 							ui.hideModal();
 							ui.addNotification(null, E('p', _('Tunnel %s is saved and reconnects.').format(iface)), 'info');
+
+							if (done)
+								done();
 						});
 					}) }, _('Save'))
 				])
 			]);
+
+			text.focus();
 		});
 	},
 

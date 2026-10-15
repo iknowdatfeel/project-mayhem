@@ -1,5 +1,5 @@
 'use strict';
-'require view';
+'require baseclass';
 'require form';
 'require uci';
 'require rpc';
@@ -81,7 +81,7 @@ function ensurePool() {
 	}
 }
 
-return view.extend({
+return baseclass.extend({
 	keys: [],		// [{ link, info }]
 
 	load() {

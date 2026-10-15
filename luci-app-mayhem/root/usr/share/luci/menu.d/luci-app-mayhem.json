@@ -3,7 +3,8 @@
 		"title": "Mayhem",
 		"order": 40,
 		"action": {
-			"type": "firstchild"
+			"type": "view",
+			"path": "mayhem/dashboard"
 		},
 		"depends": {
 			"acl": [
@@ -12,46 +13,6 @@
 			"uci": {
 				"mayhem": true
 			}
-		}
-	},
-	"admin/services/mayhem/dashboard": {
-		"title": "Dashboard",
-		"order": 10,
-		"action": {
-			"type": "view",
-			"path": "mayhem/dashboard"
-		}
-	},
-	"admin/services/mayhem/sections": {
-		"title": "Routing",
-		"order": 20,
-		"action": {
-			"type": "view",
-			"path": "mayhem/sections"
-		}
-	},
-	"admin/services/mayhem/servers": {
-		"title": "Server list",
-		"order": 25,
-		"action": {
-			"type": "view",
-			"path": "mayhem/servers"
-		}
-	},
-	"admin/services/mayhem/settings": {
-		"title": "Settings",
-		"order": 30,
-		"action": {
-			"type": "view",
-			"path": "mayhem/settings"
-		}
-	},
-	"admin/services/mayhem/components": {
-		"title": "Component updates",
-		"order": 28,
-		"action": {
-			"type": "view",
-			"path": "mayhem/components"
 		}
 	}
 }

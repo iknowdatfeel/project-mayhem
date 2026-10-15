@@ -26,6 +26,10 @@ export MAYHEM_RUN_DIR="$WORK/run"
 # A real dnsmasq runs in the router namespace (tunnel sections need its nftset).
 export MAYHEM_DNSMASQ_INIT="$WORK/dnsmasq-init"
 export MAYHEM_DNSMASQ_DIRS="$WORK/dnsmasq.d"
+# dnsmasq's upstream servers: xray-run switches this file between xray and the
+# provider's DNS (resolv.conf.auto) and sends dnsmasq a SIGHUP.
+export MAYHEM_DNS_SERVERS="$WORK/dns.servers"
+export MAYHEM_RESOLV_AUTO="$WORK/resolv.conf.auto"
 export MAYHEM_XRAY_BIN="$XRAY"
 # Like /etc/mayhem on a fresh router, the parent of these does not exist yet.
 export MAYHEM_GEO_DIR="$WORK/etc/geo"
@@ -139,6 +143,10 @@ start_mayhem() {
 	else
 		uc "$FILES/usr/share/mayhem/gen.uc" --model "$1" --out "$MAYHEM_RUN_DIR" 2>/dev/null || { bad "generator"; return 1; }
 	fi
+	# Like the init script: dnsmasq gets Mayhem's file (restarted only when it
+	# changed), then xray-run switches its servers to xray.
+	# shellcheck disable=SC2016 # expanded by the inner shell
+	ip netns exec router sh -c '. "$MAYHEM_LIB_DIR/lib.sh"; mayhem_dns_up' >> "$WORK/run.log" 2>&1
 	ip netns exec router "$FILES/usr/libexec/mayhem/xray-run" > "$WORK/run.log" 2>&1 &
 
 	local i=0
@@ -224,6 +232,7 @@ table ip nat {
 NFT
 
 mkdir -p "$MAYHEM_DNSMASQ_DIRS"
+echo 'nameserver 45.0.0.2' > "$MAYHEM_RESOLV_AUTO"
 cat > "$MAYHEM_DNSMASQ_INIT" <<EOF
 #!/bin/sh
 # runs inside the router namespace, like the real init script would
@@ -296,6 +305,7 @@ PY
 
 cat > "$WORK/server.json" <<EOF
 { "log": { "loglevel": "warning" },
+  "dns": { "hosts": { "youtube.test": "45.0.0.2" } },
   "inbounds": [
     { "tag": "a", "listen": "45.0.0.3", "port": 8443, "protocol": "shadowsocks",
       "settings": { "method": "2022-blake3-aes-128-gcm", "password": "$SS_KEY", "network": "tcp,udp" } },
@@ -304,7 +314,7 @@ cat > "$WORK/server.json" <<EOF
     { "tag": "c", "listen": "45.0.0.3", "port": 8445, "protocol": "shadowsocks",
       "settings": { "method": "2022-blake3-aes-128-gcm", "password": "$SS_KEY", "network": "tcp,udp" } } ],
   "outbounds": [
-    { "tag": "out-a", "protocol": "freedom", "sendThrough": "45.0.0.3" },
+    { "tag": "out-a", "protocol": "freedom", "sendThrough": "45.0.0.3", "streamSettings": { "sockopt": { "domainStrategy": "UseIP" } } },
     { "tag": "out-b", "protocol": "freedom", "sendThrough": "45.0.0.8" },
     { "tag": "out-c", "protocol": "freedom", "sendThrough": "45.0.0.9" } ],
   "routing": { "rules": [ { "inboundTag": [ "b" ], "outboundTag": "out-b" }, { "inboundTag": [ "c" ], "outboundTag": "out-c" } ] } }
@@ -330,7 +340,7 @@ sleep 2
 
 cat > "$WORK/lists.json" <<EOF
 {
-  "settings": { "mode": "lists", "interface": [ "br-lan" ], "ip_family": "ipv4_only", "log_level": "warning" },
+  "settings": { "mode": "lists", "capture": "all", "interface": [ "br-lan" ], "ip_family": "ipv4_only", "log_level": "warning" },
   "dns": { "domestic": [ "45.0.0.2" ], "remote": [ "45.0.0.4" ], "via_proxy": "1", "proxy_section": "main", "hijack": "1" },
   "sections": [
     { ".name": "ads", "type": "block", "enabled": "1", "domain": [ "ads.test" ] },
@@ -387,6 +397,23 @@ if start_mayhem "$WORK/lists.json"; then
 		ok "rules removed after xray crash"
 	fi
 	expect "traffic goes direct while xray is down" 192.168.1.2 http://45.0.0.2:8080/
+fi
+stop_mayhem
+
+# --- only listed traffic to xray (the default of "lists") --------------------------
+
+echo "== only listed traffic to xray"
+sed 's/"capture": "all", //' "$WORK/lists.json" > "$WORK/capture.json"
+if start_mayhem "$WORK/capture.json"; then
+	expect "no rule -> kernel direct, past xray" 192.168.1.2 http://45.0.0.2:8080/
+	expect "IP rule -> proxy" 45.0.0.3 http://45.0.0.7:8080/
+	expect "excluded IP -> kernel direct" 192.168.1.2 http://45.0.0.6:8080/
+	fake="$(dns client 192.168.1.1 53 youtube.test)"
+	case "$fake" in
+		198.18.*) ok "domain of a rule -> fake address through dnsmasq" ;;
+		*) bad "domain of a rule -> fake address through dnsmasq: got $fake" ;;
+	esac
+	expect_dns "other domain -> provider DNS through dnsmasq" client 192.168.1.1 53 other.test 45.0.0.2
 fi
 stop_mayhem
 
@@ -484,6 +511,7 @@ write_uci() {
 			"config settings 'settings'" \
 			"	option enabled '1'" \
 			"	option mode 'lists'" \
+			"	option capture 'all'" \
 			"	list interface 'br-lan'" \
 			"	option ip_family 'ipv4_only'" \
 			"	option probe_url 'http://45.0.0.2:8080/204'" \
@@ -751,6 +779,7 @@ cat > "$MAYHEM_UCI_DIR/mayhem" <<EOF
 config settings 'settings'
 	option enabled '1'
 	option mode 'lists'
+	option capture 'all'
 	list interface 'br-lan'
 	option ip_family 'ipv4_only'
 
@@ -822,6 +851,7 @@ cat > "$MAYHEM_UCI_DIR/mayhem" <<EOF
 config settings 'settings'
 	option enabled '1'
 	option mode 'lists'
+	option capture 'all'
 	list interface 'br-lan'
 	option ip_family 'ipv4_only'
 	option ip_check_url 'http://45.0.0.2:8080/'
@@ -1024,8 +1054,8 @@ if start_mayhem uci; then
 		else
 			expect "server A picked: the rest goes through it" 45.0.0.3 http://45.0.0.7:8080/
 
-			# Server B by hand: connections through A are closed at once (a
-			# balancer choice alone would leave them on A), the rules stay.
+			# Server B by hand: nothing restarts. New connections go through B,
+			# the open one finishes on A, the rules stay.
 			xpid="$(proc_in router xray)"
 			ip netns exec client curl -s -m 20 -o /dev/null -w '%{size_download}' http://45.0.0.7:8080/slow > "$WORK/slow2.out" 2>/dev/null &
 			cpid=$!
@@ -1038,9 +1068,9 @@ if start_mayhem uci; then
 				sleep 0.5
 			done
 			wait "$cpid"
-			if [ "$(cat "$WORK/slow2.out" 2>/dev/null)" != 10240 ]; then ok "server B by hand: the open connection through A is closed"; else bad "server B by hand: the download through A went on"; fi
-			if [ "$kept" = 1 ] && [ -f "$MAYHEM_RUN_DIR/active" ]; then ok "server B by hand: the interception stays while xray restarts"; else bad "server B by hand: the interception was removed"; fi
-			if [ -n "$(proc_in router xray)" ] && [ "$(proc_in router xray)" != "$xpid" ]; then ok "server B by hand: a new xray"; else bad "server B by hand: xray was not restarted"; fi
+			if [ "$(cat "$WORK/slow2.out" 2>/dev/null)" = 10240 ]; then ok "server B by hand: the open connection through A finishes"; else bad "server B by hand: the download through A broke: $(cat "$WORK/slow2.out" 2>/dev/null)"; fi
+			if [ "$kept" = 1 ] && [ -f "$MAYHEM_RUN_DIR/active" ]; then ok "server B by hand: the interception stays"; else bad "server B by hand: the interception was removed"; fi
+			if [ "$(proc_in router xray)" = "$xpid" ]; then ok "server B by hand: xray keeps running"; else bad "server B by hand: xray was restarted"; fi
 			expect "server B by hand: new connections go through it" 45.0.0.8 http://45.0.0.7:8080/
 		fi
 	fi

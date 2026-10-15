@@ -1,5 +1,5 @@
 'use strict';
-'require view';
+'require baseclass';
 'require form';
 'require uci';
 'require rpc';
@@ -26,21 +26,16 @@ const ROUTE_XRAY = _('Through Xray is more flexible: every rule works. Speed is 
 // Categories above this make xray use a lot of memory (same limit as the generator).
 const HEAVY = 50000;
 
-// Public resolvers for the DNS lists: [ label, DoH address ].
-const RESOLVERS = [
-	[ 'Cloudflare', 'https://1.1.1.1/dns-query' ],
-	[ 'Google', 'https://8.8.8.8/dns-query' ],
-	[ 'Quad9', 'https://9.9.9.9/dns-query' ],
-	[ 'AdGuard', 'https://dns.adguard-dns.com/dns-query' ],
-	[ 'Yandex', 'https://common.dot.dns.yandex.net/dns-query' ],
-	[ 'Comss DNS', 'https://dns.comss.one/dns-query' ],
-	[ 'Xbox DNS', 'https://xbox-dns.ru/dns-query' ]
-];
-
-// Plain servers of the same providers, for UDP and TCP.
-const PLAIN_RESOLVERS = [
-	[ 'Cloudflare', '1.1.1.1' ], [ 'Google', '8.8.8.8' ], [ 'Quad9', '9.9.9.9' ],
-	[ 'AdGuard', '94.140.14.14' ], [ 'Yandex', '77.88.8.8' ]
+// Popular resolvers: [ id, name, plain address (UDP and TCP), DoH address ].
+// Comss and Xbox DNS only answer over DoH.
+const PROVIDERS = [
+	[ 'cloudflare', 'Cloudflare', '1.1.1.1', 'https://1.1.1.1/dns-query' ],
+	[ 'google', 'Google', '8.8.8.8', 'https://8.8.8.8/dns-query' ],
+	[ 'quad9', 'Quad9', '9.9.9.9', 'https://9.9.9.9/dns-query' ],
+	[ 'adguard', 'AdGuard', '94.140.14.14', 'https://dns.adguard-dns.com/dns-query' ],
+	[ 'yandex', 'Yandex', '77.88.8.8', 'https://common.dot.dns.yandex.net/dns-query' ],
+	[ 'comss', 'Comss DNS', null, 'https://dns.comss.one/dns-query' ],
+	[ 'xbox', 'Xbox DNS', null, 'https://xbox-dns.ru/dns-query' ]
 ];
 
 const DNS_TYPES = [ [ 'udp', 'UDP' ], [ 'tcp', 'TCP' ], [ 'doh', 'DoH (HTTPS)' ] ];
@@ -80,98 +75,72 @@ function dnsJoin(type, addr) {
 	return type === 'tcp' ? 'tcp://' + addr : addr;
 }
 
-// A list of DNS servers, each with its type: UDP, TCP or DoH, and its address
-// (a known resolver or any other). Stored as the usual UCI list of strings.
-const DnsList = ui.AbstractElement.extend({
-	__init__(value, options) {
-		this.values = L.toArray(value);
-		this.options = options || {};
-	},
+function provider(id) {
+	return PROVIDERS.find((p) => p[0] === id) || null;
+}
 
-	row(v) {
-		const sp = dnsSplit(v);
-		const type = E('select', { 'class': 'cbi-input-select', 'style': 'width:auto' },
-			DNS_TYPES.map((t) => E('option', { 'value': t[0], 'selected': t[0] === sp[0] ? '' : null }, t[1])));
-		const addr = E('input', { 'class': 'cbi-input-text', 'value': sp[1], 'style': 'flex:1;min-width:12em',
-			'placeholder': this.options.placeholder || '' });
-		const listId = 'mh-dns-' + Math.random().toString(36).slice(2);
-		const presets = E('datalist', { 'id': listId });
-		const fill = () => {
-			const doh = type.value === 'doh';
+// A server of the config -> what the drop-down shows: a provider or the address.
+function dnsChoice(v) {
+	const sp = dnsSplit(v);
+	const plain = sp[1].replace(/:53$/, '');
+	const p = PROVIDERS.find((x) => sp[0] === 'doh' ? x[3] === sp[1] : x[2] === plain);
 
-			presets.replaceChildren(...(doh ? RESOLVERS : PLAIN_RESOLVERS).map((r) => E('option', { 'value': r[1] }, r[0])));
-		};
+	return p ? p[0] : sp[1];
+}
 
-		addr.setAttribute('list', listId);
-		fill();
+// A choice of the drop-down with the common type -> the config form.
+function dnsEntry(type, choice) {
+	const p = provider(choice);
 
-		type.addEventListener('change', () => {
-			// The same server in the new form, when it has one.
-			const host = addr.value.trim().replace(/^[a-z]+:\/\//i, '').replace(/\/.*$/, '');
+	if (!p)
+		return dnsJoin(type, choice);
 
-			addr.value = type.value === 'doh' ? (host ? 'https://' + host + '/dns-query' : '') : host.replace(/:443$/, '');
-			fill();
-			this.changed();
-		});
-		addr.addEventListener('change', () => this.changed());
+	return type === 'doh' ? p[3] : (p[2] ? dnsJoin(type, p[2]) : '');
+}
 
-		return E('div', { 'class': 'mh-dns-row', 'style': 'display:flex;gap:6px;align-items:center;margin-bottom:4px' }, [
-			type, addr, presets,
-			E('button', { 'class': 'btn cbi-button-remove', 'title': _('Remove'), 'click': (ev) => {
-				ev.preventDefault();
-				dom.parent(ev.target, '.mh-dns-row').remove();
-				this.changed();
-			} }, '✕')
-		]);
-	},
+// One type for all servers of a list and the servers themselves ticked in one
+// drop-down: popular resolvers or any address typed in. The first one is the
+// main server, the next ones are fallbacks. Both options write the same UCI
+// list (dns.domestic or dns.remote).
+function dnsOptions(s, kind, labels, defType) {
+	const typeName = '_' + kind + '_type';
+	const list = (sid) => L.toArray(uci.get('mayhem', sid, kind));
+	const typeOf = (sid) => s.formvalue(sid, typeName) || defType;
 
-	changed() {
-		this.node.dispatchEvent(new CustomEvent('mh-dns-change'));
-	},
+	const store = function(sid) {
+		const t = typeOf(sid);
+		const all = L.toArray(s.formvalue(sid, kind)).map((x) => dnsEntry(t, x)).filter((x) => x);
 
-	render() {
-		const rows = E('div', { 'class': 'mh-dns-rows' }, this.values.map((v) => this.row(v)));
-		const node = E('div', { 'id': this.options.id }, [
-			rows,
-			E('button', { 'class': 'btn cbi-button-add', 'click': (ev) => {
-				ev.preventDefault();
-				rows.appendChild(this.row(this.options.newValue || ''));
-			} }, _('Add a server'))
-		]);
+		if (all.length)
+			uci.set('mayhem', sid, kind, all);
+		else
+			uci.unset('mayhem', sid, kind);
+	};
 
-		this.node = node;
-		this.rows = rows;
-		this.setUpdateEvents(node, 'mh-dns-change');
-		this.setChangeEvents(node, 'mh-dns-change');
-		dom.bindClassInstance(node, this);
+	let o = s.option(form.ListValue, typeName, labels[0]);
+	DNS_TYPES.forEach((t) => o.value(t[0], t[1]));
+	o.cfgvalue = (sid) => list(sid).length ? dnsSplit(list(sid)[0])[0] : defType;
+	o.write = o.remove = store;
 
-		return node;
-	},
+	o = s.option(form.MultiValue, kind, labels[1], labels[2]);
+	o.create = true;
+	o.display_size = 3;
+	PROVIDERS.forEach((p) => o.value(p[0], p[2] ? '%s (%s)'.format(p[1], p[2]) : '%s (DoH)'.format(p[1])));
+	o.cfgvalue = (sid) => list(sid).map(dnsChoice);
+	o.validate = function(sid, v) {
+		for (const x of L.toArray(v)) {
+			const p = provider(x);
 
-	getValue() {
-		return Array.from(this.rows.querySelectorAll('.mh-dns-row')).map((r) =>
-			dnsJoin(r.querySelector('select').value, r.querySelector('input').value)).filter((v) => v);
-	},
+			if (p && !p[2] && typeOf(sid) !== 'doh')
+				return _('%s only works over DoH').format(p[1]);
+		}
 
-	setValue(v) {
-		this.values = L.toArray(v);
-		this.rows.replaceChildren(...this.values.map((x) => this.row(x)));
-	}
-});
+		return true;
+	};
+	o.write = o.remove = store;
 
-const DnsOption = form.Value.extend({
-	__name__: 'CBI.MayhemDnsList',
-
-	renderWidget(section_id, option_index, cfgvalue) {
-		return new DnsList(cfgvalue != null ? cfgvalue : this.default, {
-			id: this.cbid(section_id), placeholder: this.placeholder, newValue: this.newValue
-		}).render();
-	},
-
-	textvalue(section_id) {
-		return L.toArray(this.cfgvalue(section_id)).join(', ');
-	}
-});
+	return o;
+}
 
 // Known geo data sources: [ kind, provider, URL ].
 const GEO_PRESETS = [
@@ -407,7 +376,7 @@ function viewOf(o, part, write) {
 	};
 }
 
-return view.extend({
+return baseclass.extend({
 	load() {
 		return Promise.all([
 			uci.load([ 'mayhem', 'network' ]),
@@ -464,18 +433,6 @@ return view.extend({
 		o.default = 'lists';
 		o.depends('mode', 'lists');
 
-		o = s.option(form.DynamicList, 'bypass', _('Devices without Mayhem'),
-			_('Traffic and DNS of these devices are left alone, in any mode: for a work laptop with a VPN of its own, a game console and the like. An IP address, a subnet or a MAC address. Only addresses from 198.18.0.0/15 still go to Xray, which the router\'s DNS gives out for proxied sites.'));
-		o.datatype = 'or(macaddr,cidr,ipaddr)';
-		o.placeholder = _('IP or MAC address');
-		Object.keys(hosts).sort().forEach((mac) => {
-			const h = hosts[mac] || {};
-			const ip = L.toArray(h.ipaddrs || h.ipv4)[0];
-			const label = h.name ? '%s (%s)'.format(h.name, ip || mac) : (ip ? '%s (%s)'.format(ip, mac) : mac);
-
-			o.value(mac, label);
-		});
-
 		o = s.option(form.Flag, 'exclude_local', _('Keep local addresses out of routing'),
 			_('Addresses of local networks (10.0.0.0/8, 192.168.0.0/16 and others) always go direct.'));
 		o.default = '1';
@@ -488,6 +445,18 @@ return view.extend({
 		o = s.option(form.Flag, 'torrent_direct', _('Torrents direct'),
 			_('Xray recognizes BitTorrent by its first packets and sends it direct, past the proxy.'));
 		o.rmempty = false;
+
+		o = s.option(form.DynamicList, 'bypass', _('Exclude devices from routing'),
+			_('Traffic and DNS of these devices are left alone, in any mode: for a work laptop with a VPN of its own, a game console and the like. An IP address, a subnet or a MAC address. Only addresses from 198.18.0.0/15 still go to Xray, which the router\'s DNS gives out for proxied sites.'));
+		o.datatype = 'or(macaddr,cidr,ipaddr)';
+		o.placeholder = _('IP or MAC address');
+		Object.keys(hosts).sort().forEach((mac) => {
+			const h = hosts[mac] || {};
+			const ip = L.toArray(h.ipaddrs || h.ipv4)[0];
+			const label = h.name ? '%s (%s)'.format(h.name, ip || mac) : (ip ? '%s (%s)'.format(ip, mac) : mac);
+
+			o.value(mac, label);
+		});
 
 		o = s.option(form.SectionValue, '_sections', form.GridSection, 'section', _('Sections'),
 			_('A section is a set of rules and the way its traffic leaves the router. Sections are checked from top to bottom; blocking always goes first.'));
@@ -583,7 +552,7 @@ return view.extend({
 		}
 		else {
 			o = ss.option(form.DummyValue, 'subscription', _('Subscriptions'));
-			o.cfgvalue = () => _('No subscriptions yet: add them on the Server list page.');
+			o.cfgvalue = () => _('No subscriptions yet: add them with the "Add connection" button.');
 		}
 		o.depends('type', 'proxy');
 		notJson(o);
@@ -915,19 +884,18 @@ return view.extend({
 		// --- DNS ---
 
 		s = m.section(form.NamedSection, 'dns', 'dns', _('DNS'),
-			_('Direct traffic is resolved by the domestic DNS. Domains of proxy sections get addresses from Xray itself and are resolved by the proxy server; the remote DNS serves tunnel sections and the rest of the traffic when everything goes through the proxy. The first server in a list is the main one, the next ones are fallbacks. Every server is UDP, TCP or DoH (Xray has no DNS over TLS).'));
+			_('Direct traffic is resolved by the domestic DNS. Domains of proxy sections get addresses from Xray itself and are resolved by the proxy server; the remote DNS serves tunnel sections and the rest of the traffic when everything goes through the proxy. The main server and its fallbacks share one type: UDP, TCP or DoH (Xray has no DNS over TLS).'));
 		s.addremove = false;
 
 		const lan = String(L.toArray(uci.get('network', 'lan', 'ipaddr'))[0] || '192.168.1.1').split('/')[0];
 
-		o = s.option(DnsOption, 'domestic', _('Domestic DNS'),
-			_('None, or the address of the router: the DNS servers of the provider.'));
+		o = dnsOptions(s, 'domestic', [ _('Domestic DNS type'), _('Domestic DNS'),
+			_('Tick one or several, or type your own address. The first one is the main server, the next ones are fallbacks. None: the DNS servers of the provider.') ], 'udp');
 		o.placeholder = lan;
-		o.newValue = '77.88.8.8';
 
-		o = s.option(DnsOption, 'remote', _('Remote DNS'));
+		o = dnsOptions(s, 'remote', [ _('Remote DNS type'), _('Remote DNS'),
+			_('Tick one or several, or type your own address. The first one is the main server, the next ones are fallbacks.') ], 'doh');
 		o.placeholder = _('Choose or type an address');
-		o.newValue = 'https://1.1.1.1/dns-query';
 
 		o = s.option(form.Flag, 'via_proxy', _('Remote DNS through the proxy'),
 			now ? _('On: queries go through the active server, now %s. Off: they go direct, encrypted when the server is DoH.').format(now)
@@ -991,7 +959,7 @@ return view.extend({
 		o.onclick = function() {
 			return callDataUpdate('geo', '').then((r) => {
 				ui.addNotification(null, E('p', r.busy ? _('An update is already running')
-					: _('The update runs in the background. Open this tab again in a few minutes to see the result.')), 'info');
+					: _('The update runs in the background. Open this window again in a few minutes to see the result.')), 'info');
 			});
 		};
 
@@ -1060,7 +1028,7 @@ return view.extend({
 				'class': 'btn cbi-button-action',
 				'click': ui.createHandlerFn(this, () => callDataUpdate('geo', '').then((r) => {
 					ui.addNotification(null, E('p', r.busy ? _('An update is already running')
-						: _('Geo data is downloading in the background. Open this page again in a few minutes.')), 'info');
+						: _('Geo data is downloading in the background. Open this window again in a few minutes.')), 'info');
 				}))
 			}, _('Download the category list'));
 

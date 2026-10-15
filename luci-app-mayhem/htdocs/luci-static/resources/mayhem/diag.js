@@ -231,6 +231,7 @@ return baseclass.extend({
 			E('div', { 'class': 'right', 'style': 'margin-top:8px' }, [
 				E('button', { 'class': 'btn cbi-button-action', 'click': ui.createHandlerFn(this, 'run') }, _('Run again')), ' ',
 				E('button', { 'class': 'btn', 'click': ui.createHandlerFn(this, 'copy') }, _('Copy report')), ' ',
+				E('button', { 'class': 'btn', 'click': ui.createHandlerFn(this, 'logs') }, _('View logs')), ' ',
 				E('button', { 'class': 'btn', 'click': ui.hideModal }, _('Close'))
 			])
 		], 'mh-diag-modal');
@@ -309,14 +310,23 @@ return baseclass.extend({
 		let component = 'all', lines = 300, follow = true, timer = null;
 		const pre = E('pre', { 'class': 'mh-log' }, _('Loading…'));
 
-		const show = () => callLogs(component, lines).then((r) => {
-			const atEnd = pre.scrollTop + pre.clientHeight >= pre.scrollHeight - 20;
+		// One request at a time; a failed refresh waits for the next one.
+		let busy = false;
+		const show = () => {
+			if (busy)
+				return Promise.resolve();
 
-			pre.textContent = (r.lines || []).join('\n') || _('No messages yet.');
+			busy = true;
 
-			if (atEnd)
-				pre.scrollTop = pre.scrollHeight;
-		});
+			return callLogs(component, lines).then((r) => {
+				const atEnd = pre.scrollTop + pre.clientHeight >= pre.scrollHeight - 20;
+
+				pre.textContent = (r.lines || []).join('\n') || _('No messages yet.');
+
+				if (atEnd)
+					pre.scrollTop = pre.scrollHeight;
+			}).catch(() => {}).finally(() => { busy = false; });
+		};
 
 		const select = (opts, value, change) => E('select', { 'class': 'cbi-input-select', 'change': change },
 			opts.map((o) => E('option', { 'value': o[0], 'selected': o[0] === value ? '' : null }, o[1])));
@@ -463,8 +473,6 @@ return baseclass.extend({
 
 		return [
 			mh.button({ icon: 'search', text: _('Diagnostics'), click: ui.createHandlerFn(this, 'diagnostics', true) }),
-			mh.button({ icon: 'logs', text: _('View logs'), click: ui.createHandlerFn(this, 'logs') }),
-			mh.button({ icon: 'archive', text: _('Backup'), click: ui.createHandlerFn(this, 'backup') }),
 			btn('restart', 'restart', 'cbi-button-apply', _('Restart Mayhem')),
 			d.running ? btn('stop', 'stop', 'cbi-button-remove', _('Stop Mayhem'))
 				: btn('start', 'play', 'cbi-button-save', _('Start Mayhem')),
