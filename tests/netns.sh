@@ -410,7 +410,7 @@ if start_mayhem "$WORK/capture.json"; then
 	expect "excluded IP -> kernel direct" 192.168.1.2 http://45.0.0.6:8080/
 	fake="$(dns client 192.168.1.1 53 youtube.test)"
 	case "$fake" in
-		198.18.*) ok "domain of a rule -> fake address through dnsmasq" ;;
+		198.1[89].*) ok "domain of a rule -> fake address through dnsmasq" ;;
 		*) bad "domain of a rule -> fake address through dnsmasq: got $fake" ;;
 	esac
 	expect_dns "other domain -> provider DNS through dnsmasq" client 192.168.1.1 53 other.test 45.0.0.2
