@@ -1,10 +1,11 @@
 'use strict';
-'require view';
+'require baseclass';
 'require form';
 'require uci';
 'require rpc';
 'require ui';
 'require mayhem.common as mh';
+'require mayhem.diag as diag';
 
 // Settings: logging, memory, watchdog, server checks and the reset to defaults.
 
@@ -35,7 +36,7 @@ function resetDialog() {
 	]);
 }
 
-return view.extend({
+return baseclass.extend({
 	load() {
 		return uci.load('mayhem');
 	},
@@ -87,6 +88,12 @@ return view.extend({
 		o.validate = function(section_id, value) {
 			return (!value || /^https?:\/\/\S+$/.test(value)) ? true : _('Expected an http(s):// address');
 		};
+
+		o = s.option(form.Button, '_backup', _('Backup'),
+			_('Export every setting of Mayhem to a file or restore them from one.'));
+		o.inputtitle = _('Backup…');
+		o.inputstyle = 'action';
+		o.onclick = () => diag.backup();
 
 		o = s.option(form.Button, '_reset', _('Restore defaults'));
 		o.inputtitle = _('Reset settings…');

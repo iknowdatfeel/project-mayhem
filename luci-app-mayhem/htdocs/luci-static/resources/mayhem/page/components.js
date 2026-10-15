@@ -1,5 +1,5 @@
 'use strict';
-'require view';
+'require baseclass';
 'require form';
 'require uci';
 'require rpc';
@@ -33,7 +33,7 @@ function updated(ts) {
 	return ts ? _('Updated %s').format(new Date(ts * 1000).toLocaleString()) : _('Not updated yet');
 }
 
-return view.extend({
+return baseclass.extend({
 	load() {
 		return Promise.all([
 			uci.load('mayhem'),
@@ -65,7 +65,7 @@ return view.extend({
 				'class': 'btn cbi-button',
 				'click': ui.createHandlerFn(this, () => callDataUpdate(what, '').then((r) => {
 					ui.addNotification(null, E('p', r.busy ? _('An update is already running')
-						: _('The update runs in the background. Open this tab again in a few minutes to see the result.')), 'info');
+						: _('The update runs in the background. Open this window again in a few minutes to see the result.')), 'info');
 				}))
 			}, _('Update now'));
 

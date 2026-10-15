@@ -329,8 +329,10 @@ def main():
             pg.on('pageerror', lambda e: errors.append('page error: %s' % e))
             pg.on('console', lambda m: errors.append('console: %s' % m.text) if m.type == 'error' and 'Failed to load resource' not in m.text else None)
             pg.on('response', lambda r: errors.append('HTTP %d for %s' % (r.status, r.url)) if r.status >= 400 else None)
-            pg.goto('%s/page/%s' % (base, view))
-            pg.wait_for_selector('#view .cbi-map', timeout=15000)
+            # Pages other than the dashboard open in a window over it (#name).
+            path, _sep, frag = view.partition('#')
+            pg.goto('%s/page/%s%s' % (base, path, '#' + frag if frag else ''))
+            pg.wait_for_selector('.mh-sheet-body .cbi-map' if frag else '#view .cbi-map', timeout=15000)
             pg.wait_for_timeout(500)
             for name, act in (actions or []):
                 try:
@@ -339,7 +341,7 @@ def main():
                 except Exception as e:
                     errors.append('%s: %s' % (name, e))
             if os.environ.get('SHOTS'):
-                pg.screenshot(path=os.path.join(os.environ['SHOTS'], view.replace('/', '_') + '.png'), full_page=True)
+                pg.screenshot(path=os.path.join(os.environ['SHOTS'], view.replace('/', '_').replace('#', '_') + '.png'), full_page=True)
             body = pg.inner_text('body')
             for marker in ('TypeError', 'ReferenceError', 'SyntaxError', 'is not defined', 'Unable to'):
                 if marker in body:
@@ -372,7 +374,7 @@ def main():
             # domain and ip lists, geo categories stay where they were
             # dialogs closed with hideModal leave the grid's stack behind: start clean
             pg.reload()
-            pg.wait_for_selector('#view .cbi-map', timeout=15000)
+            pg.wait_for_selector('.mh-sheet-body .cbi-map', timeout=15000)
             pg.wait_for_timeout(500)
             pg.query_selector_all('[data-tab="settings"] .cbi-section-table-row .cbi-button-edit')[0].click()
             pg.wait_for_selector('.modal [data-name="_text"] textarea', timeout=5000)
@@ -389,7 +391,8 @@ def main():
             keys = pg.query_selector('.modal [data-name="_links"]')
             if keys and keys.is_visible():
                 raise RuntimeError('server keys are shown for a section that uses the server list')
-            area.fill(area.input_value() + '\n91.108.4.0/22\nexample.org # comment')
+            area.fill(area.input_value() + '\nexample.org # comment')
+            pg.fill('.modal [data-name="_text_ip"] textarea', '91.108.4.0/22')
             # the dialog's Save already sends the changes to the router
             n = len(uci_writes)
             pg.click('.modal .cbi-button-positive')
@@ -436,13 +439,13 @@ def main():
             shot(pg, 'servers_add_vpn')
 
         def import_modal(pg):
-            pg.click('.cbi-tabmenu [data-tab="device"] a')
+            pg.click('.mh-sheet-body .cbi-tabmenu [data-tab="device"] a')
             pg.wait_for_timeout(300)
             shot(pg, 'servers_tunnels')
-            text = pg.inner_text('div[data-tab="device"]')
+            text = pg.inner_text('.mh-sheet-body div[data-tab="device"]')
             if 'awg0' not in text or 'AmneziaWG' not in text:
                 raise RuntimeError('awg0 running as "none" is not listed as an AmneziaWG tunnel')
-            btn = pg.locator('div[data-tab="device"] button', has_text=TRANSLATIONS.get('Restart the network', 'Restart the network'))
+            btn = pg.locator('.mh-sheet-body div[data-tab="device"] button', has_text=TRANSLATIONS.get('Restart the network', 'Restart the network'))
             if not btn.count():
                 raise RuntimeError('no button to restart the network for the unloaded protocol')
             n = len(installs)
@@ -451,19 +454,19 @@ def main():
             if 'protos' not in installs[n:]:
                 raise RuntimeError('the button does not start the network restart: %s' % installs[n:])
             close_modal(pg)
-            if not pg.locator('div[data-tab="device"] input[placeholder="awg0"]').count():
+            if not pg.locator('.mh-sheet-body div[data-tab="device"] input[placeholder="awg0"]').count():
                 raise RuntimeError('no field for the name of the tunnel')
-            pg.click('div[data-tab="device"] button[title]:has-text("✎")')
+            pg.click('.mh-sheet-body div[data-tab="device"] button[title]:has-text("✎")')
             pg.wait_for_selector('.modal input[maxlength="15"]', timeout=5000)
             shot(pg, 'servers_tunnel_rename')
             close_modal(pg)
-            pg.click('[data-tab="device"] .cbi-button-add')
+            pg.click('.mh-sheet-body [data-tab="device"] .cbi-button-add')
             pg.wait_for_selector('.modal textarea', timeout=5000)
             shot(pg, 'sections_import')
             close_modal(pg)
 
         def run_diag(pg):
-            pg.click('#mayhem-body .mh-side button >> nth=-6')
+            pg.click('#mayhem-body .mh-side button >> nth=-4')
             pg.wait_for_selector('.modal .mh-drow', timeout=5000)
             pg.wait_for_timeout(500)
             pg.wait_for_function('!document.querySelector(".modal .mh-spin")', timeout=90000)
@@ -473,14 +476,18 @@ def main():
             close_modal(pg)
 
         def logs_modal(pg):
-            pg.click('#mayhem-body .mh-side button >> nth=-5')
+            # the logs open from the diagnostics dialog
+            pg.click('#mayhem-body .mh-side button >> nth=-4')
+            pg.wait_for_selector('.modal .mh-drow', timeout=5000)
+            pg.click('.modal button:has-text("%s")' % TRANSLATIONS.get('View logs', 'View logs'))
             pg.wait_for_selector('.modal .mh-log', timeout=5000)
             pg.wait_for_timeout(500)
             shot(pg, 'dashboard_logs')
             close_modal(pg)
 
         def backup_modal(pg):
-            pg.click('#mayhem-body .mh-side button >> nth=-4')
+            # the backup is in the settings, next to the reset
+            pg.click('[data-name="_backup"] button')
             pg.wait_for_selector('.modal .mh-backup', timeout=5000)
             pg.wait_for_timeout(300)
             shot(pg, 'dashboard_backup')
@@ -524,6 +531,18 @@ def main():
             pg.click('.cbi-tabmenu [data-tab="dns"] a')
             pg.wait_for_selector('[data-tab="dns"] [data-name="remote"]', state='visible', timeout=5000)
             shot(pg, 'routing_dns')
+            # one type for the list, a resolver from the drop-down: saved as one entry
+            pg.select_option('[data-tab="dns"] select[id$="._domestic_type"]', 'tcp')
+            pg.evaluate("""() => {
+                const w = L.dom.findClassInstance(document.querySelector('[data-tab="dns"] [data-name="domestic"] .cbi-dropdown'));
+                w.setValue(['google', 'quad9']);
+            }""")
+            n = len(uci_writes)
+            pg.click('.mh-sheet-foot .cbi-button-save')
+            pg.wait_for_timeout(1000)
+            got = [a.get('values', {}).get('domestic') for m, a in uci_writes[n:] if m == 'set' and a.get('section') == 'dns']
+            if ['tcp://8.8.8.8', 'tcp://9.9.9.9'] not in got:
+                raise RuntimeError('domestic DNS saved as %s' % uci_writes[n:])
 
         def upload_modal(pg):
             pg.click('.cbi-tabmenu [data-tab="geo"] a')
@@ -533,7 +552,7 @@ def main():
 
         def components_page(pg):
             pg.wait_for_timeout(1500)
-            if not pg.query_selector('#view table') or not pg.query_selector('[data-name="auto_update"]'):
+            if not pg.query_selector('.mh-sheet table') or not pg.query_selector('[data-name="auto_update"]'):
                 raise RuntimeError('no component table or automatic update')
             shot(pg, 'components')
 
@@ -573,7 +592,7 @@ def main():
             HIDE['subscription'] = no_subs
             try:
                 pg.reload()
-                pg.wait_for_selector('#view .cbi-map', timeout=15000)
+                pg.wait_for_selector('.mh-sheet-body .cbi-map', timeout=15000)
                 pg.wait_for_timeout(500)
                 pg.click('.cbi-tabmenu li[data-tab="settings"] a')  # earlier actions leave another tab open
                 inp = pg.locator('[data-tab="settings"] .cbi-section-create input[type=text]').first
@@ -590,18 +609,90 @@ def main():
             finally:
                 HIDE['subscription'] = False
 
+        def edit_server(pg):
+            # the pencil of a server added by key: its Xray JSON, nothing else
+            n = len(calls)
+            pg.click('#mayhem-body .mh-section .mh-tile .mh-ren >> nth=0')
+            pg.wait_for_selector('.modal textarea', timeout=5000)
+            if pg.query_selector('.modal .cbi-tabmenu'):
+                raise RuntimeError('the server dialog still has tabs')
+            if 'luci.mayhem.parse_link' not in calls[n:]:
+                raise RuntimeError('the dialog did not ask the router for the JSON: %s' % calls[n:])
+            text = pg.input_value('.modal textarea')
+            if '"protocol"' not in text:
+                raise RuntimeError('no outbound JSON in the dialog: %s' % text[:200])
+            shot(pg, 'dashboard_edit')
+            close_modal(pg)
+
+        def delete_server(pg):
+            # the bin of a server added by key: a question, then it is gone
+            # from the page at once and its key from the server list
+            conf = os.path.join(FIX, 'uci', 'mayhem')
+            saved = open(conf).read()
+            try:
+                delete_checks(pg, conf)
+            finally:
+                open(conf, 'w').write(saved)  # the other pages want the server back
+
+        def delete_checks(pg, conf):
+            names = pg.eval_on_selector_all('#mayhem-body .mh-tile b', 'es => es.map(e => e.textContent)')
+            pg.click('#mayhem-body .mh-section .mh-tile .mh-del >> nth=0')
+            pg.wait_for_selector('.modal .cbi-button-negative', timeout=5000)
+            shot(pg, 'dashboard_delete')
+            pg.click('.modal .cbi-button-negative')
+            pg.wait_for_timeout(1000)
+            if 'luci.mayhem.server_delete' not in calls:
+                raise RuntimeError('deleting did not reach the router')
+            after = pg.eval_on_selector_all('#mayhem-body .mh-tile b', 'es => es.map(e => e.textContent)')
+            if len(after) != len(names) - 1 or after.count(names[0]) >= names.count(names[0]):
+                raise RuntimeError('the server is still on the page: %s -> %s' % (names, after))
+            pg.wait_for_timeout(3500)  # a poll with the old data does not bring it back
+            again = pg.eval_on_selector_all('#mayhem-body .mh-tile b', 'es => es.map(e => e.textContent)')
+            if again != after:
+                raise RuntimeError('the server came back with the next poll: %s' % again)
+            if ('#%s\'' % names[0]) in open(conf).read():
+                raise RuntimeError('the key of %s is still in the config' % names[0])
+
+        def services_badge(pg):
+            # the badge at the top opens the state of each service
+            pg.click('#mayhem-body .mh-pill')
+            pg.wait_for_selector('#mayhem-body .mh-svc', timeout=3000)
+            text = pg.inner_text('#mayhem-body .mh-svc')
+            if 'Xray' not in text or 'Dnsmasq' not in text:
+                raise RuntimeError('no service states under the badge: %s' % text)
+            shot(pg, 'dashboard_services')
+            pg.click('#mayhem-body .mh-pill')
+
+        def nav_pages(pg):
+            # every page opens in the window from its button and closes again
+            for i in range(4):
+                pg.click('#mayhem-body .mh-navbtn >> nth=%d' % i)
+                pg.wait_for_selector('.mh-sheet-body .cbi-map', timeout=15000)
+                if i == 0:
+                    shot(pg, 'dashboard_sheet')
+                pg.keyboard.press('Escape')
+                pg.wait_for_selector('.mh-sheet-overlay', state='detached', timeout=5000)
+            if '#' in pg.url:
+                raise RuntimeError('the address keeps a page after closing: %s' % pg.url)
+
         pages = [
-            ('mayhem/dashboard', [('buttons', dashboard_buttons), ('logs dialog', logs_modal), ('backup dialog', backup_modal), ('run diagnostics', run_diag)]),
-            ('mayhem/sections', [('sections tab', lambda pg: shot(pg, 'routing_sections')), ('main section', main_section),
+            ('mayhem/dashboard', [('buttons', dashboard_buttons), ('logs dialog', logs_modal), ('run diagnostics', run_diag),
+                                  ('edit a server', edit_server), ('delete a server', delete_server), ('services', services_badge), ('pages in a window', nav_pages)]),
+            ('mayhem/dashboard#sections', [('sections tab', lambda pg: shot(pg, 'routing_sections')), ('main section', main_section),
                                  ('edit sections', lambda pg: open_modals(pg, '[data-tab="settings"]')), ('domains as text', section_text),
                                  ('tunnel options', type_tunnel), ('DNS tab', dns_tab), ('edit geo sources', geo_tab), ('upload dialog', upload_modal),
                                  ('add a section', add_section), ('add a section without subscriptions', lambda pg: add_section(pg, True))]),
-            ('mayhem/servers', [('server list tabs', servers_tabs), ('import dialog', import_modal), ('vpn key as a server', add_vpn_key)]),
-            ('mayhem/components', [('components', components_page)]),
-            ('mayhem/settings', [('reset dialog', settings_tabs)]),
+            ('mayhem/dashboard#servers', [('server list tabs', servers_tabs), ('import dialog', import_modal), ('vpn key as a server', add_vpn_key)]),
+            ('mayhem/dashboard#components', [('components', components_page)]),
+            ('mayhem/dashboard#settings', [('reset dialog', settings_tabs), ('backup dialog', backup_modal)]),
         ]
 
+        only = os.environ.get('MAYHEM_ONLY')
+
         for view, actions in pages:
+            if only and only not in view:
+                continue
+
             try:
                 errs = open_view(view, actions)
             except Exception as e:

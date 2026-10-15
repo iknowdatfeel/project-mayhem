@@ -5,12 +5,16 @@
 'require ui';
 'require mayhem.common as mh';
 'require mayhem.diag as diag';
+'require mayhem.sheet as sheet';
+'require mayhem.linkedit as linkedit';
+'require mayhem.tunnels as tunnels';
 
-// The dashboard: three small widgets and the servers like Happ shows them:
-// servers added by link in "Server list", every subscription in a box of its
-// own with its traffic and expiry, tunnels used as servers. The buttons sit
-// together at the side: checks, updates, diagnostics and logs (in dialogs),
-// restart, stop, autostart. The main section is chosen in the connection box.
+// The dashboard, the only page of Mayhem: three small widgets and the servers
+// in boxes by where they come from (keys, every subscription with its traffic
+// and expiry, tunnels). The buttons at the top open the rest in a window over
+// it: connections (keys, subscriptions, tunnels), routing, settings and
+// component updates. Checks, diagnostics, logs and the service controls sit
+// together at the side. The main section is chosen in the connection box.
 
 const callDashboard = rpc.declare({ object: 'luci.mayhem', method: 'dashboard', expect: { '': {} } });
 const callAction = rpc.declare({ object: 'luci.mayhem', method: 'action', params: [ 'name' ], expect: { '': {} } });
@@ -23,24 +27,48 @@ const callSetPing = rpc.declare({ object: 'luci.mayhem', method: 'set_ping_metho
 const callSetMain = rpc.declare({ object: 'luci.mayhem', method: 'set_main_section', params: [ 'section' ], expect: { '': {} } });
 const callRename = rpc.declare({ object: 'luci.mayhem', method: 'rename_server', params: [ 'section', 'tag', 'link', 'name' ], expect: { '': {} } });
 const callSetSelect = rpc.declare({ object: 'luci.mayhem', method: 'set_select', params: [ 'section', 'mode', 'chain' ], expect: { '': {} } });
+const callParseOne = rpc.declare({ object: 'luci.mayhem', method: 'parse_link', params: [ 'link' ], expect: { '': {} } });
+const callServerDelete = rpc.declare({ object: 'luci.mayhem', method: 'server_delete', params: [ 'section', 'tag' ], expect: { '': {} } });
+const callServerEdit = rpc.declare({ object: 'luci.mayhem', method: 'server_edit', params: [ 'section', 'old', 'link' ], expect: { '': {} } });
 
 const PROBE_PARALLEL = 4;
 const DAY = 86400;
 const PROBES = [ [ 'url', _('URL test') ], [ 'tcp', _('TCP ping') ], [ 'icmp', _('ICMP ping') ] ];
 
 const CSS = `
+.mh-top { display:flex; align-items:center; justify-content:space-between; gap:10px; flex-wrap:wrap; }
+.mh-brand { display:flex; align-items:center; gap:10px; }
+.mh-brand-name { font-size:150%; font-weight:700; color:var(--text-color-high, inherit); }
+.mh-pill { display:inline-flex; align-items:center; gap:6px; padding:2px 10px; border-radius:999px; font-size:85%; border:1px solid currentColor; background:none; cursor:pointer; font-family:inherit; line-height:1.6; }
+.mh-pill:hover { background:rgba(127,127,127,.12); }
+.mh-caret { font-size:80%; opacity:.7; }
+.mh-pill-wrap { position:relative; }
+.mh-svc { position:absolute; top:calc(100% + 6px); left:0; z-index:20; min-width:220px; padding:8px 12px; border-radius:6px; background:var(--background-color-high, #fff); border:1px solid var(--border-color-low, #ddd); box-shadow:0 6px 20px rgba(0,0,0,.3); }
+.mh-svc-row { display:flex; justify-content:space-between; gap:16px; padding:3px 0; }
+.mh-pill::before { content:''; width:8px; height:8px; border-radius:50%; background:currentColor; }
+.mh-pill--ok { color:var(--success-color-medium, green); }
+.mh-pill--warn { color:var(--warn-color-medium, orange); }
+.mh-pill--fail { color:var(--error-color-medium, red); }
+.mh-pill--off { color:var(--text-color-medium, #888); }
+.mh-nav { display:flex; flex-wrap:wrap; gap:6px; }
+.mh-nav .btn { margin:0; }
+@media (max-width: 700px) { .mh-nav { width:100%; } .mh-nav .btn { flex:1 1 calc(50% - 6px); } }
+.mh-empty { display:flex; flex-direction:column; align-items:flex-start; gap:6px; }
+.mh-ren .mh-icon { width:14px; height:14px; vertical-align:middle; }
+.mh-del:hover { color:var(--error-color-medium, red); }
 .mh-head { display:flex; align-items:center; justify-content:space-between; gap:10px; flex-wrap:wrap; }
 .mh-head .mh-grow { flex:1 1 auto; }
-.mh-widgets { display:grid; grid-template-columns:repeat(3, 1fr); grid-gap:10px; }
-@media (max-width: 700px) { .mh-widgets { grid-template-columns:1fr; } }
+.mh-layout { display:grid; grid-template-columns:1fr 1fr 240px; grid-template-rows:auto 1fr; grid-template-areas:"conn sys side" "servers servers side"; grid-gap:10px; align-items:start; }
+.mh-a-conn { grid-area:conn; align-self:stretch; } .mh-a-sys { grid-area:sys; align-self:stretch; } .mh-a-side { grid-area:side; } .mh-a-servers { grid-area:servers; }
+@media (max-width: 900px) { .mh-layout { grid-template-columns:1fr; grid-template-rows:none; grid-template-areas:"conn" "sys" "side" "servers"; } }
 .mh-widget-row { white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
 .mh-whead { display:flex; justify-content:space-between; align-items:baseline; gap:8px; }
 .mh-split { display:grid; grid-template-columns:1fr 240px; grid-column-gap:12px; align-items:start; }
 @media (max-width: 700px) { .mh-split { grid-template-columns:1fr; grid-row-gap:10px; } }
-.mh-side { display:grid; grid-template-columns:1fr; grid-row-gap:6px; }
-.mh-side > .btn, .mh-side > select { width:100%; height:30px; line-height:28px; min-height:0; margin:0; padding:0 10px; font-size:90%; box-sizing:border-box; }
+.mh-side { display:grid; grid-template-columns:1fr; gap:6px; align-content:start; }
+.mh-side > .btn, .mh-side > select { width:100%; height:30px; line-height:28px; min-height:0; margin:0; padding:0 10px; font-size:90%; box-sizing:border-box; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
 .mh-side > .btn .mh-icon { width:14px; height:14px; }
-.mh-side-gap { height:4px; }
+.mh-side-gap { grid-column:1 / -1; height:2px; }
 
 .mh-group { margin-top:10px; }
 .mh-ghead { display:flex; align-items:center; flex-wrap:wrap; gap:4px 12px; margin-bottom:6px; }
@@ -57,6 +85,7 @@ const CSS = `
 .mh-tile--pick:hover { border-color:var(--primary-color-high, dodgerblue); }
 .mh-tile--active { border-color:var(--success-color-medium, green); }
 .mh-tile-foot { display:flex; justify-content:space-between; margin-top:6px; gap:6px; }
+.mh-tile-foot > span:last-child { white-space:nowrap; }
 .mh-alert { display:grid; grid-template-columns:24px 1fr auto; grid-column-gap:10px; align-items:center; }
 .mh-alert ul { margin:4px 0 0; padding-left:18px; }
 .mh-ghead .btn { padding:0 8px; line-height:22px; min-height:0; font-size:90%; }
@@ -72,8 +101,15 @@ const CSS = `
 .mh-chain-list .btn { padding:0 8px; line-height:22px; min-height:0; }
 `;
 
+// Speed in megabytes a second: one unit, so the numbers do not jump between
+// B/s, KB/s and MB/s from one second to the next.
 function rate(n) {
-	return n == null ? '—' : _('%s/s').format(mh.bytes(n));
+	if (n == null)
+		return '—';
+
+	const mb = n / 1048576;
+
+	return _('%s MB/s').format(mb >= 10 ? mb.toFixed(0) : mb >= 1 ? mb.toFixed(1) : mb.toFixed(2));
 }
 
 const PROTOCOLS = {
@@ -130,12 +166,16 @@ return view.extend({
 	busy: {},
 	method: 'url',
 	conn: null,		// ping and exit of the default section, checked on demand
+	gone: {},		// tag -> time: deleted servers, hidden until the reload drops them
+	showServices: false,	// the state of the services under the badge
 
 	load() {
 		return callDashboard();
 	},
 
 	update(d) {
+		this.hideGone(d);
+
 		if (this.data && d.time > this.data.time) {
 			const dt = d.time - this.data.time;
 			const diff = (a, b) => Math.max(0, (a - b) / dt);
@@ -150,6 +190,27 @@ return view.extend({
 
 		this.data = d;
 		this.redraw();
+	},
+
+	// Deleted servers leave the page at once: the router reloads in the
+	// background, and until then its data still has them.
+	hideGone(d) {
+		const now = Date.now();
+		const seen = {};
+
+		for (const s of (d.sections || [])) {
+			s.nodes = (s.nodes || []).filter((n) => {
+				if (!this.gone[n.tag])
+					return true;
+
+				seen[n.tag] = true;
+				return false;
+			});
+		}
+
+		for (const tag in this.gone)
+			if (!seen[tag] || now - this.gone[tag] > 120000)
+				delete this.gone[tag];
 	},
 
 	redraw() {
@@ -228,6 +289,54 @@ return view.extend({
 		input.select();
 	},
 
+	// The pencil of a server: a key is edited as Xray JSON, a tunnel as its
+	// .conf; a subscription's server only gets a name of its own.
+	editServer(section, n) {
+		if (n.iface && (n.tproto === 'amneziawg' || n.tproto === 'wireguard'))
+			return tunnels.editDialog(n.iface, () => window.setTimeout(() => this.refresh(), 3000));
+
+		if (!n.link || !n.usec)
+			return this.renameDialog(section, n);
+
+		return callParseOne(n.link).then((r) => {
+			linkedit.dialog(n.link, r.outbound, n.name, (link) => callServerEdit(n.usec, n.link, link).then((res) => {
+				if (res.error)
+					return res.error;
+
+				window.setTimeout(() => this.refresh(), 2000);
+				return null;
+			}));
+		});
+	},
+
+	// The bin of a server, after a question. It is gone from the page at once.
+	deleteServer(section, n) {
+		const what = n.iface ? _('The tunnel leaves the server list and stays a network interface; it can be added back under Tunnels.')
+			: (n.source === 'link' || n.source === 'json') ? _('The server key is deleted.')
+			: _('The server is hidden from this subscription and does not come back with its updates.');
+
+		ui.showModal(_('Delete server %s?').format(n.name), [
+			E('p', _('Are you sure you want to delete server %s?').format(n.name)),
+			E('p', { 'class': 'mh-muted mh-small' }, what),
+			E('div', { 'class': 'right', 'style': 'margin-top:1em' }, [
+				E('button', { 'class': 'btn', 'click': ui.hideModal }, _('Cancel')), ' ',
+				E('button', { 'class': 'btn cbi-button-negative', 'click': ui.createHandlerFn(this, () => callServerDelete(section, n.tag).then((r) => {
+					ui.hideModal();
+
+					if (r.error) {
+						ui.addNotification(null, E('p', r.error), 'error');
+						return;
+					}
+
+					this.gone[n.tag] = Date.now();
+					delete this.probes[n.tag];
+					this.hideGone(this.data);
+					this.redraw();
+				})) }, _('Delete'))
+			])
+		]);
+	},
+
 	// Ping and external address of the default section: once when the page
 	// opens, after a server change and with the latency test. Never polled.
 	checkConnection() {
@@ -246,8 +355,14 @@ return view.extend({
 
 		this.redraw();
 
+		// The same check is the server's latency in its box: one number for
+		// one server, not two from two checks.
 		const ping = main.node
-			? callProbe(main.node.tag, method).then((r) => { conn.ms = r.ms; conn.pingError = r.error; })
+			? callProbe(main.node.tag, method).then((r) => {
+				conn.ms = r.ms;
+				conn.pingError = r.error;
+				this.probes[main.node.tag] = { method: method, value: (r.ms != null) ? r.ms : (r.error || 'error') };
+			})
 			: Promise.resolve();
 		const exit = callExitInfo(sec.name, geoLang()).then((r) => { conn.exit = r; });
 
@@ -400,6 +515,50 @@ return view.extend({
 		});
 	},
 
+	// --- top -----------------------------------------------------------------------
+
+	// The name, the state of the service and the pages that open over the
+	// dashboard.
+	navButton(page, icon, cls, text) {
+		return sheet.button({ page: page, icon: icon, cls: cls, text: text, onclose: () => this.refresh() });
+	},
+
+	renderTop(d) {
+		const working = d.running && d.active;
+		const st = !d.enabled ? [ 'mh-pill--off', _('Turned off') ]
+			: working ? [ 'mh-pill--ok', _('Works') ]
+			: d.running ? [ 'mh-pill--warn', _('Starting…') ]
+			: [ 'mh-pill--fail', _('Does not work') ];
+
+		// The badge opens the state of each service.
+		const services = () => {
+			const xray = !d.xray ? [ _('Not installed'), 'mh-fail' ]
+				: d.running ? [ _('Works'), 'mh-ok' ] : [ _('Does not work'), 'mh-fail' ];
+			const row = (name, v) => E('div', { 'class': 'mh-svc-row' }, [
+				E('span', name), E('span', { 'class': v[1] }, v[0])
+			]);
+
+			return E('div', { 'class': 'mh-svc' }, [
+				row('Mayhem', [ st[1], st[0].replace('mh-pill--', 'mh-').replace('mh-off', 'mh-muted') ]),
+				row('Xray', xray),
+				row('Dnsmasq', d.dnsmasq ? [ _('Works'), 'mh-ok' ] : [ _('Does not work'), 'mh-fail' ])
+			]);
+		};
+
+		return E('div', { 'class': 'mh-top' }, [
+			E('div', { 'class': 'mh-brand' }, [
+				E('span', { 'class': 'mh-brand-name' }, 'Mayhem'),
+				E('span', { 'class': 'mh-pill-wrap' }, [
+					E('button', {
+						'class': 'mh-pill ' + st[0], 'title': _('Services'), 'aria-expanded': this.showServices ? 'true' : 'false',
+						'click': () => { this.showServices = !this.showServices; this.redraw(); }
+					}, [ st[1], E('span', { 'class': 'mh-caret' }, this.showServices ? '▴' : '▾') ]),
+					this.showServices ? services() : ''
+				])
+			])
+		]);
+	},
+
 	// --- widgets -----------------------------------------------------------------
 
 	widget(title, rows, note) {
@@ -486,31 +645,21 @@ return view.extend({
 		return rows;
 	},
 
+	// The connection, the system and all the buttons in one row; the state of
+	// the service is the badge at the top.
 	renderWidgets(d) {
 		const working = d.running && d.active;
-		const svc = !d.enabled ? [ '✘ ' + _('Turned off'), 'mh-muted' ]
-			: working ? [ '✔ ' + _('Works'), 'mh-ok' ]
-			: d.running ? [ '… ' + _('Starting…'), 'mh-warn' ]
-			: [ '✘ ' + _('Does not work'), 'mh-fail' ];
-		const xray = !d.xray ? [ '✘ ' + _('Not installed'), 'mh-fail' ]
-			: d.running ? [ '✔ ' + _('Works'), 'mh-ok' ]
-			: [ '✘ ' + _('Does not work'), 'mh-fail' ];
 
-		return E('div', { 'class': 'mh-widgets' }, [
+		return [
 			this.widget(_('Connection state'), this.connectionRows(d, working), this.mainChoice(d)),
 			this.widget(_('System'), [
 				[ _('Router'), d.model || '—' ],
 				[ _('OS'), d.system || '—' ],
 				[ 'Mayhem', d.version || '—' ],
-				[ 'Xray', d.xray || '—' ]
-			]),
-			this.widget(_('Services'), [
-				[ 'Mayhem', svc[0], svc[1] ],
-				[ 'Xray', xray[0], xray[1] ],
-				[ 'Dnsmasq', d.dnsmasq ? '✔ ' + _('Works') : '✘ ' + _('Does not work'), d.dnsmasq ? 'mh-ok' : 'mh-fail' ],
-				[ _('Xray memory'), d.rss_kb ? mh.bytes(d.rss_kb * 1024) : '—' ]
+				[ 'Xray', d.xray || '—' ],
+				[ _('Memory use'), d.rss_kb ? mh.bytes(d.rss_kb * 1024) : '—' ]
 			])
-		]);
+		];
 	},
 
 	// Configuration errors stop xray: they stay in sight. Warnings are on the
@@ -582,12 +731,19 @@ return view.extend({
 				pos >= 0 ? E('span', { 'class': 'mh-chain-no', 'title': _('Place in the fallback chain') }, String(pos + 1)) : '',
 				E('b', n.name),
 				E('button', {
-					'class': 'mh-ren', 'title': _('Rename'),
+					'class': 'mh-ren', 'title': ((n.link && n.usec) || n.iface) ? _('Edit') : _('Rename'),
 					'click': (ev) => {
 						ev.stopPropagation();
-						this.renameDialog(s.name, n);
+						this.editServer(s.name, n);
 					}
-				}, '✎')
+				}, mh.icon('pencil', true)),
+				E('button', {
+					'class': 'mh-ren mh-del', 'title': _('Delete'),
+					'click': (ev) => {
+						ev.stopPropagation();
+						this.deleteServer(s.name, n);
+					}
+				}, mh.icon('trash', true))
 			]),
 			E('div', { 'class': 'mh-tile-foot mh-small' }, [
 				E('span', { 'class': 'mh-muted' }, protocolName(n)),
@@ -714,16 +870,17 @@ return view.extend({
 			return E('div', { 'class': 'mh-box mh-section' }, [
 				head,
 				by[src].length ? E('div', { 'class': 'mh-grid' }, by[src].map((n) => this.tile(s, n)))
-					: E('div', { 'class': 'mh-muted mh-small' }, _('Add servers by key on the Server list page.'))
+					: E('div', { 'class': 'mh-muted mh-small' }, _('Add servers with the "Add connection" button.'))
 			]);
 		});
 	},
 
 	// The server list when xray has none of it (nothing added yet).
 	emptyPool() {
-		return E('div', { 'class': 'mh-box mh-section' }, [
-			E('div', { 'class': 'mh-ghead' }, E('span', { 'class': 'mh-title' }, _('Server list'))),
-			E('div', { 'class': 'mh-muted mh-small' }, _('Add servers by key or a subscription on the Server list page.'))
+		return E('div', { 'class': 'mh-box mh-section mh-empty' }, [
+			E('div', { 'class': 'mh-title' }, _('No servers yet')),
+			E('div', { 'class': 'mh-muted' }, _('Add a server or a subscription with the "Add connection" button.')),
+			this.navButton('servers', 'plus', 'cbi-button-add', _('Add connection'))
 		]);
 	},
 
@@ -888,8 +1045,13 @@ return view.extend({
 				click: ui.createHandlerFn(this, 'refreshServers')
 			}));
 
-		if (side.length)
-			side.push(E('div', { 'class': 'mh-side-gap' }));
+		// The pages that open over the dashboard.
+		side.push(E('div', { 'class': 'mh-side-gap' }));
+		side.push(this.navButton('servers', 'plus', 'cbi-button-add mh-navbtn', _('Add connection')));
+		side.push(this.navButton('sections', 'route', 'cbi-button mh-navbtn'));
+		side.push(this.navButton('settings', 'settings', 'cbi-button mh-navbtn'));
+		side.push(this.navButton('components', 'package', 'cbi-button mh-navbtn'));
+		side.push(E('div', { 'class': 'mh-side-gap' }));
 
 		return E('div', { 'class': 'mh-box mh-side' }, side.concat(diag.controls()));
 	},
@@ -945,15 +1107,24 @@ return view.extend({
 		if (!sections.some((s) => s.name === 'pool'))
 			boxes.unshift(this.emptyPool());
 
-		// Servers on the left, the buttons in a box of their own on the right.
-		return [ this.renderAlert(d), this.renderWidgets(d), E('div', { 'class': 'mh-split' }, [
-			E('div', { 'class': 'mh-stack' }, boxes.concat(this.renderLoose(subs, d.time))),
-			this.renderSide(d)
+		// The connection and the system on top, the servers under them, the
+		// column of buttons at the side all the way down.
+		const [ conn, sys ] = this.renderWidgets(d);
+		const side = this.renderSide(d);
+
+		conn.classList.add('mh-a-conn');
+		sys.classList.add('mh-a-sys');
+		side.classList.add('mh-a-side');
+
+		return [ this.renderTop(d), this.renderAlert(d), E('div', { 'class': 'mh-layout' }, [
+			conn, sys, side,
+			E('div', { 'class': 'mh-stack mh-a-servers' }, boxes.concat(this.renderLoose(subs, d.time)))
 		]) ];
 	},
 
 	render(d) {
 		this.data = d;
+		this.hideGone(d);
 
 		if (PROBES.some((p) => p[0] === d.ping_method))
 			this.method = d.ping_method;
@@ -966,14 +1137,31 @@ return view.extend({
 			return (this.method !== 'url' && proxies.length) ? this.probeAll(proxies) : this.checkConnection();
 		}, 0);
 
-		poll.add(() => document.hidden ? Promise.resolve() : this.refresh(), 3);
+		// Behind an open window or dialog, in a hidden tab or while the last answer has
+		// not come yet, the dashboard does not ask: rpcd answers one call at a
+		// time, and a queue of polls made the browser drop the calls of the
+		// window ("XHR request aborted"). A failed poll is just skipped.
+		let polling = false;
+
+		poll.add(() => {
+			if (polling || document.hidden || sheet.isOpen() || document.body.classList.contains('modal-overlay-active'))
+				return Promise.resolve();
+
+			polling = true;
+
+			return this.refresh().catch(() => {}).finally(() => { polling = false; });
+		}, 3);
 
 		// First: the section headers draw its buttons.
 		const dialogs = diag.render({ state: () => this.data, refresh: () => this.refresh(), redraw: () => this.redraw() });
 
+		// A page that reloads itself (renaming, a restore) opens again.
+		window.setTimeout(() => sheet.restore(() => this.refresh()), 0);
+
 		return E('div', { 'class': 'cbi-map mh-page mh-stack' }, [
 			mh.style(),
 			E('style', CSS),
+			sheet.style(),
 			dialogs,
 			E('div', { 'id': 'mayhem-body', 'class': 'mh-stack' }, this.renderBody(d))
 		]);
