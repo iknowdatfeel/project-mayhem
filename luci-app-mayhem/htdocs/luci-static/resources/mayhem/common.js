@@ -33,16 +33,25 @@ const CSS = `
 
 // A call to the router that drops before its answer (the browser reports
 // "XHR request aborted by browser": the router closed the connection while it
-// was busy) is sent again, up to two times, when everything in it only reads.
+// was busy) is sent again, up to three times, when everything in it only reads.
 // Calls that change something are never repeated: the first one may have
 // gone through. Every page of Mayhem loads this module, so it covers them all.
+// The usual cause is a kept-alive connection that uhttpd closes after a few
+// idle seconds just as the browser sends the next call over it.
 const READ_ONLY = {
 	'uci': [ 'get', 'state', 'changes', 'configs' ],
 	'luci-rpc': true,
-	'luci': [ 'getVersion', 'getFeatures', 'getInitList', 'getLocaltime', 'getTimezones', 'getMountPoints', 'getRealtimeStats', 'getConntrackList', 'getProcessList', 'getUSBDevices', 'getSwconfigFeatures', 'getSwconfigPortState', 'getBlockDevices' ],
+	'luci': [ 'getVersion', 'getFeatures', 'getInitList', 'getLocaltime', 'getTimezones', 'getMountPoints', 'getRealtimeStats',
+		'getConntrackList', 'getProcessList', 'getUSBDevices', 'getSwconfigFeatures', 'getSwconfigPortState', 'getBlockDevices',
+		'getCoreInfo', 'getConntrackHelpers', 'getDUIDHints', 'getLEDs' ],
 	'network.interface': [ 'dump', 'status' ],
 	'network.device': [ 'status' ],
+	'network.wireless': [ 'status' ],
 	'network': [ 'get_proto_handlers' ],
+	'iwinfo': true,
+	'session': [ 'access', 'get' ],
+	'rc': [ 'list' ],
+	'service': [ 'list' ],
 	'system': [ 'board', 'info' ],
 	'file': [ 'read', 'list', 'stat' ],
 	'luci.mayhem': [ 'dashboard', 'status', 'geo', 'sysinfo', 'logs', 'tunnel_info', 'tunnel_get', 'parse_link',
@@ -78,7 +87,7 @@ function readOnly(data) {
 			throw e;
 		});
 
-		return again(2);
+		return again(3);
 	};
 })();
 
