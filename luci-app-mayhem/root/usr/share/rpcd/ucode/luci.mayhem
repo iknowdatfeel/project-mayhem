@@ -46,7 +46,9 @@ function write_json(path, v) {
 }
 
 function uci_cursor() {
-	const c = require('uci').cursor(C.UCI_DIR);
+	// MAYHEM_UCI_SAVE_DIR: the tests keep UCI deltas next to their config.
+	const save = getenv('MAYHEM_UCI_SAVE_DIR');
+	const c = save ? require('uci').cursor(C.UCI_DIR, save) : require('uci').cursor(C.UCI_DIR);
 
 	c.load('mayhem');
 
@@ -2400,7 +2402,10 @@ const methods = {
 					c.set('mayhem', n.iface, 'tunnel');
 
 				c.set('mayhem', n.iface, 'server', '0');
-				c.commit('mayhem');
+
+				if (!c.commit('mayhem'))
+					return { error: 'the config could not be saved' };
+
 				system('/etc/init.d/mayhem reload >/dev/null 2>&1 &');
 
 				return { ok: true };
@@ -2448,7 +2453,9 @@ const methods = {
 					c.delete('mayhem', usec, 'chain');
 			}
 
-			c.commit('mayhem');
+			if (!c.commit('mayhem'))
+				return { error: 'the config could not be saved' };
+
 			system('/etc/init.d/mayhem reload >/dev/null 2>&1 &');
 
 			return { ok: true };
