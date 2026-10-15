@@ -17,7 +17,7 @@ uc() {
 		"$UCODE" -L "$FILES/usr/share/ucode/*.uc" ${UCODE_LIB:+-L "$UCODE_LIB"} "$@"
 }
 
-mkdir -p "$FIX/uci" "$FIX/run" "$FIX/geo" "$FIX/lists" "$FIX/subs" "$FIX/dat"
+mkdir -p "$FIX/uci" "$FIX/uci-save" "$FIX/run" "$FIX/geo" "$FIX/lists" "$FIX/subs" "$FIX/dat"
 cp "$ROOT/tests/luci/uci/network" "$ROOT/tests/luci/uci/firewall" "$FIX/uci/"
 sed "s#@FIX@#$FIX#g" "$ROOT/tests/luci/uci/mayhem.in" > "$FIX/uci/mayhem"
 python3 "$ROOT/tests/geo/mkdat.py" "$FIX/dat"

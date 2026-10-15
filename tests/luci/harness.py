@@ -135,6 +135,9 @@ def ucode_env():
     env = dict(os.environ)
     env.update({
         'MAYHEM_UCI_DIR': os.path.join(FIX, 'uci'),
+        # deltas of the plugin's own commits: /tmp/.uci may belong to root
+        # after the netns test in CI
+        'MAYHEM_UCI_SAVE_DIR': os.path.join(FIX, 'uci-save'),
         'MAYHEM_RUN_DIR': os.path.join(FIX, 'run'),
         'MAYHEM_GEO_DIR': os.path.join(FIX, 'geo'),
         'MAYHEM_LISTS_DIR': os.path.join(FIX, 'lists'),
