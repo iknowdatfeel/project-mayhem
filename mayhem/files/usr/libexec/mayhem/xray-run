@@ -1,9 +1,10 @@
 #!/bin/sh
 # Mayhem: runs xray under procd and owns the traffic redirection.
 #
-# Interception (nftables + policy routing) and the dnsmasq redirect are set up
-# only after xray listens, and are removed as soon as xray exits for any
-# reason. While xray is down - crash or restart - traffic goes direct.
+# Interception (nftables + policy routing) is set up and dnsmasq is pointed at
+# xray only after xray listens; when xray exits for any reason the rules go
+# and dnsmasq goes back to the provider's servers. While xray is down - crash
+# or restart - traffic and DNS go direct, and dnsmasq is never restarted.
 
 . "${MAYHEM_LIB_DIR:-/usr/share/mayhem}/lib.sh"
 
@@ -39,7 +40,7 @@ fi
 # What this xray runs with: reloads compare the new config with it. Hard
 # links, not copies: the generator replaces its files (rename), so the links
 # keep the old content, and /var/run is RAM.
-for f in xray.json xray.key overrides; do
+for f in xray.json xray.key overrides nft.conf tunnels; do
 	ln -f "$MAYHEM_RUN_DIR/$f" "$MAYHEM_RUN_DIR/running.$f" 2>/dev/null ||
 		cp "$MAYHEM_RUN_DIR/$f" "$MAYHEM_RUN_DIR/running.$f" 2>/dev/null || : > "$MAYHEM_RUN_DIR/running.$f"
 done
@@ -94,7 +95,8 @@ if [ "$ready" = 1 ]; then
 	# Saved server choices go in before any traffic does.
 	mayhem_apply_overrides
 
-	if mayhem_net_up && mayhem_tunnels_up && mayhem_dns_up; then
+	# dnsmasq asks xray from now on (a SIGHUP, not a restart).
+	if mayhem_net_up && mayhem_tunnels_up && mayhem_dns_servers xray; then
 		touch "$MAYHEM_RUN_DIR/active"
 		mayhem_log "started, traffic is redirected to xray (pid $xray_pid)"
 	else
@@ -134,9 +136,10 @@ while :; do
 	mayhem_log "xray restarted, connections reopen through the chosen servers (pid $xray_pid)"
 done
 
-rm -f "$MAYHEM_RUN_DIR/active" "$MAYHEM_RUN_DIR/xray.pid" "$MAYHEM_RUN_DIR/xray-run.pid" "$MAYHEM_RUN_DIR/watchdog.mem"
+rm -f "$MAYHEM_RUN_DIR/active" "$MAYHEM_RUN_DIR/xray.pid" "$MAYHEM_RUN_DIR/xray-run.pid" "$MAYHEM_RUN_DIR/watchdog.mem" "$MAYHEM_RUN_DIR/watchdog.hang"
+# The provider's DNS until xray is back: dnsmasq keeps running and answering.
+mayhem_dns_servers isp
 mayhem_net_down
-mayhem_dns_down
 
 if [ "$stopping" = 1 ]; then
 	mayhem_log "stopped, traffic goes direct"

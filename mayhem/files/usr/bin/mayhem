@@ -109,6 +109,14 @@ cmd_xray_install() {
 	local ver="${1:-$MAYHEM_XRAY_VERSION}" asset bin url tmp="/tmp/mayhem-xray" sum want new
 
 	ver="${ver#v}"
+
+	# Every update of Mayhem runs this: the same xray again would cost 13-20 MB
+	# in /tmp and 36 MB written to flash for nothing.
+	if [ -z "${MAYHEM_FORCE:-}" ] && [ -x "$MAYHEM_XRAY_BIN" ] && [ "$(mayhem_xray_version)" = "$ver" ]; then
+		echo "xray $ver is already installed"
+		return 0
+	fi
+
 	set -- $(xray_asset) || { echo "Unsupported architecture" >&2; return 1; }
 	asset="$1"
 	bin="$2"
@@ -174,6 +182,36 @@ pkg_has() {
 	fi
 }
 
+# Package lists live in RAM on OpenWrt: after a reboot there are none, and
+# dependencies of a downloaded package cannot be found without them.
+pkg_update() {
+	echo "Updating the package lists..."
+
+	if [ "$PM" = apk ]; then
+		apk update >/dev/null 2>&1
+	else
+		opkg update >/dev/null 2>&1
+	fi || echo "Could not update the package lists, trying with what there is" >&2
+}
+
+# While dnsmasq is replaced the router has no DNS of its own: the package
+# manager asks the provider's servers (or public ones) directly meanwhile.
+RESOLV=/tmp/resolv.conf
+resolv_direct() {
+	local ns
+
+	ns="$(awk '$1 == "nameserver" && $2 !~ /^(127\.|::1$)/ { print "nameserver " $2 }' /tmp/resolv.conf.d/resolv.conf.auto 2>/dev/null)"
+	[ -n "$ns" ] || ns="nameserver 77.88.8.8
+nameserver 1.1.1.1"
+
+	cp "$RESOLV" "$RESOLV.mayhem" 2>/dev/null
+	printf '%s\n' "$ns" > "$RESOLV.new" && mv -f "$RESOLV.new" "$RESOLV"
+}
+
+resolv_restore() {
+	[ -f "$RESOLV.mayhem" ] && mv -f "$RESOLV.mayhem" "$RESOLV"
+}
+
 pkg_add_file() {
 	if [ "$PM" = apk ]; then
 		apk add --allow-untrusted "$1"
@@ -233,17 +271,28 @@ cmd_awg_install() {
 			;;
 	esac
 
+	# The kernel module needs other kernel modules from the official feeds.
+	pkg_update
+
 	# Packages are built per release and target: the kernel module must match.
 	postfix="_v${ver}_${arch}_${target%%/*}_${target#*/}"
 	rm -rf "$dir"
 	mkdir -p "$dir" || return 1
 
 	for p in kmod-amneziawg amneziawg-tools luci-proto-amneziawg; do
+		# What is already there stays: a second run after a failed one only
+		# adds what is missing.
+		if pkg_has "$p"; then
+			echo "$p is already installed"
+			continue
+		fi
+
 		got=""
 
 		# opkg installs only .ipk and apk only .apk
 		file="$p$postfix.$PM_EXT"
 		echo "Downloading $file..."
+
 		if fetch "$AWG_RELEASES/v$ver/$file" "$dir/$file" && [ -s "$dir/$file" ]; then
 			got="$dir/$file"
 		else
@@ -259,7 +308,7 @@ cmd_awg_install() {
 		fi
 
 		if ! pkg_add_file "$got"; then
-			echo "Installing $p failed. If the firmware is a custom build, its kernel may not match the official one." >&2
+			echo "Installing $p failed (see above). The kernel module needs the official package feeds for its dependencies; on a custom firmware build the kernel may not match the official one." >&2
 			rm -rf "$dir"
 			return 1
 		fi
@@ -287,9 +336,11 @@ first_file() {
 
 # Swaps dnsmasq for dnsmasq-full. Both packages are downloaded before anything
 # is removed, and the old one is put back if the new one does not install or
-# does not start: the router must never be left without DNS and DHCP.
+# does not start: the router must never be left without DNS and DHCP. While
+# there is no dnsmasq, the router resolves through the provider's servers, so
+# that the package manager can still fetch what dnsmasq-full depends on.
 cmd_dnsmasq_full() {
-	local dir="/tmp/mayhem-dnsmasq" full old
+	local dir="/tmp/mayhem-dnsmasq" full old ok=0
 
 	if mayhem_dnsmasq_nftset; then
 		echo "dnsmasq already supports nftset"
@@ -300,16 +351,15 @@ cmd_dnsmasq_full() {
 	mkdir -p "$dir" || return 1
 	cp /etc/config/dhcp "$dir/dhcp" 2>/dev/null
 
+	pkg_update
 	echo "Downloading dnsmasq-full..."
 
 	if [ "$PM" = apk ]; then
-		apk update >/dev/null 2>&1
-		apk fetch -o "$dir" dnsmasq-full dnsmasq >/dev/null 2>&1
+		apk fetch -o "$dir" dnsmasq-full dnsmasq 2>&1 | tail -n 3
 		full="$(first_file "$dir"/dnsmasq-full-*.apk)"
 		old="$(first_file "$dir"/dnsmasq-[0-9]*.apk)"
 	else
-		opkg update >/dev/null 2>&1
-		(cd "$dir" && opkg download dnsmasq-full >/dev/null 2>&1 && opkg download dnsmasq >/dev/null 2>&1)
+		(cd "$dir" && opkg download dnsmasq-full 2>&1 | tail -n 3 && opkg download dnsmasq 2>&1 | tail -n 3)
 		full="$(first_file "$dir"/dnsmasq-full_*.ipk)"
 		old="$(first_file "$dir"/dnsmasq_*.ipk)"
 	fi
@@ -320,38 +370,57 @@ cmd_dnsmasq_full() {
 		return 1
 	fi
 
+	resolv_direct
 	echo "Replacing dnsmasq..."
 
 	if [ "$PM" = apk ]; then
-		apk del dnsmasq >/dev/null 2>&1
-		apk add "$full"
+		apk del dnsmasq 2>&1 | tail -n 5
 	else
-		opkg remove dnsmasq >/dev/null 2>&1 || opkg remove --force-depends dnsmasq >/dev/null 2>&1
-		opkg install "$full"
+		opkg remove dnsmasq >/dev/null 2>&1 || opkg remove --force-depends dnsmasq 2>&1 | tail -n 5
+	fi
+
+	if pkg_has dnsmasq; then
+		echo "dnsmasq cannot be removed (see above), nothing was changed" >&2
+		resolv_restore
+		rm -rf "$dir"
+		return 1
+	fi
+
+	if [ "$PM" = apk ]; then
+		apk add "$full" 2>&1 | tail -n 5
+	else
+		opkg install "$full" 2>&1 | tail -n 5
 	fi
 
 	[ -f "$dir/dhcp" ] && cp "$dir/dhcp" /etc/config/dhcp
+	resolv_restore
 	/etc/init.d/dnsmasq enable >/dev/null 2>&1
 	/etc/init.d/dnsmasq restart >/dev/null 2>&1
 	sleep 2
 
-	if mayhem_dnsmasq_nftset && pidof dnsmasq >/dev/null 2>&1; then
+	mayhem_dnsmasq_nftset && pidof dnsmasq >/dev/null 2>&1 && ok=1
+
+	if [ "$ok" = 1 ]; then
 		rm -rf "$dir"
 		echo "dnsmasq-full is installed"
+		# Kernel tunnel sections can fill their sets now.
+		/etc/init.d/mayhem running >/dev/null 2>&1 && /etc/init.d/mayhem reload
 		return 0
 	fi
 
 	echo "dnsmasq-full did not work, putting dnsmasq back" >&2
+	resolv_direct
 
 	if [ "$PM" = apk ]; then
 		apk del dnsmasq-full >/dev/null 2>&1
-		apk add "$old"
+		apk add "$old" 2>&1 | tail -n 5
 	else
 		opkg remove dnsmasq-full >/dev/null 2>&1
-		opkg install "$old"
+		opkg install "$old" 2>&1 | tail -n 5
 	fi
 
 	[ -f "$dir/dhcp" ] && cp "$dir/dhcp" /etc/config/dhcp
+	resolv_restore
 	/etc/init.d/dnsmasq enable >/dev/null 2>&1
 	/etc/init.d/dnsmasq restart >/dev/null 2>&1
 	rm -rf "$dir"

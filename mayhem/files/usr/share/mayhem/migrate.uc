@@ -16,6 +16,14 @@ const c = cursor(UCI_DIR);
 
 c.load('mayhem');
 
+// 0.16: the old default check URL becomes the new one (plain HTTP, the
+// checks vary less). A URL the user chose stays.
+if (c.get('mayhem', 'settings', 'probe_url') == 'https://www.gstatic.com/generate_204') {
+	c.set('mayhem', 'settings', 'probe_url', 'http://www.gstatic.com/generate_204');
+	c.commit('mayhem');
+	print('the server check URL is now plain HTTP\n');
+}
+
 if (c.get('mayhem', 'pool')) {
 	print('nothing to do\n');
 	exit(0);

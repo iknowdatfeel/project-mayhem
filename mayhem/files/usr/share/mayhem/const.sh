@@ -17,6 +17,8 @@ MAYHEM_TUN_MASK=0x40000ff
 MAYHEM_TUN_RULE_PRIO=108
 MAYHEM_NFT_TABLE=mayhem
 MAYHEM_RUN_DIR="${MAYHEM_RUN_DIR:-/var/run/mayhem}"
+# dnsmasq runs in a jail that sees only some paths: /var/run/dnsmasq is one.
+MAYHEM_DNS_SERVERS="${MAYHEM_DNS_SERVERS:-/var/run/dnsmasq/mayhem.servers}"
 MAYHEM_SUBS_DIR="${MAYHEM_SUBS_DIR:-/etc/mayhem/subs}"
 MAYHEM_GEO_DIR="${MAYHEM_GEO_DIR:-/etc/mayhem/geo}"
 MAYHEM_LISTS_DIR="${MAYHEM_LISTS_DIR:-/etc/mayhem/lists}"

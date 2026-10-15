@@ -4,6 +4,7 @@
 'require uci';
 'require rpc';
 'require ui';
+'require dom';
 'require tools.widgets as widgets';
 'require mayhem.common as mh';
 
@@ -12,6 +13,7 @@
 // rules (ready categories, own domains and addresses as text or as a list,
 // rule lists); rarely needed options behind "Advanced settings".
 
+const callHostHints = rpc.declare({ object: 'luci-rpc', method: 'getHostHints', expect: { '': {} } });
 const callGeo = rpc.declare({ object: 'luci.mayhem', method: 'geo', expect: { '': {} } });
 const callDataUpdate = rpc.declare({ object: 'luci.mayhem', method: 'data_update', params: [ 'what', 'name' ], expect: { '': {} } });
 const callGeoImport = rpc.declare({ object: 'luci.mayhem', method: 'geo_import', params: [ 'name', 'kind' ], expect: { '': {} } });
@@ -34,6 +36,142 @@ const RESOLVERS = [
 	[ 'Comss DNS', 'https://dns.comss.one/dns-query' ],
 	[ 'Xbox DNS', 'https://xbox-dns.ru/dns-query' ]
 ];
+
+// Plain servers of the same providers, for UDP and TCP.
+const PLAIN_RESOLVERS = [
+	[ 'Cloudflare', '1.1.1.1' ], [ 'Google', '8.8.8.8' ], [ 'Quad9', '9.9.9.9' ],
+	[ 'AdGuard', '94.140.14.14' ], [ 'Yandex', '77.88.8.8' ]
+];
+
+const DNS_TYPES = [ [ 'udp', 'UDP' ], [ 'tcp', 'TCP' ], [ 'doh', 'DoH (HTTPS)' ] ];
+
+// A DNS server as written in the config -> [ type, address as shown ].
+function dnsSplit(v) {
+	v = String(v || '').trim();
+
+	if (/^https:\/\//i.test(v))
+		return [ 'doh', v ];
+
+	if (/^tcp:\/\//i.test(v))
+		return [ 'tcp', v.replace(/^tcp:\/\//i, '') ];
+
+	return [ 'udp', v.replace(/^udp:\/\//i, '') ];
+}
+
+// [ type, address ] -> the config form: 1.1.1.1, tcp://1.1.1.1:53,
+// https://1.1.1.1/dns-query (a bare host becomes a DoH URL with /dns-query).
+function dnsJoin(type, addr) {
+	addr = String(addr || '').trim();
+
+	if (!addr)
+		return '';
+
+	if (type === 'doh') {
+		if (/^https:\/\//i.test(addr))
+			return addr;
+
+		const host = addr.replace(/^[a-z]+:\/\//i, '').replace(/\/.*$/, '');
+
+		return 'https://' + host + '/dns-query';
+	}
+
+	addr = addr.replace(/^[a-z]+:\/\//i, '').replace(/\/.*$/, '');
+
+	return type === 'tcp' ? 'tcp://' + addr : addr;
+}
+
+// A list of DNS servers, each with its type: UDP, TCP or DoH, and its address
+// (a known resolver or any other). Stored as the usual UCI list of strings.
+const DnsList = ui.AbstractElement.extend({
+	__init__(value, options) {
+		this.values = L.toArray(value);
+		this.options = options || {};
+	},
+
+	row(v) {
+		const sp = dnsSplit(v);
+		const type = E('select', { 'class': 'cbi-input-select', 'style': 'width:auto' },
+			DNS_TYPES.map((t) => E('option', { 'value': t[0], 'selected': t[0] === sp[0] ? '' : null }, t[1])));
+		const addr = E('input', { 'class': 'cbi-input-text', 'value': sp[1], 'style': 'flex:1;min-width:12em',
+			'placeholder': this.options.placeholder || '' });
+		const listId = 'mh-dns-' + Math.random().toString(36).slice(2);
+		const presets = E('datalist', { 'id': listId });
+		const fill = () => {
+			const doh = type.value === 'doh';
+
+			presets.replaceChildren(...(doh ? RESOLVERS : PLAIN_RESOLVERS).map((r) => E('option', { 'value': r[1] }, r[0])));
+		};
+
+		addr.setAttribute('list', listId);
+		fill();
+
+		type.addEventListener('change', () => {
+			// The same server in the new form, when it has one.
+			const host = addr.value.trim().replace(/^[a-z]+:\/\//i, '').replace(/\/.*$/, '');
+
+			addr.value = type.value === 'doh' ? (host ? 'https://' + host + '/dns-query' : '') : host.replace(/:443$/, '');
+			fill();
+			this.changed();
+		});
+		addr.addEventListener('change', () => this.changed());
+
+		return E('div', { 'class': 'mh-dns-row', 'style': 'display:flex;gap:6px;align-items:center;margin-bottom:4px' }, [
+			type, addr, presets,
+			E('button', { 'class': 'btn cbi-button-remove', 'title': _('Remove'), 'click': (ev) => {
+				ev.preventDefault();
+				dom.parent(ev.target, '.mh-dns-row').remove();
+				this.changed();
+			} }, '✕')
+		]);
+	},
+
+	changed() {
+		this.node.dispatchEvent(new CustomEvent('mh-dns-change'));
+	},
+
+	render() {
+		const rows = E('div', { 'class': 'mh-dns-rows' }, this.values.map((v) => this.row(v)));
+		const node = E('div', { 'id': this.options.id }, [
+			rows,
+			E('button', { 'class': 'btn cbi-button-add', 'click': (ev) => {
+				ev.preventDefault();
+				rows.appendChild(this.row(this.options.newValue || ''));
+			} }, _('Add a server'))
+		]);
+
+		this.node = node;
+		this.rows = rows;
+		this.setUpdateEvents(node, 'mh-dns-change');
+		this.setChangeEvents(node, 'mh-dns-change');
+		dom.bindClassInstance(node, this);
+
+		return node;
+	},
+
+	getValue() {
+		return Array.from(this.rows.querySelectorAll('.mh-dns-row')).map((r) =>
+			dnsJoin(r.querySelector('select').value, r.querySelector('input').value)).filter((v) => v);
+	},
+
+	setValue(v) {
+		this.values = L.toArray(v);
+		this.rows.replaceChildren(...this.values.map((x) => this.row(x)));
+	}
+});
+
+const DnsOption = form.Value.extend({
+	__name__: 'CBI.MayhemDnsList',
+
+	renderWidget(section_id, option_index, cfgvalue) {
+		return new DnsList(cfgvalue != null ? cfgvalue : this.default, {
+			id: this.cbid(section_id), placeholder: this.placeholder, newValue: this.newValue
+		}).render();
+	},
+
+	textvalue(section_id) {
+		return L.toArray(this.cfgvalue(section_id)).join(', ');
+	}
+});
 
 // Known geo data sources: [ kind, provider, URL ].
 const GEO_PRESETS = [
@@ -65,7 +203,8 @@ const GEOSITE_RE = /^geosite:([A-Za-z0-9_]+:)?[a-z0-9][a-z0-9_!.-]*(@[a-z0-9!_-]
 const GEOIP_RE = /^geoip:!?([A-Za-z0-9_]+:)?[a-z0-9][a-z0-9_.-]*$/i;
 const IP4_RE = /^(\d{1,3}\.){3}\d{1,3}(\/\d{1,2})?$/;
 const IP6_RE = /^[0-9a-f:]+(\/\d{1,3})?$/i;
-const LINK_RE = /^(vless|vmess|trojan|ss|socks5?|https?|hysteria2|hy2|wireguard|wg):\/\/\S+/i;
+// A key, or a server kept as Xray JSON on one line.
+const LINK_RE = /^((vless|vmess|trojan|ss|socks5?|https?|hysteria2|hy2|wireguard|wg):\/\/\S+|\{.*\}$)/i;
 
 function isIp(v) {
 	return GEOIP_RE.test(v) || IP4_RE.test(v) || (IP6_RE.test(v) && v.indexOf(':') >= 0);
@@ -273,11 +412,13 @@ return view.extend({
 		return Promise.all([
 			uci.load([ 'mayhem', 'network' ]),
 			L.resolveDefault(callGeo(), {}),
-			L.resolveDefault(callDashboard(), {})
+			L.resolveDefault(callDashboard(), {}),
+			L.resolveDefault(callHostHints(), {})
 		]);
 	},
 
 	render(data) {
+		const hosts = data[3] || {};
 		const geo = data[1] || {};
 		const dash = data[2] || {};
 		const cats = geo.categories || { geosite: [], geoip: [] };
@@ -315,6 +456,25 @@ return view.extend({
 		o.disabled = 'lists';
 		o.default = 'lists';
 		o.rmempty = false;
+
+		o = s.option(form.Flag, 'capture', _('Send all traffic to Xray'),
+			_('Off (recommended): only traffic of the rules reaches Xray - domains of proxy sections get addresses from 198.18.0.0/15 that the router recognizes, subnets of their rules are matched in the kernel. The rest of the traffic never touches Xray, which then needs far less memory. On: every connection of the network goes through Xray, which also recognizes sites by their TLS name - for devices with a DNS of their own (DNS over HTTPS in the browser) whose sites should still go through the proxy.'));
+		o.enabled = 'all';
+		o.disabled = 'lists';
+		o.default = 'lists';
+		o.depends('mode', 'lists');
+
+		o = s.option(form.DynamicList, 'bypass', _('Devices without Mayhem'),
+			_('Traffic and DNS of these devices are left alone, in any mode: for a work laptop with a VPN of its own, a game console and the like. An IP address, a subnet or a MAC address. Only addresses from 198.18.0.0/15 still go to Xray, which the router\'s DNS gives out for proxied sites.'));
+		o.datatype = 'or(macaddr,cidr,ipaddr)';
+		o.placeholder = _('IP or MAC address');
+		Object.keys(hosts).sort().forEach((mac) => {
+			const h = hosts[mac] || {};
+			const ip = L.toArray(h.ipaddrs || h.ipv4)[0];
+			const label = h.name ? '%s (%s)'.format(h.name, ip || mac) : (ip ? '%s (%s)'.format(ip, mac) : mac);
+
+			o.value(mac, label);
+		});
 
 		o = s.option(form.Flag, 'exclude_local', _('Keep local addresses out of routing'),
 			_('Addresses of local networks (10.0.0.0/8, 192.168.0.0/16 and others) always go direct.'));
@@ -482,23 +642,34 @@ return view.extend({
 
 		// --- rules ---
 
-		o = ss.option(form.DynamicList, '_cats', _('Ready categories'),
-			_('Categories of geo data: geosite for domains, geoip for addresses. Categories marked as heavy hold more than %s rules and make Xray use a lot of memory.').format(formatCount(HEAVY)) +
-			(noGeo ? ' ' + _('Categories appear in the list after the first geo data download.') : ''));
+		// Domains and addresses apart: geosite categories, then geoip ones.
+		const heavyNote = _('Categories marked as heavy hold more than %s rules and make Xray use a lot of memory.').format(formatCount(HEAVY)) +
+			(noGeo ? ' ' + _('Categories appear in the list after the first geo data download.') : '');
+
+		o = ss.option(form.DynamicList, '_sites', _('Domain categories (geosite)'), heavyNote);
 		o.modalonly = true;
 		geoChoices(o, 'geosite', cats.geosite);
-		geoChoices(o, 'geoip', cats.geoip);
 		o.cfgvalue = function(sid) {
-			return list(this, sid, 'domain').filter(isGeo).concat(list(this, sid, 'ip').filter(isGeo));
+			return list(this, sid, 'domain').filter(isGeo);
 		};
 		o.validate = function(sid, value) {
-			return (!value || GEOSITE_RE.test(value) || GEOIP_RE.test(value)) ? true : _('Expected geosite:category or geoip:category');
+			return (!value || GEOSITE_RE.test(value)) ? true : _('Expected geosite:category');
 		};
 		viewOf(o, 'list', function(sid, value) {
-			const v = L.toArray(value);
+			setList(this, sid, 'domain', list(this, sid, 'domain').filter((x) => !isGeo(x)).concat(L.toArray(value)));
+		});
 
-			setList(this, sid, 'domain', list(this, sid, 'domain').filter((x) => !isGeo(x)).concat(v.filter((x) => (/^geosite:/i).test(x))));
-			setList(this, sid, 'ip', list(this, sid, 'ip').filter((x) => !isGeo(x)).concat(v.filter((x) => (/^geoip:/i).test(x))));
+		o = ss.option(form.DynamicList, '_geoips', _('Address categories (geoip)'));
+		o.modalonly = true;
+		geoChoices(o, 'geoip', cats.geoip);
+		o.cfgvalue = function(sid) {
+			return list(this, sid, 'ip').filter(isGeo);
+		};
+		o.validate = function(sid, value) {
+			return (!value || GEOIP_RE.test(value)) ? true : _('Expected geoip:category');
+		};
+		viewOf(o, 'list', function(sid, value) {
+			setList(this, sid, 'ip', list(this, sid, 'ip').filter((x) => !isGeo(x)).concat(L.toArray(value)));
 		});
 
 		o = ss.option(form.ListValue, 'rules_input', _('Own domains and addresses'));
@@ -507,20 +678,20 @@ return view.extend({
 		o.default = 'text';
 		o.modalonly = true;
 
-		o = ss.option(form.TextValue, '_text', _('Domains and IP addresses'),
-			_('One per line, or separated by commas or spaces; "#" starts a comment. example.com matches the domain and its subdomains; full: is the exact name, keyword: a substring, regexp: a regular expression. Addresses and subnets: 91.108.4.0/22, 2001:db8::/32.'));
-		o.rows = 8;
+		o = ss.option(form.TextValue, '_text', _('Domains'),
+			_('One per line, or separated by commas or spaces; "#" starts a comment. example.com matches the domain and its subdomains; full: is the exact name, keyword: a substring, regexp: a regular expression.'));
+		o.rows = 6;
 		o.monospace = true;
-		o.placeholder = 'example.com\nfull:www.example.org\n91.108.4.0/22\n# Comment';
+		o.placeholder = 'example.com\nfull:www.example.org\n# Comment';
 		o.depends('rules_input', 'text');
 		o.modalonly = true;
 		o.cfgvalue = function(sid) {
-			return list(this, sid, 'domain').filter((x) => !isGeo(x)).concat(list(this, sid, 'ip').filter((x) => !isGeo(x))).join('\n');
+			return list(this, sid, 'domain').filter((x) => !isGeo(x)).join('\n');
 		};
 		o.validate = function(sid, value) {
 			for (const t of tokens(value)) {
 				if (isIp(t))
-					continue;
+					return _('%s is an address: it goes into the field below').format(t);
 
 				const e = domainError(t);
 
@@ -531,10 +702,28 @@ return view.extend({
 			return true;
 		};
 		viewOf(o, 'text', function(sid, value) {
-			const t = tokens(value);
+			setList(this, sid, 'domain', list(this, sid, 'domain').filter(isGeo).concat(tokens(value)));
+		});
 
-			setList(this, sid, 'domain', list(this, sid, 'domain').filter(isGeo).concat(t.filter((x) => !isIp(x))));
-			setList(this, sid, 'ip', list(this, sid, 'ip').filter(isGeo).concat(t.filter(isIp)));
+		o = ss.option(form.TextValue, '_text_ip', _('IP addresses and subnets'),
+			_('IPv4 or IPv6 addresses, CIDR allowed, one per line or separated by commas or spaces: 91.108.4.0/22, 2001:db8::/32.'));
+		o.rows = 4;
+		o.monospace = true;
+		o.placeholder = '91.108.4.0/22\n2001:db8::/32';
+		o.depends('rules_input', 'text');
+		o.modalonly = true;
+		o.cfgvalue = function(sid) {
+			return list(this, sid, 'ip').filter((x) => !isGeo(x)).join('\n');
+		};
+		o.validate = function(sid, value) {
+			for (const t of tokens(value))
+				if (!isIp(t))
+					return _('Expected an IP address or a subnet in CIDR form') + ': ' + t;
+
+			return true;
+		};
+		viewOf(o, 'text', function(sid, value) {
+			setList(this, sid, 'ip', list(this, sid, 'ip').filter(isGeo).concat(tokens(value)));
 		});
 
 		o = ss.option(form.DynamicList, '_domains', _('Domains'),
@@ -726,20 +915,19 @@ return view.extend({
 		// --- DNS ---
 
 		s = m.section(form.NamedSection, 'dns', 'dns', _('DNS'),
-			_('Direct traffic is resolved by the domestic DNS, proxied traffic by the remote DNS. The first server in a list is the main one, the next ones are fallbacks. Xray has no DNS over TLS: use https:// (DoH), tcp:// or a plain address.'));
+			_('Direct traffic is resolved by the domestic DNS. Domains of proxy sections get addresses from Xray itself and are resolved by the proxy server; the remote DNS serves tunnel sections and the rest of the traffic when everything goes through the proxy. The first server in a list is the main one, the next ones are fallbacks. Every server is UDP, TCP or DoH (Xray has no DNS over TLS).'));
 		s.addremove = false;
 
 		const lan = String(L.toArray(uci.get('network', 'lan', 'ipaddr'))[0] || '192.168.1.1').split('/')[0];
 
-		o = s.option(form.DynamicList, 'domestic', _('Domestic DNS'),
-			_('Empty, or the address of the router: the DNS servers of the provider.'));
+		o = s.option(DnsOption, 'domestic', _('Domestic DNS'),
+			_('None, or the address of the router: the DNS servers of the provider.'));
 		o.placeholder = lan;
-		o.value('77.88.8.8', 'Yandex (77.88.8.8)');
-		RESOLVERS.forEach((r) => o.value(r[1], '%s (%s)'.format(r[0], r[1])));
+		o.newValue = '77.88.8.8';
 
-		o = s.option(form.DynamicList, 'remote', _('Remote DNS'));
+		o = s.option(DnsOption, 'remote', _('Remote DNS'));
 		o.placeholder = _('Choose or type an address');
-		RESOLVERS.forEach((r) => o.value(r[1], '%s (%s)'.format(r[0], r[1])));
+		o.newValue = 'https://1.1.1.1/dns-query';
 
 		o = s.option(form.Flag, 'via_proxy', _('Remote DNS through the proxy'),
 			now ? _('On: queries go through the active server, now %s. Off: they go direct, encrypted when the server is DoH.').format(now)
@@ -761,7 +949,7 @@ return view.extend({
 		o.rmempty = false;
 
 		o = s.option(form.Flag, 'fakedns', _('FakeDNS'),
-			_('Proxied domains get addresses from 198.18.0.0/15. Helps when an app hides the domain, but cached fake addresses stop working while Mayhem is stopped.'));
+			_('Only matters when all traffic goes to Xray: proxied domains then get addresses from 198.18.0.0/15 as well (without it, they are recognized by their TLS name). By lists, Xray always does this. Cached fake addresses stop working while Mayhem is stopped.'));
 
 		// --- geo files ---
 

@@ -7,7 +7,7 @@
 import * as fs from 'fs';
 import { parse_link, outbound_host, outbound_port, refused_by_xray } from 'mayhem.links';
 import { list_key, entries, dnsmasq_nftset } from 'mayhem.rules';
-import { parse_conf, is_amnezia, uci_sections } from 'mayhem.awg';
+import { parse_conf, is_amnezia, uci_sections, to_conf } from 'mayhem.awg';
 import * as C from 'mayhem.const';
 
 const XRAY = getenv('MAYHEM_XRAY_BIN') ?? '/usr/libexec/mayhem/xray';
@@ -96,7 +96,7 @@ function active_tag(s, obs) {
 	if (s.mode == 'single')
 		return s.nodes[0].tag;
 
-	if (s.mode == 'manual')
+	if (s.mode == 'manual' || s.mode == 'fallback')
 		return s.selected;
 
 	if (s.override)
@@ -284,7 +284,19 @@ function uri_escape(s) {
 function rename_link(link, name) {
 	let out = null;
 
-	if (match(link, /^vmess:\/\/[A-Za-z0-9+\/=_-]+$/)) {
+	// A server kept as Xray JSON: its name is the tag.
+	if (substr(trim(link), 0, 1) == '{') {
+		try {
+			const j = json(link);
+
+			j.tag = name;
+			out = sprintf('%J', j);
+		}
+		catch (e) {
+			out = null;
+		}
+	}
+	else if (match(link, /^vmess:\/\/[A-Za-z0-9+\/=_-]+$/)) {
 		try {
 			const j = json(b64dec(replace(replace(substr(link, 8), '-', '+'), '_', '/')));
 
@@ -465,8 +477,19 @@ function diag_local() {
 	const conf_dirs = lines_of(run(`sh -c '. ${LIB}/lib.sh; mayhem_dnsmasq_dirs' 2>/dev/null`));
 	const has_conf = length(filter(conf_dirs, (d) => fs.access(`${d}/mayhem.conf`))) > 0;
 
-	check(res, 'dns', 'Redirect to xray', has_conf ? 'ok' : (active ? 'fail' : 'info'),
-		has_conf ? 'dnsmasq forwards queries to xray' : 'dnsmasq does not use xray');
+	// dnsmasq reads its servers from dns.servers: xray while it works, the
+	// provider's otherwise.
+	const to_xray = index(fs.readfile(C.DNS_SERVERS) ?? '', `#${C.DNS_PORT}`) >= 0;
+
+	check(res, 'dns', 'Redirect to xray', has_conf && to_xray ? 'ok' : (active ? 'fail' : 'info'),
+		!has_conf ? 'dnsmasq does not use xray' : to_xray ? 'dnsmasq forwards queries to xray' : 'dnsmasq asks the provider\'s servers until xray works');
+
+	// By lists, only the names of the rules go to xray when dnsmasq can match
+	// all of them.
+	if (state.mode == 'lists' && state.dns)
+		check(res, 'dns', 'Queries through xray', state.dns.split ? 'ok' : 'info',
+			state.dns.split ? sprintf('only the names of the rules (%d), the rest goes to the provider directly', state.dns.names ?? 0)
+				: sprintf('all of them: dnsmasq cannot match %s', state.dns.why ?? '?'));
 
 	// Tunnels
 	for (let sn in keys(state.sections ?? {})) {
@@ -1108,6 +1131,14 @@ function xray_installed() {
 	if (!fs.access(XRAY))
 		return null;
 
+	// xray-run notes the version of the binary it started: no second xray
+	// process (~30 MB) just to print it.
+	const noted = trim(fs.readfile(`${RUN}/xray.version`) ?? '');
+	const bin = fs.stat(XRAY), file = fs.stat(`${RUN}/xray.version`);
+
+	if (match(noted, /^[0-9][0-9A-Za-z.-]*$/) && bin && file && file.mtime >= bin.mtime)
+		return noted;
+
 	const m = match(run(`${XRAY} version 2>/dev/null`) ?? '', /Xray ([0-9][^ ]*)/);
 
 	return m ? m[1] : 'installed';
@@ -1158,7 +1189,8 @@ const methods = {
 				const sec = {
 					name: sn, type: s.type, mode: s.mode, balancer: s.balancer, pool: s.pool == true,
 					active: s.type == 'proxy' ? active_tag(s, m.observatory) : null,
-					pinned: s.override ?? null, nodes: nodes, traffic: traffic
+					pinned: s.override ?? null, nodes: nodes, traffic: traffic,
+					chain: s.chain ?? null
 				};
 
 				// A tunnel chosen among the section's servers carries the rest
@@ -1259,6 +1291,9 @@ const methods = {
 			if (tag == '' && s.mode == 'manual')
 				return { error: 'a manual section needs a server' };
 
+			if (s.mode == 'fallback')
+				return { error: 'the fallback chain chooses the server' };
+
 			if (xray_pid()) {
 				const cmd = `${XRAY} api bo --server=127.0.0.1:${C.API_PORT} -b ${q(s.balancer)} ${tag != '' ? q(tag) : '-r'} >/dev/null 2>&1; echo $?`;
 
@@ -1300,19 +1335,12 @@ const methods = {
 			}
 
 			// A tunnel of the main section takes the rest of the traffic in
-			// the kernel: choosing it, or leaving it, changes the kernel rules,
-			// and procd restarts xray with them.
+			// the kernel: choosing it, or leaving it, changes the kernel rules.
+			// The reload puts them in place; xray keeps running.
+			// Otherwise nothing restarts: new connections go through the new
+			// server at once, open ones finish on the old one.
 			if (sn == state.default_section && state.mode == 'global' && (node?.iface || s.kernel))
 				system('/etc/init.d/mayhem reload >/dev/null 2>&1 &');
-			// A server chosen by hand: open connections stay with the old one
-			// until they close, so xray is restarted under the same rules and
-			// apps reconnect through the new server at once.
-			else if (tag != '') {
-				const rp = trim(fs.readfile(`${RUN}/xray-run.pid`) ?? '');
-
-				if (match(rp, /^[0-9]+$/))
-					system(`kill -HUP ${rp} 2>/dev/null`);
-			}
 
 			return { ok: true };
 		}
@@ -1389,13 +1417,32 @@ const methods = {
 				const proxy = `socks5h://${n.tag}:${C.HELPER_PASS}@127.0.0.1:${C.HELPER_PORT}`;
 				const url = state.probe_url ?? C.DEFAULT_PROBE_URL;
 
-				out = trim(run(`curl -s -o /dev/null -m 10 -x ${q(proxy)} -w '%{http_code} %{time_starttransfer}' ${q(url)}`) ?? '');
-				m = match(out, /^([0-9]+) ([0-9.]+)$/);
+				// Two requests over one connection. The first also pays for the
+				// handshakes with the server and the site (several round trips,
+				// a lost packet costs a second or three): it only proves that the
+				// server works. The second is the delay through the server itself,
+				// and it hardly jumps from one check to the next.
+				out = run(`curl -s -m 10 -x ${q(proxy)} -o /dev/null -o /dev/null -w '%{http_code} %{time_starttransfer} %{num_connects}\n' ${q(url)} ${q(url)}`) ?? '';
 
-				if (!m || int(m[1]) < 200 || int(m[1]) >= 400)
-					return { error: m ? `HTTP ${m[1]}` : 'timeout' };
+				const res = [];
 
-				return { ms: int(m[2] * 1000) || 1 };
+				for (let l in split(trim(out), '\n')) {
+					m = match(l, /^([0-9]+) ([0-9.]+) ([0-9]+)$/);
+
+					if (m)
+						push(res, { code: int(m[1]), t: m[2] * 1, fresh: int(m[3]) > 0 });
+				}
+
+				const okc = (r) => r && r.code >= 200 && r.code < 400;
+
+				if (!okc(res[0]))
+					return { error: res[0] ? `HTTP ${res[0].code}` : 'timeout' };
+
+				// The second request went over the same connection: its time.
+				if (okc(res[1]) && !res[1].fresh)
+					return { ms: int(res[1].t * 1000) || 1 };
+
+				return { ms: int(res[0].t * 1000) || 1 };
 
 			default:
 				return { error: 'unknown method' };
@@ -2010,7 +2057,17 @@ const methods = {
 			if (type(req.args?.links) == 'array')
 				return { results: map(slice(req.args.links, 0, 500), (l) => one(`${l}`)) };
 
-			return one(req.args?.link);
+			// One server: also its Xray outbound, for editing it as JSON.
+			const r = one(req.args?.link);
+
+			try {
+				r.outbound = parse_link(req.args?.link).outbound;
+			}
+			catch (e) {
+				r.outbound = null;
+			}
+
+			return r;
 		}
 	},
 
@@ -2132,6 +2189,320 @@ const methods = {
 		}
 	},
 
+	// A server key (or JSON server) of the server list or of a section is
+	// replaced by an edited one. A new name carries the choices along.
+	server_edit: {
+		args: { section: '', old: '', link: '' },
+		call: function(req) {
+			const sec = req.args?.section || 'pool';
+			let link = trim(req.args?.link ?? '');
+			const c = uci_cursor();
+			let parsed;
+
+			if (c.get('mayhem', sec) != 'pool' && c.get('mayhem', sec) != 'section')
+				return { error: 'unknown section' };
+
+			// JSON goes in as one line.
+			if (substr(link, 0, 1) == '{') {
+				try {
+					link = sprintf('%J', json(link));
+				}
+				catch (e) {
+					return { error: 'the server config is not valid JSON' };
+				}
+			}
+
+			if (match(link, /[\r\n]/))
+				return { error: 'one server only' };
+
+			try {
+				parsed = parse_link(link);
+			}
+			catch (e) {
+				return { error: e.message };
+			}
+
+			const why = refused_by_xray(parsed.outbound);
+
+			if (why)
+				return { error: `xray does not accept this server: ${why}` };
+
+			const links = c.get('mayhem', sec, 'link') ?? [];
+			const all = type(links) == 'array' ? links : [ links ];
+			const i = index(all, req.args?.old ?? '');
+
+			if (i < 0)
+				return { error: 'the server key was not found' };
+
+			let old = null;
+
+			try {
+				old = parse_link(all[i]).name;
+			}
+			catch (e) {
+				old = null;
+			}
+
+			all[i] = link;
+			c.set('mayhem', sec, 'link', all);
+
+			if (old != null && parsed.name != '' && old != parsed.name) {
+				for (let k in [ 'selected', 'override' ])
+					if (c.get('mayhem', sec, k) == old)
+						c.set('mayhem', sec, k, parsed.name);
+
+				const chain = c.get('mayhem', sec, 'chain');
+
+				if (chain)
+					c.set('mayhem', sec, 'chain', map(type(chain) == 'array' ? chain : [ chain ], (n) => n == old ? parsed.name : n));
+			}
+
+			c.commit('mayhem');
+			system('/etc/init.d/mayhem reload >/dev/null 2>&1 &');
+
+			return { ok: true, name: parsed.name };
+		}
+	},
+
+	// Takes a tunnel out of Mayhem. mode "hide": it stops being a server of
+	// the server list (mayhem.<iface>.server = 0), the interface stays; "show"
+	// puts it back. "full": the network interface goes as well, with its
+	// peers, its place in firewall zones, the tunnel sections that use it and
+	// every choice that names it.
+	tunnel_delete: {
+		args: { iface: '', mode: 'hide' },
+		call: function(req) {
+			const iface = req.args?.iface ?? '';
+			const c = require('uci').cursor(C.UCI_DIR);
+
+			c.load('network');
+			c.load('firewall');
+			c.load('mayhem');
+
+			if (!match(iface, /^[A-Za-z0-9_]+$/) || c.get('network', iface) != 'interface')
+				return { error: `network interface ${iface} does not exist` };
+
+			const drop = (v) => type(v) == 'array' ? filter(v, (x) => x != iface) : (v == iface ? null : v);
+			const set_or_delete = (cfg, sid, opt, v) => {
+				if (v == null || (type(v) == 'array' && !length(v)))
+					c.delete(cfg, sid, opt);
+				else
+					c.set(cfg, sid, opt, v);
+			};
+
+			const mode = req.args?.mode ?? 'hide';
+
+			if (index([ 'hide', 'show', 'full' ], mode) < 0)
+				return { error: 'unknown mode' };
+
+			if (mode == 'show') {
+				if (c.get('mayhem', iface) == 'tunnel')
+					c.delete('mayhem', iface, 'server');
+			}
+			else if (mode == 'hide') {
+				if (c.get('mayhem', iface) == null)
+					c.set('mayhem', iface, 'tunnel');
+
+				c.set('mayhem', iface, 'server', '0');
+			}
+			else {
+				const proto = c.get('network', iface, 'proto') ?? '';
+				const peers = [];
+
+				c.foreach('network', `${proto}_${iface}`, (p) => push(peers, p['.name']));
+
+				for (let p in peers)
+					c.delete('network', p);
+
+				c.delete('network', iface);
+
+				c.foreach('firewall', 'zone', (z) => {
+					if (z.network != null)
+						set_or_delete('firewall', z['.name'], 'network', drop(z.network));
+				});
+
+				const gone = [];
+
+				c.foreach('mayhem', 'section', (sec) => {
+					if (sec.type == 'interface' && sec.interface == iface)
+						push(gone, sec['.name']);
+				});
+
+				for (let sn in gone)
+					c.delete('mayhem', sn);
+
+				const clean = (sid) => {
+					const v = c.get_all('mayhem', sid);
+
+					if (!v)
+						return;
+
+					if (v.iface_node != null)
+						set_or_delete('mayhem', sid, 'iface_node', drop(v.iface_node));
+
+					for (let k in [ 'selected', 'override' ])
+						if (v[k] == iface)
+							c.delete('mayhem', sid, k);
+
+					if (v.chain != null)
+						set_or_delete('mayhem', sid, 'chain', drop(v.chain));
+				};
+
+				c.foreach('mayhem', 'section', (sec) => clean(sec['.name']));
+				clean('pool');
+
+				if (c.get('mayhem', iface) == 'tunnel')
+					c.delete('mayhem', iface);
+
+				if (index(gone, c.get('mayhem', 'settings', 'default_section')) >= 0)
+					c.delete('mayhem', 'settings', 'default_section');
+			}
+
+			c.commit('network');
+			c.commit('firewall');
+			c.commit('mayhem');
+
+			system(mode == 'full'
+				? `(ifdown ${q(iface)}; /etc/init.d/network reload; /etc/init.d/firewall reload; /etc/init.d/mayhem reload) >/dev/null 2>&1 &`
+				: '/etc/init.d/mayhem reload >/dev/null 2>&1 &');
+
+			return { ok: true };
+		}
+	},
+
+	// A tunnel (AmneziaWG or WireGuard interface) as a .conf and as its
+	// options, for editing.
+	tunnel_get: {
+		args: { iface: '' },
+		call: function(req) {
+			const iface = req.args?.iface ?? '';
+			const c = network_cursor();
+
+			if (!match(iface, /^[a-z][a-z0-9_]{0,14}$/) || c.get('network', iface) != 'interface')
+				return { error: 'unknown interface' };
+
+			const proto = c.get('network', iface, 'proto');
+
+			if (proto != 'amneziawg' && proto != 'wireguard')
+				return { error: 'only AmneziaWG and WireGuard tunnels can be edited here' };
+
+			const opts = c.get_all('network', iface) ?? {};
+			const peers = [];
+
+			c.foreach('network', `${proto}_${iface}`, (p) => push(peers, p));
+
+			return { ok: true, proto: proto, conf: to_conf(opts, peers) };
+		}
+	},
+
+	// Saves an edited .conf over the tunnel: the interface keeps its name,
+	// protocol, firewall zone and Mayhem settings; its keys, addresses,
+	// obfuscation parameters and peers are replaced. The tunnel reconnects.
+	tunnel_set: {
+		args: { iface: '', conf: '' },
+		call: function(req) {
+			const iface = req.args?.iface ?? '';
+			const c = require('uci').cursor(C.UCI_DIR);
+
+			c.load('network');
+
+			if (!match(iface, /^[a-z][a-z0-9_]{0,14}$/) || c.get('network', iface) != 'interface')
+				return { error: 'unknown interface' };
+
+			const proto = c.get('network', iface, 'proto');
+
+			if (proto != 'amneziawg' && proto != 'wireguard')
+				return { error: 'only AmneziaWG and WireGuard tunnels can be edited here' };
+
+			let conf, cfg;
+
+			try {
+				conf = parse_conf(req.args?.conf);
+
+				if (proto == 'wireguard' && is_amnezia(conf))
+					die('this config has AmneziaWG parameters, but the tunnel is plain WireGuard');
+
+				cfg = uci_sections(conf, proto);
+			}
+			catch (e) {
+				return { error: e.message };
+			}
+
+			// Options the config does not set go: they came from the old one.
+			const keep = [ 'proto', 'disabled', 'auto', 'force_link', 'defaultroute', 'peerdns', 'dns', 'ip6prefix', 'nohostroute', 'fwmark', 'metric' ];
+			const old = c.get_all('network', iface) ?? {};
+
+			for (let k in keys(old))
+				if (substr(k, 0, 1) != '.' && index(keep, k) < 0 && cfg.iface[k] == null)
+					c.delete('network', iface, k);
+
+			for (let k in keys(cfg.iface))
+				c.set('network', iface, k, cfg.iface[k]);
+
+			const gone = [];
+
+			c.foreach('network', `${proto}_${iface}`, (p) => push(gone, p['.name']));
+
+			for (let sid in gone)
+				c.delete('network', sid);
+
+			for (let p in cfg.peers) {
+				const sid = c.add('network', `${proto}_${iface}`);
+
+				for (let k in keys(p))
+					c.set('network', sid, k, p[k]);
+			}
+
+			c.commit('network');
+			system(`(/etc/init.d/network reload; sleep 2; ifup ${iface}; /etc/init.d/mayhem reload) >/dev/null 2>&1 &`);
+
+			return { ok: true };
+		}
+	},
+
+	// How a section with several servers picks one: auto (the fastest), manual
+	// (chosen on the dashboard) or fallback (a chain of servers by name, the
+	// first that works). Saving needs no restart of xray unless the way of
+	// checking servers changes (manual has no checks).
+	set_select: {
+		args: { section: '', mode: '', chain: [] },
+		call: function(req) {
+			const sn = req.args?.section ?? '';
+			const mode = req.args?.mode ?? '';
+			const c = uci_cursor();
+			const kind = c.get('mayhem', sn);
+
+			if (index([ 'auto', 'manual', 'fallback' ], mode) < 0)
+				return { error: 'unknown mode' };
+
+			if (kind != 'pool' && (kind != 'section' || (c.get('mayhem', sn, 'type') ?? 'proxy') != 'proxy'))
+				return { error: 'not a proxy section' };
+
+			const chain = filter(type(req.args?.chain) == 'array' ? req.args.chain : [], (n) => type(n) == 'string' && n != '' && length(n) <= 128);
+
+			if (mode == 'fallback' && length(chain) < 2)
+				return { error: 'a chain needs two servers or more' };
+
+			c.set('mayhem', sn, 'select', mode);
+
+			if (mode == 'fallback')
+				c.set('mayhem', sn, 'chain', chain);
+			else
+				c.delete('mayhem', sn, 'chain');
+
+			// A chain decides by itself; a server pinned in automatic mode
+			// would only get in its way.
+			if (mode != 'auto')
+				c.delete('mayhem', sn, 'override');
+
+			c.commit('mayhem');
+			fs.unlink(`${RUN}/fallback.fails`);
+			system('/etc/init.d/mayhem reload >/dev/null 2>&1 &');
+
+			return { ok: true };
+		}
+	},
+
 	// The main section, chosen on the dashboard: remote DNS, downloads and the
 	// rest of the traffic go through it.
 	set_main_section: {
@@ -2154,5 +2525,70 @@ const methods = {
 		}
 	}
 };
+
+// --- calls that wait for the network ----------------------------------------
+// rpcd serves all plugins in one process: while one call waits (curl through a
+// server, a download), every other call of LuCI and ubus waits too, and the
+// browser drops them after a while ("XHR request aborted by browser"). These
+// methods run in a child process (call.uc) and rpcd answers when it exits; in
+// the meantime it serves other calls. Without the uloop module, or outside
+// rpcd (tests, the child itself), they run in place as before.
+const APART = [ 'probe', 'exit_info', 'sub_update', 'refresh_servers', 'components', 'diagnose' ];
+const CALL = getenv('MAYHEM_RPC_CALL') ?? '/usr/share/mayhem-luci/call.uc';
+let uloop = null;
+
+if (getenv('MAYHEM_RPC_CHILD') == null) {
+	try {
+		uloop = require('uloop');
+	}
+	catch (e) {
+		uloop = null;
+	}
+}
+
+let apart_seq = 0;
+
+function run_apart(name, inplace, req) {
+	if (!uloop || type(req?.defer) != 'function' || !fs.access(CALL))
+		return inplace(req);
+
+	fs.mkdir(RUN, 0700);
+
+	const out = `${RUN}/rpc.${++apart_seq}.${time()}.out`;
+	const cmd = `MAYHEM_RPC_CHILD=1 exec ucode ${q(CALL)} ${q(name)} ${q(sprintf('%J', req.args ?? {}))} >${q(out)} 2>/dev/null`;
+	const deferred = req.defer();
+	// The environment goes along explicitly: older ucode (OpenWrt 24.10)
+	// starts the process with an empty one otherwise.
+	const proc = uloop.process('/bin/sh', [ '-c', cmd ], getenv(), (code) => {
+		let res = null;
+
+		try {
+			res = json(fs.readfile(out) ?? '');
+		}
+		catch (e) {
+			res = null;
+		}
+
+		fs.unlink(out);
+		req.reply(type(res) == 'object' ? res : { error: `the call failed (exit code ${code})` });
+	});
+
+	if (!proc) {
+		fs.unlink(out);
+		return inplace(req);
+	}
+
+	return deferred;
+}
+
+// A function per method: loop variables are not captured one per pass.
+function apart(name) {
+	const inplace = methods[name].call;
+
+	return (req) => run_apart(name, inplace, req);
+}
+
+for (let name in APART)
+	methods[name].call = apart(name);
 
 return { 'luci.mayhem': methods };

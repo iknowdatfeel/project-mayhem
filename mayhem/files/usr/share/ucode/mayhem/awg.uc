@@ -142,3 +142,64 @@ export function uci_sections(conf, proto) {
 
 	return { iface: iface, peers: peers, v6: length(filter(addrs, (a) => index(a, ':') >= 0)) > 0 };
 };
+
+// .conf key names as AmneziaVPN writes them, for the way back.
+const CONF_NAMES = {
+	privatekey: 'PrivateKey', listenport: 'ListenPort', mtu: 'MTU',
+	jc: 'Jc', jmin: 'Jmin', jmax: 'Jmax', s1: 'S1', s2: 'S2', s3: 'S3', s4: 'S4',
+	h1: 'H1', h2: 'H2', h3: 'H3', h4: 'H4', i1: 'I1', i2: 'I2', i3: 'I3', i4: 'I4', i5: 'I5',
+	headerprotectionkey: 'HeaderProtectionKey', contentpaddingaddition: 'ContentPaddingAddition',
+	rekeyaftertime: 'RekeyAfterTime', rekeytimeout: 'RekeyTimeout', rejectaftertime: 'RejectAfterTime',
+	keepalivetimeout: 'KeepaliveTimeout', maxhandshakeattempts: 'MaxHandshakeAttempts',
+	randomtrailers: 'RandomTrailers', disablecookies: 'DisableCookies'
+};
+
+function as_list(v) {
+	return type(v) == 'array' ? v : (v == null || v == '' ? [] : [ v ]);
+}
+
+// The tunnel as a .conf again, from its network sections (the interface's
+// options and its peers): what parse_conf() reads, so it can be edited as
+// text and imported back over the same interface.
+export function to_conf(iface, peers) {
+	let s = '[Interface]\n';
+	const opt_of = {};
+
+	for (let k in keys(IFACE_KEYS))
+		opt_of[k] = IFACE_KEYS[k];
+
+	for (let k in keys(BOOL_KEYS))
+		opt_of[k] = BOOL_KEYS[k];
+
+	if (length(as_list(iface.addresses)))
+		s += `Address = ${join(', ', as_list(iface.addresses))}\n`;
+
+	for (let k in keys(CONF_NAMES)) {
+		const v = iface[opt_of[k]];
+
+		if (v != null && v != '')
+			s += `${CONF_NAMES[k]} = ${BOOL_KEYS[k] ? (v == '1' ? 'on' : 'off') : v}\n`;
+	}
+
+	for (let p in peers) {
+		s += '\n[Peer]\n';
+		s += `PublicKey = ${p.public_key}\n`;
+
+		if (p.preshared_key)
+			s += `PresharedKey = ${p.preshared_key}\n`;
+
+		if (length(as_list(p.allowed_ips)))
+			s += `AllowedIPs = ${join(', ', as_list(p.allowed_ips))}\n`;
+
+		if (p.endpoint_host) {
+			const h = index(p.endpoint_host, ':') >= 0 ? `[${p.endpoint_host}]` : p.endpoint_host;
+
+			s += `Endpoint = ${h}${p.endpoint_port ? `:${p.endpoint_port}` : ''}\n`;
+		}
+
+		if (p.persistent_keepalive)
+			s += `PersistentKeepalive = ${p.persistent_keepalive}\n`;
+	}
+
+	return s;
+};

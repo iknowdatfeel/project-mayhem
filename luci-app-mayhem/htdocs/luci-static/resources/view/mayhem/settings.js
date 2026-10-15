@@ -68,7 +68,7 @@ return view.extend({
 
 		o = s.option(form.Value, 'probe_url', _('Address for server checks'),
 			_('The automatic server choice and the URL test request it through each server.'));
-		o.placeholder = 'https://www.gstatic.com/generate_204';
+		o.placeholder = 'http://www.gstatic.com/generate_204';
 		o.validate = function(section_id, value) {
 			return (!value || /^https?:\/\/\S+$/.test(value)) ? true : _('Expected an http(s):// address');
 		};

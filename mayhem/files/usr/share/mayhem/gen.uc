@@ -91,6 +91,8 @@ put('xray.json', sprintf('%J\n', res.xray));
 put('xray.key', sprintf('%J\n', res.key));
 put('nft.conf', res.nft);
 put('dnsmasq.conf', res.dnsmasq);
+// What dnsmasq asks while xray works (lib.sh, mayhem_dns_servers).
+put('dns.xray', res.dns_xray);
 put('env', `GOMEMLIMIT=${res.memlimit_mib}MiB\nMAYHEM_IPV6=${res.ipv6 ? 1 : 0}\nXRAY_LOCATION_ASSET=${GEO_DIR}\n`);
 
 // xray reads geo files only at start: procd watches this stamp to restart it

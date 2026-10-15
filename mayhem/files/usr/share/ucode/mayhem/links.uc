@@ -573,11 +573,36 @@ function parse_wireguard(u, warn) {
 }
 
 // Returns { name, outbound, warnings[] }. Throws on malformed links.
+// A server edited as Xray JSON is kept in the server list as one line: the
+// outbound object, its "tag" being the server's name.
+function parse_json_server(text) {
+	let j;
+
+	try {
+		j = json(text);
+	}
+	catch (e) {
+		die('the server config is not valid JSON');
+	}
+
+	if (type(j) != 'object' || type(j.protocol) != 'string')
+		die('the server config has no "protocol"');
+
+	const name = type(j.tag) == 'string' ? j.tag : '';
+
+	delete j.tag;
+
+	return { name: name, outbound: j, warnings: [] };
+}
+
 export function parse_link(link) {
 	link = trim(link ?? '');
 
 	if (link == '')
 		die('empty link');
+
+	if (substr(link, 0, 1) == '{')
+		return parse_json_server(link);
 
 	const warn = [];
 	const m = match(link, /^([A-Za-z][A-Za-z0-9+.-]*):\/\//);

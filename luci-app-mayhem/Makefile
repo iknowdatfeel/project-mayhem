@@ -8,7 +8,7 @@ PKG_RELEASE:=1
 PKG_PO_VERSION:=$(PKG_VERSION)
 
 LUCI_TITLE:=LuCI interface for Mayhem
-LUCI_DEPENDS:=+luci-base +rpcd-mod-ucode +mayhem
+LUCI_DEPENDS:=+luci-base +rpcd-mod-ucode +ucode-mod-uloop +mayhem
 LUCI_PKGARCH:=all
 
 PKG_LICENSE:=MIT

@@ -16,14 +16,13 @@ mayhem_net_up() {
 
 	local v6="${MAYHEM_IPV6:-0}"
 
-	ip rule del fwmark "$mark" table "$MAYHEM_RT_TABLE" 2>/dev/null
-	ip rule add fwmark "$mark" table "$MAYHEM_RT_TABLE" priority "$MAYHEM_RULE_PRIO" || return 1
+	# Applied again on reload while traffic flows: rules that are in place
+	# stay, the ruleset is swapped in one nft transaction.
+	mayhem_ip_rule_has 4 || ip rule add fwmark "$mark" table "$MAYHEM_RT_TABLE" priority "$MAYHEM_RULE_PRIO" || return 1
 	ip route replace local 0.0.0.0/0 dev lo table "$MAYHEM_RT_TABLE" || return 1
 
 	if [ "$v6" = 1 ]; then
-		ip -6 rule del fwmark "$mark" table "$MAYHEM_RT_TABLE" 2>/dev/null
-
-		if ! ip -6 rule add fwmark "$mark" table "$MAYHEM_RT_TABLE" priority "$MAYHEM_RULE_PRIO" ||
+		if ! { mayhem_ip_rule_has 6 || ip -6 rule add fwmark "$mark" table "$MAYHEM_RT_TABLE" priority "$MAYHEM_RULE_PRIO"; } ||
 		   ! ip -6 route replace local ::/0 dev lo table "$MAYHEM_RT_TABLE"; then
 			mayhem_log "IPv6 interception is not available, IPv6 traffic goes direct" warn
 			v6=0
@@ -36,6 +35,44 @@ mayhem_net_up() {
 	else
 		sed '/meta nfproto ipv6/d' "$run/nft.conf" | nft -f -
 	fi
+}
+
+# Is the fwmark rule of IPv$1 in place?
+mayhem_ip_rule_has() {
+	ip -"$1" rule show 2>/dev/null | grep -qE "fwmark $MAYHEM_FWMARK(/$MAYHEM_FWMARK)? lookup $MAYHEM_RT_TABLE( |\$)"
+}
+
+# Reload while xray works: new firewall rules and tunnel routes go in place
+# without restarting xray (a new section, a tunnel chosen as the main server).
+mayhem_net_refresh() {
+	[ -f "$MAYHEM_RUN_DIR/active" ] || return 0
+
+	if ! cmp -s "$MAYHEM_RUN_DIR/nft.conf" "$MAYHEM_RUN_DIR/running.nft.conf"; then
+		if mayhem_net_up; then
+			cp "$MAYHEM_RUN_DIR/nft.conf" "$MAYHEM_RUN_DIR/running.nft.conf"
+			mayhem_log "firewall rules changed without a restart"
+			# The new ruleset starts with empty sets that dnsmasq fills as it
+			# resolves; it does that for upstream answers only, not for what
+			# it has cached: drop its cache so the sets fill again.
+			grep -q 'nftset=' "$MAYHEM_RUN_DIR/dnsmasq.conf" 2>/dev/null && mayhem_dnsmasq_hup
+		else
+			mayhem_log "could not change the firewall rules, restarting xray" warn
+			echo "restart $(date +%s)" >> "$MAYHEM_RUN_DIR/xray.key"
+			return 1
+		fi
+	fi
+
+	if ! cmp -s "$MAYHEM_RUN_DIR/tunnels" "$MAYHEM_RUN_DIR/running.tunnels"; then
+		mayhem_tunnels_down
+		mayhem_tunnels_up
+		cp "$MAYHEM_RUN_DIR/tunnels" "$MAYHEM_RUN_DIR/running.tunnels" 2>/dev/null
+	fi
+
+	# New names of the rules (a section, a geo update): dnsmasq sends them to
+	# xray from now on.
+	mayhem_dns_servers xray
+
+	return 0
 }
 
 mayhem_net_down() {
@@ -239,7 +276,10 @@ mayhem_watchdog() {
 	pid="$(cat "$MAYHEM_RUN_DIR/xray.pid" 2>/dev/null)"
 
 	if [ -n "$pid" ] && [ -d "/proc/$pid" ]; then
-		rss="$(awk '/^VmRSS:/ { print $2 }' "/proc/$pid/status" 2>/dev/null)"
+		# RssAnon: the memory xray took. VmRSS also counts ~20 MB of its own
+		# code read from flash, which the kernel drops and reads again.
+		rss="$(awk '/^RssAnon:/ { print $2 }' "/proc/$pid/status" 2>/dev/null)"
+		[ -n "$rss" ] || rss="$(awk '/^VmRSS:/ { print $2 }' "/proc/$pid/status" 2>/dev/null)"
 		total="$(awk '/^MemTotal:/ { print $2 }' /proc/meminfo)"
 		pct="${MAYHEM_WATCHDOG_MEM:-$(uci -q get mayhem.settings.watchdog_mem)}"
 		limit=$(( ${total:-0} * ${pct:-40} / 100 ))
@@ -257,6 +297,38 @@ mayhem_watchdog() {
 			echo "$n" > "$MAYHEM_RUN_DIR/watchdog.mem"
 		else
 			echo 0 > "$MAYHEM_RUN_DIR/watchdog.mem"
+		fi
+
+		# A hung xray (alive, but it does not answer): DNS and the listed
+		# sites stop while it is there. Three minutes without an answer on
+		# its own metrics port, and it is restarted; xray-run sends DNS and
+		# traffic direct meanwhile.
+		if [ -f "$MAYHEM_RUN_DIR/active" ]; then
+			# Counted per xray process ("pid count"): a count left from a
+			# process that is gone does not carry over.
+			if ! kill -0 "$pid" 2>/dev/null; then
+				rm -f "$MAYHEM_RUN_DIR/watchdog.hang"
+			elif curl -s -o /dev/null -m 5 "http://127.0.0.1:$MAYHEM_METRICS_PORT/debug/vars" 2>/dev/null; then
+				rm -f "$MAYHEM_RUN_DIR/watchdog.hang"
+			else
+				n=1
+				# shellcheck disable=SC2046
+				set -- $(cat "$MAYHEM_RUN_DIR/watchdog.hang" 2>/dev/null)
+				if [ "${1:-}" = "$pid" ]; then
+					n=$(( ${2:-0} + 1 ))
+				fi
+				echo "$pid $n" > "$MAYHEM_RUN_DIR/watchdog.hang"
+
+				if [ "$n" -ge 3 ]; then
+					mayhem_log "xray has not answered for 3 minutes, restarting it" warn
+					mayhem_watchdog_note "xray restarted: it did not answer"
+					rm -f "$MAYHEM_RUN_DIR/watchdog.hang"
+					kill -TERM "$pid"
+					sleep 5
+					# A stopped or wedged process may ignore TERM.
+					kill -0 "$pid" 2>/dev/null && kill -KILL "$pid"
+				fi
+			fi
 		fi
 	fi
 
@@ -281,8 +353,13 @@ mayhem_watchdog() {
 }
 
 # --- dnsmasq -----------------------------------------------------------------
-# The redirect lives only in dnsmasq's conf-dir under /tmp: nothing is written
-# to flash, and a reboot or a crash cleanup always returns plain DNS.
+# dnsmasq gets one file in its conf-dir under /tmp (nothing on flash, a reboot
+# always returns plain DNS): no-resolv, the nftset lines of tunnel sections
+# and servers-file=$MAYHEM_DNS_SERVERS (inside dnsmasq's jail). The file is put in place when
+# the service starts and dnsmasq restarts only when it changed. Which servers
+# dnsmasq asks - xray, or the provider's while xray is down - lives in
+# that file, which dnsmasq reads again on SIGHUP: switching takes no
+# restart, and DNS never stops while xray starts, restarts or crashes.
 
 mayhem_dnsmasq_dirs() {
 	local dirs
@@ -297,19 +374,89 @@ mayhem_dnsmasq_dirs() {
 	echo "$dirs"
 }
 
-mayhem_dns_up() {
-	local d
+# The provider's DNS servers as dnsmasq would use them without Mayhem.
+mayhem_isp_dns() {
+	local f="${MAYHEM_RESOLV_AUTO:-/tmp/resolv.conf.d/resolv.conf.auto}" ip found=""
 
-	# A hard link when the conf-dir is on the same tmpfs: with tunnel sections
-	# the file holds every domain of their lists and would take RAM twice.
+	found="$(awk '$1 == "nameserver" && $2 !~ /^(127\.|::1$)/ { print "server=" $2 }' "$f" 2>/dev/null)"
+
+	if [ -n "$found" ]; then
+		echo "$found"
+		return 0
+	fi
+
+	for ip in $(uci -q get mayhem.dns.domestic) 77.88.8.8 77.88.8.1; do
+		case "$ip" in
+			*[!0-9a-fA-F.:]*) continue ;;
+		esac
+		echo "server=$ip"
+	done
+}
+
+mayhem_dnsmasq_hup() {
+	local pids
+
+	pids="$(pidof dnsmasq 2>/dev/null)"
+	# shellcheck disable=SC2086
+	[ -n "$pids" ] && kill -HUP $pids 2>/dev/null
+	return 0
+}
+
+# Where dnsmasq sends queries: "xray" or "isp". HUP only when it changes.
+# With xray: dns.xray from the generator - either everything to xray, or only
+# the names of the rules, with "@ISP@" standing for the provider's servers
+# for everything else.
+mayhem_dns_servers() {
+	local f="$MAYHEM_DNS_SERVERS" new="$MAYHEM_DNS_SERVERS.new"
+
+	mkdir -p "$MAYHEM_RUN_DIR" "$(dirname "$MAYHEM_DNS_SERVERS")"
+
+	if [ "$1" = xray ] && [ -s "$MAYHEM_RUN_DIR/dns.xray" ]; then
+		mayhem_isp_dns > "$new.isp"
+		sed -e "/^@ISP@\$/{r $new.isp" -e 'd;}' "$MAYHEM_RUN_DIR/dns.xray" > "$new"
+		rm -f "$new.isp"
+	elif [ "$1" = xray ]; then
+		echo "server=127.0.0.1#$MAYHEM_DNS_PORT" > "$new"
+	else
+		mayhem_isp_dns > "$new"
+	fi
+
+	if cmp -s "$new" "$f"; then
+		rm -f "$new"
+		return 0
+	fi
+
+	mv -f "$new" "$f"
+	mayhem_dnsmasq_hup
+}
+
+# Puts Mayhem's file into dnsmasq's conf-dir; restarts dnsmasq only when the
+# file is new or changed (tunnel domains, first start).
+mayhem_dns_up() {
+	local d changed=0
+
+	# xray-run switches dnsmasq to xray once xray listens.
+	mkdir -p "$(dirname "$MAYHEM_DNS_SERVERS")"
+
+	if [ ! -f "$MAYHEM_DNS_SERVERS" ] || [ ! -f "$MAYHEM_RUN_DIR/active" ]; then
+		mayhem_isp_dns > "$MAYHEM_DNS_SERVERS.tmp" && mv -f "$MAYHEM_DNS_SERVERS.tmp" "$MAYHEM_DNS_SERVERS"
+	fi
+
 	for d in $(mayhem_dnsmasq_dirs); do
 		mkdir -p "$d" || continue
+		cmp -s "$MAYHEM_RUN_DIR/dnsmasq.conf" "$d/$MAYHEM_DNSMASQ_FILE" && continue
+
+		# A hard link when the conf-dir is on the same tmpfs: with tunnel
+		# sections the file holds every domain of their lists.
 		rm -f "$d/$MAYHEM_DNSMASQ_FILE"
 		ln "$MAYHEM_RUN_DIR/dnsmasq.conf" "$d/$MAYHEM_DNSMASQ_FILE" 2>/dev/null ||
 			cp "$MAYHEM_RUN_DIR/dnsmasq.conf" "$d/$MAYHEM_DNSMASQ_FILE"
+		changed=1
 	done
 
-	"$MAYHEM_DNSMASQ_INIT" restart >/dev/null 2>&1
+	[ "$changed" = 1 ] && "$MAYHEM_DNSMASQ_INIT" restart >/dev/null 2>&1
+
+	return 0
 }
 
 mayhem_dns_down() {
@@ -322,6 +469,7 @@ mayhem_dns_down() {
 		fi
 	done
 
+	rm -f "$MAYHEM_DNS_SERVERS"
 	[ "$changed" = 1 ] && "$MAYHEM_DNSMASQ_INIT" restart >/dev/null 2>&1
 
 	return 0

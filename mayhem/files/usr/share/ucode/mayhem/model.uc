@@ -6,7 +6,7 @@
 
 import { cursor } from 'uci';
 import { readfile, writefile, access, stat, mkdir, lsdir, unlink, popen } from 'fs';
-import { SUBS_DIR, UCI_DIR, GEO_DIR, LISTS_DIR, RUN_DIR } from 'mayhem.const';
+import { SUBS_DIR, UCI_DIR, GEO_DIR, LISTS_DIR, RUN_DIR, DNS_SPLIT_MAX } from 'mayhem.const';
 import { is_true, entries, list_key, norm_ip, norm_domain, is_ip, dnsmasq_nftset } from 'mayhem.rules';
 import { resolve, geoip_cidrs, geosite_domains, KERNEL_DOMAINS_MAX } from 'mayhem.geo';
 
@@ -117,6 +117,39 @@ function router_ips() {
 	return out;
 }
 
+function fallback_now() {
+	try {
+		return json(readfile(`${RUN_DIR}/fallback.json`) ?? '');
+	}
+	catch (e) {
+		return null;
+	}
+}
+
+// Upstream servers set in dnsmasq's own settings (/etc/config/dhcp, "list
+// server"). dnsmasq asks them next to xray, so a proxied domain may get its
+// real address from them and go direct. Servers for one domain
+// (/lan/192.168.1.5) do not matter.
+function dnsmasq_servers() {
+	const out = [];
+
+	try {
+		const c = cursor(UCI_DIR);
+
+		c.load('dhcp');
+		c.foreach('dhcp', 'dnsmasq', (s) => {
+			for (let v in entries(s.server))
+				if (substr(v, 0, 1) != '/' && index(out, v) < 0)
+					push(out, v);
+		});
+	}
+	catch (e) {
+		return [];
+	}
+
+	return out;
+}
+
 function runtime(sections) {
 	const names = [];
 
@@ -137,7 +170,10 @@ function runtime(sections) {
 		mem_total_kb: mem_total_kb(),
 		router_ips: router_ips(),
 		ifaces: ifaces(names),
-		dnsmasq_nftset: length(names) ? dnsmasq_nftset(command('dnsmasq --version 2>/dev/null')) : null
+		dnsmasq_nftset: length(names) ? dnsmasq_nftset(command('dnsmasq --version 2>/dev/null')) : null,
+		// the servers fallback chains use now (fallback.uc): { section: tag }
+		fallback: fallback_now(),
+		dnsmasq_servers: dnsmasq_servers()
 	};
 }
 
@@ -169,14 +205,15 @@ function geo_sources(c) {
 	return out;
 }
 
-// Subnets of the geoip categories that direct and block sections use: they
-// go into nftables sets, so this traffic never reaches xray.
+// Subnets of the geoip categories that sections use: they go into nftables
+// sets. Direct and blocked traffic never reaches xray, and with only the
+// lists captured, proxied subnets are how the kernel knows what to send to it.
 function geo_cidrs(sections, sources) {
 	const per_source = {};
 	const out = {};
 
 	for (let sec in sections) {
-		if (!is_true(sec.enabled ?? '1') || index([ 'exclusion', 'block', 'interface' ], sec.type) < 0)
+		if (!is_true(sec.enabled ?? '1'))
 			continue;
 
 		for (let i in entries(sec.ip)) {
@@ -244,7 +281,7 @@ function geo_cidrs(sections, sources) {
 // dnsmasq needs them spelled out. Cached in RAM like the subnets. With the
 // rest of the traffic going into a kernel tunnel (all), the categories of
 // every section: their addresses must be told apart in the kernel.
-function geo_domains(sections, sources, all) {
+function geo_domains(sections, sources, all, split) {
 	const per_source = {};
 	const out = {};
 	const used = {};
@@ -254,7 +291,13 @@ function geo_domains(sections, sources, all) {
 		if (!is_true(sec.enabled ?? '1'))
 			continue;
 
-		if (!all && (sec.type != 'interface' || (sec.route_mode ?? 'kernel') == 'xray'))
+		// Kernel tunnels need their categories spelled out for dnsmasq's
+		// nftset; other sections only small ones, for the names dnsmasq
+		// sends to xray (DNS_SPLIT_MAX).
+		const kernel = sec.type == 'interface' && (sec.route_mode ?? 'kernel') != 'xray';
+		const most = kernel ? KERNEL_DOMAINS_MAX : DNS_SPLIT_MAX;
+
+		if (!all && !kernel && !split)
 			continue;
 
 		for (let d in entries(sec.domain)) {
@@ -267,7 +310,7 @@ function geo_domains(sections, sources, all) {
 
 			// Not spelled out at all when too big for dnsmasq (the generator
 			// says so): a million domains would not fit in RAM here either.
-			if (x.state == 'ready' && (x.count ?? 0) <= KERNEL_DOMAINS_MAX) {
+			if (x.state == 'ready' && (x.count ?? 0) <= (all ? KERNEL_DOMAINS_MAX : most)) {
 				per_source[x.source] ??= [];
 				push(per_source[x.source], x.cat);
 			}
@@ -389,7 +432,7 @@ function pool_section(c) {
 	return {
 		'.name': 'pool', '.type': 'pool', type: 'proxy', enabled: '1', pool: true,
 		link: p.link, subscription: subs, iface_node: pool_tunnels(c, p),
-		select: p.select, selected: p.selected, override: p.override
+		select: p.select, selected: p.selected, override: p.override, chain: p.chain
 	};
 }
 
@@ -457,13 +500,15 @@ function load_model() {
 	// The rest of the traffic may go into a kernel tunnel: the main section
 	// (or, without one, the first tunnel the generator would fall back to)
 	// is a tunnel section in kernel mode.
+	// Spelled-out categories of every section are also needed by lists:
+	// dnsmasq then sends only their names to xray (see dns_names in build).
 	const kernel_rest = settings.mode == 'global' && length(filter(sections, (s) =>
 		is_true(s.enabled ?? '1') && s.type == 'interface' && (s.route_mode ?? 'kernel') != 'xray' &&
 		(settings.default_section == null || settings.default_section == s['.name']))) > 0;
 
 	return {
 		subscriptions: subscriptions,
-		geo: { sources: sources, cidrs: geo_cidrs(sections, sources), domains: geo_domains(sections, sources, kernel_rest) },
+		geo: { sources: sources, cidrs: geo_cidrs(sections, sources), domains: geo_domains(sections, sources, kernel_rest, settings.mode != 'global') },
 		lists: lists(sections),
 		settings: settings,
 		tunnel_labels: tunnel_labels,
