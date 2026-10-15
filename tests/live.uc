@@ -53,7 +53,7 @@ for (let mode in [ 'lists', 'global' ]) {
 		t1['nl1.provider.example'] == t2['nl1.provider.example'] && t1['de1.provider.example'] == t2['de1.provider.example']);
 	expect(`${mode}: a new server of the same provider needs no restart`, key(r1) == key(r2));
 	expect(`${mode}: an address as a server needs no restart`, key(r1) == key(build(model(mode, [ `${A}#NL`, `${B}#DE`, `${E}#IP` ]))));
-	expect(`${mode}: new rules need a restart`, key(r1) != key(build(model(mode, [ `${A}#NL`, `${B}#DE` ], [ 'youtube.com', 'other.com' ]))));
+	expect(`${mode}: new rules are applied without a restart`, key(r1) == key(build(model(mode, [ `${A}#NL`, `${B}#DE` ], [ 'youtube.com', 'other.com' ]))));
 	expect(`${mode}: the fallback server has a tag of its own`,
 		length(filter(r1.xray.outbounds, (o) => o.tag == 'f-main')) == 1 &&
 		r1.xray.routing.balancers[0].fallbackTag == 'f-main');

@@ -22,6 +22,7 @@ const callExitInfo = rpc.declare({ object: 'luci.mayhem', method: 'exit_info', p
 const callSetPing = rpc.declare({ object: 'luci.mayhem', method: 'set_ping_method', params: [ 'method' ], expect: { '': {} } });
 const callSetMain = rpc.declare({ object: 'luci.mayhem', method: 'set_main_section', params: [ 'section' ], expect: { '': {} } });
 const callRename = rpc.declare({ object: 'luci.mayhem', method: 'rename_server', params: [ 'section', 'tag', 'link', 'name' ], expect: { '': {} } });
+const callSetSelect = rpc.declare({ object: 'luci.mayhem', method: 'set_select', params: [ 'section', 'mode', 'chain' ], expect: { '': {} } });
 
 const PROBE_PARALLEL = 4;
 const DAY = 86400;
@@ -62,6 +63,13 @@ const CSS = `
 .mh-ghead > .btn:last-child { margin-left:auto; }
 .mh-ghead .mh-title { margin-right:4px; }
 .mh-whead select { width:auto; height:24px; line-height:22px; min-height:0; padding:0 4px; font-size:90%; }
+.mh-ghead select { width:auto; height:24px; line-height:22px; min-height:0; padding:0 4px; font-size:90%; }
+.mh-chain-no { display:inline-block; min-width:16px; padding:0 4px; border-radius:8px; text-align:center; font-size:80%; line-height:16px; background:var(--primary-color-high, dodgerblue); color:var(--on-primary-color, white); }
+.mh-chain { display:flex; flex-wrap:wrap; align-items:center; gap:4px 6px; margin-bottom:6px; }
+.mh-chain-list { margin:0 0 10px; padding:0; list-style:none; }
+.mh-chain-list li { display:flex; align-items:center; gap:6px; padding:4px 0; border-bottom:1px solid var(--border-color-low, #eee); }
+.mh-chain-list li b { flex:1; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.mh-chain-list .btn { padding:0 8px; line-height:22px; min-height:0; }
 `;
 
 function rate(n) {
@@ -252,7 +260,7 @@ return view.extend({
 	},
 
 	// The main section carries remote DNS, downloads and the rest of the
-	// traffic: changing it restarts xray, so it is asked first.
+	// traffic: it is asked first.
 	setMain(name) {
 		const d = this.data;
 
@@ -268,7 +276,7 @@ return view.extend({
 			};
 
 			ui.showModal(_('Main section: %s').format(label), [
-				E('p', _('Remote DNS, downloads and the rest of the traffic go through the active server of %s. Xray restarts, connections break for a moment.').format(label)),
+				E('p', _('Remote DNS, downloads and the rest of the traffic go through the active server of %s. New connections go there at once, open ones finish where they are.').format(label)),
 				E('div', { 'class': 'right' }, [
 					E('button', { 'class': 'btn', 'click': () => done(false) }, _('Cancel')), ' ',
 					E('button', { 'class': 'btn cbi-button-action', 'click': () => done(true) }, _('Change'))
@@ -294,11 +302,15 @@ return view.extend({
 		callSetPing(m);
 	},
 
-	// Checks every server of the section with the chosen method, a few at a time.
+	// Checks every server of the section with the chosen method, a few at a
+	// time, but never two of one address at once: subscriptions often have
+	// many servers on one host, and a burst of connections to it makes its
+	// firewall drop some (a lost SYN costs a second or three of "ping").
 	probeSection(sec) {
 		const method = this.method;
 		const queue = sec.nodes.slice();
 		const key = 'probe:' + sec.name;
+		const busyHost = {};
 
 		if (this.busy[key])
 			return Promise.resolve();
@@ -306,15 +318,27 @@ return view.extend({
 		this.busy[key] = true;
 		this.redraw();
 
+		const next = () => {
+			const i = queue.findIndex((n) => !n.address || !busyHost[n.address]);
+
+			return i < 0 ? null : queue.splice(i, 1)[0];
+		};
+
 		const worker = () => {
-			const n = queue.shift();
+			const n = next();
 
 			if (!n)
-				return Promise.resolve();
+				return queue.length ? new Promise((r) => window.setTimeout(r, 150)).then(worker) : Promise.resolve();
+
+			if (n.address)
+				busyHost[n.address] = true;
 
 			return callProbe(n.tag, method).then((r) => {
 				this.probes[n.tag] = { method: method, value: (r.ms != null) ? r.ms : (r.error || 'error') };
 				this.redraw();
+			}).catch(() => {}).finally(() => {
+				if (n.address)
+					delete busyHost[n.address];
 			}).then(worker);
 		};
 
@@ -419,7 +443,8 @@ return view.extend({
 		if (s.type === 'interface')
 			return [ _('Server'), s.label ? '%s (%s)'.format(s.label, s.interface) : _('Interface %s').format(s.interface || '?') ];
 
-		const how = s.mode === 'auto' ? (s.pinned ? _('pinned by hand') : _('automatic')) : null;
+		const how = s.mode === 'auto' ? (s.pinned ? _('pinned by hand') : _('automatic'))
+			: s.mode === 'fallback' ? _('fallback chain') : null;
 
 		return [ _('Server'), m.node ? (how ? '%s (%s)'.format(m.node.name, how) : m.node.name) : '—' ];
 	},
@@ -541,7 +566,8 @@ return view.extend({
 
 	tile(s, n) {
 		const active = n.tag === s.active;
-		const pick = s.balancer && !active;
+		const pick = s.balancer && !active && s.mode !== 'fallback';
+		const pos = s.mode === 'fallback' ? (s.chain || []).indexOf(n.tag) : -1;
 		const attrs = {
 			'class': 'mh-tile' + (active ? ' mh-tile--active' : '') + (pick ? ' mh-tile--pick' : ''),
 			'title': '%s · ↓ %s ↑ %s'.format(n.iface ? _('Interface %s').format(n.iface) : '%s:%s'.format(n.address || '?', n.port || '?'),
@@ -553,6 +579,7 @@ return view.extend({
 
 		return E('div', attrs, [
 			E('div', { 'class': 'mh-tile-head' }, [
+				pos >= 0 ? E('span', { 'class': 'mh-chain-no', 'title': _('Place in the fallback chain') }, String(pos + 1)) : '',
 				E('b', n.name),
 				E('button', {
 					'class': 'mh-ren', 'title': _('Rename'),
@@ -709,6 +736,9 @@ return view.extend({
 
 		const boxes = this.sourceBoxes(s, subs, now);
 
+		if (s.balancer && boxes.length)
+			boxes[0].insertBefore(this.chooseBar(s), boxes[0].children[1] || null);
+
 		// Automatic choice with a server pinned by hand: the way back.
 		if (s.mode === 'auto' && s.pinned && boxes.length) {
 			const head = boxes[0].firstChild;
@@ -719,6 +749,113 @@ return view.extend({
 		}
 
 		return boxes;
+	},
+
+	// How the section picks its server: the fastest, by hand, or a fallback
+	// chain (server 1 > server 2 > ...), shown in its order.
+	chooseBar(s) {
+		const byTag = {};
+
+		(s.nodes || []).forEach((n) => byTag[n.tag] = n);
+
+		const modes = [ [ 'auto', _('Fastest server') ], [ 'manual', _('Chosen by hand') ], [ 'fallback', _('Fallback chain') ] ];
+		const sel = E('select', {
+			'class': 'cbi-input-select',
+			'title': _('How the server is chosen'),
+			'change': ui.createHandlerFn(this, (ev) => {
+				const v = ev.target.value;
+
+				ev.target.blur();
+
+				if (v === 'fallback')
+					return this.chainDialog(s);
+
+				return this.saveSelect(s.name, v, []);
+			})
+		}, modes.map((m) => E('option', { 'value': m[0], 'selected': m[0] === s.mode ? '' : null }, m[1])));
+
+		const parts = [ sel ];
+
+		if (s.mode === 'fallback') {
+			const names = (s.chain || []).map((t) => byTag[t] ? byTag[t].name : '?');
+
+			parts.push(E('span', { 'class': 'mh-small' }, names.join(' → ')));
+			parts.push(E('a', { 'href': '#', 'class': 'mh-small', 'click': ui.createHandlerFn(this, (ev) => {
+				ev.preventDefault();
+				return this.chainDialog(s);
+			}) }, _('Change')));
+		}
+
+		return E('div', { 'class': 'mh-chain' }, parts);
+	},
+
+	saveSelect(section, mode, chain) {
+		return callSetSelect(section, mode, chain).then((r) => {
+			if (r.error)
+				ui.addNotification(null, E('p', r.error), 'error');
+
+			// The reload takes a moment.
+			return new Promise((res) => window.setTimeout(res, 1500));
+		}).then(() => this.refresh());
+	},
+
+	// The chain: servers in the order they are tried, up and down, add, remove.
+	chainDialog(s) {
+		const byTag = {};
+
+		(s.nodes || []).forEach((n) => byTag[n.tag] = n);
+
+		let chain = (s.mode === 'fallback' ? (s.chain || []) : []).filter((t) => byTag[t]).map((t) => byTag[t].name);
+		const list = E('ul', { 'class': 'mh-chain-list' });
+		const add = E('select', { 'class': 'cbi-input-select', 'style': 'width:100%' });
+
+		const draw = () => {
+			list.replaceChildren(...chain.map((name, i) => E('li', [
+				E('span', { 'class': 'mh-chain-no' }, String(i + 1)),
+				E('b', name),
+				E('button', { 'class': 'btn', 'title': _('Up'), 'disabled': i === 0 ? '' : null,
+					'click': () => { chain.splice(i - 1, 0, chain.splice(i, 1)[0]); draw(); } }, '↑'),
+				E('button', { 'class': 'btn', 'title': _('Down'), 'disabled': i === chain.length - 1 ? '' : null,
+					'click': () => { chain.splice(i + 1, 0, chain.splice(i, 1)[0]); draw(); } }, '↓'),
+				E('button', { 'class': 'btn cbi-button-remove', 'title': _('Remove'),
+					'click': () => { chain.splice(i, 1); draw(); } }, '✕')
+			])));
+
+			if (!chain.length)
+				list.appendChild(E('li', { 'class': 'mh-muted' }, _('Add servers in the order they should be tried.')));
+
+			const rest = (s.nodes || []).filter((n) => chain.indexOf(n.name) < 0);
+
+			add.replaceChildren(E('option', { 'value': '' }, _('Add a server…')),
+				...rest.map((n) => E('option', { 'value': n.name }, n.name)));
+		};
+
+		add.addEventListener('change', () => {
+			if (add.value)
+				chain.push(add.value);
+
+			draw();
+		});
+
+		draw();
+
+		ui.showModal(_('Fallback chain'), [
+			E('p', _('The first server carries the traffic while it works. When it stops answering, the next one takes over, and so on; a server higher in the chain takes over again as soon as it works. Checks run every 20 seconds, nothing restarts.')),
+			list,
+			add,
+			E('div', { 'class': 'right', 'style': 'margin-top:1em' }, [
+				E('button', { 'class': 'btn', 'click': () => { ui.hideModal(); this.redraw(); } }, _('Cancel')), ' ',
+				E('button', { 'class': 'btn cbi-button-action', 'click': ui.createHandlerFn(this, () => {
+					if (chain.length < 2) {
+						ui.addNotification(null, E('p', _('A chain needs two servers or more')), 'warning');
+						return;
+					}
+
+					ui.hideModal();
+					return this.saveSelect(s.name, 'fallback', chain);
+				}) }, _('Save'))
+			])
+		]);
 	},
 
 	// The box at the side: checks and updates of every section, then the
@@ -829,7 +966,7 @@ return view.extend({
 			return (this.method !== 'url' && proxies.length) ? this.probeAll(proxies) : this.checkConnection();
 		}, 0);
 
-		poll.add(() => document.hidden ? Promise.resolve() : this.refresh(), 2);
+		poll.add(() => document.hidden ? Promise.resolve() : this.refresh(), 3);
 
 		// First: the section headers draw its buttons.
 		const dialogs = diag.render({ state: () => this.data, refresh: () => this.refresh(), redraw: () => this.redraw() });

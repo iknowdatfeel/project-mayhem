@@ -7,6 +7,7 @@
 'require mayhem.common as mh';
 'require mayhem.tunnels as tunnels';
 'require mayhem.vpnkey as vpnkey';
+'require mayhem.linkedit as linkedit';
 
 // Server list: servers added by key, subscriptions, tunnels and the options
 // of every server (Mux). Keys and subscriptions form one list, like in Happ:
@@ -17,8 +18,11 @@ const callParse = rpc.declare({ object: 'luci.mayhem', method: 'parse_link', par
 const callDashboard = rpc.declare({ object: 'luci.mayhem', method: 'dashboard', expect: { '': {} } });
 const callRename = rpc.declare({ object: 'luci.mayhem', method: 'rename_server', params: [ 'section', 'tag', 'link', 'name' ], expect: { '': {} } });
 const callImport = rpc.declare({ object: 'luci.mayhem', method: 'awg_import', params: [ 'name', 'conf', 'section', 'pool', 'label' ], expect: { '': {} } });
+const callParseOne = rpc.declare({ object: 'luci.mayhem', method: 'parse_link', params: [ 'link' ], expect: { '': {} } });
+const callServerEdit = rpc.declare({ object: 'luci.mayhem', method: 'server_edit', params: [ 'section', 'old', 'link' ], expect: { '': {} } });
 
-const LINK_RE = /^(vless|vmess|trojan|ss|socks5?|https?|hysteria2|hy2|wireguard|wg):\/\/\S+/i;
+// A key, or a server kept as Xray JSON on one line.
+const LINK_RE = /^((vless|vmess|trojan|ss|socks5?|https?|hysteria2|hy2|wireguard|wg):\/\/\S+|\{.*\}$)/i;
 
 const PROTOCOLS = {
 	vless: 'VLESS', vmess: 'VMess', trojan: 'Trojan', shadowsocks: 'Shadowsocks', socks: 'SOCKS', http: 'HTTP',
@@ -32,6 +36,9 @@ const CSS = `
 .mh-keys { width:100%; margin-top:12px; }
 .mh-keys td { vertical-align:middle; }
 .mh-keys .mh-key-name { max-width:320px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.mh-keys .mh-key-actions { width:1%; white-space:nowrap; }
+.mh-keys .mh-key-actions > div { gap:4px; justify-content:flex-end; }
+.mh-keys .mh-key-actions > div > .btn { flex:0 0 auto; margin:0; }
 `;
 
 function randomHwid() {
@@ -224,6 +231,24 @@ return view.extend({
 		]);
 	},
 
+	// All parameters of a key, or the server as Xray JSON.
+	editKey(k) {
+		return callParseOne(k.link).then((r) => {
+			linkedit.dialog(k.link, r.outbound, (k.info || {}).name || r.name || '', (link) => {
+				if (link === k.link)
+					return null;
+
+				return callServerEdit('pool', k.link, link).then((res) => {
+					if (res.error)
+						return res.error;
+
+					window.setTimeout(() => window.location.reload(), 1000);
+					return null;
+				});
+			});
+		});
+	},
+
 	renderAdd(section) {
 		const text = E('textarea', {
 			'class': 'cbi-input-textarea', 'rows': 4,
@@ -247,16 +272,22 @@ return view.extend({
 				]),
 				E('td', { 'class': 'td' }, proto),
 				E('td', { 'class': 'td' }, addr),
-				E('td', { 'class': 'td cbi-section-actions' }, [
+				// The theme lays out the children of an action cell as rows:
+				// the buttons go into one row of their own.
+				E('td', { 'class': 'td cbi-section-actions mh-key-actions' }, E('div', [
+					E('button', {
+						'class': 'btn cbi-button',
+						'click': ui.createHandlerFn(this, 'editKey', k)
+					}, _('Edit')),
 					E('button', {
 						'class': 'btn cbi-button',
 						'click': ui.createHandlerFn(this, 'renameKey', k)
-					}, _('Rename')), ' ',
+					}, _('Rename')),
 					E('button', {
 						'class': 'btn cbi-button cbi-button-remove',
 						'click': ui.createHandlerFn(this, 'removeKey', k)
 					}, _('Delete'))
-				])
+				]))
 			]);
 		});
 

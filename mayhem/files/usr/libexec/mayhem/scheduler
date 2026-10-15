@@ -4,32 +4,42 @@
 # reloads the service when something changed. A reload only restarts xray
 # when its generated config or the geo files it uses really changed.
 # Then checks the tunnels, runs the watchdog (xray memory, dnsmasq) and, when
-# turned on, the nightly update of Mayhem itself.
+# turned on, the nightly update of Mayhem itself. Fallback chains of servers
+# are checked every 20 seconds.
 
 . "${MAYHEM_LIB_DIR:-/usr/share/mayhem}/lib.sh"
 
 sleep 10
 
+tick=0
+
 while :; do
-	reload=0
+	if [ $((tick % 3)) = 0 ]; then
+		reload=0
 
-	ucode "$MAYHEM_SUB" update >/dev/null 2>&1
-	if [ "$?" = 3 ]; then
-		mayhem_log "subscriptions changed, applying the new servers"
-		reload=1
+		ucode "$MAYHEM_SUB" update >/dev/null 2>&1
+		if [ "$?" = 3 ]; then
+			mayhem_log "subscriptions changed, applying the new servers"
+			reload=1
+		fi
+
+		ucode "$MAYHEM_UPDATE" due >/dev/null 2>&1
+		if [ "$?" = 3 ]; then
+			mayhem_log "geo data or rule lists changed, applying them"
+			reload=1
+		fi
+
+		[ "$reload" = 1 ] && /etc/init.d/mayhem reload
+
+		mayhem_tunnels_check
+		mayhem_watchdog
+		mayhem_auto_update
 	fi
 
-	ucode "$MAYHEM_UPDATE" due >/dev/null 2>&1
-	if [ "$?" = 3 ]; then
-		mayhem_log "geo data or rule lists changed, applying them"
-		reload=1
-	fi
+	# Only when a section has a chain: a ucode process costs a little.
+	grep -q '"mode": *"fallback"' "$MAYHEM_RUN_DIR/nodes.json" 2>/dev/null &&
+		ucode "$MAYHEM_LIB_DIR/fallback.uc" >/dev/null 2>&1
 
-	[ "$reload" = 1 ] && /etc/init.d/mayhem reload
-
-	mayhem_tunnels_check
-	mayhem_watchdog
-	mayhem_auto_update
-
-	sleep 60
+	tick=$((tick + 1))
+	sleep 20
 done

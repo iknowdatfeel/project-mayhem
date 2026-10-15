@@ -76,7 +76,7 @@ export function geo_ref(kind, val, orig) {
 export function norm_domain(s) {
 	s = trim(s);
 
-	const m = match(s, /^([a-z]+):(.*)$/);
+	const m = index(s, ':') > 0 ? match(s, /^([a-z]+):(.*)$/) : null;
 
 	if (m) {
 		const kind = m[1], val = m[2];
@@ -116,7 +116,12 @@ export function norm_domain(s) {
 		}
 	}
 
-	const d = replace(lc(s), /^(\*\.|\.)/, '');
+	let d = lc(s);
+
+	if (substr(d, 0, 1) == '.')
+		d = substr(d, 1);
+	else if (substr(d, 0, 2) == '*.')
+		d = substr(d, 2);
 
 	if (!match(d, DOMAIN_RE) || index(d, '*') >= 0)
 		return { error: `invalid domain "${s}"` };
@@ -233,6 +238,9 @@ export function dns_server(s) {
 // Rule list text (a downloaded or local list): one domain, rule or subnet per
 // line; "#" starts a comment. Returns { domains: [], ips: [], bad: n }
 // with raw entries (normalized by the caller).
+// A list is read line by line, often with hundreds of thousands of lines on a
+// slow router: regular expressions only where a plain character test cannot
+// tell (they cost ~30 us a line in ucode).
 export function split_list(text) {
 	const res = { domains: [], ips: [], bad: 0 };
 
@@ -248,14 +256,20 @@ export function split_list(text) {
 			continue;
 
 		// hosts-file style "0.0.0.0 example.com"
-		const hm = match(line, /^(0\.0\.0\.0|127\.0\.0\.1)[[:space:]]+([^[:space:]]+)$/);
+		if (substr(line, 0, 7) == '0.0.0.0' || substr(line, 0, 9) == '127.0.0.1') {
+			const hm = match(line, /^(0\.0\.0\.0|127\.0\.0\.1)[[:space:]]+([^[:space:]]+)$/);
 
-		if (hm)
-			line = hm[2];
+			if (hm)
+				line = hm[2];
+		}
 
-		if (match(line, /^[0-9.]+(\/[0-9]+)?$/) || match(line, /^[0-9A-Fa-f:]*:[0-9A-Fa-f:.]*(\/[0-9]+)?$/))
+		const c = ord(line, 0);
+		const digit = c >= 48 && c <= 57;
+
+		if ((digit || index(line, ':') >= 0) &&
+		    (match(line, /^[0-9.]+(\/[0-9]+)?$/) || match(line, /^[0-9A-Fa-f:]*:[0-9A-Fa-f:.]*(\/[0-9]+)?$/)))
 			push(res.ips, line);
-		else if (match(line, /^[^[:space:]]+$/))
+		else if (index(line, ' ') < 0 && index(line, '\t') < 0)
 			push(res.domains, line);
 		else
 			res.bad++;

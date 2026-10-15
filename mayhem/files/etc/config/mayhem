@@ -31,7 +31,7 @@ config settings 'settings'
 	option watchdog '1'
 	option watchdog_mem '40'
 	# automatic server choice: how often and with which URL servers are checked
-	option probe_url 'https://www.gstatic.com/generate_204'
+	option probe_url 'http://www.gstatic.com/generate_204'
 	option probe_interval '3m'
 	# install new releases of Mayhem nightly (at geo.update_hour)
 	option auto_update '0'
