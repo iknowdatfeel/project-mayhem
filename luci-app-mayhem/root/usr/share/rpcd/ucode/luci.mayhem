@@ -1,6 +1,7 @@
 // Mayhem: rpcd backend for the LuCI app (ubus object "luci.mayhem").
 // The dashboard is polled every few seconds, so it only reads files under
 // /var/run/mayhem and xray's metrics endpoint; nothing heavy is spawned.
+// No method waits for a process inside rpcd: see deferred_sh() and APART.
 
 'use strict';
 
@@ -28,6 +29,72 @@ function run(cmd) {
 	p.close();
 
 	return out;
+}
+
+// --- not holding rpcd ----------------------------------------------------------
+// rpcd serves every plugin in its one process, and uhttpd stops altogether
+// while rpcd is busy: before each call it asks rpcd whether the session may
+// make it, and waits for the answer. A kept-alive connection whose time runs
+// out meanwhile is closed with the next call already sent over it: the page
+// gets no answer ("XHR request aborted by browser"). So no method waits for a
+// process here. It is started through rpcd's own file.exec, which does not
+// wait either; the method returns that pending call, and rpcd sends the answer
+// when the process is done. Outside rpcd (tests, call.uc) it runs in place.
+let ubus_conn = null;
+
+function ubus_link() {
+	if (getenv('MAYHEM_RPC_CHILD') != null)
+		return null;
+
+	if (ubus_conn == null) {
+		try {
+			ubus_conn = require('ubus').connect(getenv('MAYHEM_UBUS_SOCKET'), 120) ?? false;
+		}
+		catch (e) {
+			ubus_conn = false;
+		}
+	}
+
+	return ubus_conn || null;
+}
+
+let apart_seq = 0;
+
+// Runs a shell command and answers with done(what it printed).
+function deferred_sh(req, cmd, done) {
+	const conn = type(req?.reply) == 'function' ? ubus_link() : null;
+
+	if (!conn)
+		return done(run(cmd));
+
+	fs.mkdir(RUN, 0700);
+
+	const out = `${RUN}/rpc.${++apart_seq}.${time()}.out`;
+	const pending = conn.defer('file', 'exec', { command: '/bin/sh', params: [ '-c', `exec >${q(out)} 2>/dev/null; ${cmd}` ] }, () => {
+		const text = fs.readfile(out) ?? '';
+		let res;
+
+		fs.unlink(out);
+
+		try {
+			res = done(text);
+		}
+		catch (e) {
+			res = { error: `${e}` };
+		}
+
+		req.reply(type(res) == 'object' ? res : {});
+	});
+
+	if (!pending) {
+		// ubusd restarted: connect again next time
+		ubus_conn = null;
+		fs.unlink(out);
+
+		return done(run(cmd));
+	}
+
+	return pending;
 }
 
 function read_json(path) {
@@ -67,9 +134,13 @@ function rss_kb(pid) {
 	return m ? int(m[1]) : null;
 }
 
-function metrics() {
+function metrics_cmd() {
+	return `curl -s -m 2 http://127.0.0.1:${C.METRICS_PORT}/debug/vars`;
+}
+
+function metrics(text) {
 	try {
-		const j = json(run(`curl -s -m 2 http://127.0.0.1:${C.METRICS_PORT}/debug/vars`) ?? '');
+		const j = json(text ?? run(metrics_cmd()) ?? '');
 
 		return { stats: j?.stats?.outbound ?? {}, observatory: j?.observatory ?? {} };
 	}
@@ -241,13 +312,18 @@ function network_cursor() {
 	return c;
 }
 
-// Tunnel sections: state from the watchdog and the latest handshake.
-function tunnel_state(name, device) {
+function handshakes_cmd(device) {
+	return `(awg show ${device} latest-handshakes || wg show ${device} latest-handshakes) 2>/dev/null`;
+}
+
+// Tunnel sections: state from the watchdog and the latest handshake
+// (`out`: what handshakes_cmd() printed, run here when not given).
+function tunnel_state(name, device, out) {
 	const st = trim(fs.readfile(`${RUN}/tunnel.${name}`) ?? '');
 	let hs = null;
 
 	if (match(device ?? '', /^[A-Za-z0-9_.-]+$/)) {
-		const out = run(`(awg show ${device} latest-handshakes || wg show ${device} latest-handshakes) 2>/dev/null`) ?? '';
+		out ??= run(handshakes_cmd(device)) ?? '';
 
 		for (let line in split(out, '\n')) {
 			const m = match(line, /[[:space:]]([0-9]+)$/);
@@ -1158,6 +1234,154 @@ function tcp_time(out) {
 	return { ms: int((m[2] * 1 - m[1] * 1) * 1000) || 1 };
 }
 
+// --- the dashboard ---------------------------------------------------------------
+// Everything it shows that needs a process, in one shell command: xray's
+// counters, whether dnsmasq runs and the latest handshake of every tunnel.
+const MARK = '@@mayhem@@';
+
+function dashboard_cmd(pid, state) {
+	const parts = [ pid ? metrics_cmd() : 'true', `echo; echo ${MARK}dnsmasq; pidof dnsmasq 2>/dev/null` ];
+
+	for (let sn in keys(state.sections ?? {})) {
+		const dev = state.sections[sn].device;
+
+		if (state.sections[sn].type == 'interface' && match(dev ?? '', /^[A-Za-z0-9_.-]+$/))
+			push(parts, `echo ${MARK}hs ${dev}; ${handshakes_cmd(dev)}`);
+	}
+
+	return join('; ', parts);
+}
+
+function dashboard_parts(text) {
+	const chunks = split(text ?? '', MARK);
+	const res = { metrics: trim(chunks[0] ?? ''), dnsmasq: false, hs: {} };
+
+	for (let i = 1; i < length(chunks); i++) {
+		const nl = index(chunks[i], '\n');
+		const head = nl < 0 ? chunks[i] : substr(chunks[i], 0, nl);
+		const rest = nl < 0 ? '' : substr(chunks[i], nl + 1);
+
+		if (head == 'dnsmasq')
+			res.dnsmasq = trim(rest) != '';
+		else if (substr(head, 0, 3) == 'hs ')
+			res.hs[substr(head, 3)] = rest;
+	}
+
+	return res;
+}
+
+function dashboard(pid, state, out) {
+		const m = pid ? metrics(out.metrics) : { stats: {}, observatory: {} };
+		const c = uci_cursor();
+		const sections = [];
+		const totals = { proxy: { up: 0, down: 0 }, direct: { up: 0, down: 0 }, all: { up: 0, down: 0 } };
+		const kernel_tun = {};
+
+		for (let sn in keys(state.sections ?? {})) {
+			const s = state.sections[sn];
+			const nodes = [];
+			const traffic = { up: 0, down: 0 };
+
+			for (let n in s.nodes ?? []) {
+				const o = m.observatory[n.tag];
+				const t = m.stats[n.tag] ?? {};
+
+				traffic.up += t.uplink ?? 0;
+				traffic.down += t.downlink ?? 0;
+
+				push(nodes, {
+					tag: n.tag, name: n.name, protocol: n.protocol, address: n.address,
+					port: n.port, udp: n.udp, source: n.source, iface: n.iface, tproto: n.tproto, link: n.link, usec: n.usec,
+					delay: o ? o.delay : null, alive: o ? o.alive : null,
+					up: t.uplink ?? 0, down: t.downlink ?? 0
+				});
+			}
+
+			const sec = {
+				name: sn, type: s.type, mode: s.mode, balancer: s.balancer, pool: s.pool == true,
+				active: s.type == 'proxy' ? active_tag(s, m.observatory) : null,
+				pinned: s.override ?? null, nodes: nodes, traffic: traffic,
+				chain: s.chain ?? null
+			};
+
+			// A tunnel chosen among the section's servers carries the rest
+			// of the traffic in the kernel: its interface counts it.
+			if (s.kernel) {
+				const kn = filter(s.nodes ?? [], (n) => n.iface == s.kernel)[0];
+				const dev = kn?.device ?? s.kernel;
+
+				if (match(dev, /^[A-Za-z0-9_.@-]+$/)) {
+					const b = (f) => +trim(fs.readfile(`${SYS_NET}/${dev}/statistics/${f}`) ?? '0') || 0;
+
+					sec.kernel = s.kernel;
+					totals.all.up += b('tx_bytes');
+					totals.all.down += b('rx_bytes');
+				}
+			}
+
+			if (s.type == 'interface') {
+				sec.interface = s.interface;
+				sec.label = c.get('mayhem', s.interface) == 'tunnel' ? c.get('mayhem', s.interface, 'label') : null;
+				sec.device = s.device;
+				sec.tunnel = tunnel_state(sn, s.device, out.hs[s.device] ?? '');
+
+				// The kernel sends this traffic past xray: the interface
+				// counts it (what xray sends into it as well).
+				if (s.mode == 'kernel' && match(s.device ?? '', /^[A-Za-z0-9_.@-]+$/)) {
+					const b = (f) => +trim(fs.readfile(`${SYS_NET}/${s.device}/statistics/${f}`) ?? '0') || 0;
+
+					kernel_tun[sn] = true;
+					sec.traffic = { up: b('tx_bytes'), down: b('rx_bytes') };
+					totals.all.up += sec.traffic.up;
+					totals.all.down += sec.traffic.down;
+				}
+			}
+
+			push(sections, sec);
+		}
+
+		for (let tag in keys(m.stats)) {
+			const t = m.stats[tag];
+			const k = index([ 'n-', 'f-' ], substr(tag, 0, 2)) >= 0 ? 'proxy' : ((tag == 'direct' || tag == 'direct-udp') ? 'direct' : null);
+
+			if (k) {
+				totals[k].up += t.uplink ?? 0;
+				totals[k].down += t.downlink ?? 0;
+			}
+
+			// Everything that leaves the router through xray: servers,
+			// tunnels in xray mode and direct; not DNS and not blocked.
+			const im = match(tag, /^i-(.+)-[0-9]+$/);
+
+			if (k || (im && !kernel_tun[im[1]])) {
+				totals.all.up += t.uplink ?? 0;
+				totals.all.down += t.downlink ?? 0;
+			}
+		}
+
+		return {
+			time: time(),
+			version: mayhem_version(),
+			enabled: c.get('mayhem', 'settings', 'enabled') == '1',
+			autostart: length(fs.glob('/etc/rc.d/S[0-9][0-9]mayhem') ?? []) > 0,
+			running: pid != null,
+			active: pid != null && fs.access(`${RUN}/active`) == true,
+			xray: trim(fs.readfile(`${RUN}/xray.version`) ?? '') || null,
+			rss_kb: pid ? rss_kb(pid) : null,
+			dnsmasq: out.dnsmasq,
+			status: read_json(`${RUN}/status.json`),
+			mode: state.mode,
+			probe_url: state.probe_url,
+			default_section: default_section(state),
+			ping_method: c.get('mayhem', 'settings', 'ping_method') ?? 'url',
+			model: trim(fs.readfile('/tmp/sysinfo/model') ?? '') || null,
+			system: os_release(),
+			sections: sections,
+			totals: totals,
+			subscriptions: subscriptions()
+		};
+}
+
 const methods = {
 	status: {
 		call: function() {
@@ -1170,119 +1394,13 @@ const methods = {
 		}
 	},
 
+	// rpcd does not wait for the processes: the answer goes when they are done.
 	dashboard: {
-		call: function() {
+		call: function(req) {
 			const pid = xray_pid();
 			const state = read_json(`${RUN}/nodes.json`) ?? { sections: {} };
-			const m = pid ? metrics() : { stats: {}, observatory: {} };
-			const c = uci_cursor();
-			const sections = [];
-			const totals = { proxy: { up: 0, down: 0 }, direct: { up: 0, down: 0 }, all: { up: 0, down: 0 } };
-			const kernel_tun = {};
 
-			for (let sn in keys(state.sections ?? {})) {
-				const s = state.sections[sn];
-				const nodes = [];
-				const traffic = { up: 0, down: 0 };
-
-				for (let n in s.nodes ?? []) {
-					const o = m.observatory[n.tag];
-					const t = m.stats[n.tag] ?? {};
-
-					traffic.up += t.uplink ?? 0;
-					traffic.down += t.downlink ?? 0;
-
-					push(nodes, {
-						tag: n.tag, name: n.name, protocol: n.protocol, address: n.address,
-						port: n.port, udp: n.udp, source: n.source, iface: n.iface, tproto: n.tproto, link: n.link, usec: n.usec,
-						delay: o ? o.delay : null, alive: o ? o.alive : null,
-						up: t.uplink ?? 0, down: t.downlink ?? 0
-					});
-				}
-
-				const sec = {
-					name: sn, type: s.type, mode: s.mode, balancer: s.balancer, pool: s.pool == true,
-					active: s.type == 'proxy' ? active_tag(s, m.observatory) : null,
-					pinned: s.override ?? null, nodes: nodes, traffic: traffic,
-					chain: s.chain ?? null
-				};
-
-				// A tunnel chosen among the section's servers carries the rest
-				// of the traffic in the kernel: its interface counts it.
-				if (s.kernel) {
-					const kn = filter(s.nodes ?? [], (n) => n.iface == s.kernel)[0];
-					const dev = kn?.device ?? s.kernel;
-
-					if (match(dev, /^[A-Za-z0-9_.@-]+$/)) {
-						const b = (f) => +trim(fs.readfile(`${SYS_NET}/${dev}/statistics/${f}`) ?? '0') || 0;
-
-						sec.kernel = s.kernel;
-						totals.all.up += b('tx_bytes');
-						totals.all.down += b('rx_bytes');
-					}
-				}
-
-				if (s.type == 'interface') {
-					sec.interface = s.interface;
-					sec.label = c.get('mayhem', s.interface) == 'tunnel' ? c.get('mayhem', s.interface, 'label') : null;
-					sec.device = s.device;
-					sec.tunnel = tunnel_state(sn, s.device);
-
-					// The kernel sends this traffic past xray: the interface
-					// counts it (what xray sends into it as well).
-					if (s.mode == 'kernel' && match(s.device ?? '', /^[A-Za-z0-9_.@-]+$/)) {
-						const b = (f) => +trim(fs.readfile(`${SYS_NET}/${s.device}/statistics/${f}`) ?? '0') || 0;
-
-						kernel_tun[sn] = true;
-						sec.traffic = { up: b('tx_bytes'), down: b('rx_bytes') };
-						totals.all.up += sec.traffic.up;
-						totals.all.down += sec.traffic.down;
-					}
-				}
-
-				push(sections, sec);
-			}
-
-			for (let tag in keys(m.stats)) {
-				const t = m.stats[tag];
-				const k = index([ 'n-', 'f-' ], substr(tag, 0, 2)) >= 0 ? 'proxy' : ((tag == 'direct' || tag == 'direct-udp') ? 'direct' : null);
-
-				if (k) {
-					totals[k].up += t.uplink ?? 0;
-					totals[k].down += t.downlink ?? 0;
-				}
-
-				// Everything that leaves the router through xray: servers,
-				// tunnels in xray mode and direct; not DNS and not blocked.
-				const im = match(tag, /^i-(.+)-[0-9]+$/);
-
-				if (k || (im && !kernel_tun[im[1]])) {
-					totals.all.up += t.uplink ?? 0;
-					totals.all.down += t.downlink ?? 0;
-				}
-			}
-
-			return {
-				time: time(),
-				version: mayhem_version(),
-				enabled: c.get('mayhem', 'settings', 'enabled') == '1',
-				autostart: length(fs.glob('/etc/rc.d/S[0-9][0-9]mayhem') ?? []) > 0,
-				running: pid != null,
-				active: pid != null && fs.access(`${RUN}/active`) == true,
-				xray: trim(fs.readfile(`${RUN}/xray.version`) ?? '') || null,
-				rss_kb: pid ? rss_kb(pid) : null,
-				dnsmasq: trim(run('pidof dnsmasq 2>/dev/null') ?? '') != '',
-				status: read_json(`${RUN}/status.json`),
-				mode: state.mode,
-				probe_url: state.probe_url,
-				default_section: default_section(state),
-				ping_method: c.get('mayhem', 'settings', 'ping_method') ?? 'url',
-				model: trim(fs.readfile('/tmp/sysinfo/model') ?? '') || null,
-				system: os_release(),
-				sections: sections,
-				totals: totals,
-				subscriptions: subscriptions()
-			};
+			return deferred_sh(req, dashboard_cmd(pid, state), (out) => dashboard(pid, state, dashboard_parts(out)));
 		}
 	},
 
@@ -2618,59 +2736,33 @@ const methods = {
 	}
 };
 
-// --- calls that wait for the network ----------------------------------------
-// rpcd serves all plugins in one process: while one call waits (curl through a
-// server, a download), every other call of LuCI and ubus waits too, and the
-// browser drops them after a while ("XHR request aborted by browser"). These
-// methods run in a child process (call.uc) and rpcd answers when it exits; in
-// the meantime it serves other calls. Without the uloop module, or outside
-// rpcd (tests, the child itself), they run in place as before.
-const APART = [ 'probe', 'exit_info', 'sub_update', 'refresh_servers', 'components', 'diagnose' ];
+// --- calls that start processes ---------------------------------------------
+// These methods run a program (curl through a server, a download, `mayhem
+// status`, `xray api`, logread, an init script) and would hold rpcd meanwhile
+// (see deferred_sh() above). They run in a child process (call.uc) instead,
+// and rpcd answers when it exits; outside rpcd they run in place.
+const APART = [ 'probe', 'exit_info', 'sub_update', 'refresh_servers', 'components', 'diagnose',
+	'status', 'check', 'sysinfo', 'logs', 'tunnel_info', 'action', 'select_node', 'backup_import', 'reset_config' ];
 const CALL = getenv('MAYHEM_RPC_CALL') ?? '/usr/share/mayhem-luci/call.uc';
-let uloop = null;
-
-if (getenv('MAYHEM_RPC_CHILD') == null) {
-	try {
-		uloop = require('uloop');
-	}
-	catch (e) {
-		uloop = null;
-	}
-}
-
-let apart_seq = 0;
 
 function run_apart(name, inplace, req) {
-	if (!uloop || type(req?.defer) != 'function' || !fs.access(CALL))
+	if (!fs.access(CALL) || ubus_link() == null || type(req?.reply) != 'function')
 		return inplace(req);
 
-	fs.mkdir(RUN, 0700);
+	const cmd = `MAYHEM_RPC_CHILD=1 exec ucode ${q(CALL)} ${q(name)} ${q(sprintf('%J', req.args ?? {}))}`;
 
-	const out = `${RUN}/rpc.${++apart_seq}.${time()}.out`;
-	const cmd = `MAYHEM_RPC_CHILD=1 exec ucode ${q(CALL)} ${q(name)} ${q(sprintf('%J', req.args ?? {}))} >${q(out)} 2>/dev/null`;
-	const deferred = req.defer();
-	// The environment goes along explicitly: older ucode (OpenWrt 24.10)
-	// starts the process with an empty one otherwise.
-	const proc = uloop.process('/bin/sh', [ '-c', cmd ], getenv(), (code) => {
+	return deferred_sh(req, cmd, (text) => {
 		let res = null;
 
 		try {
-			res = json(fs.readfile(out) ?? '');
+			res = json(text);
 		}
 		catch (e) {
 			res = null;
 		}
 
-		fs.unlink(out);
-		req.reply(type(res) == 'object' ? res : { error: `the call failed (exit code ${code})` });
+		return type(res) == 'object' ? res : { error: 'the call failed' };
 	});
-
-	if (!proc) {
-		fs.unlink(out);
-		return inplace(req);
-	}
-
-	return deferred;
 }
 
 // A function per method: loop variables are not captured one per pass.

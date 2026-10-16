@@ -137,6 +137,27 @@ pool_tunnel_check() {
 	fi
 }
 
+# A fallback chain keeps whole server names: they may have spaces and commas.
+pool_chain_check() {
+	mkdir -p "$OUT/uci-poolchain"
+	sed "s/^config pool 'pool'$/config pool 'pool'\n\tlist link 'ss:\/\/YWVzLTI1Ni1nY206cHc@1.2.3.10:8388#NL fast, 1'\n\tlist link 'ss:\/\/YWVzLTI1Ni1nY206cHc@1.2.3.11:8388#Backup hy2'\n\toption select 'fallback'\n\tlist chain 'Backup hy2'\n\tlist chain 'NL fast, 1'/; /^\toption select 'auto'$/d" \
+		"$OUT/uci-pool/mayhem" > "$OUT/uci-poolchain/mayhem"
+	if ! out="$(MAYHEM_UCI_DIR="$OUT/uci-poolchain" MAYHEM_SUBS_DIR="$OUT/uci-subs" \
+		uc "$FILES/usr/share/mayhem/gen.uc" --out "$OUT/uci-poolchain-run" 2>&1)"; then
+		bad "fallback chain: $out"
+	elif printf '%s' "$out" | grep -q "fallback chain is gone"; then
+		bad "fallback chain: $(printf '%s' "$out" | grep "fallback chain")"
+	elif ! uc -e "
+		const s = json(require('fs').readfile('$OUT/uci-poolchain-run/nodes.json')).sections.pool;
+		const name = (t) => filter(s.nodes, (n) => n.tag == t)[0]?.name;
+		exit((s.mode == 'fallback' && join('|', map(s.chain, name)) == 'Backup hy2|NL fast, 1' && name(s.selected) == 'Backup hy2') ? 0 : 1);
+	" 2>/dev/null; then
+		bad "fallback chain: not the two servers in their order"
+	else
+		ok "fallback chain with spaces and commas in server names"
+	fi
+}
+
 # Comments and text around the keys are not servers; base64 may be wrapped.
 sub_check mixed-b64.txt '"name": "A server"'
 sub_check mixed-b64.txt '"skipped": 0'
@@ -205,6 +226,7 @@ else
 	ok "server list: migration, sections without servers, subscriptions"
 fi
 pool_tunnel_check
+pool_chain_check
 
 # WireGuard/AmneziaWG configs and AmneziaVPN keys
 if out="$(uc "$ROOT/tests/awg.uc" "$ROOT/tests/awg/client.conf" 2>&1)"; then

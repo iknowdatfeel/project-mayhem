@@ -5,7 +5,7 @@
 'use strict';
 
 import { parse_link, outbound_host, outbound_port, outbound_udp, refused_by_xray } from 'mayhem.links';
-import { is_true, entries, norm_domain, norm_ip, is_ip, dns_server, split_list, list_key } from 'mayhem.rules';
+import { is_true, as_list, entries, norm_domain, norm_ip, is_ip, dns_server, split_list, list_key } from 'mayhem.rules';
 import { resolve, HEAVY, KERNEL_DOMAINS_MAX } from 'mayhem.geo';
 import * as C from 'mayhem.const';
 
@@ -1242,7 +1242,8 @@ export function build(model) {
 				else if (smode == 'fallback') {
 					let chain = [];
 
-					for (let c in entries(sec.chain)) {
+					// Whole names: a server name may have spaces and commas.
+					for (let c in as_list(sec.chain)) {
 						const n = byname(c);
 
 						if (!n)
