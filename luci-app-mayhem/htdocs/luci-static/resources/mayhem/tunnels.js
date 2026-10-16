@@ -42,8 +42,10 @@ return baseclass.extend({
 	},
 
 	// Runs an installation in the background and shows its log until it ends.
+	// A button passes its click event after the arguments: only a string is a
+	// version (rpcd turns the call down when the type is wrong).
 	install(what, version) {
-		return callInstall(what, version || '').then((r) => {
+		return callInstall(what, typeof version === 'string' ? version : '').then((r) => {
 			if (r.error || r.busy) {
 				ui.addNotification(null, E('p', r.error || _('An installation is already running')), 'error');
 				return;
