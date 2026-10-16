@@ -139,14 +139,29 @@ function write_json(path, v) {
 	return fs.writefile(tmp, sprintf('%J\n', v)) != null && fs.rename(tmp, path);
 }
 
-function uci_cursor() {
-	// MAYHEM_UCI_SAVE_DIR: the tests keep UCI deltas next to their config.
+// A UCI cursor for any config. MAYHEM_UCI_SAVE_DIR: the tests keep UCI
+// deltas next to their config (a shared /tmp/.uci may belong to another user).
+function uci_open() {
 	const save = getenv('MAYHEM_UCI_SAVE_DIR');
-	const c = save ? require('uci').cursor(C.UCI_DIR, save) : require('uci').cursor(C.UCI_DIR);
+
+	return save ? require('uci').cursor(C.UCI_DIR, save) : require('uci').cursor(C.UCI_DIR);
+}
+
+function uci_cursor() {
+	const c = uci_open();
 
 	c.load('mayhem');
 
 	return c;
+}
+
+// Commits the configs one after another; false when one could not be saved.
+function commit_all(c, ...configs) {
+	for (let cfg in configs)
+		if (!c.commit(cfg))
+			return false;
+
+	return true;
 }
 
 function xray_pid() {
@@ -332,7 +347,7 @@ function proto_handlers() {
 }
 
 function network_cursor() {
-	const c = require('uci').cursor(C.UCI_DIR);
+	const c = uci_open();
 
 	c.load('network');
 
@@ -429,7 +444,7 @@ const TUNNEL_PING_HOST = '1.1.1.1';
 
 // The server of a tunnel: the endpoint of its first peer.
 function tunnel_endpoint(iface) {
-	const c = require('uci').cursor(C.UCI_DIR);
+	const c = uci_open();
 	let ep = null;
 
 	if (!c.load('network'))
@@ -1812,7 +1827,7 @@ const methods = {
 
 			// No name: the first free awgN.
 			if (name == '') {
-				const nc = require('uci').cursor(C.UCI_DIR);
+				const nc = uci_open();
 
 				nc.load('network');
 
@@ -1850,7 +1865,7 @@ const methods = {
 				return { error: e.message };
 			}
 
-			const c = require('uci').cursor(C.UCI_DIR);
+			const c = uci_open();
 
 			c.load('network');
 			c.load('firewall');
@@ -1930,9 +1945,8 @@ const methods = {
 				c.set('mayhem', section, 'route_mode', 'kernel');
 			}
 
-			c.commit('mayhem');
-			c.commit('network');
-			c.commit('firewall');
+			if (!commit_all(c, 'mayhem', 'network', 'firewall'))
+				return { error: 'the config could not be saved' };
 
 			apply_bg('/etc/init.d/network reload; /etc/init.d/firewall reload; /etc/init.d/mayhem reload');
 
@@ -2031,7 +2045,7 @@ const methods = {
 			if (!match(to, /^[a-z][a-z0-9_]{0,14}$/))
 				return { error: 'the name must start with a letter and have at most 15 lower-case letters, digits or _' };
 
-			const c = require('uci').cursor(C.UCI_DIR);
+			const c = uci_open();
 
 			c.load('network');
 			c.load('firewall');
@@ -2109,9 +2123,8 @@ const methods = {
 				c.delete('mayhem', from);
 			}
 
-			c.commit('network');
-			c.commit('firewall');
-			c.commit('mayhem');
+			if (!commit_all(c, 'network', 'firewall', 'mayhem'))
+				return { error: 'the config could not be saved' };
 
 			apply_bg('/etc/init.d/network reload; /etc/init.d/firewall reload; /etc/init.d/mayhem reload');
 
@@ -2452,7 +2465,7 @@ const methods = {
 		args: { iface: '', mode: 'hide' },
 		call: function(req) {
 			const iface = req.args?.iface ?? '';
-			const c = require('uci').cursor(C.UCI_DIR);
+			const c = uci_open();
 
 			c.load('network');
 			c.load('firewall');
@@ -2537,9 +2550,8 @@ const methods = {
 					c.delete('mayhem', 'settings', 'default_section');
 			}
 
-			c.commit('network');
-			c.commit('firewall');
-			c.commit('mayhem');
+			if (!commit_all(c, 'network', 'firewall', 'mayhem'))
+				return { error: 'the config could not be saved' };
 
 			apply_bg(mode == 'full'
 				? `ifdown ${q(iface)}; /etc/init.d/network reload; /etc/init.d/firewall reload; /etc/init.d/mayhem reload`
@@ -2663,7 +2675,7 @@ const methods = {
 		args: { iface: '', conf: '' },
 		call: function(req) {
 			const iface = req.args?.iface ?? '';
-			const c = require('uci').cursor(C.UCI_DIR);
+			const c = uci_open();
 
 			c.load('network');
 
@@ -2714,7 +2726,9 @@ const methods = {
 					c.set('network', sid, k, p[k]);
 			}
 
-			c.commit('network');
+			if (!c.commit('network'))
+				return { error: 'the config could not be saved' };
+
 			apply_bg(`/etc/init.d/network reload; sleep 2; ifup ${iface}; /etc/init.d/mayhem reload`);
 
 			return { ok: true };
