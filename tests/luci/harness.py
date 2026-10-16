@@ -678,13 +678,18 @@ def main():
             # (the router takes a few seconds to reload).
             sel = '#mayhem-body .mh-chain select >> nth=0'
             n = len(calls)
+            conf = os.path.join(FIX, 'uci', 'mayhem')
             pg.select_option(sel, 'manual')
-            pg.wait_for_timeout(4000)
+            for _ in range(40):
+                pg.wait_for_timeout(250)
+                if "option select 'manual'" in open(conf).read():
+                    break
+            pg.wait_for_timeout(3500)  # a poll with the router's old data comes in between
             if 'luci.mayhem.set_select' not in calls[n:]:
                 raise RuntimeError('the choice did not reach the router: %s' % calls[n:])
             if pg.eval_on_selector(sel, 'e => e.value') != 'manual':
                 raise RuntimeError('the old way of choosing came back after a poll')
-            if "option select 'manual'" not in open(os.path.join(FIX, 'uci', 'mayhem')).read():
+            if "option select 'manual'" not in open(conf).read():
                 raise RuntimeError('the choice is not in the config')
 
         @restoring('mayhem', 'network', 'firewall')
@@ -698,11 +703,18 @@ def main():
                 raise RuntimeError('no choice between out of the list and deleting the tunnel')
             shot(pg, 'dashboard_delete_tunnel')
             n = len(calls)
+            net = os.path.join(FIX, 'uci', 'network')
             pg.click('.modal .cbi-button-negative')
-            pg.wait_for_timeout(1500)
+            # The call runs the real backend: on a slow machine it takes a
+            # while, so wait for its result instead of a fixed time.
+            for _ in range(40):
+                pg.wait_for_timeout(250)
+                if "config interface 'awg0'" not in open(net).read() and \
+                        not pg.locator('#mayhem-body .mh-tile', has_text='awg0').count():
+                    break
             if 'luci.mayhem.tunnel_delete' not in calls[n:]:
                 raise RuntimeError('deleting the tunnel did not reach the router: %s' % calls[n:])
-            if "config interface 'awg0'" in open(os.path.join(FIX, 'uci', 'network')).read():
+            if "config interface 'awg0'" in open(net).read():
                 raise RuntimeError('the network interface of the tunnel is still there')
             if pg.locator('#mayhem-body .mh-tile', has_text='awg0').count():
                 raise RuntimeError('the tunnel is still on the dashboard')
