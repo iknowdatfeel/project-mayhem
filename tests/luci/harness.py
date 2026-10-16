@@ -191,6 +191,9 @@ def call(obj, method, args):
         if method == 'components' and (args or {}).get('check'):
             return {'mayhem': '0.11.0', 'xray': '26.9.30', 'xray_latest': '26.9.30', 'mayhem_latest': '0.12.0'}
         if method == 'system_install':
+            # rpcd turns down an argument of the wrong type (a click event)
+            if not isinstance((args or {}).get('version', ''), str):
+                return {'error': 'invalid argument: version'}
             installs.append((args or {}).get('what'))
         if method == 'awg_import':
             imports.append(args or {})
