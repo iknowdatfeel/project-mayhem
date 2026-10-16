@@ -1,6 +1,5 @@
 'use strict';
 'require baseclass';
-'require rpc';
 
 // Shared look of the Mayhem pages: bordered boxes, status colors and small
 // line icons. Colors come from the theme where it defines them (bootstrap),
@@ -93,14 +92,10 @@ function readOnly(data) {
 		return;
 
 	const post = R.post;
-	let last = Date.now();
 
 	R.mhRetry = true;
 	R.post = function(url, data, options) {
 		const args = arguments;
-
-		last = Date.now();
-
 		const again = (left) => post.apply(R, args).catch((e) => {
 			if (left > 0 && /aborted by browser/.test(String(e && e.message)) && /\/ubus\//.test(String(url)) && readOnly(data))
 				return new Promise((res) => window.setTimeout(res, 600)).then(() => again(left - 1));
@@ -110,24 +105,6 @@ function readOnly(data) {
 
 		return again(3);
 	};
-
-	// uhttpd closes a kept-alive connection after 20 idle seconds, and a call
-	// sent over it just then (a Save in a window after a minute of editing,
-	// when the dashboard does not poll) gets no answer; a call that changes
-	// something is never repeated. While the page is visible a tiny call goes
-	// out when nothing else has for 8 seconds, so the connection the browser
-	// picks next is never that old.
-	const KEEP = 8000;
-
-	const keep = rpc.declare({ object: 'session', method: 'access', params: [ 'scope', 'object', 'function' ], expect: { access: false } });
-
-	window.setInterval(() => {
-		if (document.hidden || Date.now() - last < KEEP)
-			return;
-
-		last = Date.now();
-		keep('uci', 'mayhem', 'read').catch(() => {});
-	}, 2000);
 })();
 
 // Line icons on a 24x24 grid: [ circles [cx, cy, r], paths ].
