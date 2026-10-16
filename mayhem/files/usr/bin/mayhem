@@ -386,11 +386,11 @@ cmd_dnsmasq_full() {
 		return 1
 	fi
 
-	if [ "$PM" = apk ]; then
-		apk add "$full" 2>&1 | tail -n 5
-	else
-		opkg install "$full" 2>&1 | tail -n 5
-	fi
+	# The files came from the feeds through the package manager, which checked
+	# them against the signed index; apk itself wants every local file signed,
+	# and OpenWrt signs only the index.
+	echo "Installing dnsmasq-full..."
+	pkg_add_file "$full" 2>&1 | tail -n 8
 
 	[ -f "$dir/dhcp" ] && cp "$dir/dhcp" /etc/config/dhcp
 	resolv_restore
@@ -413,10 +413,20 @@ cmd_dnsmasq_full() {
 
 	if [ "$PM" = apk ]; then
 		apk del dnsmasq-full >/dev/null 2>&1
-		apk add "$old" 2>&1 | tail -n 5
 	else
 		opkg remove dnsmasq-full >/dev/null 2>&1
-		opkg install "$old" 2>&1 | tail -n 5
+	fi
+
+	pkg_add_file "$old" 2>&1 | tail -n 8
+
+	# Without its package back the router has no DNS and DHCP: the feeds.
+	if ! pkg_has dnsmasq && ! pkg_has dnsmasq-full; then
+		echo "Installing dnsmasq from the package feeds..."
+		if [ "$PM" = apk ]; then
+			apk add dnsmasq 2>&1 | tail -n 5
+		else
+			opkg install dnsmasq 2>&1 | tail -n 5
+		fi
 	fi
 
 	[ -f "$dir/dhcp" ] && cp "$dir/dhcp" /etc/config/dhcp

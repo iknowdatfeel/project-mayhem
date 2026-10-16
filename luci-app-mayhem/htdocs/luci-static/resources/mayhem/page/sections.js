@@ -915,6 +915,11 @@ return baseclass.extend({
 			_('Tick one or several, or type your own address. The first one is the main server, the next ones are fallbacks.') ], 'doh');
 		o.placeholder = _('Choose or type an address');
 
+		// Xray does not ask a DoH server again when its answer breaks off:
+		// with one server the device gets an error.
+		if (L.toArray(uci.get('mayhem', 'dns', 'remote')).length === 1)
+			o.description += ' ' + _('With one server, a query it fails to answer fails on the device too: add a second one, Cloudflare or Google say, to take over.');
+
 		o = s.option(form.Flag, 'via_proxy', _('Remote DNS through the proxy'),
 			now ? _('On: queries go through the active server, now %s. Off: they go direct, encrypted when the server is DoH.').format(now)
 				: _('On: queries go through the active server. Off: they go direct, encrypted when the server is DoH.'));

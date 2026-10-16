@@ -16,6 +16,7 @@ Needs python3-playwright with Chromium.
 For screenshots (SHOTS=DIR saves one per page):
   MAYHEM_LANG=ru  pages in Russian, from luci-app-mayhem/po/ru/mayhem.po
   MAYHEM_DARK=1   the dark variant of the bootstrap theme
+  SHOTS_WIDTH, SHOTS_HEIGHT  the window size (1280x720)
   MAYHEM_DEMO=1   xray looks running: a fake metrics endpoint answers with
                   delays and growing traffic for the servers in run/nodes.json
 """
@@ -326,7 +327,7 @@ def main():
         browser = p.chromium.launch(executable_path=os.environ.get('CHROMIUM') or None)
 
         def open_view(view, actions=None):
-            ctx = browser.new_context(viewport={'width': 1280, 'height': int(os.environ.get('SHOTS_HEIGHT', '720'))})
+            ctx = browser.new_context(viewport={'width': int(os.environ.get('SHOTS_WIDTH', '1280')), 'height': int(os.environ.get('SHOTS_HEIGHT', '720'))})
             pg = ctx.new_page()
             errors = []
             pg.on('pageerror', lambda e: errors.append('page error: %s' % e))
@@ -459,7 +460,7 @@ def main():
             close_modal(pg)
             if not pg.locator('.mh-sheet-body div[data-tab="device"] input[placeholder="awg0"]').count():
                 raise RuntimeError('no field for the name of the tunnel')
-            pg.click('.mh-sheet-body div[data-tab="device"] button[title]:has-text("✎")')
+            pg.click('.mh-sheet-body div[data-tab="device"] .mh-actions button[title]')
             pg.wait_for_selector('.modal input[maxlength="15"]', timeout=5000)
             shot(pg, 'servers_tunnel_rename')
             close_modal(pg)
@@ -656,6 +657,56 @@ def main():
             if ('#%s\'' % names[0]) in open(conf).read():
                 raise RuntimeError('the key of %s is still in the config' % names[0])
 
+        def restoring(*names):
+            # runs a step that changes the fixture config, then puts it back
+            def wrap(step):
+                def run(pg):
+                    paths = [os.path.join(FIX, 'uci', n) for n in names]
+                    saved = [open(x).read() for x in paths]
+                    try:
+                        step(pg)
+                    finally:
+                        for x, t in zip(paths, saved):
+                            open(x, 'w').write(t)
+                return run
+            return wrap
+
+        @restoring('mayhem')
+        def choose_mode(pg):
+            # The way a section picks its server changes at once on the page,
+            # and a poll with the router's old data does not put it back
+            # (the router takes a few seconds to reload).
+            sel = '#mayhem-body .mh-chain select >> nth=0'
+            n = len(calls)
+            pg.select_option(sel, 'manual')
+            pg.wait_for_timeout(4000)
+            if 'luci.mayhem.set_select' not in calls[n:]:
+                raise RuntimeError('the choice did not reach the router: %s' % calls[n:])
+            if pg.eval_on_selector(sel, 'e => e.value') != 'manual':
+                raise RuntimeError('the old way of choosing came back after a poll')
+            if "option select 'manual'" not in open(os.path.join(FIX, 'uci', 'mayhem')).read():
+                raise RuntimeError('the choice is not in the config')
+
+        @restoring('mayhem', 'network', 'firewall')
+        def delete_tunnel(pg):
+            # The bin of a tunnel asks what to do: out of the server list, or
+            # delete the tunnel with its interface, as under Tunnels.
+            tile = pg.locator('#mayhem-body .mh-tile', has_text='awg0').first
+            tile.locator('.mh-del').click()
+            pg.wait_for_selector('.modal .cbi-button-negative', timeout=5000)
+            if not pg.query_selector('.modal .cbi-button-action'):
+                raise RuntimeError('no choice between out of the list and deleting the tunnel')
+            shot(pg, 'dashboard_delete_tunnel')
+            n = len(calls)
+            pg.click('.modal .cbi-button-negative')
+            pg.wait_for_timeout(1500)
+            if 'luci.mayhem.tunnel_delete' not in calls[n:]:
+                raise RuntimeError('deleting the tunnel did not reach the router: %s' % calls[n:])
+            if "config interface 'awg0'" in open(os.path.join(FIX, 'uci', 'network')).read():
+                raise RuntimeError('the network interface of the tunnel is still there')
+            if pg.locator('#mayhem-body .mh-tile', has_text='awg0').count():
+                raise RuntimeError('the tunnel is still on the dashboard')
+
         def services_badge(pg):
             # the badge at the top opens the state of each service
             pg.click('#mayhem-body .mh-pill')
@@ -680,7 +731,8 @@ def main():
 
         pages = [
             ('mayhem/dashboard', [('buttons', dashboard_buttons), ('logs dialog', logs_modal), ('run diagnostics', run_diag),
-                                  ('edit a server', edit_server), ('delete a server', delete_server), ('services', services_badge), ('pages in a window', nav_pages)]),
+                                  ('edit a server', edit_server), ('delete a server', delete_server), ('choose how', choose_mode),
+                                  ('delete a tunnel', delete_tunnel), ('services', services_badge), ('pages in a window', nav_pages)]),
             ('mayhem/dashboard#sections', [('sections tab', lambda pg: shot(pg, 'routing_sections')), ('main section', main_section),
                                  ('edit sections', lambda pg: open_modals(pg, '[data-tab="settings"]')), ('domains as text', section_text),
                                  ('tunnel options', type_tunnel), ('DNS tab', dns_tab), ('edit geo sources', geo_tab), ('upload dialog', upload_modal),

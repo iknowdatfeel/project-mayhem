@@ -1,5 +1,6 @@
 'use strict';
 'require baseclass';
+'require rpc';
 
 // Shared look of the Mayhem pages: bordered boxes, status colors and small
 // line icons. Colors come from the theme where it defines them (bootstrap),
@@ -29,6 +30,22 @@ const CSS = `
 .mh-btn { display:inline-flex; align-items:center; justify-content:center; gap:6px; }
 .mh-btn .mh-icon { width:16px; height:16px; }
 .cbi-map-tabbed > .cbi-section > h3:first-child { display:none; }
+.mh-actions { width:1%; white-space:nowrap; }
+.mh-actions > div { display:flex; flex-wrap:nowrap; gap:4px; justify-content:flex-end; }
+.mh-actions > div > .btn { flex:0 0 auto; margin:0; }
+.mh-note { display:flex; flex-wrap:wrap; align-items:center; gap:6px 10px; }
+.mh-note > .btn { margin:0; }
+/* Tables of keys and tunnels: on a narrow screen every row is a card, each cell
+   with the name of its column, the buttons in one line at the bottom. */
+@media (max-width: 800px) {
+.mh-rtable, .mh-rtable tbody { display:block; width:100%; }
+.mh-rtable .tr.table-titles { display:none !important; }
+.mh-rtable .tr { display:block; padding:8px 0; border-bottom:1px solid var(--border-color-low, #ddd); }
+.mh-rtable .td { display:flex; justify-content:space-between; align-items:center; gap:10px; padding:3px 0; border:0; width:auto; max-width:none; white-space:normal; text-align:right; }
+.mh-rtable .td[data-title]::before { content:attr(data-title); color:var(--text-color-medium, #888); text-align:left; flex:0 0 auto; }
+.mh-rtable .td.mh-actions { width:auto; justify-content:flex-end; padding-top:6px; }
+.mh-rtable .td.mh-actions > div { flex-wrap:wrap; }
+}
 `;
 
 // A call to the router that drops before its answer (the browser reports
@@ -76,10 +93,14 @@ function readOnly(data) {
 		return;
 
 	const post = R.post;
+	let last = Date.now();
 
 	R.mhRetry = true;
 	R.post = function(url, data, options) {
 		const args = arguments;
+
+		last = Date.now();
+
 		const again = (left) => post.apply(R, args).catch((e) => {
 			if (left > 0 && /aborted by browser/.test(String(e && e.message)) && /\/ubus\//.test(String(url)) && readOnly(data))
 				return new Promise((res) => window.setTimeout(res, 600)).then(() => again(left - 1));
@@ -89,6 +110,24 @@ function readOnly(data) {
 
 		return again(3);
 	};
+
+	// uhttpd closes a kept-alive connection after 20 idle seconds, and a call
+	// sent over it just then (a Save in a window after a minute of editing,
+	// when the dashboard does not poll) gets no answer; a call that changes
+	// something is never repeated. While the page is visible a tiny call goes
+	// out when nothing else has for 8 seconds, so the connection the browser
+	// picks next is never that old.
+	const KEEP = 8000;
+
+	const keep = rpc.declare({ object: 'session', method: 'access', params: [ 'scope', 'object', 'function' ], expect: { access: false } });
+
+	window.setInterval(() => {
+		if (document.hidden || Date.now() - last < KEEP)
+			return;
+
+		last = Date.now();
+		keep('uci', 'mayhem', 'read').catch(() => {});
+	}, 2000);
 })();
 
 // Line icons on a 24x24 grid: [ circles [cx, cy, r], paths ].

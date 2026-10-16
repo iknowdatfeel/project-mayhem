@@ -393,8 +393,13 @@ elif ! uc -e "
 	bad "model subs: servers are not checked one at a time (burstObservatory)"
 elif [ "$(wc -l < "$OUT/lists/xray.json")" != 1 ]; then
 	bad "model lists: xray.json is not compact"
+elif ! uc -e "
+	const d = json(require('fs').readfile('$OUT/lists/xray.json')).dns;
+	exit((d.serveStale === true && d.serveExpiredTTL > 0) ? 0 : 1);
+" 2>/dev/null; then
+	bad "model lists: an expired DNS answer is not served while it is renewed (serveStale)"
 else
-	ok "memory: direct UDP idle timeout, spread server checks, compact config"
+	ok "memory: direct UDP idle timeout, spread server checks, compact config; stale DNS answers"
 fi
 
 # The rest of the traffic into a kernel tunnel (main section, global mode):
@@ -403,8 +408,8 @@ fi
 nft_rest() {
 	# $1 model dir: line numbers of the rules, "-" when missing
 	for re in '@blk_d4 counter drop' '@direct4 counter return' '@dir_d4 counter return' '@px_d4 meta l4proto' \
-		'meta nfproto ipv4 meta l4proto tcp th dport { 80, 443 } meta mark set meta mark & 0x[0-9a-f]* | 0x4000001 counter return' \
-		'meta nfproto ipv4 meta l4proto { tcp, udp } meta mark set meta mark | 0x2000000 tproxy'; do
+		'meta nfproto ipv4 meta l4proto tcp th dport { 80, 443 } meta mark set meta mark & 0x[0-9a-f]* | 0x4000001 \(ct mark set ct mark & 0x[0-9a-f]* | 0x[0-9a-f]* \)\?counter return' \
+		'meta nfproto ipv4 meta l4proto { tcp, udp } meta mark set meta mark | 0x2000000 .*tproxy'; do
 		n="$(grep -n -- "$re" "$1/nft.conf" | head -n 1 | cut -d: -f1)"
 		printf '%s ' "${n:--}"
 	done
@@ -425,7 +430,7 @@ elif grep -q 'meta nfproto ipv4 meta mark set meta mark & 0x[0-9a-f]* | 0x400000
 elif ! grep -q 'meta l4proto udp th dport 443 counter drop' "$OUT/tunrest/nft.conf" || \
      grep -q 'udp th dport 443 counter drop' "$OUT/tunrest-fake/nft.conf"; then
 	bad "model tunrest: QUIC off must drop UDP 443 before the tunnel, and only then"
-elif ! grep -q 'meta nfproto ipv4 meta mark set meta mark & 0x[0-9a-f]* | 0x4000001 counter return' "$OUT/tunrest-fake/nft.conf"; then
+elif ! grep -q 'meta nfproto ipv4 meta mark set meta mark & 0x[0-9a-f]* | 0x4000001 \(ct mark set ct mark & 0x[0-9a-f]* | 0x[0-9a-f]* \)\?counter return' "$OUT/tunrest-fake/nft.conf"; then
 	bad "model tunrest-fake: without torrents direct all the rest goes into the tunnel in the kernel"
 elif grep -q '#px_d4' "$OUT/tunrest-fake/dnsmasq.conf" || ! grep -q '198.18.0.0/15 meta l4proto' "$OUT/tunrest-fake/nft.conf" || \
      ! uc -e "
@@ -434,15 +439,29 @@ elif grep -q '#px_d4' "$OUT/tunrest-fake/dnsmasq.conf" || ! grep -q '198.18.0.0/
 	exit((length(f) == 1 && index(f[0].domains, 'domain:instagram.com') >= 0) ? 0 : 1);
 " 2>/dev/null; then
 	bad "model tunrest-fake: FakeDNS must answer only proxy domains, its pool goes to xray"
-elif grep -q 'px_4\|0x4000001 counter return$' "$OUT/global/nft.conf" 2>/dev/null; then
+elif grep -q 'px_4\|0x4000001.*counter return$' "$OUT/global/nft.conf" 2>/dev/null; then
 	bad "model global: the rest goes into a tunnel without a tunnel main section"
 else
 	ok "the rest of the traffic into a kernel tunnel: exclusions, blocking and proxy sections kept"
 fi
 
+# Connections carry the generation of their path; picking a tunnel for the
+# rest (or leaving it) changes it, and connections of the old one are reset
+# instead of hanging (Telegram waited minutes for answers that never came).
+gen_of() { grep -o 'ct mark set ct mark & 0x[0-9a-f]* | 0x[0-9a-f]*' "$1" | awk '{ print $NF }' | sort -u; }
+if [ "$(gen_of "$OUT/global/nft.conf")" != 0x10000000 ] || [ -z "$(gen_of "$OUT/pooltun/nft.conf")" ] ||
+   [ "$(gen_of "$OUT/pooltun/nft.conf")" = 0x10000000 ] || [ "$(gen_of "$OUT/pooltun/nft.conf" | wc -l)" != 1 ]; then
+	bad "path generation: global $(gen_of "$OUT/global/nft.conf" | tr '\n' ' '), picked tunnel $(gen_of "$OUT/pooltun/nft.conf" | tr '\n' ' ')"
+elif ! grep -q 'ct state established,related ct mark & 0x30000000 != 0 ct mark & 0x30000000 != 0x10000000 meta mark set meta mark | 0x8000000 counter return' "$OUT/global/nft.conf" ||
+     ! grep -q 'meta mark & 0x8000000 == 0x8000000 meta l4proto tcp counter reject with tcp reset' "$OUT/global/nft.conf"; then
+	bad "connections of an old path are not reset"
+else
+	ok "connections of an old path are reset when the main server becomes or stops being a kernel tunnel"
+fi
+
 # A tunnel picked by hand in the server list takes the rest in the kernel;
 # the watchdog keeps the choice (bal 0). Without dnsmasq-full it stays in xray.
-if ! grep -q 'meta nfproto ipv4 meta mark set meta mark & 0x[0-9a-f]* | 0x4000001 counter return' "$OUT/pooltun/nft.conf" 2>/dev/null ||
+if ! grep -q 'meta nfproto ipv4 meta mark set meta mark & 0x[0-9a-f]* | 0x4000001 \(ct mark set ct mark & 0x[0-9a-f]* | 0x[0-9a-f]* \)\?counter return' "$OUT/pooltun/nft.conf" 2>/dev/null ||
    ! grep -q '^pool awg0 0x4000001 111 0 0$' "$OUT/pooltun/tunnels" 2>/dev/null ||
    ! grep -q 'nftset=/ru.test/.*#dir_d4' "$OUT/pooltun/dnsmasq.conf" 2>/dev/null; then
 	bad "model pooltun: the picked tunnel does not take the rest in the kernel: $(cat "$OUT/pooltun/tunnels" 2>/dev/null)"

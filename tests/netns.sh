@@ -971,7 +971,7 @@ EOF
 
 rest_hits() {
 	ip netns exec router nft list chain inet mayhem prerouting 2>/dev/null |
-		sed -n 's/.*meta nfproto ipv4 meta mark set .* | 0x0*4000001 counter packets \([0-9]*\).*/\1/p'
+		sed -n 's/.*meta nfproto ipv4 meta mark set .* | 0x0*4000001 .*counter packets \([0-9]*\).*/\1/p'
 }
 
 if start_mayhem uci; then

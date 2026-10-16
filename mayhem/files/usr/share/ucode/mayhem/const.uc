@@ -18,6 +18,16 @@ export const RT_TABLE = 109;
 // routing table TUN_TABLE + n; their ip rules go in at priority TUN_RULE_PRIO.
 export const TUN_MARK = 0x4000000;
 export const TUN_MASK = 0x40000ff;
+
+// Connections that go through xray or into the tunnel of the main section
+// carry a "path generation" in their conntrack mark. When the path changes
+// (a tunnel picked as the main server, or left), packets of connections of
+// the old generation are marked STALE_MARK in prerouting and answered with a
+// TCP reset in forward: the device reconnects at once instead of waiting for
+// answers that never come.
+export const CT_GEN_MASK = 0x30000000;
+export const CT_GEN_SHIFT = 28;
+export const STALE_MARK = 0x8000000;
 export const TUN_TABLE = 110;
 export const TUN_MAX = 32;
 export const TUN_RULE_PRIO = 108;

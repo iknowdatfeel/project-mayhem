@@ -30,6 +30,9 @@ const SERVICE_PROTOCOLS = [ 'freedom', 'direct', 'blackhole', 'block', 'dns', 'l
 const DNS_LEVEL = 1;
 const DNS_IDLE = 4;
 
+// How long xray may answer with an expired DNS record while it asks again.
+const DNS_STALE = 3600;
+
 // Every UDP flow that reaches xray is a session (2 sockets, 3 goroutines,
 // ~35 KB), and in "lists" mode that is every flow of the network: a torrent
 // client's DHT alone opens thousands, each living 2-3 minutes after its last
@@ -222,6 +225,12 @@ function build_nft_text(S, v6, sets, tunnels, dns_redirect, fake_pool, kdef, cap
 	const ifaces = map(length(sets.ifaces) ? sets.ifaces : [ 'br-lan' ], (i) => sprintf('%J', i));
 	const mark = sprintf('0x%x', C.FWMARK);
 	const keep = sprintf('0x%x', 0xffffffff & ~C.TUN_MASK);
+	// The path generation: 1 without a kernel tunnel for the rest of the
+	// traffic, 2 or 3 with one (two tunnels in a row differ too).
+	const gen = sprintf('0x%x', (kdef ? 2 + (kdef.mark & 1) : 1) << C.CT_GEN_SHIFT);
+	const gmask = sprintf('0x%x', C.CT_GEN_MASK);
+	const stale = sprintf('0x%x', C.STALE_MARK);
+	const tag = `ct mark set ct mark & ${sprintf('0x%x', 0xffffffff & ~C.CT_GEN_MASK)} | ${gen}`;
 	let s = `table inet ${C.NFT_TABLE}\ndelete table inet ${C.NFT_TABLE}\n\n`;
 
 	s += `table inet ${C.NFT_TABLE} {\n`;
@@ -277,11 +286,15 @@ function build_nft_text(S, v6, sets, tunnels, dns_redirect, fake_pool, kdef, cap
 
 	s += '\t\tiifname != @ifaces return\n';
 
+	// A connection that took another path before the last change: no rule
+	// here may take it, the forward chain resets it.
+	s += `\t\tct state established,related ct mark & ${gmask} != 0 ct mark & ${gmask} != ${gen} meta mark set meta mark | ${stale} counter return\n`;
+
 	// Devices left alone (settings.bypass): nothing of theirs is touched,
 	// only fake addresses still reach xray - the router's DNS gives them out
 	// for proxied domains, and they lead nowhere else.
 	const fake_only = fake_pool
-		? `meta l4proto { tcp, udp } meta mark set meta mark | ${mark} tproxy ip to 127.0.0.1:${C.TPROXY_PORT} counter accept`
+		? `meta l4proto { tcp, udp } meta mark set meta mark | ${mark} ${tag} tproxy ip to 127.0.0.1:${C.TPROXY_PORT} counter accept`
 		: null;
 
 	for (let m in [ 'ether saddr @bypass_mac', 'ip saddr @bypass4', 'ip6 saddr @bypass6' ]) {
@@ -314,9 +327,9 @@ function build_nft_text(S, v6, sets, tunnels, dns_redirect, fake_pool, kdef, cap
 	}
 
 	if (kdef) {
-		const m = `meta mark set meta mark & ${keep} | ${kdef.mark}`;
-		const tp4 = `meta l4proto { tcp, udp } meta mark set meta mark | ${mark} tproxy ip to 127.0.0.1:${C.TPROXY_PORT} counter accept`;
-		const tp6 = `meta nfproto ipv6 meta l4proto { tcp, udp } meta mark set meta mark | ${mark} tproxy ip6 to [::1]:${C.TPROXY_PORT} counter accept`;
+		const m = `meta mark set meta mark & ${keep} | ${kdef.mark} ${tag}`;
+		const tp4 = `meta l4proto { tcp, udp } meta mark set meta mark | ${mark} ${tag} tproxy ip to 127.0.0.1:${C.TPROXY_PORT} counter accept`;
+		const tp6 = `meta nfproto ipv6 meta l4proto { tcp, udp } meta mark set meta mark | ${mark} ${tag} tproxy ip6 to [::1]:${C.TPROXY_PORT} counter accept`;
 
 		s += '\t\tip daddr @direct4 counter return\n';
 		s += '\t\tip6 daddr @direct6 counter return\n';
@@ -369,10 +382,10 @@ function build_nft_text(S, v6, sets, tunnels, dns_redirect, fake_pool, kdef, cap
 	s += '\t\tip daddr @direct4 counter return\n';
 	s += '\t\tip6 daddr @direct6 counter return\n';
 
-	const tp4 = `meta l4proto { tcp, udp } meta mark set meta mark | ${mark} tproxy ip to 127.0.0.1:${C.TPROXY_PORT} counter accept`;
+	const tp4 = `meta l4proto { tcp, udp } meta mark set meta mark | ${mark} ${tag} tproxy ip to 127.0.0.1:${C.TPROXY_PORT} counter accept`;
 	// "meta nfproto ipv6" marks the lines dropped when IPv6 policy routing
 	// cannot be set up (mayhem_net_up).
-	const tp6 = `meta nfproto ipv6 meta l4proto { tcp, udp } meta mark set meta mark | ${mark} tproxy ip6 to [::1]:${C.TPROXY_PORT} counter accept`;
+	const tp6 = `meta nfproto ipv6 meta l4proto { tcp, udp } meta mark set meta mark | ${mark} ${tag} tproxy ip6 to [::1]:${C.TPROXY_PORT} counter accept`;
 
 	if (cap) {
 		if (fake_pool)
@@ -390,6 +403,12 @@ function build_nft_text(S, v6, sets, tunnels, dns_redirect, fake_pool, kdef, cap
 			s += `\t\t${tp6}\n`;
 	}
 
+	s += '\t}\n';
+
+	s += '\n\tchain stale {\n';
+	s += '\t\ttype filter hook forward priority filter - 1; policy accept;\n';
+	s += `\t\tmeta mark & ${stale} == ${stale} meta l4proto tcp counter reject with tcp reset\n`;
+	s += `\t\tmeta mark & ${stale} == ${stale} counter drop\n`;
 	s += '\t}\n';
 
 	// dnsmasq asks xray for the router's own lookups too, so with FakeDNS the
@@ -1839,6 +1858,12 @@ export function build(model) {
 			tag: 'dns-module',
 			queryStrategy: F.dns,
 			disableFallbackIfMatch: true,
+			// A DNS server that fails now and then (a DoH connection cut
+			// mid-answer, which xray does not repeat) costs nothing for a
+			// name asked before: the expired answer goes out at once and is
+			// renewed in the background. Kept an hour past its TTL at most.
+			serveStale: true,
+			serveExpiredTTL: DNS_STALE,
 			servers: servers
 		},
 		inbounds: [

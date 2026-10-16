@@ -167,6 +167,7 @@ return view.extend({
 	method: 'url',
 	conn: null,		// ping and exit of the default section, checked on demand
 	gone: {},		// tag -> time: deleted servers, hidden until the reload drops them
+	pendingSel: {},		// section -> { mode, chain, time }: a choice the reload has not applied yet
 	showServices: false,	// the state of the services under the badge
 
 	load() {
@@ -175,6 +176,7 @@ return view.extend({
 
 	update(d) {
 		this.hideGone(d);
+		this.settleSel(d);
 
 		if (this.data && d.time > this.data.time) {
 			const dt = d.time - this.data.time;
@@ -311,8 +313,28 @@ return view.extend({
 
 	// The bin of a server, after a question. It is gone from the page at once.
 	deleteServer(section, n) {
-		const what = n.iface ? _('The tunnel leaves the server list and stays a network interface; it can be added back under Tunnels.')
-			: (n.source === 'link' || n.source === 'json') ? _('The server key is deleted.')
+		// A deleted tunnel goes from every section that has it as a server;
+		// one out of the server list only from that list.
+		const forget = (mode) => {
+			const tags = n.iface ? [].concat(...(this.data.sections || []).filter((x) => mode === 'full' || x.name === 'pool').map((x) =>
+				(x.nodes || []).filter((y) => y.iface === n.iface).map((y) => y.tag))) : [ n.tag ];
+
+			for (const t of tags.length ? tags : [ n.tag ]) {
+				this.gone[t] = Date.now();
+				delete this.probes[t];
+			}
+
+			this.hideGone(this.data);
+			this.redraw();
+			return this.refresh();
+		};
+
+		// A tunnel: out of the server list, or deleted with its interface,
+		// as under Tunnels.
+		if (n.iface)
+			return tunnels.deleteDialog(n.iface, false, forget);
+
+		const what = (n.source === 'link' || n.source === 'json') ? _('The server key is deleted.')
 			: _('The server is hidden from this subscription and does not come back with its updates.');
 
 		ui.showModal(_('Delete server %s?').format(n.name), [
@@ -328,10 +350,7 @@ return view.extend({
 						return;
 					}
 
-					this.gone[n.tag] = Date.now();
-					delete this.probes[n.tag];
-					this.hideGone(this.data);
-					this.redraw();
+					return forget();
 				})) }, _('Delete'))
 			])
 		]);
@@ -554,7 +573,11 @@ return view.extend({
 						'click': () => { this.showServices = !this.showServices; this.redraw(); }
 					}, [ st[1], E('span', { 'class': 'mh-caret' }, this.showServices ? '▴' : '▾') ]),
 					this.showServices ? services() : ''
-				])
+				]),
+				// The router is applying a change (a reload): what is shown
+				// may change in a moment.
+				d.applying ? E('span', { 'class': 'mh-muted mh-small mh-btn', 'title': _('Servers and rules on the page update by themselves when it is done.') },
+					[ mh.icon('loader', true), _('Applying changes…') ]) : ''
 			])
 		]);
 	},
@@ -916,6 +939,8 @@ return view.extend({
 		(s.nodes || []).forEach((n) => byTag[n.tag] = n);
 
 		const modes = [ [ 'auto', _('Fastest server') ], [ 'manual', _('Chosen by hand') ], [ 'fallback', _('Fallback chain') ] ];
+		const pend = this.pendingSel[s.name];
+		const mode = pend ? pend.mode : s.mode;
 		const sel = E('select', {
 			'class': 'cbi-input-select',
 			'title': _('How the server is chosen'),
@@ -929,12 +954,15 @@ return view.extend({
 
 				return this.saveSelect(s.name, v, []);
 			})
-		}, modes.map((m) => E('option', { 'value': m[0], 'selected': m[0] === s.mode ? '' : null }, m[1])));
+		}, modes.map((m) => E('option', { 'value': m[0], 'selected': m[0] === mode ? '' : null }, m[1])));
 
 		const parts = [ sel ];
 
-		if (s.mode === 'fallback') {
-			const names = (s.chain || []).map((t) => byTag[t] ? byTag[t].name : '?');
+		if (pend)
+			parts.push(E('span', { 'class': 'mh-muted mh-small' }, _('applying…')));
+
+		if (mode === 'fallback') {
+			const names = pend ? pend.chain : (s.chain || []).map((t) => byTag[t] ? byTag[t].name : '?');
 
 			parts.push(E('span', { 'class': 'mh-small' }, names.join(' → ')));
 			parts.push(E('a', { 'href': '#', 'class': 'mh-small', 'click': ui.createHandlerFn(this, (ev) => {
@@ -946,14 +974,37 @@ return view.extend({
 		return E('div', { 'class': 'mh-chain' }, parts);
 	},
 
+	// The choice shows at once; the router takes a few seconds to reload, and
+	// until its data has the new mode the dashboard keeps showing the choice
+	// (before, a poll in between put the old mode back in the list).
 	saveSelect(section, mode, chain) {
-		return callSetSelect(section, mode, chain).then((r) => {
-			if (r.error)
-				ui.addNotification(null, E('p', r.error), 'error');
+		this.pendingSel[section] = { mode: mode, chain: chain, time: Date.now() };
+		this.redraw();
 
-			// The reload takes a moment.
-			return new Promise((res) => window.setTimeout(res, 1500));
-		}).then(() => this.refresh());
+		return callSetSelect(section, mode, chain).then((r) => {
+			if (r.error) {
+				delete this.pendingSel[section];
+				ui.addNotification(null, E('p', r.error), 'error');
+			}
+
+			return this.refresh();
+		}).catch((e) => {
+			delete this.pendingSel[section];
+			this.redraw();
+			throw e;
+		});
+	},
+
+	// Choices the router has applied (or that waited too long) are dropped.
+	settleSel(d) {
+		for (const name in this.pendingSel) {
+			const p = this.pendingSel[name];
+			const s = (d.sections || []).find((x) => x.name === name);
+			const done = s && s.mode === p.mode && (p.mode !== 'fallback' || (s.chain || []).length === p.chain.length);
+
+			if (done || !s || Date.now() - p.time > 90000 || (!d.applying && Date.now() - p.time > 20000))
+				delete this.pendingSel[name];
+		}
 	},
 
 	// The chain: servers in the order they are tried, up and down, add, remove.
