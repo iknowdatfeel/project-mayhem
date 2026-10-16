@@ -2,6 +2,7 @@
 'require baseclass';
 'require dom';
 'require ui';
+'require uci';
 'require mayhem.common as mh';
 
 // Everything but the dashboard opens in a window over it: the server list,
@@ -44,6 +45,9 @@ body.mh-sheet-open { overflow:hidden; }
 `;
 
 let open = null;	// { name, overlay, page, restore }
+
+// Configs the pages read: loaded anew each time a page opens.
+const CONFIGS = [ 'mayhem', 'network', 'firewall', 'dhcp' ];
 
 function currentHash() {
 	const h = (window.location.hash || '').replace(/^#/, '');
@@ -186,6 +190,11 @@ function show(name, onclose) {
 
 	const mine = open;
 
+	// LuCI keeps a config it once loaded: the dashboard changes the router's
+	// config by itself (deleting a server, a tunnel, a chain), and a page that
+	// opens later must not show what was there before.
+	uci.unload(CONFIGS);
+
 	return L.require('mayhem.page.' + name).then((page) => {
 		defaults(page, body);
 
@@ -221,6 +230,22 @@ return baseclass.extend({
 		const name = currentHash();
 
 		return name ? show(name, onclose) : Promise.resolve();
+	},
+
+	// The open page drawn again from the router's config after a change made
+	// on it (a key or a tunnel added); the dashboard under it is told when
+	// the window closes. Without a window the whole page reloads.
+	reload() {
+		if (!open) {
+			window.location.reload();
+			return new Promise(() => {});
+		}
+
+		const name = open.name, onclose = open.onclose;
+
+		open.onclose = null;
+
+		return show(name, onclose);
 	},
 
 	// A button of the dashboard that opens a page.

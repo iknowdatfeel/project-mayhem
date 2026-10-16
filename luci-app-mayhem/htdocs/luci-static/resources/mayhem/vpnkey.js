@@ -119,6 +119,13 @@ return baseclass.extend({
 
 			const conf = findConf(j);
 
+			// Amnezia Premium and Free keys hold an account, not a tunnel: the
+			// app asks Amnezia's gateway for the config with a key built into
+			// the app. The app can export a config file per country instead.
+			if (!conf && (j.api_config || j.auth_data))
+				throw new Error(_('This is an Amnezia subscription key (%s): it holds only access to the account, the tunnel config is issued to the AmneziaVPN app alone. In the app, open this subscription, export the AmneziaWG configuration file for the country you need and paste its text or pick the file here.')
+					.format(typeof j.name === 'string' && j.name ? j.name : (j.api_config && j.api_config.service_type) || 'AmneziaVPN'));
+
 			if (!conf)
 				throw new Error(_('The key holds no WireGuard/AmneziaWG configuration. Keys of AmneziaVPN subscriptions only work in the app: export a .conf there instead.'));
 

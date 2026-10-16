@@ -5,6 +5,7 @@
 'require poll';
 'require uci';
 'require mayhem.vpnkey as vpnkey';
+'require mayhem.sheet as sheet';
 
 // Tunnels: network interfaces (AmneziaWG, WireGuard and others) that tunnel
 // sections and proxy sections use. Lists them, imports configs and keys,
@@ -76,7 +77,7 @@ return baseclass.extend({
 					log,
 					E('p', inst.rc === '0' ? _('Done.') : inst.rc == null ? _('The installer stopped without a result, see the log above.')
 						: _('Failed, see the log above. Nothing else was changed.')),
-					E('div', { 'class': 'right' }, E('button', { 'class': 'btn', 'click': () => window.location.reload() }, _('Close')))
+					E('div', { 'class': 'right' }, E('button', { 'class': 'btn', 'click': () => { ui.hideModal(); sheet.reload(); } }, _('Close')))
 				]);
 			}).catch(() => {}).finally(() => { checking = false; }));
 
@@ -84,7 +85,9 @@ return baseclass.extend({
 		});
 	},
 
-	importDialog(info) {
+	// done(result): after an import; without it the open window is drawn
+	// again.
+	importDialog(info, done) {
 		const name = E('input', { 'class': 'cbi-input-text', 'value': 'awg0', 'maxlength': 15 });
 		const text = E('textarea', {
 			'class': 'cbi-input-textarea', 'rows': 10, 'style': 'width:100%;font-family:monospace',
@@ -122,7 +125,11 @@ return baseclass.extend({
 					? _('Interface %s and section %s are created. Add rules to the section in Routing.').format(r.interface, r.section)
 					: r.pool ? _('Interface %s is created and added to the server list: choose it on the dashboard.').format(r.interface)
 					: _('Interface %s is created.').format(r.interface)), 'info');
-				window.setTimeout(() => window.location.reload(), 1500);
+
+				if (done)
+					done(r);
+				else
+					sheet.reload();
 			}).catch((e) => ui.addNotification(null, E('p', e.message), 'error'));
 		};
 
@@ -191,7 +198,8 @@ return baseclass.extend({
 
 	// A tunnel out of Mayhem: out of the server list only, or with its
 	// network interface, peers and tunnel sections.
-	deleteDialog(iface, hidden) {
+	// done(mode) runs after it; without it the open window is drawn again.
+	deleteDialog(iface, hidden, done) {
 		const run = (mode) => callTunnelDelete(iface, mode).then((r) => {
 			if (r.error) {
 				ui.addNotification(null, E('p', r.error), 'error');
@@ -201,7 +209,11 @@ return baseclass.extend({
 			ui.hideModal();
 			ui.addNotification(null, E('p', mode === 'full' ? _('Tunnel %s is deleted.').format(iface)
 				: mode === 'hide' ? _('Tunnel %s is no longer a server.').format(iface) : _('Tunnel %s is a server again.').format(iface)), 'info');
-			window.setTimeout(() => window.location.reload(), 2000);
+
+			if (done)
+				done(mode);
+			else
+				sheet.reload();
 		});
 
 		ui.showModal(_('Tunnel %s').format(iface), [
@@ -236,8 +248,8 @@ return baseclass.extend({
 				}
 
 				ui.hideModal();
-				ui.addNotification(null, E('p', _('Interface %s is now %s. The tunnel reconnects.').format(iface, to)), 'info');
-				window.setTimeout(() => window.location.reload(), 2500);
+				return sheet.reload().then(() =>
+					ui.addNotification(null, E('p', _('Interface %s is now %s. The tunnel reconnects.').format(iface, to)), 'info'));
 			});
 		};
 
@@ -262,22 +274,22 @@ return baseclass.extend({
 		const notes = [];
 
 		if (!info.awg)
-			notes.push(E('p', [
-				_('AmneziaWG is not installed.'), ' ',
+			notes.push(E('p', { 'class': 'mh-note' }, [
+				E('span', _('AmneziaWG is not installed.')),
 				E('button', { 'class': 'btn cbi-button', 'click': ui.createHandlerFn(this, 'install', 'awg') }, _('Install AmneziaWG'))
 			]));
 
 		if ((info.protos_missing || []).length)
-			notes.push(E('p', { 'class': 'mh-warn' }, [
-				_('%s is installed, but the network has not loaded it yet: its tunnels do not start.').format(
-					info.protos_missing.map((p) => NAMES[p] || p).join(', ')), ' ',
+			notes.push(E('p', { 'class': 'mh-note mh-warn' }, [
+				E('span', _('%s is installed, but the network has not loaded it yet: its tunnels do not start.').format(
+					info.protos_missing.map((p) => NAMES[p] || p).join(', '))),
 				E('button', { 'class': 'btn cbi-button', 'click': ui.createHandlerFn(this, 'install', 'protos') }, _('Restart the network'))
 			]));
 
 		if (info.nftset === false)
-			notes.push(E('p', { 'class': kernel ? 'mh-warn' : '' }, [
-				kernel ? _('Tunnel sections in kernel mode need dnsmasq-full: until it is installed, their domains go through Xray.')
-					: _('dnsmasq-full is needed only for tunnel sections in kernel mode; tunnels in the server list work without it.'), ' ',
+			notes.push(E('p', { 'class': 'mh-note' + (kernel ? ' mh-warn' : '') }, [
+				E('span', kernel ? _('Tunnel sections in kernel mode need dnsmasq-full: until it is installed, their domains go through Xray.')
+					: _('dnsmasq-full is needed only for tunnel sections in kernel mode; tunnels in the server list work without it.')),
 				E('button', { 'class': 'btn cbi-button', 'click': ui.createHandlerFn(this, 'install', 'dnsmasq') }, _('Install dnsmasq-full'))
 			]));
 
@@ -297,22 +309,33 @@ return baseclass.extend({
 			}
 		});
 
-		const rows = tunnels.map((t) => E('tr', { 'class': 'tr' }, [
-			E('td', { 'class': 'td' }, labelBox(t.name)),
-			E('td', { 'class': 'td' }, [ E('b', t.name), ' ',
-				E('button', { 'class': 'btn cbi-button', 'title': _('Rename the interface'), 'click': ui.createHandlerFn(this, 'renameDialog', t.name) }, '✎'), ' ',
-				(t.proto === 'amneziawg' || t.proto === 'wireguard')
-					? E('button', { 'class': 'btn cbi-button', 'click': ui.createHandlerFn(this, 'editDialog', t.name) }, _('Edit')) : '' ]),
-			E('td', { 'class': 'td' }, NAMES[t.proto] || t.proto),
-			E('td', { 'class': 'td' }, t.up ? E('span', { 'class': 'mh-ok' }, '✔ ' + _('Works')) : E('span', { 'class': 'mh-fail' }, '✘ ' + _('Does not work'))),
-			E('td', { 'class': 'td' }, [
-				usedBy(t.name).join(', ') || E('span', { 'class': 'mh-muted' }, _('Not used')),
-				uci.get('mayhem', t.name, 'server') === '0' ? E('div', { 'class': 'mh-muted mh-small' }, _('Not in the server list')) : ''
-			]),
-			E('td', { 'class': 'td', 'style': 'text-align:right;white-space:nowrap' },
-				E('button', { 'class': 'btn cbi-button cbi-button-remove',
-					'click': ui.createHandlerFn(this, 'deleteDialog', t.name, uci.get('mayhem', t.name, 'server') === '0') }, _('Delete')))
-		]));
+		// The buttons of a tunnel sit together at the end of its row, in one
+		// line (the theme would put the children of an action cell under one
+		// another); each cell names its column for the narrow layout.
+		const rows = tunnels.map((t) => {
+			const hidden = uci.get('mayhem', t.name, 'server') === '0';
+			const editable = t.proto === 'amneziawg' || t.proto === 'wireguard';
+
+			return E('tr', { 'class': 'tr' }, [
+				E('td', { 'class': 'td', 'data-title': _('Tunnel name') }, labelBox(t.name)),
+				E('td', { 'class': 'td', 'data-title': _('Interface') }, E('b', t.name)),
+				E('td', { 'class': 'td', 'data-title': _('Protocol') }, NAMES[t.proto] || t.proto),
+				E('td', { 'class': 'td', 'data-title': _('State') },
+					t.up ? E('span', { 'class': 'mh-ok' }, '✔ ' + _('Works')) : E('span', { 'class': 'mh-fail' }, '✘ ' + _('Does not work'))),
+				E('td', { 'class': 'td', 'data-title': _('Sections') }, [
+					usedBy(t.name).join(', ') || E('span', { 'class': 'mh-muted' }, _('Not used')),
+					hidden ? E('div', { 'class': 'mh-muted mh-small' }, _('Not in the server list')) : ''
+				]),
+				E('td', { 'class': 'td cbi-section-actions mh-actions' }, E('div', [
+					editable ? E('button', { 'class': 'btn cbi-button cbi-button-edit',
+						'click': ui.createHandlerFn(this, 'editDialog', t.name, null) }, _('Edit')) : '',
+					E('button', { 'class': 'btn cbi-button', 'title': _('Rename the interface'),
+						'click': ui.createHandlerFn(this, 'renameDialog', t.name) }, _('Rename')),
+					E('button', { 'class': 'btn cbi-button cbi-button-remove',
+						'click': ui.createHandlerFn(this, 'deleteDialog', t.name, hidden, null) }, _('Delete'))
+				]))
+			]);
+		});
 
 		return E('div', Object.assign({ 'class': 'cbi-section' }, attrs || {}), [
 			E('div', { 'class': 'cbi-section-descr' },
@@ -320,7 +343,7 @@ return baseclass.extend({
 			E('div', { 'class': 'cbi-section-descr' },
 				_('Every tunnel is also a server of the server list: choose it on the dashboard like any other server, or let the automatic choice by ping take it.')),
 			...notes,
-			rows.length ? E('table', { 'class': 'table' }, [
+			rows.length ? E('table', { 'class': 'table mh-rtable' }, [
 				E('tr', { 'class': 'tr table-titles' }, [
 					E('th', { 'class': 'th' }, _('Tunnel name')), E('th', { 'class': 'th' }, _('Interface')), E('th', { 'class': 'th' }, _('Protocol')),
 					E('th', { 'class': 'th' }, _('State')), E('th', { 'class': 'th' }, _('Sections')), E('th', { 'class': 'th' }, '')

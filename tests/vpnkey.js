@@ -10,6 +10,10 @@ const src = fs.readFileSync(path.join(root, 'luci-app-mayhem/htdocs/luci-static/
 const body = src.replace(/^'require [^']*';$/mg, '');
 global._ = (s) => s;
 
+// LuCI adds String.prototype.format; enough of it for %s.
+if (!String.prototype.format)
+	String.prototype.format = function(...a) { let i = 0; return this.replace(/%s/g, () => String(a[i++])); };
+
 const mod = new Function('baseclass', body)({ extend: (o) => o });
 const key = fs.readFileSync(path.join(__dirname, 'awg/key.txt'), 'utf8');
 const apikey = fs.readFileSync(path.join(__dirname, 'awg/apikey.txt'), 'utf8');
@@ -65,6 +69,26 @@ const want = fs.readFileSync(path.join(__dirname, 'awg/client.conf'), 'utf8')
 		}
 		catch (e) {
 			console.log('FAIL ' + what + ': ' + e.message);
+			failed++;
+		}
+	}
+
+	// An Amnezia Premium key: an account, not a config; the error says how to
+	// get one.
+	const premium = Buffer.from(JSON.stringify({ name: 'Amnezia Premium', config_version: 2,
+		api_config: { service_type: 'amnezia-premium', service_protocol: 'awg' }, auth_data: { api_key: 'x' } }));
+	const plen = Buffer.alloc(4);
+
+	plen.writeUInt32BE(premium.length);
+
+	try {
+		await mod.decode(enc(Buffer.concat([ plen, zlib.deflateSync(premium) ])));
+		console.log('FAIL a Premium key was accepted');
+		failed++;
+	}
+	catch (e) {
+		if (!/subscription key \(Amnezia Premium\)/.test(e.message)) {
+			console.log('FAIL Premium key: ' + e.message);
 			failed++;
 		}
 	}

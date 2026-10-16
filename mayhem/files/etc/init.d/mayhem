@@ -7,7 +7,21 @@ USE_PROCD=1
 
 . /usr/share/mayhem/lib.sh
 
+# While the service (re)starts, a file applying.<pid> tells the dashboard
+# that what it shows is about to change.
 start_service() {
+	local f rc
+
+	mkdir -p "$MAYHEM_RUN_DIR"
+	f="$MAYHEM_RUN_DIR/applying.$$"
+	: > "$f"
+	mayhem_start
+	rc=$?
+	rm -f "$f"
+	return $rc
+}
+
+mayhem_start() {
 	local enabled conflicts
 
 	config_load mayhem

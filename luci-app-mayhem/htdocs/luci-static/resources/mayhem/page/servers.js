@@ -8,6 +8,7 @@
 'require mayhem.tunnels as tunnels';
 'require mayhem.vpnkey as vpnkey';
 'require mayhem.linkedit as linkedit';
+'require mayhem.sheet as sheet';
 
 // Server list: servers added by key, subscriptions, tunnels and the options
 // of every server (Mux). Keys and subscriptions form one list, like in Happ:
@@ -134,10 +135,9 @@ return baseclass.extend({
 
 		say(_('Unpacking the key…'), '');
 
-		return next(0, []).then((names) => {
-			say(_('Tunnel %s is added to the server list. The page reloads…').format(names.join(', ')), 'mh-ok');
-			window.setTimeout(() => window.location.reload(), 2500);
-		}).catch((e) => say(e.message, 'mh-fail'));
+		return next(0, []).then((names) => sheet.reload().then(() =>
+			ui.addNotification(null, E('p', _('Tunnel %s is added to the server list: it shows on the dashboard in a few seconds, when the router has applied it.').format(names.join(', '))), 'info')
+		)).catch((e) => say(e.message, 'mh-fail'));
 	},
 
 	addKeys(text, say) {
@@ -217,7 +217,7 @@ return baseclass.extend({
 				}
 
 				ui.hideModal();
-				window.setTimeout(() => window.location.reload(), 1000);
+				sheet.reload();
 			});
 		};
 
@@ -242,7 +242,7 @@ return baseclass.extend({
 					if (res.error)
 						return res.error;
 
-					window.setTimeout(() => window.location.reload(), 1000);
+					sheet.reload();
 					return null;
 				});
 			});
@@ -255,6 +255,13 @@ return baseclass.extend({
 			'placeholder': 'vless://…\nss://…\nvpn://…'
 		});
 		const msg = E('div', { 'class': 'mh-small', 'style': 'margin-top:.5em' });
+		// A WireGuard/AmneziaWG .conf file: its text goes into the box.
+		const file = E('input', { 'type': 'file', 'accept': '.conf,.txt', 'style': 'display:none', 'change': (ev) => {
+			const f = ev.target.files[0];
+
+			if (f)
+				f.text().then((t) => { text.value = t.trim(); });
+		} });
 		const say = (m, cls) => {
 			msg.className = 'mh-small ' + (cls || 'mh-muted');
 			msg.textContent = m;
@@ -266,15 +273,15 @@ return baseclass.extend({
 			const addr = i.address ? (i.port ? '%s:%s'.format(i.address, i.port) : i.address) : '—';
 
 			return E('tr', { 'class': 'tr' }, [
-				E('td', { 'class': 'td mh-key-name', 'title': i.error || i.name || '' }, [
+				E('td', { 'class': 'td mh-key-name', 'data-title': _('Server name'), 'title': i.error || i.name || '' }, [
 					i.name || '—',
 					i.ok === false ? E('div', { 'class': 'mh-fail mh-small' }, '⚠ ' + _('Skipped: %s').format(i.error || '?')) : ''
 				]),
-				E('td', { 'class': 'td' }, proto),
-				E('td', { 'class': 'td' }, addr),
+				E('td', { 'class': 'td', 'data-title': _('Protocol') }, proto),
+				E('td', { 'class': 'td', 'data-title': _('Address') }, addr),
 				// The theme lays out the children of an action cell as rows:
 				// the buttons go into one row of their own.
-				E('td', { 'class': 'td cbi-section-actions mh-key-actions' }, E('div', [
+				E('td', { 'class': 'td cbi-section-actions mh-key-actions mh-actions' }, E('div', [
 					E('button', {
 						'class': 'btn cbi-button',
 						'click': ui.createHandlerFn(this, 'editKey', k)
@@ -299,11 +306,16 @@ return baseclass.extend({
 				E('button', {
 					'class': 'btn cbi-button cbi-button-add',
 					'click': ui.createHandlerFn(this, () => this.addKeys(text.value, say))
-				}, _('Add'))
+				}, _('Add')),
+				E('button', {
+					'class': 'btn cbi-button',
+					'click': (ev) => { ev.preventDefault(); file.click(); }
+				}, _('Open a .conf file…')),
+				file
 			]),
 			msg,
 			E('p', { 'class': 'mh-muted mh-small' }, _('Servers go into the server list on the dashboard and are applied at once.')),
-			rows.length ? E('table', { 'class': 'table mh-keys' }, [
+			rows.length ? E('table', { 'class': 'table mh-keys mh-rtable' }, [
 				E('tr', { 'class': 'tr table-titles' }, [
 					E('th', { 'class': 'th' }, _('Server name')), E('th', { 'class': 'th' }, _('Protocol')), E('th', { 'class': 'th' }, _('Address')),
 					E('th', { 'class': 'th' })

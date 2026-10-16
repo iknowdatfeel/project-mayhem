@@ -1569,8 +1569,6 @@ msgid "The settings are reset. The page reloads in a few seconds."
 msgstr "Настройки сброшены. Страница перезагрузится через несколько секунд."
 
 #: htdocs/luci-static/resources/view/mayhem/dashboard.js
-msgid "The tunnel leaves the server list and stays a network interface; it can be added back under Tunnels."
-msgstr "Туннель уйдёт из списка серверов и останется сетевым интерфейсом; вернуть его можно на вкладке «Туннели»."
 
 #: htdocs/luci-static/resources/mayhem/page/components.js
 msgid "The update runs in the background. Open this window again in a few minutes to see the result."
@@ -1645,8 +1643,6 @@ msgid "Tunnel %s is a server again."
 msgstr "Туннель %s снова в списке серверов."
 
 #: htdocs/luci-static/resources/mayhem/page/servers.js
-msgid "Tunnel %s is added to the server list. The page reloads…"
-msgstr "Туннель %s добавлен в список серверов. Страница перезагружается…"
 
 #: htdocs/luci-static/resources/mayhem/tunnels.js
 msgid "Tunnel %s is deleted."
@@ -1871,3 +1867,24 @@ msgstr "секция %s"
 #: htdocs/luci-static/resources/mayhem/diag.js
 msgid "updated %s"
 msgstr "обновлено %s"
+
+msgid "This is an Amnezia subscription key (%s): it holds only access to the account, the tunnel config is issued to the AmneziaVPN app alone. In the app, open this subscription, export the AmneziaWG configuration file for the country you need and paste its text or pick the file here."
+msgstr "Это ключ подписки Amnezia (%s): в нём только доступ к аккаунту, конфигурацию туннеля шлюз Amnezia выдаёт только приложению AmneziaVPN. В приложении откройте эту подписку, выгрузите файл конфигурации AmneziaWG для нужной страны и вставьте сюда его текст или выберите файл."
+
+msgid "Open a .conf file…"
+msgstr "Открыть файл .conf…"
+
+msgid "Applying changes…"
+msgstr "Применяю изменения…"
+
+msgid "Servers and rules on the page update by themselves when it is done."
+msgstr "Когда закончу, серверы и правила на странице обновятся сами."
+
+msgid "applying…"
+msgstr "применяю…"
+
+msgid "Tunnel %s is added to the server list: it shows on the dashboard in a few seconds, when the router has applied it."
+msgstr "Туннель %s добавлен в список серверов: на дашборде он появится через несколько секунд, когда роутер применит изменения."
+
+msgid "With one server, a query it fails to answer fails on the device too: add a second one, Cloudflare or Google say, to take over."
+msgstr "С одним сервером запрос, на который он не ответил, не получит ответа и на устройстве: добавьте второй, например Cloudflare или Google, — он подхватит."
