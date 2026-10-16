@@ -730,12 +730,16 @@ def main():
             pg.click('#mayhem-body .mh-pill')
 
         def nav_pages(pg):
-            # every page opens in the window from its button and closes again
-            for i in range(4):
+            # every page opens in the window from its button and closes again,
+            # twice: a page opened again must find what LuCI loaded before
+            for i in list(range(4)) * 2:
                 pg.click('#mayhem-body .mh-navbtn >> nth=%d' % i)
                 pg.wait_for_selector('.mh-sheet-body .cbi-map', timeout=15000)
                 if i == 0:
                     shot(pg, 'dashboard_sheet')
+                err = pg.query_selector('.mh-sheet-body .alert-message.error, .mh-sheet-notes .alert-message.error')
+                if err:
+                    raise RuntimeError('page %d opened again: %s' % (i, err.inner_text()))
                 pg.keyboard.press('Escape')
                 pg.wait_for_selector('.mh-sheet-overlay', state='detached', timeout=5000)
             if '#' in pg.url:

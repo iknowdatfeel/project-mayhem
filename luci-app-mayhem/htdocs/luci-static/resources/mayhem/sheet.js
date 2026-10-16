@@ -46,8 +46,10 @@ body.mh-sheet-open { overflow:hidden; }
 
 let open = null;	// { name, overlay, page, restore }
 
-// Configs the pages read: loaded anew each time a page opens.
-const CONFIGS = [ 'mayhem', 'network', 'firewall', 'dhcp' ];
+// Mayhem's config, which the dashboard changes by itself: loaded anew each
+// time a page opens (LuCI's network and zone helpers keep their own copy of
+// the others).
+const CONFIGS = [ 'mayhem' ];
 
 function currentHash() {
 	const h = (window.location.hash || '').replace(/^#/, '');
