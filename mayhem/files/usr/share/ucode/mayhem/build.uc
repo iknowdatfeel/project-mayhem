@@ -217,8 +217,7 @@ function tun_mark(idx) {
 	return sprintf('0x%x', C.TUN_MARK | idx);
 }
 
-// cap: null when every flow of the LAN goes to xray (global mode, or
-// "capture all"); otherwise { px4, px6 }: only what the rules send through a
+// cap: null when every flow of the LAN goes to xray (global mode); otherwise { px4, px6 }: only what the rules send through a
 // proxy reaches xray - fake addresses of its domains and the subnets of its
 // IP rules - and the rest of the traffic never leaves the kernel.
 function build_nft_text(S, v6, sets, tunnels, dns_redirect, fake_pool, kdef, cap) {
@@ -263,6 +262,12 @@ function build_nft_text(S, v6, sets, tunnels, dns_redirect, fake_pool, kdef, cap
 			s += nft_set(`tun_${t.name}_s6`, 'ipv6_addr', t.src.ip6);
 			s += `\tset tun_${t.name}_sm {\n\t\ttype ether_addr\n${length(t.src.mac) ? `\t\telements = { ${join(', ', t.src.mac)} }\n` : ''}\t}\n`;
 		}
+	}
+
+	// Addresses of excluded domains in global mode (dnsmasq fills them).
+	if (sets.dir_domains && !kdef) {
+		s += '\tset dir_d4 {\n\t\ttype ipv4_addr\n\t}\n';
+		s += '\tset dir_d6 {\n\t\ttype ipv6_addr\n\t}\n';
 	}
 
 	if (cap) {
@@ -402,6 +407,11 @@ function build_nft_text(S, v6, sets, tunnels, dns_redirect, fake_pool, kdef, cap
 
 	s += '\t\tip daddr @direct4 counter return\n';
 	s += '\t\tip6 daddr @direct6 counter return\n';
+
+	if (sets.dir_domains && !kdef) {
+		s += '\t\tip daddr @dir_d4 counter return\n';
+		s += '\t\tip6 daddr @dir_d6 counter return\n';
+	}
 
 	const tp4 = `meta l4proto { tcp, udp } meta mark set meta mark | ${mark} ${tag} tproxy ip to 127.0.0.1:${C.TPROXY_PORT} counter accept`;
 	// "meta nfproto ipv6" marks the lines dropped when IPv6 policy routing
@@ -1084,12 +1094,12 @@ export function build(model) {
 	const F = FAMILY[family_key];
 	const v6 = R.ipv6 !== false && family_key != 'ipv4_only';
 	const fakedns = is_true(D.fakedns);
-	// "By lists" sends to xray only what its rules route through a proxy,
-	// unless the whole network is captured (settings.capture = all): domains
-	// of proxy sections get fake addresses (FakeDNS), which is how the kernel
-	// tells their traffic apart. Everything else stays in the kernel: xray
-	// keeps no sessions (and no memory) for it.
-	const capture_all = mode == 'global' || S.capture == 'all';
+	// "By lists" sends to xray only what its rules route through a proxy:
+	// domains of proxy sections get fake addresses (FakeDNS), which is how
+	// the kernel tells their traffic apart, subnets of their rules are
+	// matched in the kernel. Everything else stays in the kernel: xray keeps
+	// no sessions (and no memory) for it.
+	const capture_all = mode == 'global';
 	const fake = fakedns || !capture_all;
 	const log_level = index(LOG_LEVELS, S.log_level) >= 0 ? S.log_level : 'warning';
 
@@ -1121,7 +1131,7 @@ export function build(model) {
 
 		if (!capture_all)
 			for (let g in RL.geo_nosub)
-				warn(`section "${sn}": ${g} only works when all traffic goes to Xray (Routing → Capture)`);
+				warn(`section "${sn}": ${g} has no subnets the kernel could match, it only works in global mode`);
 	};
 	const tun_domains4 = uset();		// tunnel sections without IPv6: no AAAA answers
 	const tun_domains = uset();
@@ -1706,6 +1716,24 @@ export function build(model) {
 		};
 	}
 
+	// Global mode with the rest through xray: domains of exclusions get
+	// their real addresses, dnsmasq puts them into a set, and their traffic
+	// goes direct in the kernel, past xray (UDP included). Only with FakeDNS,
+	// where every other site gets a fake address: with real ones a proxied
+	// site on the same CDN address as an excluded one would go direct too.
+	let gdir = null;
+
+	if (mode == 'global' && !kdef && fakedns && R.dnsmasq_nftset !== false) {
+		const d = uset();
+
+		for (let r in routed)
+			if (r.type == 'exclusion')
+				d.add_all(kernel_domains(r.name, r.RL, model, warn, 'they go direct through xray'));
+
+		if (length(d.items))
+			gdir = d.items;
+	}
+
 	// --- DNS ----------------------------------------------------------------
 
 	if (length(R.dnsmasq_servers ?? []))
@@ -2159,7 +2187,8 @@ export function build(model) {
 			ifaces: entries(S.interface),
 			...bypass_sets(S, warn),
 			block4: sets.block4.items, block6: sets.block6.items,
-			direct4: sets.direct4.items, direct6: sets.direct6.items, direct_ports: sets.direct_ports.items
+			direct4: sets.direct4.items, direct6: sets.direct6.items, direct_ports: sets.direct_ports.items,
+			dir_domains: gdir != null
 		}, tunnels, dns_redirect, fake ? C.FAKEDNS_POOL : null, kdef,
 			capture_all ? null : { px4: px4.items, px6: v6 ? px6.items : [] }),
 		// Which servers dnsmasq asks (xray, or the provider's while xray is
@@ -2173,7 +2202,8 @@ export function build(model) {
 		dnsmasq: `no-resolv\nservers-file=${C.DNS_SERVERS}\n` +
 			(nftset ? join('', map(tunnels, (t) => nftset_lines(t.domains, `tun_${t.name}_d4`, `tun_${t.name}_d6`))) : '') +
 			(kdef ? nftset_lines(kdef.blkd, 'blk_d4', 'blk_d6') + nftset_lines(kdef.dird, 'dir_d4', 'dir_d6') +
-				nftset_lines(kdef.pxd, 'px_d4', 'px_d6') : ''),
+				nftset_lines(kdef.pxd, 'px_d4', 'px_d6') : '') +
+			(gdir ? nftset_lines(gdir, 'dir_d4', 'dir_d6') : ''),
 		// "section device mark table v6" per tunnel section; mark and table are
 		// "-" in xray mode.
 		tunnels: join('', map(tun_all, (t) => `${t.name} ${t.device} ${t.mark} ${t.table} ${t.v6 ? 1 : 0}${t.keep_bal ? ' 0' : ''}\n`)),
