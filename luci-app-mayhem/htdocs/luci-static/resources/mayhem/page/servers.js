@@ -21,6 +21,7 @@ const callRename = rpc.declare({ object: 'luci.mayhem', method: 'rename_server',
 const callImport = rpc.declare({ object: 'luci.mayhem', method: 'awg_import', params: [ 'name', 'conf', 'section', 'pool', 'label' ], expect: { '': {} } });
 const callParseOne = rpc.declare({ object: 'luci.mayhem', method: 'parse_link', params: [ 'link' ], expect: { '': {} } });
 const callServerEdit = rpc.declare({ object: 'luci.mayhem', method: 'server_edit', params: [ 'section', 'old', 'link' ], expect: { '': {} } });
+const callServerRestore = rpc.declare({ object: 'luci.mayhem', method: 'server_restore', params: [ 'subscription', 'name' ], expect: { '': {} } });
 
 // A key, or a server kept as Xray JSON on one line.
 const LINK_RE = /^((vless|vmess|trojan|ss|socks5?|https?|hysteria2|hy2|wireguard|wg):\/\/\S+|\{.*\}$)/i;
@@ -106,6 +107,44 @@ return baseclass.extend({
 
 			list.forEach((k, i) => k.info = res[i] || {});
 			this.keys = list;
+		});
+	},
+
+	// Servers deleted from a subscription (the provider's names). After a
+	// restore the answer of the router is newer than the cached config.
+	hiddenOf(sid) {
+		if (this.restored && this.restored[sid])
+			return this.restored[sid];
+
+		const v = uci.get('mayhem', sid, 'hidden');
+
+		return Array.isArray(v) ? v : (v ? [ v ] : []);
+	},
+
+	// The button of a subscription: brings every server deleted from it back.
+	// The router answers with what is still deleted (nothing), which is newer
+	// than the cached config.
+	restoreHidden(sid, ev) {
+		const n = this.hiddenOf(sid).length;
+
+		if (!n) {
+			ui.addNotification(null, E('p', _('No servers were deleted from this subscription.')), 'info');
+			return Promise.resolve();
+		}
+
+		return callServerRestore(sid, '').then((r) => {
+			if (r.error) {
+				ui.addNotification(null, E('p', r.error), 'error');
+				return;
+			}
+
+			this.restored = this.restored || {};
+			this.restored[sid] = r.hidden || [];
+
+			if (ev && ev.target)
+				ev.target.textContent = _('Restore deleted servers');
+
+			ui.addNotification(null, E('p', _('Deleted servers restored: %d. Mayhem applies the list now.').format(n)), 'info');
 		});
 	},
 
@@ -386,6 +425,19 @@ return baseclass.extend({
 			const v = this.map.data.get('mayhem', sid, 'via_xray');
 
 			return v != null ? v : (this.map.data.get('mayhem', sid, 'update_via') === 'direct' ? '0' : '1');
+		};
+
+		o = s.taboption('main', form.Button, '_restore_hidden', ' ',
+			_('Servers deleted from the list on the dashboard do not come back when the subscription is updated. This brings them back.'));
+		o.modalonly = true;
+		o.inputstyle = 'action';
+		o.inputtitle = function(sid) {
+			const n = self.hiddenOf(sid).length;
+
+			return n ? '%s (%d)'.format(_('Restore deleted servers'), n) : _('Restore deleted servers');
+		};
+		o.onclick = function(ev, sid) {
+			return self.restoreHidden(sid, ev);
 		};
 
 		o = s.taboption('device', form.Flag, 'send_hwid', _('Send device data'),

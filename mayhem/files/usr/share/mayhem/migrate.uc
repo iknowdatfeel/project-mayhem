@@ -10,7 +10,8 @@
 'use strict';
 
 import { cursor } from 'uci';
-import { UCI_DIR } from 'mayhem.const';
+import { readfile } from 'fs';
+import { UCI_DIR, SUBS_DIR } from 'mayhem.const';
 
 const c = cursor(UCI_DIR);
 
@@ -22,6 +23,125 @@ if (c.get('mayhem', 'settings', 'probe_url') == 'https://www.gstatic.com/generat
 	c.set('mayhem', 'settings', 'probe_url', 'http://www.gstatic.com/generate_204');
 	c.commit('mayhem');
 	print('the server check URL is now plain HTTP\n');
+}
+
+// 0.18.1: a server deleted from a subscription is kept with the subscription
+// ("list hidden"), where its window can restore it. Before, it was a
+// ^name$ entry in the name exclusions of the section.
+const META = '[]\\.*+?(){}|^$';
+
+// The alternatives of a name regexp, split at the "|" that is not escaped.
+const alternatives = (re) => {
+	const out = [];
+	let cur = '';
+
+	for (let i = 0; i < length(re); i++) {
+		const ch = substr(re, i, 1);
+
+		if (ch == '\\' && i + 1 < length(re)) {
+			cur += ch + substr(re, ++i, 1);
+		}
+		else if (ch == '|') {
+			push(out, cur);
+			cur = '';
+		}
+		else
+			cur += ch;
+	}
+
+	push(out, cur);
+
+	return out;
+};
+
+// "^name$" with every special character escaped is a plain name; anything
+// else is a real expression and null.
+const literal = (alt) => {
+	if (length(alt) < 3 || substr(alt, 0, 1) != '^' || substr(alt, -1) != '$')
+		return null;
+
+	const body = substr(alt, 1, length(alt) - 2);
+	let name = '';
+
+	for (let i = 0; i < length(body); i++) {
+		const ch = substr(body, i, 1);
+
+		if (ch == '\\') {
+			if (i + 1 >= length(body) || index(META, substr(body, i + 1, 1)) < 0)
+				return null;
+
+			name += substr(body, ++i, 1);
+		}
+		else if (index(META, ch) >= 0)
+			return null;
+		else
+			name += ch;
+	}
+
+	return name;
+};
+
+const as_array = (v) => v == null ? [] : (type(v) == 'array' ? v : [ v ]);
+let moved = 0;
+
+const move_exclusions = (sn) => {
+	const exc = c.get('mayhem', sn, 'exclude');
+	const subs = split(join(' ', as_array(c.get('mayhem', sn, 'subscription'))), /[ ,]+/);
+
+	if (type(exc) != 'string' || exc == '' || !length(subs))
+		return;
+
+	const keep = [];
+
+	for (let alt in alternatives(exc)) {
+		const name = literal(alt);
+		let found = false;
+
+		if (name != null) {
+			for (let sub in subs) {
+				if (c.get('mayhem', sub) != 'subscription')
+					continue;
+
+				let cache = null;
+
+				try {
+					cache = json(readfile(`${SUBS_DIR}/${sub}.json`) ?? '');
+				}
+				catch (e) {
+					cache = null;
+				}
+
+				if (!length(filter(cache?.nodes ?? [], (nd) => nd.name == name)))
+					continue;
+
+				const have = as_array(c.get('mayhem', sub, 'hidden'));
+
+				if (index(have, name) < 0)
+					push(have, name);
+
+				c.set('mayhem', sub, 'hidden', have);
+				found = true;
+			}
+		}
+
+		if (found)
+			moved++;
+		else
+			push(keep, alt);
+	}
+
+	if (length(keep))
+		c.set('mayhem', sn, 'exclude', join('|', keep));
+	else
+		c.delete('mayhem', sn, 'exclude');
+};
+
+c.foreach('mayhem', 'section', (s) => move_exclusions(s['.name']));
+c.foreach('mayhem', 'pool', (s) => move_exclusions(s['.name']));
+
+if (moved) {
+	c.commit('mayhem');
+	print(`${moved} deleted subscription servers moved to their subscriptions\n`);
 }
 
 if (c.get('mayhem', 'pool')) {

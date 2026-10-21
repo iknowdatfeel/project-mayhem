@@ -2049,3 +2049,19 @@ msgstr "Провайдера: удалённый DNS не отвечает"
 #: htdocs/luci-static/resources/mayhem/tunnels.js
 msgid "wg-obfuscator with the same key in front of WireGuard"
 msgstr "wg-obfuscator с тем же ключом перед WireGuard"
+
+#: htdocs/luci-static/resources/mayhem/page/servers.js
+msgid "No servers were deleted from this subscription."
+msgstr "Из этой подписки серверы не удалялись."
+
+#: htdocs/luci-static/resources/mayhem/page/servers.js
+msgid "Restore deleted servers"
+msgstr "Вернуть удалённые серверы"
+
+#: htdocs/luci-static/resources/mayhem/page/servers.js
+msgid "Deleted servers restored: %d. Mayhem applies the list now."
+msgstr "Удалённых серверов возвращено: %d. Mayhem применяет список."
+
+#: htdocs/luci-static/resources/mayhem/page/servers.js
+msgid "Servers deleted from the list on the dashboard do not come back when the subscription is updated. This brings them back."
+msgstr "Серверы, удалённые из списка на дашборде, не возвращаются при обновлении подписки. Эта кнопка возвращает их."

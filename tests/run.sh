@@ -644,6 +644,13 @@ else
 	bad "renaming servers: $out"
 fi
 
+# Servers deleted from a subscription: left out, restored, old exclusions moved.
+if out="$(UCODE="$UCODE" sh "$ROOT/tests/hidden.sh" 2>&1)"; then
+	ok "deleted subscription servers: generator, delete and restore, migration"
+else
+	bad "deleted subscription servers: $out"
+fi
+
 # Backup and restore of the config, with and without subscriptions and keys.
 mkdir -p "$OUT/backup-uci" "$OUT/bin"
 cp "$ROOT/tests/uci/mayhem" "$OUT/backup-uci/mayhem"

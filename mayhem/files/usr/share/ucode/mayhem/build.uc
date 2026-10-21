@@ -748,7 +748,7 @@ function collect_nodes(sec, model, warn) {
 		for (let node in cache.nodes ?? []) {
 			const nn = node.name ?? '';
 
-			if ((inc && !match(nn, inc)) || (exc && match(nn, exc)))
+			if ((inc && !match(nn, inc)) || (exc && match(nn, exc)) || model.hidden?.[sub]?.[nn])
 				continue;
 
 			try {

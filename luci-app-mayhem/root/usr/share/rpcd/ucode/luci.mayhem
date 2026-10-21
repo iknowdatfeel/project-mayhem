@@ -2978,9 +2978,10 @@ const methods = {
 	},
 
 	// A server off the dashboard. A key or a JSON server leaves its list; a
-	// subscription's server gets into the exclusions of its section, so it
-	// does not come back with the next update; a tunnel leaves the server
-	// list and stays a network interface. Mayhem reloads.
+	// subscription's server gets into the subscription's list of deleted
+	// servers, so it does not come back with the next update (server_restore
+	// brings it back); a tunnel leaves the server list and stays a network
+	// interface. Mayhem reloads.
 	server_delete: {
 		args: { section: '', tag: '' },
 		call: function(req) {
@@ -3025,11 +3026,16 @@ const methods = {
 					c.delete('mayhem', usec, 'link');
 			}
 			else if (n.source != 'link' && n.source != 'json' && c.get('mayhem', n.source) == 'subscription') {
+				// Kept with the subscription (the provider's name), so the
+				// subscription's window can bring the server back.
 				const orig = n.orig ?? n.name;
-				const esc = replace(orig, /[][\\.*+?(){}|^$]/g, (m) => `\\${m}`);
-				const old = c.get('mayhem', usec, 'exclude') ?? '';
+				const had = c.get('mayhem', n.source, 'hidden') ?? [];
+				const list = type(had) == 'array' ? had : [ had ];
 
-				c.set('mayhem', usec, 'exclude', old != '' ? `${old}|^${esc}$` : `^${esc}$`);
+				if (index(list, orig) < 0)
+					push(list, orig);
+
+				c.set('mayhem', n.source, 'hidden', list);
 			}
 			else
 				return { error: 'this server cannot be deleted here' };
@@ -3056,6 +3062,41 @@ const methods = {
 			apply_bg('/etc/init.d/mayhem reload');
 
 			return { ok: true };
+		}
+	},
+
+	// Brings servers deleted from a subscription back: one by its name (as the
+	// provider names it), or all of them with an empty name. The servers appear
+	// again, Mayhem reloads. Returns what is still deleted.
+	server_restore: {
+		args: { subscription: '', name: '' },
+		call: function(req) {
+			const sub = req.args?.subscription ?? '';
+			const name = req.args?.name ?? '';
+			const c = uci_cursor();
+
+			if (c.get('mayhem', sub) != 'subscription')
+				return { error: 'unknown subscription' };
+
+			const had = c.get('mayhem', sub, 'hidden') ?? [];
+			const list = type(had) == 'array' ? had : [ had ];
+
+			if (name != '' && index(list, name) < 0)
+				return { error: 'this server is not deleted' };
+
+			const left = name == '' ? [] : filter(list, (h) => h != name);
+
+			if (length(left))
+				c.set('mayhem', sub, 'hidden', left);
+			else
+				c.delete('mayhem', sub, 'hidden');
+
+			if (!c.commit('mayhem'))
+				return { error: 'the config could not be saved' };
+
+			apply_bg('/etc/init.d/mayhem reload');
+
+			return { ok: true, hidden: left };
 		}
 	},
 
