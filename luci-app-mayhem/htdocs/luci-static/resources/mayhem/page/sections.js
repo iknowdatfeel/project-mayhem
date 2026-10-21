@@ -20,7 +20,7 @@ const callGeoImport = rpc.declare({ object: 'luci.mayhem', method: 'geo_import',
 const callDashboard = rpc.declare({ object: 'luci.mayhem', method: 'dashboard', expect: { '': {} } });
 const callRename = rpc.declare({ object: 'luci.mayhem', method: 'rename_section', params: [ 'name', 'new_name' ], expect: { '': {} } });
 
-const ROUTE_KERNEL = _('Kernel is the fastest: traffic goes into the tunnel straight from the kernel, without Xray. The best choice for games and calls. Domains, geosite, geoip and subnets work; keyword and regexp rules only work through the Xray backup. Kernel sections always go before the other sections.');
+const ROUTE_KERNEL = _('Kernel is the fastest: traffic goes into the tunnel straight from the kernel, without Xray. The best choice for games and calls. Domains, GeoSite, GeoIP and subnets work; keyword and regexp rules only work through the Xray backup. Kernel sections always go before the other sections.');
 const ROUTE_XRAY = _('Through Xray is more flexible: every rule works. Speed is limited by Xray.');
 
 // Categories above this make xray use a lot of memory (same limit as the generator).
@@ -496,7 +496,7 @@ return baseclass.extend({
 		o.default = 'lists';
 		o.rmempty = false;
 
-		o = s.option(form.Flag, 'capture', _('Full capture (TPROXY)'),
+		o = s.option(form.Flag, 'capture', _('Route all traffic through Xray'),
 			_('Off (recommended): only traffic of the rules reaches Xray - domains of proxy sections get addresses from 198.18.0.0/15 that the router recognizes, subnets of their rules are matched in the kernel. The rest of the traffic never touches Xray, which then needs far less memory. On: every connection of the network goes through Xray, which also recognizes sites by their TLS name - for devices with a DNS of their own (DNS over HTTPS in the browser) whose sites should still go through the proxy.'));
 		o.enabled = 'all';
 		o.disabled = 'lists';
@@ -516,7 +516,7 @@ return baseclass.extend({
 			_('Xray recognizes BitTorrent by its first packets and sends it direct, past the proxy.'));
 		o.rmempty = false;
 
-		o = s.option(form.Flag, 'killswitch', _('Kill switch'),
+		o = s.option(form.Flag, 'killswitch', _('KillSwitch'),
 			_('On: when the servers or the remote DNS do not answer, traffic waits for them and never goes direct; so does it while Xray restarts. Off: a section none of whose servers answers sends its traffic direct (with a fallback chain - only when every server of the chain is down), and names of the remote DNS go to the provider\'s DNS while it does not answer; everything comes back by itself when they answer again.'));
 		o.rmempty = false;
 
@@ -582,7 +582,7 @@ return baseclass.extend({
 		// A section is a routing rule: by default its traffic goes through the
 		// active server of the server list; a separate server is for domains
 		// that need one of their own.
-		o = ss.option(form.ListValue, 'servers', _('Outbound'),
+		o = ss.option(form.ListValue, 'servers', _('Connection'),
 			now ? _('The active server of the server list is the one chosen on the dashboard, now %s. A separate server is for domains that need a server of their own.').format(now)
 				: _('The active server of the server list is the one chosen on the dashboard. A separate server is for domains that need a server of their own.'));
 		o.value('pool', _('Active server of the server list'));
@@ -683,6 +683,15 @@ return baseclass.extend({
 		o.depends('type', 'interface');
 		o.modalonly = true;
 
+		// --- ports of a direct section ---
+
+		o = ss.option(form.DynamicList, 'ports', _('Bypass ports'),
+			_('TCP and UDP to these ports go direct, whatever the address: 4501 or a range 5000-5100. The domains and addresses of the section go direct on any port.'));
+		o.datatype = 'or(port,portrange)';
+		o.placeholder = '4501';
+		o.depends('type', 'exclusion');
+		o.modalonly = true;
+
 		// --- who ---
 
 		// Some devices only; none: the whole network. Other devices go on to
@@ -708,7 +717,7 @@ return baseclass.extend({
 		const heavyNote = _('Categories marked as heavy hold more than %s rules and make Xray use a lot of memory.').format(formatCount(HEAVY)) +
 			(noGeo ? ' ' + _('Categories appear in the list after the first geo data download.') : '');
 
-		o = ss.option(form.DynamicList, '_sites', _('Geosite categories'), heavyNote);
+		o = ss.option(form.DynamicList, '_sites', _('GeoSite categories'), heavyNote);
 		o.modalonly = true;
 		geoChoices(o, 'geosite', cats.geosite);
 		o.cfgvalue = function(sid) {
@@ -1040,7 +1049,7 @@ return baseclass.extend({
 		// --- geo files ---
 
 		s = m.section(form.NamedSection, 'geo', 'geo', _('Geo data'),
-			_('Mayhem downloads the geosite and geoip files and reads them on the fly. Only the categories that sections use stay on the router, so a 70 MB file takes just a few hundred kilobytes of flash. New categories are downloaded within a minute after saving, the rest is updated every night.'));
+			_('Mayhem downloads the GeoSite and GeoIP files and reads them on the fly. Only the categories that sections use stay on the router, so a 70 MB file takes just a few hundred kilobytes of flash. New categories are downloaded within a minute after saving, the rest is updated every night.'));
 		s.addremove = false;
 
 		o = s.option(form.ListValue, 'update_hour', _('Update hour'));
@@ -1151,7 +1160,7 @@ return baseclass.extend({
 			}, _('Download the category list'));
 
 			pane.insertBefore(E('div', { 'class': 'cbi-section' }, [
-				E('p', _('The geosite and geoip categories have not been downloaded yet.')), btn
+				E('p', _('The GeoSite and GeoIP categories have not been downloaded yet.')), btn
 			]), pane.firstChild);
 
 			return node;

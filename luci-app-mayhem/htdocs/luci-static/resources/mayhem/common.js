@@ -1,5 +1,6 @@
 'use strict';
 'require baseclass';
+'require dom';
 
 // Shared look of the Mayhem pages: bordered boxes, status colors and small
 // line icons. Colors come from the theme where it defines them (bootstrap),
@@ -34,6 +35,9 @@ const CSS = `
 .mh-actions > div > .btn { flex:0 0 auto; margin:0; }
 .mh-note { display:flex; flex-wrap:wrap; align-items:center; gap:6px 10px; }
 .mh-note > .btn { margin:0; }
+.mh-ip { display:inline-flex; align-items:center; gap:4px; }
+.mh-ip-eye { margin:0 !important; padding:0 4px !important; min-width:0; line-height:1; border:0; background:none; box-shadow:none; vertical-align:middle; }
+.mh-ip-eye .mh-icon { width:14px; height:14px; }
 .mh-dns-dynlist > .item { cursor:grab; }
 .mh-dns-dynlist > .item > span { pointer-events:none; }
 /* Tables of keys and tunnels: on a narrow screen every row is a card, each cell
@@ -141,7 +145,9 @@ const ICONS = {
 	settings: [ [ [ 12, 12, 3 ] ], [ 'M19.4 15a1.7 1.7 0 0 0 .3 1.8l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-1.8-.3 1.7 1.7 0 0 0-1 1.5V21a2 2 0 1 1-4 0v-.1a1.7 1.7 0 0 0-1.1-1.5 1.7 1.7 0 0 0-1.8.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.7 1.7 0 0 0 .3-1.8 1.7 1.7 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.1a1.7 1.7 0 0 0 1.5-1.1 1.7 1.7 0 0 0-.3-1.8l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.7 1.7 0 0 0 1.8.3H9a1.7 1.7 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.1a1.7 1.7 0 0 0 1 1.5 1.7 1.7 0 0 0 1.8-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.7 1.7 0 0 0-.3 1.8V9a1.7 1.7 0 0 0 1.5 1H21a2 2 0 1 1 0 4h-.1a1.7 1.7 0 0 0-1.5 1Z' ] ],
 	package: [ [], [ 'm7.5 4.3 9 5.2', 'M21 8 12 3 3 8v8l9 5 9-5V8Z', 'M3.3 7 12 12l8.7-5', 'M12 22V12' ] ],
 	pencil: [ [], [ 'M17 3a2.8 2.8 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5Z' ] ],
-	trash: [ [], [ 'M3 6h18', 'M8 6V4h8v2', 'M19 6l-1 14H6L5 6', 'M10 11v6', 'M14 11v6' ] ]
+	trash: [ [], [ 'M3 6h18', 'M8 6V4h8v2', 'M19 6l-1 14H6L5 6', 'M10 11v6', 'M14 11v6' ] ],
+	eye: [ [ [ 12, 12, 3 ] ], [ 'M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7S2 12 2 12Z' ] ],
+	'eye-off': [ [], [ 'M10.7 5.1A10 10 0 0 1 12 5c6.5 0 10 7 10 7a17 17 0 0 1-2.2 3.2', 'M6.6 6.6A17 17 0 0 0 2 12s3.5 7 10 7a9.7 9.7 0 0 0 5.4-1.6', 'M9.9 9.9a3 3 0 0 0 4.2 4.2', 'M2 2l20 20' ] ]
 };
 
 const SVG = 'http://www.w3.org/2000/svg';
@@ -236,8 +242,91 @@ function mainServerText(d) {
 	return (m.section && m.section.name !== 'pool') ? m.section.name : null;
 }
 
+// IP addresses are hidden by default wherever Mayhem shows them (the external
+// address, diagnostics, logs): an eye next to one shows them all, and the
+// choice is kept in the browser. A hidden IPv4 address keeps its first
+// number (185.*.*.*), an IPv6 one its first group (2a01:****).
+const IP4_RE = /\b(\d{1,3})\.\d{1,3}\.\d{1,3}\.\d{1,3}\b/g;
+const IP6_RE = /\b([0-9a-f]{1,4}):(?:[0-9a-f]{0,4}:){1,6}[0-9a-f]{0,4}\b/gi;
+const IP_KEY = 'mayhem-show-ip';
+
+function ipShown() {
+	try {
+		return window.localStorage.getItem(IP_KEY) === '1';
+	}
+	catch (e) {
+		return false;
+	}
+}
+
+function maskIps(text) {
+	return String(text == null ? '' : text)
+		.replace(IP4_RE, (m, a) => (/^(127|10|192|172)$/.test(a) && /^(127\.0\.0\.1|10\.|192\.168\.|172\.(1[6-9]|2\d|3[01])\.)/.test(m)) ? m : a + '.*.*.*')
+		.replace(IP6_RE, (m, a) => {
+			const groups = m.split(':').length;
+
+			// not a time (12:30:45), a MAC address or a loopback/link-local one
+			if (groups < 4 || /^([0-9a-f]{2}:){5}[0-9a-f]{2}$/i.test(m) || (groups < 8 && m.indexOf('::') < 0) || /^(::|fe80:)/i.test(m))
+				return m;
+
+			return a + ':****';
+		});
+}
+
+// The text as shown now: masked unless IP addresses are shown.
+function ipText(text) {
+	return ipShown() ? String(text == null ? '' : text) : maskIps(text);
+}
+
+// Every element with data-mh-ip (its real text) follows the choice.
+function ipRefresh() {
+	document.querySelectorAll('[data-mh-ip]').forEach((el) => {
+		el.textContent = ipText(el.getAttribute('data-mh-ip'));
+	});
+
+	document.querySelectorAll('.mh-ip-eye').forEach((b) => {
+		dom.content(b, icon(ipShown() ? 'eye-off' : 'eye', true));
+		b.title = ipShown() ? _('Hide IP addresses') : _('Show IP addresses');
+	});
+
+	document.dispatchEvent(new CustomEvent('mh-ip-change'));
+}
+
+function ipToggle(ev) {
+	if (ev)
+		ev.preventDefault();
+
+	try {
+		window.localStorage.setItem(IP_KEY, ipShown() ? '0' : '1');
+	}
+	catch (e) {}
+
+	ipRefresh();
+}
+
+// The eye button that shows or hides IP addresses everywhere.
+function ipEye() {
+	return E('button', {
+		'class': 'btn mh-ip-eye', 'type': 'button',
+		'title': ipShown() ? _('Hide IP addresses') : _('Show IP addresses'),
+		'click': ipToggle
+	}, icon(ipShown() ? 'eye-off' : 'eye', true));
+}
+
+// Text with IP addresses, hidden by default, and the eye next to it.
+function ipSpan(text, eye) {
+	const span = E('span', { 'data-mh-ip': String(text == null ? '' : text) }, ipText(text));
+
+	return eye === false ? span : E('span', { 'class': 'mh-ip' }, [ span, ipEye() ]);
+}
+
 return baseclass.extend({
 	icon: icon,
+	maskIps: maskIps,
+	ipText: ipText,
+	ipShown: ipShown,
+	ipEye: ipEye,
+	ipSpan: ipSpan,
 	bytes: bytes,
 	ago: ago,
 	mainServer: mainServer,

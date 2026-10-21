@@ -412,36 +412,6 @@ def main():
                 raise RuntimeError('text rules were saved as %s' % got)
 
         def section_who_dns(pg):
-            # "Applies to": some devices; the section's own DNS servers in
-            # their order and type; both saved with the dialog
-            pg.reload()
-            pg.wait_for_selector('.mh-sheet-body .cbi-map', timeout=15000)
-            pg.wait_for_timeout(500)
-            pg.query_selector_all('[data-tab="settings"] .cbi-section-table-row .cbi-button-edit')[0].click()
-            pg.wait_for_selector('.modal [data-name="_who"]', timeout=5000)
-            if pg.is_visible('.modal [data-name="devices"]'):
-                raise RuntimeError('the device list is shown for the whole network')
-            pg.select_option('.modal select[id$="._who"]', 'devices')
-            pg.wait_for_selector('.modal [data-name="devices"]', state='visible', timeout=3000)
-            pg.evaluate("""() => {
-                const q = (n) => L.dom.findClassInstance(document.querySelector('.modal [data-name="' + n + '"] .cbi-dynlist'));
-                q('devices').setValue(['aa:bb:cc:dd:ee:01', '192.168.1.50']);
-                q('dns').setValue(['quad9', '9.9.9.10']);
-            }""")
-            pg.select_option('.modal select[id$="._dns_type"]', 'tcp')
-            pg.wait_for_timeout(300)
-            shot(pg, 'section_who_dns')
-            n = len(uci_writes)
-            pg.click('.modal .cbi-button-positive')
-            pg.wait_for_timeout(1500)
-            got = {}
-            for method, args in uci_writes[n:]:
-                if method == 'set' and args.get('section') == 'main':
-                    got.update(args.get('values', {}))
-            if got.get('devices') != ['aa:bb:cc:dd:ee:01', '192.168.1.50'] or got.get('dns') != ['tcp://9.9.9.9', 'tcp://9.9.9.10']:
-                raise RuntimeError('devices and section DNS were saved as %s' % got)
-
-        def section_who_dns(pg):
             # devices of a section and its own DNS servers: empty means the
             # whole network and the global DNS; both saved with the dialog
             pg.reload()
@@ -468,6 +438,17 @@ def main():
                     got.update(args.get('values', {}))
             if got.get('devices') != ['aa:bb:cc:dd:ee:01', '192.168.1.50'] or got.get('dns') != ['tcp://9.9.9.9', 'tcp://9.9.9.10']:
                 raise RuntimeError('devices and section DNS were saved as %s' % got)
+            # a direct section has bypass ports
+            for i in range(len(pg.query_selector_all('[data-tab="settings"] .cbi-section-table-row .cbi-button-edit'))):
+                pg.query_selector_all('[data-tab="settings"] .cbi-section-table-row .cbi-button-edit')[i].click()
+                pg.wait_for_selector('.modal select[id$=".type"]', timeout=5000)
+                if pg.eval_on_selector('.modal select[id$=".type"]', 'e => e.value') == 'exclusion':
+                    if not pg.is_visible('.modal [data-name="ports"]'):
+                        raise RuntimeError('no bypass ports in a direct section')
+                    shot(pg, 'section_ports')
+                    close_modal(pg)
+                    break
+                close_modal(pg)
 
         def main_section(pg):
             # the main section is chosen on the dashboard, not here; the switch
@@ -860,7 +841,7 @@ def main():
                                   ('edit a server', edit_server), ('delete a server', delete_server), ('choose how', choose_mode),
                                   ('delete a tunnel', delete_tunnel), ('services', services_badge), ('pages in a window', nav_pages)]),
             ('mayhem/dashboard#sections', [('sections tab', lambda pg: shot(pg, 'routing_sections')), ('main section', main_section),
-                                 ('edit sections', lambda pg: open_modals(pg, '[data-tab="settings"]')), ('domains as text', section_text), ('who and DNS of a section', section_who_dns), ('who and DNS of a section', section_who_dns),
+                                 ('edit sections', lambda pg: open_modals(pg, '[data-tab="settings"]')), ('domains as text', section_text), ('who and DNS of a section', section_who_dns),
                                  ('tunnel options', type_tunnel), ('DNS tab', dns_tab), ('edit geo sources', geo_tab), ('upload dialog', upload_modal),
                                  ('add a section', add_section), ('add a section without subscriptions', lambda pg: add_section(pg, True))]),
             ('mayhem/dashboard#servers', [('server list tabs', servers_tabs), ('import dialog', import_modal), ('vpn key as a server', add_vpn_key)]),

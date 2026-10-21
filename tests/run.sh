@@ -679,6 +679,20 @@ else
 	ok "section DNS: own servers first and through the section, DoQ, all at once"
 fi
 
+# Ports of a direct section: direct in the kernel and in xray, bad ones warned.
+if ! grep -q 'meta l4proto { tcp, udp } th dport { 4501, 5000-5100 } counter return' "$OUT/secdns/nft.conf"; then
+	bad "direct ports: not in the kernel"
+elif ! uc -e "
+	const r = filter(json(require('fs').readfile('$OUT/secdns/xray.json')).routing.rules, (q) => q.port == '4501,5000-5100');
+	exit((length(r) == 1 && r[0].outboundTag == 'direct' && r[0].domain == null && r[0].ip == null) ? 0 : 1);
+" 2>/dev/null; then
+	bad "direct ports: no xray rule"
+elif ! grep -q '70000' "$OUT/secdns/status.json" || ! grep -q '9-3' "$OUT/secdns/status.json"; then
+	bad "direct ports: no warning for bad ports"
+else
+	ok "direct ports: any address on them goes direct, in the kernel and in xray"
+fi
+
 # Many servers: the check interval grows (two seconds per server at least).
 python3 - "$ROOT/tests/models/subs.json" "$OUT/many.json" <<'PY'
 import json, sys
