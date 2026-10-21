@@ -220,6 +220,13 @@ main() {
 	msg "Installing xray..."
 	/usr/bin/mayhem xray-install || die "xray installation failed, run 'mayhem xray-install' later."
 
+	# dnsmasq-full: the same dnsmasq with nftset, which tunnels in kernel mode
+	# need. Swapped with a rollback: if it does not install or start, the old
+	# dnsmasq comes back and everything works as before.
+	msg "Installing dnsmasq-full..."
+	/usr/bin/mayhem dnsmasq-full ||
+		warn "dnsmasq-full is not installed, the old dnsmasq stays: tunnels in kernel mode go through xray. Install it later from Server list → Tunnels."
+
 	[ "$autostart" = 1 ] && /etc/init.d/mayhem enable
 	/etc/init.d/rpcd restart >/dev/null 2>&1
 	rm -rf /tmp/luci-indexcache* /tmp/luci-modulecache
