@@ -1460,13 +1460,13 @@ msgstr "Отдельный сервер"
 msgid "Server"
 msgstr "Сервер"
 
-#: htdocs/luci-static/resources/mayhem/page/sections.js
-msgid "Server keys"
-msgstr "Ключи серверов"
-
 #: htdocs/luci-static/resources/mayhem/diag.js
 msgid "Server list"
 msgstr "Список серверов"
+
+#: htdocs/luci-static/resources/view/mayhem/dashboard.js
+msgid "Server list \"%s\""
+msgstr "Список серверов «%s»"
 
 #: htdocs/luci-static/resources/mayhem/page/servers.js
 msgid "Server name"
@@ -2023,10 +2023,6 @@ msgstr "phantun_server перед WireGuard"
 #: htdocs/luci-static/resources/view/mayhem/dashboard.js
 msgid "pinned by hand"
 msgstr "закреплён вручную"
-
-#: htdocs/luci-static/resources/view/mayhem/dashboard.js
-msgid "section %s"
-msgstr "секция %s"
 
 #: htdocs/luci-static/resources/mayhem/diag.js
 msgid "updated %s"
