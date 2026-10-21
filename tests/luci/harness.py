@@ -589,9 +589,10 @@ def main():
             pg.click('.cbi-tabmenu [data-tab="dns"] a')
             pg.wait_for_selector('[data-tab="dns"] [data-name="remote"]', state='visible', timeout=5000)
             shot(pg, 'routing_dns')
-            # one type for the list, resolvers in the order of the list: saved
-            # as entries of that type, the one dragged up first
-            pg.select_option('[data-tab="dns"] select[id$="._domestic_type"]', 'tcp')
+            # the domestic DNS has no protocol to choose: plain UDP, the
+            # resolvers in the order of the list, the one dragged up first
+            if pg.query_selector('[data-tab="dns"] select[id$="._domestic_type"]'):
+                raise RuntimeError('the domestic DNS still offers a protocol')
             dyn = '[data-tab="dns"] [data-name="domestic"] .cbi-dynlist'
             pg.evaluate("""(sel) => L.dom.findClassInstance(document.querySelector(sel)).setValue(['google', 'quad9'])""", dyn)
             items = dyn + ' > .item'
@@ -602,24 +603,27 @@ def main():
             if order != ['quad9', 'google']:
                 raise RuntimeError('dragging did not move the server: %s' % order)
             shot(pg, 'routing_dns_order')
-            # a resolver that only answers over DoH stops the save over TCP
-            dl = dyn + ' .cbi-dropdown'
-            pg.click(dl)
-            pg.click(dl + ' li[data-value="comss"]')
-            err = pg.evaluate("""(sel) => {
+            # a resolver that only answers over DoH, and a name instead of an
+            # address, stop the save
+            check = """([sel, v]) => {
+                const w = L.dom.findClassInstance(document.querySelector(sel));
+                w.setValue(v);
                 const map = L.dom.findClassInstance(document.querySelector(sel).closest('.cbi-map'));
                 const o = map.lookupOption('domestic', 'dns')[0];
                 return o.isValid('dns') ? null : o.getValidationError('dns');
-            }""", dyn)
+            }"""
+            err = pg.evaluate(check, [dyn, ['quad9', 'comss']])
             if not err or 'DoH' not in err:
-                raise RuntimeError('a DoH-only server over TCP is not an error: %s' % err)
-            pg.evaluate("""(sel) => { const w = L.dom.findClassInstance(document.querySelector(sel));
-                w.setValue(w.getValue().filter((v) => v !== 'comss')); }""", dyn)
+                raise RuntimeError('a DoH-only server as domestic DNS is not an error: %s' % err)
+            err = pg.evaluate(check, [dyn, ['quad9', 'dns.example.com']])
+            if not err or 'plain UDP' not in err:
+                raise RuntimeError('a name as domestic DNS is not an error: %s' % err)
+            pg.evaluate("""([sel, v]) => L.dom.findClassInstance(document.querySelector(sel)).setValue(v)""", [dyn, ['quad9', 'google']])
             n = len(uci_writes)
             pg.click('.mh-sheet-foot .cbi-button-save')
             pg.wait_for_timeout(1000)
             got = [a.get('values', {}).get('domestic') for m, a in uci_writes[n:] if m == 'set' and a.get('section') == 'dns']
-            if ['tcp://9.9.9.9', 'tcp://8.8.8.8'] not in got:
+            if ['9.9.9.9', '8.8.8.8'] not in got:
                 raise RuntimeError('domestic DNS saved as %s' % uci_writes[n:])
 
         def upload_modal(pg):

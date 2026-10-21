@@ -1,0 +1,14 @@
+{
+  "settings": { "enabled": "1", "mode": "lists", "interface": ["br-lan"], "ip_family": "ipv4_only", "log_level": "warning" },
+  "dns": {
+    "domestic": ["https://dns.comss.one/dns-query", "tcp://77.88.8.8", "1.1.1.1", "9.9.9.9"],
+    "remote": ["https://1.1.1.1/dns-query", "https://dns.google/dns-query"],
+    "via_proxy": "0", "fakedns": "1", "parallel": "1", "hijack": "1"
+  },
+  "sections": [
+    { ".name": "main", "type": "proxy", "enabled": "1",
+      "link": "vless://11111111-2222-3333-4444-555555555555@nl.example.com:443?type=tcp&security=reality&sni=www.microsoft.com&fp=chrome&pbk=SbVKOEMjK0sIlbwg4akyBg5mL5KZwwB-ed4eEE7YnRc&sid=6ba85179e30d4fc2&flow=xtls-rprx-vision#NL",
+      "domain": ["youtube.com", "instagram.com"] }
+  ],
+  "runtime": { "wan_dns": ["192.168.100.1", "127.0.0.1"], "ipv6": false, "mem_total_kb": 245760 }
+}

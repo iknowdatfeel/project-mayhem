@@ -1749,14 +1749,24 @@ export function build(model) {
 	// xray: it stands for the servers the router got from the provider.
 	const own = [ '127.0.0.1', '::1', 'localhost', ...(R.router_ips ?? []) ];
 
+	// The domestic DNS is plain UDP, an address: its own name would have to
+	// be resolved by itself (xray refuses a DoH server that "tries to resolve
+	// itself"), and with DoH or TCP the split below would be off and every
+	// query of the network would go through xray. Encrypted DNS is for the
+	// remote servers.
 	for (let s in entries(D.domestic)) {
 		const r = dns_server(s);
 
 		if (r.error)
 			warn(`domestic DNS: ${r.error}`);
+		else if (!is_ip(r.address))
+			warn(`domestic DNS "${s}" is skipped: only plain UDP servers (an address) work as the domestic DNS; DoH, TCP and DoQ are for the remote DNS`);
 		else if (index(own, r.host) < 0)
 			push(domestic, r);
 	}
+
+	// Servers the user gave (what is left of them), not the fallback below.
+	const user_domestic = length(domestic);
 
 	if (!length(domestic)) {
 		for (let ip in R.wan_dns ?? [])
@@ -1784,6 +1794,16 @@ export function build(model) {
 		for (let s in C.DEFAULT_REMOTE_DNS)
 			push(remote, dns_server(s));
 
+	// The domestic DNS answers for direct traffic, the remote one for what
+	// goes through the proxy: one server in both lists blurs that.
+	if (user_domestic)
+		for (let d in domestic)
+			for (let r in remote)
+				if (d.host == r.host) {
+					warn(`the DNS server ${d.host} is in both the domestic and the remote lists: use different servers`);
+					break;
+				}
+
 	// DoH hostnames must be resolved without the DoH server itself.
 	for (let r in [ ...remote, ...domestic ])
 		if (!is_ip(r.host))
@@ -1806,36 +1826,26 @@ export function build(model) {
 	// queries of the network never reach xray, which kept a session (~30 KB,
 	// a few goroutines, 0.6 ms of CPU on x86) for each, and ordinary sites
 	// resolve even while xray restarts. Not possible with rules dnsmasq
-	// cannot match (keyword:, some regexp:) or with domestic DoH/TCP: then
-	// every query goes through xray, as in "everything through the proxy".
+	// cannot match (keyword:, some regexp:): then every query goes through
+	// xray, as in "everything through the proxy".
 	let split = null;
 	let split_why = null;
 	let upstream = null;		// dnsmasq lines for the rest, null = the provider's
 
 	if (mode == 'lists') {
-		const user = filter(entries(D.domestic), (x) => !dns_server(x).error && index(own, dns_server(x).host) < 0);
-
-		if (length(user)) {
+		if (user_domestic) {
 			upstream = '';
 
-			for (let d in domestic) {
-				if (!is_ip(d.address)) {
-					split_why = `the domestic DNS ${d.address} is not a plain address`;
-					break;
-				}
-
+			for (let d in domestic)
 				upstream += `server=${d.address}${d.port ? `#${d.port}` : ''}\n`;
-			}
 		}
 
-		if (!split_why) {
-			const r = dns_names(xray_dns, model);
+		const r = dns_names(xray_dns, model);
 
-			if (r.why)
-				split_why = r.why;
-			else
-				split = r.names;
-		}
+		if (r.why)
+			split_why = r.why;
+		else
+			split = r.names;
 	}
 
 	const servers = [];

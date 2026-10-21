@@ -490,10 +490,6 @@ msgid "Domains: %d, addresses: %d"
 msgstr ""
 
 #: htdocs/luci-static/resources/mayhem/page/sections.js
-msgid "Domestic DNS protocol"
-msgstr ""
-
-#: htdocs/luci-static/resources/mayhem/page/sections.js
 msgid "Domestic DNS servers"
 msgstr ""
 
@@ -1607,6 +1603,10 @@ msgstr ""
 
 #: htdocs/luci-static/resources/mayhem/page/settings.js
 msgid "The automatic server choice and the URL test request it through each server."
+msgstr ""
+
+#: htdocs/luci-static/resources/mayhem/page/sections.js
+msgid "The domestic DNS is plain UDP: enter an IP address, or choose a provider that has one"
 msgstr ""
 
 #: htdocs/luci-static/resources/mayhem/page/sections.js
