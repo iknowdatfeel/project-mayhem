@@ -1477,12 +1477,12 @@ msgstr ""
 msgid "Server"
 msgstr ""
 
-#: htdocs/luci-static/resources/view/mayhem/dashboard.js
-msgid "Server keys"
-msgstr ""
-
 #: htdocs/luci-static/resources/mayhem/diag.js
 msgid "Server list"
+msgstr ""
+
+#: htdocs/luci-static/resources/view/mayhem/dashboard.js
+msgid "Server list \"%s\""
 msgstr ""
 
 #: htdocs/luci-static/resources/mayhem/page/servers.js
@@ -2055,10 +2055,6 @@ msgstr ""
 
 #: htdocs/luci-static/resources/view/mayhem/dashboard.js
 msgid "pinned by hand"
-msgstr ""
-
-#: htdocs/luci-static/resources/view/mayhem/dashboard.js
-msgid "section %s"
 msgstr ""
 
 #: htdocs/luci-static/resources/mayhem/diag.js

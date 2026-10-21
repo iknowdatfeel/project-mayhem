@@ -967,10 +967,10 @@ return view.extend({
 			by[src].push(n);
 		}
 
-		const keys = pool ? _('Server list') : _('Server keys');
+		const keys = pool ? _('Server list') : _('Server list "%s"').format(s.name);
 		const own = { link: keys, json: keys };
 		const rank = (src) => src === 'link' ? 0 : src === 'json' ? 1 : 2;
-		const note = pool ? null : _('section %s').format(s.name);
+		const note = null;
 
 		order.sort((a, b) => rank(a) - rank(b));
 
