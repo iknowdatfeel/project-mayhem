@@ -692,7 +692,7 @@ return view.extend({
 		return E('div', { 'class': 'mh-box' }, [
 			E('div', { 'class': 'mh-whead' }, [ E('span', { 'class': 'mh-title' }, title),
 				(note && typeof note === 'object') ? note : note ? E('span', { 'class': 'mh-muted mh-small' }, note) : '' ])
-		].concat(rows.map((r) => E('div', { 'class': 'mh-widget-row', 'title': r[0] + ': ' + (r[3] || r[1]) }, [
+		].concat(rows.map((r) => E('div', { 'class': 'mh-widget-row', 'title': (typeof (r[3] || r[1]) === 'string') ? r[0] + ': ' + (r[3] || r[1]) : null }, [
 			E('span', { 'class': 'mh-muted' }, r[0] + ': '),
 			E('span', { 'class': r[2] || '' }, r[1])
 		]))));
@@ -772,7 +772,7 @@ return view.extend({
 			const f = flag(x.country_code);
 			const place = [ x.country_code ? countryName(x.country_code, x.country) : x.country, x.city ].filter((v) => v).join(', ');
 
-			rows.push([ _('External IP'), (f ? f + ' ' : '') + x.ip ]);
+			rows.push([ _('External IP'), E('span', [ f ? f + ' ' : '', mh.ipSpan(x.ip) ]) ]);
 			rows.push([ _('Location'), place || '—' ]);
 		}
 		else {
@@ -857,7 +857,7 @@ return view.extend({
 		const pos = s.mode === 'fallback' ? (s.chain || []).indexOf(n.tag) : -1;
 		const attrs = {
 			'class': 'mh-tile' + (active ? ' mh-tile--active' : '') + (pick ? ' mh-tile--pick' : ''),
-			'title': '%s · ↓ %s ↑ %s'.format(n.iface ? _('Interface %s').format(n.iface) : '%s:%s'.format(n.address || '?', n.port || '?'),
+			'title': '%s · ↓ %s ↑ %s'.format(n.iface ? _('Interface %s').format(n.iface) : mh.ipText('%s:%s'.format(n.address || '?', n.port || '?')),
 				mh.bytes(n.down), mh.bytes(n.up))
 		};
 
@@ -1226,7 +1226,7 @@ return view.extend({
 		const t = s.tunnel || {};
 		const state = t.state === 'up' ? [ 'mh-ok', '✔ ' + _('Works') ]
 			: t.state === 'down' ? [ 'mh-fail', '✘ ' + _('Down, traffic goes direct') ]
-			: t.state === 'held' ? [ 'mh-fail', '✘ ' + _('Down, traffic waits for it (kill switch)') ]
+			: t.state === 'held' ? [ 'mh-fail', '✘ ' + _('Down, traffic waits for it (KillSwitch)') ]
 			: [ 'mh-muted', _('Unknown') ];
 		const info = [ _('Interface %s').format(s.interface || '?'), s.mode === 'xray' ? _('Through Xray') : _('Kernel mode') ];
 

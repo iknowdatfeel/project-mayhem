@@ -317,6 +317,10 @@ function build_nft_text(S, v6, sets, tunnels, dns_redirect, fake_pool, kdef, cap
 	s += '\t\tip daddr @block4 counter drop\n';
 	s += '\t\tip6 daddr @block6 counter drop\n';
 
+	// Ports of direct sections: past everything, tunnels and xray alike.
+	if (length(sets.direct_ports ?? []))
+		s += `\t\tmeta l4proto { tcp, udp } th dport { ${join(', ', sets.direct_ports)} } counter return\n`;
+
 	if (kdef) {
 		s += '\t\tip daddr @blk_d4 counter drop\n';
 		s += '\t\tip6 daddr @blk_d6 counter drop\n';
@@ -1098,7 +1102,7 @@ export function build(model) {
 		{ tag: 'direct-udp', protocol: 'freedom', settings: { userLevel: UDP_LEVEL }, streamSettings: { sockopt: { domainStrategy: F.freedom } } }
 	];
 
-	const sets = { block4: uset(), block6: uset(), direct4: uset(), direct6: uset() };
+	const sets = { block4: uset(), block6: uset(), direct4: uset(), direct6: uset(), direct_ports: uset() };
 	const geo_pending = {};
 	const geo_files = [];
 	const lists_missing = [];
@@ -1453,6 +1457,24 @@ export function build(model) {
 			sets.direct4.add_all(RL.geo4);
 			sets.direct6.add_all(ips6);
 			sets.direct6.add_all(RL.geo6);
+
+			// Ports: everything to them goes direct, whatever the address; the
+			// domains and addresses of the section go direct on any port.
+			const ports = [];
+
+			for (let v in entries(sec.ports)) {
+				const m = match(trim(v), /^([0-9]{1,5})(-([0-9]{1,5}))?$/);
+
+				if (!m || int(m[1]) < 1 || int(m[1]) > 65535 || (m[3] != null && (int(m[3]) <= int(m[1]) || int(m[3]) > 65535)))
+					warn(`section "${name}": "${v}" is not a port or a range of ports, skipped`);
+				else
+					uniq_push(ports, m[3] != null ? `${int(m[1])}-${int(m[3])}` : `${int(m[1])}`);
+			}
+
+			if (length(ports)) {
+				sets.direct_ports.add_all(ports);
+				push(section_rules, { port: join(',', ports), outboundTag: 'direct' });
+			}
 			break;
 
 		case 'block':
@@ -2137,7 +2159,7 @@ export function build(model) {
 			ifaces: entries(S.interface),
 			...bypass_sets(S, warn),
 			block4: sets.block4.items, block6: sets.block6.items,
-			direct4: sets.direct4.items, direct6: sets.direct6.items
+			direct4: sets.direct4.items, direct6: sets.direct6.items, direct_ports: sets.direct_ports.items
 		}, tunnels, dns_redirect, fake ? C.FAKEDNS_POOL : null, kdef,
 			capture_all ? null : { px4: px4.items, px6: v6 ? px6.items : [] }),
 		// Which servers dnsmasq asks (xray, or the provider's while xray is

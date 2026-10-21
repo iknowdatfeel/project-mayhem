@@ -188,7 +188,7 @@ return baseclass.extend({
 				continue;
 
 			lines.push('', '[' + title + ']');
-			items.forEach((c) => lines.push('%s %s: %s'.format({ ok: '✔', warn: '!', fail: '✖' }[c.status] || '·', c.name, c.detail)));
+			items.forEach((c) => lines.push('%s %s: %s'.format({ ok: '✔', warn: '!', fail: '✖' }[c.status] || '·', c.name, mh.ipText(c.detail))));
 		}
 
 		return lines.join('\n');
@@ -225,7 +225,10 @@ return baseclass.extend({
 		this.list = E('div');
 
 		ui.showModal(_('Diagnostics'), [
-			E('div', { 'class': 'mh-small mh-muted' }, _('Checks every part of the traffic path. External addresses are requested through each section, so you can see where the traffic really leaves.')),
+			E('div', { 'class': 'mh-small mh-muted mh-note' }, [
+				E('span', _('Checks every part of the traffic path. External addresses are requested through each section, so you can see where the traffic really leaves.')),
+				mh.ipEye()
+			]),
 			this.list,
 			E('div', { 'class': 'mh-small mh-muted', 'style': 'margin-top:8px' }, versions.join(' · ')),
 			E('div', { 'class': 'right', 'style': 'margin-top:8px' }, [
@@ -280,7 +283,7 @@ return baseclass.extend({
 			]),
 			E('div', { 'class': 'mh-drow-items mh-small' }, items.map((c) => E('div', {
 				'class': 'mh-item ' + ({ ok: 'mh-ok', warn: 'mh-warn', fail: 'mh-fail' }[c.status] || 'mh-muted')
-			}, [ mh.icon(ITEM_ICON[c.status] || 'circle-idle', true), E('b', checkName(c.name)), E('div', checkDetail(c.detail)) ])))
+			}, [ mh.icon(ITEM_ICON[c.status] || 'circle-idle', true), E('b', checkName(c.name)), E('div', mh.ipSpan(checkDetail(c.detail), false)) ])))
 		]);
 	},
 
@@ -307,8 +310,19 @@ return baseclass.extend({
 	// --- logs dialog -------------------------------------------------------------
 
 	logs() {
-		let component = 'all', lines = 300, follow = true, timer = null;
+		let component = 'all', lines = 300, follow = true, timer = null, raw = '';
 		const pre = E('pre', { 'class': 'mh-log' }, _('Loading…'));
+
+		// IP addresses are masked by default; the eye shows them.
+		const onIp = () => {
+			if (!document.contains(pre))
+				return document.removeEventListener('mh-ip-change', onIp);
+
+			if (raw)
+				pre.textContent = mh.ipText(raw);
+		};
+
+		document.addEventListener('mh-ip-change', onIp);
 
 		// One request at a time; a failed refresh waits for the next one.
 		let busy = false;
@@ -321,7 +335,8 @@ return baseclass.extend({
 			return callLogs(component, lines).then((r) => {
 				const atEnd = pre.scrollTop + pre.clientHeight >= pre.scrollHeight - 20;
 
-				pre.textContent = (r.lines || []).join('\n') || _('No messages yet.');
+				raw = (r.lines || []).join('\n') || _('No messages yet.');
+				pre.textContent = mh.ipText(raw);
 
 				if (atEnd)
 					pre.scrollTop = pre.scrollHeight;
@@ -348,6 +363,7 @@ return baseclass.extend({
 						(ev) => { lines = +ev.target.value; show(); }),
 					E('label', [ E('input', { 'type': 'checkbox', 'checked': '', 'change': (ev) => follow = ev.target.checked }),
 						' ', _('Refresh every 5 seconds') ]),
+					E('span', { 'class': 'mh-ip' }, [ E('span', { 'class': 'mh-small mh-muted' }, _('IP addresses')), mh.ipEye() ]),
 					E('span', { 'style': 'margin-left:auto' }, _('Log level') + ':'),
 					select([ 'debug', 'info', 'warning', 'error', 'none' ].map((l) => [ l, l ]), level, (ev) => callLevel(ev.target.value).then((r) => {
 						if (r.error)

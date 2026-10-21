@@ -284,6 +284,10 @@ msgstr "Браузеры и приложения переходят с QUIC (UDP
 msgid "Bypass local networks"
 msgstr "Обход локальных сетей"
 
+#: htdocs/luci-static/resources/mayhem/page/sections.js
+msgid "Bypass ports"
+msgstr "Порты обхода"
+
 #: htdocs/luci-static/resources/mayhem/linkedit.js
 msgid "Cancel"
 msgstr "Отмена"
@@ -367,6 +371,10 @@ msgstr "Конфигурация"
 #: htdocs/luci-static/resources/mayhem/page/sections.js
 msgid "Configuration type"
 msgstr "Тип конфигурации"
+
+#: htdocs/luci-static/resources/mayhem/page/sections.js
+msgid "Connection"
+msgstr "Подключение"
 
 #: htdocs/luci-static/resources/view/mayhem/dashboard.js
 msgid "Connection state"
@@ -499,6 +507,10 @@ msgstr "Ниже"
 #: htdocs/luci-static/resources/view/mayhem/dashboard.js
 msgid "Down, traffic goes direct"
 msgstr "Не работает, трафик идёт напрямую"
+
+#: htdocs/luci-static/resources/view/mayhem/dashboard.js
+msgid "Down, traffic waits for it (KillSwitch)"
+msgstr "Не работает, трафик ждёт его (KillSwitch)"
 
 #: htdocs/luci-static/resources/mayhem/page/sections.js
 msgid "Download geo data"
@@ -692,10 +704,6 @@ msgstr "Файлы на роутере в том же формате, напри
 msgid "For example, Netherlands"
 msgstr "Например, Нидерланды"
 
-#: htdocs/luci-static/resources/mayhem/page/sections.js
-msgid "Full capture (TPROXY)"
-msgstr "Полный перехват (TPROXY)"
-
 #: htdocs/luci-static/resources/mayhem/common.js
 msgid "GB"
 msgstr "ГБ"
@@ -737,8 +745,8 @@ msgid "GeoIP categories"
 msgstr "Категории GeoIP"
 
 #: htdocs/luci-static/resources/mayhem/page/sections.js
-msgid "Geosite categories"
-msgstr "Категории geosite"
+msgid "GeoSite categories"
+msgstr "Категории GeoSite"
 
 #: htdocs/luci-static/resources/mayhem/page/sections.js
 msgid "Global mode"
@@ -752,6 +760,10 @@ msgstr "HWID"
 msgid "Heavy"
 msgstr "Тяжёлая"
 
+#: htdocs/luci-static/resources/mayhem/common.js
+msgid "Hide IP addresses"
+msgstr "Скрыть IP-адреса"
+
 #: htdocs/luci-static/resources/view/mayhem/dashboard.js
 msgid "How the server is chosen"
 msgstr "Как выбирается сервер"
@@ -759,6 +771,10 @@ msgstr "Как выбирается сервер"
 #: htdocs/luci-static/resources/view/mayhem/dashboard.js
 msgid "ICMP ping"
 msgstr "ICMP-пинг"
+
+#: htdocs/luci-static/resources/mayhem/diag.js
+msgid "IP addresses"
+msgstr "IP-адреса"
 
 #: htdocs/luci-static/resources/mayhem/page/sections.js
 msgid "IP or MAC address"
@@ -893,8 +909,8 @@ msgid "Kernel (fastest)"
 msgstr "Ядро (быстрее всего)"
 
 #: htdocs/luci-static/resources/mayhem/page/sections.js
-msgid "Kernel is the fastest: traffic goes into the tunnel straight from the kernel, without Xray. The best choice for games and calls. Domains, geosite, geoip and subnets work; keyword and regexp rules only work through the Xray backup. Kernel sections always go before the other sections."
-msgstr "Ядро — самый быстрый вариант: трафик уходит в туннель прямо из ядра, без Xray. Лучший выбор для игр и звонков. Работают домены, geosite, geoip и подсети; правила keyword и regexp работают только через резервный путь в Xray. Секции в режиме ядра всегда проверяются раньше остальных."
+msgid "Kernel is the fastest: traffic goes into the tunnel straight from the kernel, without Xray. The best choice for games and calls. Domains, GeoSite, GeoIP and subnets work; keyword and regexp rules only work through the Xray backup. Kernel sections always go before the other sections."
+msgstr "Ядро — самый быстрый вариант: трафик уходит в туннель прямо из ядра, без Xray. Лучший выбор для игр и звонков. Работают домены, GeoSite, GeoIP и подсети; правила keyword и regexp работают только через резервный путь в Xray. Секции в режиме ядра всегда проверяются раньше остальных."
 
 #: htdocs/luci-static/resources/view/mayhem/dashboard.js
 msgid "Kernel mode"
@@ -907,6 +923,10 @@ msgstr "Ключи и подписки"
 #: htdocs/luci-static/resources/mayhem/page/sections.js
 msgid "Keys: %d"
 msgstr "Ключей: %d"
+
+#: htdocs/luci-static/resources/mayhem/page/sections.js
+msgid "KillSwitch"
+msgstr "KillSwitch"
 
 #: htdocs/luci-static/resources/mayhem/page/servers.js
 msgid "Language"
@@ -981,8 +1001,8 @@ msgid "Mayhem cannot work like this"
 msgstr "Mayhem не может работать с такими настройками"
 
 #: htdocs/luci-static/resources/mayhem/page/sections.js
-msgid "Mayhem downloads the geosite and geoip files and reads them on the fly. Only the categories that sections use stay on the router, so a 70 MB file takes just a few hundred kilobytes of flash. New categories are downloaded within a minute after saving, the rest is updated every night."
-msgstr "Mayhem скачивает файлы geosite и geoip и разбирает их прямо во время загрузки. На роутере остаются только категории, которые используются в секциях, поэтому файл на 70 МБ занимает всего несколько сотен килобайт флеш-памяти. Новые категории скачиваются в течение минуты после сохранения, остальные обновляются каждую ночь."
+msgid "Mayhem downloads the GeoSite and GeoIP files and reads them on the fly. Only the categories that sections use stay on the router, so a 70 MB file takes just a few hundred kilobytes of flash. New categories are downloaded within a minute after saving, the rest is updated every night."
+msgstr "Mayhem скачивает файлы GeoSite и GeoIP и разбирает их прямо во время загрузки. На роутере остаются только категории, которые используются в секциях, поэтому файл на 70 МБ занимает всего несколько сотен килобайт флеш-памяти. Новые категории скачиваются в течение минуты после сохранения, остальные обновляются каждую ночь."
 
 #: htdocs/luci-static/resources/view/mayhem/dashboard.js
 msgid "Mayhem is turned off"
@@ -1197,10 +1217,6 @@ msgid "Out of the server list: the tunnel stays a network interface, Mayhem no l
 msgstr "«Убрать из списка серверов»: туннель остаётся сетевым интерфейсом, Mayhem больше не использует его как сервер. «Удалить туннель»: удаляются интерфейс, его пиры и туннельные секции, которые его используют; сеть перезапустится."
 
 #: htdocs/luci-static/resources/mayhem/page/sections.js
-msgid "Outbound"
-msgstr "Исходящее подключение"
-
-#: htdocs/luci-static/resources/mayhem/page/sections.js
 msgid "Outbound configuration (JSON)"
 msgstr "Конфигурация outbound (JSON)"
 
@@ -1372,6 +1388,10 @@ msgstr "Сброс к настройкам по умолчанию"
 msgid "Restores a backup file. A backup without connections keeps the subscriptions and server keys this router has."
 msgstr "Восстанавливает настройки из файла. Копия без подключений оставляет подписки и ключи серверов, которые уже есть на роутере."
 
+#: htdocs/luci-static/resources/mayhem/page/sections.js
+msgid "Route all traffic through Xray"
+msgstr "Маршрутизировать весь трафик через Xray"
+
 #: htdocs/luci-static/resources/view/mayhem/dashboard.js
 msgid "Router"
 msgstr "Роутер"
@@ -1492,6 +1512,10 @@ msgstr "Настройки восстановлены, подписки и кл�
 msgid "Several connections share one connection to the server. Applies to every VLESS server; with XTLS Vision only UDP is multiplexed."
 msgstr "Несколько соединений идут через одно соединение с сервером. Действует на все серверы VLESS; с XTLS Vision мультиплексируется только UDP."
 
+#: htdocs/luci-static/resources/mayhem/common.js
+msgid "Show IP addresses"
+msgstr "Показать IP-адреса"
+
 #: htdocs/luci-static/resources/mayhem/page/servers.js
 msgid "Skipped: %s"
 msgstr "Пропущен: %s"
@@ -1540,6 +1564,10 @@ msgstr "Система"
 msgid "TB"
 msgstr "ТБ"
 
+#: htdocs/luci-static/resources/mayhem/page/sections.js
+msgid "TCP and UDP to these ports go direct, whatever the address: 4501 or a range 5000-5100. The domains and addresses of the section go direct on any port."
+msgstr "TCP и UDP на эти порты идут напрямую, к любому адресу: 4501 или диапазон 5000-5100. Домены и адреса секции идут напрямую на любом порту."
+
 #: htdocs/luci-static/resources/view/mayhem/dashboard.js
 msgid "TCP ping"
 msgstr "TCP-пинг"
@@ -1555,6 +1583,10 @@ msgstr "Текстовые списки: один домен, правило и�
 #: htdocs/luci-static/resources/mayhem/page/sections.js
 msgid "The DNS of the DNS tab"
 msgstr "DNS со вкладки «DNS»"
+
+#: htdocs/luci-static/resources/mayhem/page/sections.js
+msgid "The GeoSite and GeoIP categories have not been downloaded yet."
+msgstr "Категории GeoSite и GeoIP ещё не скачаны."
 
 #: htdocs/luci-static/resources/mayhem/page/sections.js
 msgid "The active server of the server list is the one chosen on the dashboard, now %s. A separate server is for domains that need a server of their own."
@@ -1579,10 +1611,6 @@ msgstr "Файл хранится на роутере целиком, поэто
 #: htdocs/luci-static/resources/view/mayhem/dashboard.js
 msgid "The first server carries the traffic while it works. When it stops answering, the next one takes over, and so on; a server higher in the chain takes over again as soon as it works. Checks run every 20 seconds, nothing restarts."
 msgstr "Трафик идёт через первый сервер, пока он работает. Когда он перестаёт отвечать, его заменяет следующий, и так далее; сервер выше в цепочке снова становится активным, как только заработает. Проверка каждые 20 секунд, ничего не перезапускается."
-
-#: htdocs/luci-static/resources/mayhem/page/sections.js
-msgid "The geosite and geoip categories have not been downloaded yet."
-msgstr "Категории geosite и geoip ещё не скачаны."
 
 #: htdocs/luci-static/resources/mayhem/tunnels.js
 msgid "The installer stopped without a result, see the log above."
@@ -2025,9 +2053,6 @@ msgstr "Туннель %s добавлен в список серверов: н�
 msgid "With one server, a query it fails to answer fails on the device too: add a second one, Cloudflare or Google say, to take over."
 msgstr "С одним сервером запрос, на который он не ответил, не получит ответа и на устройстве: добавьте второй, например Cloudflare или Google, — он подхватит."
 
-msgid "Kill switch"
-msgstr "Kill switch"
-
 msgid "On: when the servers or the remote DNS do not answer, traffic waits for them and never goes direct; so does it while Xray restarts. Off: a section none of whose servers answers sends its traffic direct (with a fallback chain - only when every server of the chain is down), and names of the remote DNS go to the provider's DNS while it does not answer; everything comes back by itself when they answer again."
 msgstr "Включено: если серверы или удалённый DNS не отвечают, трафик ждёт их и никогда не идёт напрямую; так же и пока перезапускается Xray. Выключено: секция, у которой не отвечает ни один сервер, пускает свой трафик напрямую (с цепочкой резервных — только когда лежат все серверы цепочки), а имена удалённого DNS, пока он не отвечает, уходят к DNS провайдера; когда они снова отвечают, всё возвращается само."
 
@@ -2040,9 +2065,6 @@ msgstr "Провайдера: удалённый DNS не отвечает"
 
 
 
-
-msgid "Down, traffic waits for it (kill switch)"
-msgstr "Не работает, трафик ждёт его (kill switch)"
 
 #: htdocs/luci-static/resources/mayhem/tunnels.js
 msgid "wg-obfuscator with the same key in front of WireGuard"
