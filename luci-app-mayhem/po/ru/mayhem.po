@@ -286,7 +286,7 @@ msgstr "Обход локальных сетей"
 
 #: htdocs/luci-static/resources/mayhem/page/sections.js
 msgid "Bypass ports"
-msgstr "Порты обхода"
+msgstr "Исключить порты"
 
 #: htdocs/luci-static/resources/mayhem/linkedit.js
 msgid "Cancel"
