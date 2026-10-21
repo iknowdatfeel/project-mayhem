@@ -266,7 +266,7 @@ msgstr "Резервная копия…"
 
 #: htdocs/luci-static/resources/mayhem/page/sections.js
 msgid "BitTorrent bypass"
-msgstr "Обход для BitTorrent"
+msgstr "Исключить BitTorrent из маршрутизации"
 
 #: htdocs/luci-static/resources/mayhem/page/sections.js
 msgid "Block"
@@ -282,7 +282,7 @@ msgstr "Браузеры и приложения переходят с QUIC (UDP
 
 #: htdocs/luci-static/resources/mayhem/page/sections.js
 msgid "Bypass local networks"
-msgstr "Обход локальных сетей"
+msgstr "Исключить локальные сети из маршрутизации"
 
 #: htdocs/luci-static/resources/mayhem/page/sections.js
 msgid "Bypass ports"
