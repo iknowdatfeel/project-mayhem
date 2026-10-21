@@ -511,6 +511,17 @@ function load_model() {
 		}
 	});
 
+	// Servers the user deleted from a subscription (the provider's names);
+	// they stay out of the list when the subscription is updated.
+	const hidden = {};
+
+	c.foreach('mayhem', 'subscription', (s) => {
+		for (let h in (type(s.hidden) == 'array' ? s.hidden : (s.hidden != null ? [ s.hidden ] : []))) {
+			hidden[s['.name']] ??= {};
+			hidden[s['.name']][h] = true;
+		}
+	});
+
 	// Downloaded subscriptions, keyed by the subscription section name.
 	const subscriptions = {};
 
@@ -553,6 +564,7 @@ function load_model() {
 		settings: settings,
 		tunnel_labels: tunnel_labels,
 		aliases: aliases,
+		hidden: hidden,
 		dns: c.get_all('mayhem', 'dns') ?? {},
 		sections: sections,
 		runtime: runtime(sections)

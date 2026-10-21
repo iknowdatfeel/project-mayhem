@@ -426,6 +426,10 @@ msgid "Delete the tunnel"
 msgstr ""
 
 #: htdocs/luci-static/resources/mayhem/page/servers.js
+msgid "Deleted servers restored: %d. Mayhem applies the list now."
+msgstr ""
+
+#: htdocs/luci-static/resources/mayhem/page/servers.js
 msgid "Device data"
 msgstr ""
 
@@ -1069,6 +1073,10 @@ msgstr ""
 msgid "No servers added by key yet."
 msgstr ""
 
+#: htdocs/luci-static/resources/mayhem/page/servers.js
+msgid "No servers were deleted from this subscription."
+msgstr ""
+
 #: htdocs/luci-static/resources/view/mayhem/dashboard.js
 msgid "No servers yet"
 msgstr ""
@@ -1389,6 +1397,10 @@ msgstr ""
 msgid "Restore defaults"
 msgstr ""
 
+#: htdocs/luci-static/resources/mayhem/page/servers.js
+msgid "Restore deleted servers"
+msgstr ""
+
 #: htdocs/luci-static/resources/mayhem/diag.js
 msgid "Restores a backup file. A backup without connections keeps the subscriptions and server keys this router has."
 msgstr ""
@@ -1479,6 +1491,10 @@ msgstr ""
 
 #: htdocs/luci-static/resources/view/mayhem/dashboard.js
 msgid "Servers and rules on the page update by themselves when it is done."
+msgstr ""
+
+#: htdocs/luci-static/resources/mayhem/page/servers.js
+msgid "Servers deleted from the list on the dashboard do not come back when the subscription is updated. This brings them back."
 msgstr ""
 
 #: htdocs/luci-static/resources/mayhem/page/servers.js
