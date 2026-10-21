@@ -632,6 +632,146 @@ else
 	bad "backup: $out"
 fi
 
+# Sections limited to devices: xray rules by source address (a MAC by its
+# lease), kernel tunnels by MAC and address; a section whose devices have no
+# address has no rules yet.
+if ! uc -e "
+	const x = json(require('fs').readfile('$OUT/devices/xray.json'));
+	const r = filter(x.routing.rules, (q) => q.inboundTag?.[0] == 'tproxy-in');
+	const mix = filter(r, (q) => q.domain && index(q.domain, 'domain:instagram.com') >= 0)[0];
+	const awg = filter(r, (q) => q.domain && index(q.domain, 'domain:youtube.com') >= 0)[0];
+	const vpn = filter(r, (q) => q.domain && index(q.domain, 'domain:chatgpt.com') >= 0);
+	exit((join(',', mix?.source ?? []) == '192.168.1.20,10.0.0.0/24' && join(',', awg?.source ?? []) == '192.168.1.20,192.168.1.50/32' &&
+		length(vpn) == 0) ? 0 : 1);
+" 2>/dev/null; then
+	bad "devices: xray rules are not limited to the devices"
+elif ! grep -q 'ether saddr @tun_awg_sm ip daddr @tun_awg_4' "$OUT/devices/nft.conf" || ! grep -q 'ip saddr @tun_awg_s4 ip daddr @tun_awg_d4' "$OUT/devices/nft.conf" ||
+	! grep -q 'elements = { aa:bb:cc:dd:ee:01 }' "$OUT/devices/nft.conf" || grep -q '^		ip daddr @tun_awg_4' "$OUT/devices/nft.conf"; then
+	bad "devices: the kernel tunnel is not limited to the devices"
+elif ! grep -q 'none of its devices has an address' "$OUT/devices/status.json" || ! grep -q 'no DHCP lease' "$OUT/devices/status.json"; then
+	bad "devices: no warning for a device without an address"
+else
+	ok "devices: sections limited to some devices in xray and in the kernel"
+fi
+
+# DNS servers of a section: asked first for its names, through the section
+# (tag), DoQ directly; a direct section's names go to xray then; proxy
+# sections with FakeDNS do not use them; "all at once" is enableParallelQuery.
+if ! uc -e "
+	const x = json(require('fs').readfile('$OUT/secdns/xray.json'));
+	const sv = x.dns.servers;
+	const awg = filter(sv, (q) => q.tag == 'dns-sec-awg')[0];
+	const bank = filter(sv, (q) => q.tag == 'dns-sec-bank');
+	const r = filter(x.routing.rules, (q) => q.inboundTag?.[0] == 'dns-sec-awg' || q.inboundTag?.[0] == 'dns-sec-bank');
+	exit((x.dns.enableParallelQuery === true && awg?.address == 'https://9.9.9.9/dns-query' && awg.queryStrategy == 'UseIPv4' &&
+		index(sv, awg) < index(sv, filter(sv, (q) => q.address == 'https://1.1.1.1/dns-query')[0]) &&
+		length(bank) == 2 && bank[0].address == 'quic+local://dns.adguard-dns.com' && bank[1].address == 'tcp://77.88.8.8' &&
+		length(filter(sv, (q) => q.tag == 'dns-sec-mix')) == 0 && length(r) == 2 && r[0].balancerTag == 'bal-awg' && r[1].outboundTag == 'direct') ? 0 : 1);
+" 2>/dev/null; then
+	bad "section DNS: servers, order, tags or routing are wrong"
+elif ! grep -q 'bank.test' "$OUT/secdns/dns.xray"; then
+	bad "section DNS: dnsmasq does not send the direct section's names to xray"
+elif ! grep -q 'own DNS is not used' "$OUT/secdns/status.json"; then
+	bad "section DNS: no warning for a proxy section with FakeDNS"
+elif ! uc -e "exit(json(require('fs').readfile('$OUT/tunnels/xray.json')).dns.enableParallelQuery == null ? 0 : 1);" 2>/dev/null; then
+	bad "section DNS: servers are asked all at once without the option"
+else
+	ok "section DNS: own servers first and through the section, DoQ, all at once"
+fi
+
+# Many servers: the check interval grows (two seconds per server at least).
+python3 - "$ROOT/tests/models/subs.json" "$OUT/many.json" <<'PY'
+import json, sys
+m = json.load(open(sys.argv[1]))
+m['settings']['probe_interval'] = '3m'
+m['sections'] = [{'.name': 'auto', 'type': 'proxy', 'enabled': '1', 'select': 'auto', 'subscription': 'mysub', 'domain': ['youtube.com']}]
+m['subscriptions']['mysub']['nodes'] = [{'name': 'S%d' % i, 'link': 'trojan://pw@s%d.example:443?sni=s.example#S%d' % (i, i)} for i in range(150)]
+json.dump(m, open(sys.argv[2], 'w'))
+PY
+mkdir -p "$OUT/many"
+if ! uc "$FILES/usr/share/mayhem/gen.uc" --model "$OUT/many.json" --out "$OUT/many" >/dev/null 2>&1; then
+	bad "many servers: the generator failed"
+elif ! uc -e "
+	const a = json(require('fs').readfile('$OUT/many/xray.json')).burstObservatory?.pingConfig?.interval;
+	const b = json(require('fs').readfile('$OUT/subs/xray.json')).burstObservatory?.pingConfig?.interval;
+	exit((a == '5m' && b == '2m') ? 0 : 1);
+" 2>/dev/null; then
+	bad "many servers: the check interval does not grow"
+else
+	ok "many servers: 150 are checked every 5 minutes, a few as set"
+fi
+
+# The SHA-256 of an AmneziaWG package from the release description of GitHub.
+mkdir -p "$OUT/awgd-bin"
+printf '#!/bin/sh\nexec %s -L "%s/usr/share/ucode/*.uc" "$@"\n' "$UCODE" "$FILES" > "$OUT/awgd-bin/ucode"
+chmod +x "$OUT/awgd-bin/ucode"
+sed -n '/^awg_digest() {/,/^}/p' "$FILES/usr/bin/mayhem" > "$OUT/awgd.sh"
+printf '{"assets":[{"name":"a.apk","digest":"sha256:%s"},{"name":"b.apk","digest":null}]}' "$(printf x | sha256sum | cut -c1-64)" > "$OUT/awgd.json"
+got="$(PATH="$OUT/awgd-bin:$PATH" sh -c ". '$OUT/awgd.sh'; echo \"\$(awg_digest '$OUT/awgd.json' a.apk)/\$(awg_digest '$OUT/awgd.json' b.apk)/\$(awg_digest '$OUT/none' a.apk)\"")"
+if [ "$got" = "$(printf x | sha256sum | cut -c1-64)//" ]; then
+	ok "AmneziaWG package checksums from the GitHub release"
+else
+	bad "AmneziaWG checksums: $got"
+fi
+
+# Latency checks with fake ping and curl: ICMP of many servers at once, TCP's
+# second connection.
+mkdir -p "$OUT/probe-uci" "$OUT/probe-bin"
+cp "$ROOT/tests/luci/uci/network" "$OUT/probe-uci/"
+cat > "$OUT/probe-bin/ping" <<'EOF'
+#!/bin/sh
+echo "ping $*" >> "$FAKE_LOG"
+for a; do addr="$a"; done
+case " $* " in
+*" -I awg0 "*) [ "$addr" = 1.1.1.1 ] && { echo "64 bytes from 1.1.1.1: seq=0 ttl=57 time=40.312 ms"; exit 0; } ;;
+*) [ "$addr" = 10.0.0.1 ] && { echo "64 bytes from 10.0.0.1: seq=0 ttl=64 time=12.345 ms"; exit 0; } ;;
+esac
+sleep 2
+exit 1
+EOF
+cat > "$OUT/probe-bin/curl" <<'EOF'
+#!/bin/sh
+echo "curl $*" >> "$FAKE_LOG"
+f="$MAYHEM_RUN_DIR/curl.seq"
+head -n 1 "$f"
+sed -i 1d "$f"
+EOF
+chmod +x "$OUT/probe-bin/ping" "$OUT/probe-bin/curl"
+if out="$(PATH="$OUT/probe-bin:$PATH" FAKE_LOG="$OUT/probe.log" MAYHEM_UCI_DIR="$OUT/probe-uci" MAYHEM_RUN_DIR="$OUT/probe-run" \
+	uc "$ROOT/tests/probe.uc" "$ROOT/luci-app-mayhem/root/usr/share/rpcd/ucode/luci.mayhem" 2>&1)"; then
+	ok "latency: ICMP of many servers at once, TCP counts the second connection"
+else
+	bad "latency: $out"
+fi
+
+# URL test over kept-alive connections against a fake SOCKS inbound.
+if out="$(UCODE="$UCODE" sh "$ROOT/tests/warm.sh" 2>&1)"; then
+	case "$out" in skip:*) printf 'skip %s\n' "URL test over kept-alive connections: ${out#skip: }" ;;
+	*) ok "URL test over kept-alive connections" ;; esac
+else
+	bad "warm: $(printf '%s' "$out" | grep -v '^ok')"
+fi
+
+# WireGuard obfuscation set in the tunnel's dialog, and the service that runs
+# the obfuscators.
+mkdir -p "$OUT/obfs-uci" "$OUT/obfs-bin" "$OUT/obfs-run"
+cp "$ROOT/tests/luci/uci/network" "$ROOT/tests/luci/uci/firewall" "$ROOT/tests/uci/mayhem" "$OUT/obfs-uci/"
+printf '#!/bin/sh\nexit 0\n' > "$OUT/obfs-bin/wg-obfuscator"
+cp "$OUT/obfs-bin/wg-obfuscator" "$OUT/obfs-bin/phantun_client"
+chmod +x "$OUT/obfs-bin/wg-obfuscator" "$OUT/obfs-bin/phantun_client"
+if out="$(MAYHEM_UCI_DIR="$OUT/obfs-uci" MAYHEM_RUN_DIR="$OUT/obfs-run" MAYHEM_WG_OBFUSCATOR="$OUT/obfs-bin/wg-obfuscator" \
+	MAYHEM_PHANTUN="$OUT/obfs-bin/phantun_client" uc "$ROOT/tests/obfs.uc" "$ROOT/luci-app-mayhem/root/usr/share/rpcd/ucode/luci.mayhem" 2>&1)"; then
+	ok "WireGuard obfuscation: Phobos and fake TCP, endpoint, MTU, firewall zone"
+else
+	bad "obfuscation: $out"
+fi
+
+if out="$(sh "$ROOT/tests/obfs-svc.sh" 2>&1)"; then
+	ok "obfuscation service: wg-obfuscator with a config file, phantun with its TUN device"
+else
+	bad "obfuscation service: $out"
+fi
+
 # Servers or remote DNS that stop answering: direct and back, or the kill switch.
 if out="$(UCODE="$UCODE" sh "$ROOT/tests/health.sh" 2>&1)"; then
 	ok "health: sections and remote DNS go direct and come back, kill switch"

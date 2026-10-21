@@ -429,17 +429,17 @@ return baseclass.extend({
 		o = s.option(form.Flag, 'mux', _('Mux for VLESS'),
 			_('Several connections share one connection to the server. Applies to every VLESS server; with XTLS Vision only UDP is multiplexed.'));
 
-		o = s.option(form.Value, 'mux_concurrency', _('TCP connections per Mux connection'));
+		o = s.option(form.Value, 'mux_concurrency', _('Mux concurrency (TCP)'));
 		o.datatype = 'range(1,1024)';
 		o.placeholder = '8';
 		o.depends('mux', '1');
 
-		o = s.option(form.Value, 'mux_xudp_concurrency', _('UDP connections per Mux connection (XUDP)'));
+		o = s.option(form.Value, 'mux_xudp_concurrency', _('XUDP concurrency'));
 		o.datatype = 'range(1,1024)';
 		o.placeholder = '16';
 		o.depends('mux', '1');
 
-		o = s.option(form.ListValue, 'mux_xudp_udp443', _('QUIC (UDP 443) with Mux'));
+		o = s.option(form.ListValue, 'mux_xudp_udp443', _('XUDP UDP/443 policy'));
 		o.value('reject', _('Drop: browsers fall back to TCP'));
 		o.value('allow', _('Send through Mux'));
 		o.value('skip', _('Send without Mux'));

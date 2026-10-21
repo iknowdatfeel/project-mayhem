@@ -27,6 +27,9 @@ Usage: mayhem <command>
                              tunnel protocol (AmneziaWG, WireGuard) yet
   dnsmasq-full               replace dnsmasq with dnsmasq-full (needed for tunnel
                              sections in kernel mode); rolls back on failure
+  obfs-install phobos|faketcp
+                             install a WireGuard obfuscator: wg-obfuscator (Phobos)
+                             or phantun (fake TCP)
   version                    print versions
 EOF
 }
@@ -221,6 +224,19 @@ pkg_add_file() {
 }
 
 AWG_RELEASES="https://github.com/Slava-Shchipunov/awg-openwrt/releases/download"
+AWG_API="${MAYHEM_AWG_API:-https://api.github.com/repos/Slava-Shchipunov/awg-openwrt/releases/tags}"
+
+# The SHA-256 of a release file as GitHub lists it ("digest" of the asset):
+# $1 the release description (JSON), $2 the file name.
+awg_digest() {
+	ucode -e '
+		let r;
+		try { r = json(require("fs").readfile(ARGV[0]) ?? ""); } catch (e) { r = null; }
+		for (let a in r?.assets ?? [])
+			if (a.name == ARGV[1] && match(a.digest ?? "", /^sha256:[0-9a-f]{64}$/))
+				print(substr(a.digest, 7), "\n");
+	' -- "$1" "$2" 2>/dev/null | head -n 1
+}
 
 tunnel_protos_load() {
 	# netifd loads protocol handlers only when it starts: a reload does not
@@ -246,7 +262,7 @@ tunnel_protos_load() {
 }
 
 cmd_awg_install() {
-	local arch target ver postfix dir="/tmp/mayhem-awg" p file got
+	local arch target ver postfix dir="/tmp/mayhem-awg" p file got want sum
 
 	if pkg_has kmod-amneziawg && pkg_has amneziawg-tools; then
 		echo "AmneziaWG is already installed"
@@ -279,6 +295,14 @@ cmd_awg_install() {
 	rm -rf "$dir"
 	mkdir -p "$dir" || return 1
 
+	# Every file is checked against the SHA-256 that GitHub lists for it, as
+	# xray is against its .dgst: a broken or replaced download is not installed.
+	if ! fetch "$AWG_API/v$ver" "$dir/release.json" || [ ! -s "$dir/release.json" ]; then
+		echo "Cannot read the checksums of the AmneziaWG $ver release: $AWG_API/v$ver" >&2
+		rm -rf "$dir"
+		return 1
+	fi
+
 	for p in kmod-amneziawg amneziawg-tools luci-proto-amneziawg; do
 		# What is already there stays: a second run after a failed one only
 		# adds what is missing.
@@ -294,6 +318,15 @@ cmd_awg_install() {
 		echo "Downloading $file..."
 
 		if fetch "$AWG_RELEASES/v$ver/$file" "$dir/$file" && [ -s "$dir/$file" ]; then
+			want="$(awg_digest "$dir/release.json" "$file")"
+			sum="$(sha256sum "$dir/$file" | awk '{ print $1 }')"
+
+			if [ -z "$want" ] || [ "$sum" != "$want" ]; then
+				echo "Checksum mismatch for $file (got $sum, expected ${want:-none}), refusing to install" >&2
+				rm -rf "$dir"
+				return 1
+			fi
+
 			got="$dir/$file"
 		else
 			rm -f "$dir/$file"
@@ -324,6 +357,153 @@ cmd_awg_install() {
 
 	tunnel_protos_load
 	echo "AmneziaWG is installed"
+}
+
+# --- WireGuard obfuscators ---------------------------------------------------------
+# Static builds from the GitHub releases of their projects, checked against the
+# SHA-256 GitHub lists for each file:
+#   phobos   wg-obfuscator (github.com/ClusterM/wg-obfuscator)
+#   faketcp  phantun client (github.com/dndx/phantun)
+WG_OBFUSCATOR_VERSION="${MAYHEM_WG_OBFUSCATOR_VERSION:-1.6}"
+PHANTUN_VERSION="${MAYHEM_PHANTUN_VERSION:-0.8.1}"
+OBFS_DIR="${MAYHEM_OBFS_DIR:-/usr/libexec/mayhem}"
+GH_API="${MAYHEM_GH_API:-https://api.github.com/repos}"
+
+# The build for this router: $1 phobos or faketcp. Prints the file names to
+# look for in the release, best first.
+obfs_assets() {
+	local arch
+
+	arch="$(. /etc/openwrt_release 2>/dev/null; echo "$DISTRIB_ARCH")"
+	[ -n "$arch" ] || arch="$(uname -m)"
+
+	if [ "$1" = phobos ]; then
+		local v="wg-obfuscator-v$WG_OBFUSCATOR_VERSION-linux"
+
+		# Static builds: a soft-float one runs on any FPU.
+		case "$arch" in
+			aarch64*)                 echo "$v-arm64.tar.gz" ;;
+			arm_cortex-a*)            echo "$v-armv7-softfp.tar.gz" ;;
+			arm_arm1176*|arm_mpcore*) echo "$v-armv6-softfp.tar.gz" ;;
+			arm_*)                    echo "$v-armv5-sf.tar.gz" ;;
+			mipsel_24kc*|mipsel_74kc*|mipsel_1004kc*) echo "$v-mipsel-mips32r2.tar.gz $v-mipsel-mips32-sf.tar.gz" ;;
+			mipsel_*|mipsle*)         echo "$v-mipsel-mips32-sf.tar.gz" ;;
+			mips64el_*)               echo "$v-mips64el.tar.gz" ;;
+			mips64_*)                 echo "$v-mips64.tar.gz" ;;
+			mips_24kc*|mips_74kc*)    echo "$v-mips-mips32r2.tar.gz $v-mips-mips32-sf.tar.gz" ;;
+			mips_*|mips)              echo "$v-mips-mips32-sf.tar.gz" ;;
+			x86_64)                   echo "$v-x64.tar.gz" ;;
+			i386_*|i686|i386)         echo "$v-x86.tar.gz" ;;
+			riscv64*)                 echo "$v-riscv64.tar.gz" ;;
+			*) return 1 ;;
+		esac
+	else
+		local t
+
+		case "$arch" in
+			aarch64*)                 t=aarch64-unknown-linux-musl ;;
+			arm_cortex-a*)            t=armv7-unknown-linux-musleabihf ;;
+			arm_*)                    t=arm-unknown-linux-musleabihf ;;
+			mipsel_*|mipsle*)         t=mipsel-unknown-linux-musl ;;
+			mips64_*)                 t=mips64-unknown-linux-muslabi64 ;;
+			mips_*|mips)              t=mips-unknown-linux-musl ;;
+			x86_64)                   t=x86_64-unknown-linux-musl ;;
+			i386_*|i686|i386)         t=i686-unknown-linux-musl ;;
+			*) return 1 ;;
+		esac
+
+		echo "phantun_$t.zip phantun_${t}_nightly.zip"
+	fi
+}
+
+cmd_obfs_install() {
+	local kind="$1" repo ver bin name dir="/tmp/mayhem-obfs" file="" f want sum
+
+	case "$kind" in
+		phobos)  repo=ClusterM/wg-obfuscator; ver="v$WG_OBFUSCATOR_VERSION"; name=wg-obfuscator; bin="$OBFS_DIR/wg-obfuscator" ;;
+		faketcp) repo=dndx/phantun; ver="v$PHANTUN_VERSION"; name=phantun_client; bin="$OBFS_DIR/phantun_client" ;;
+		*) echo "Usage: mayhem obfs-install phobos|faketcp" >&2; return 1 ;;
+	esac
+
+	if [ -x "$bin" ] && [ -z "${MAYHEM_FORCE:-}" ]; then
+		echo "$name is already installed"
+	else
+		set -- $(obfs_assets "$kind") || { echo "No $name build for this architecture" >&2; return 1; }
+		rm -rf "$dir"
+		mkdir -p "$dir/x" || return 1
+
+		if ! fetch "$GH_API/$repo/releases/tags/$ver" "$dir/release.json" || [ ! -s "$dir/release.json" ]; then
+			echo "Cannot read the $name $ver release: $GH_API/$repo/releases/tags/$ver" >&2
+			rm -rf "$dir"
+			return 1
+		fi
+
+		for f in "$@"; do
+			[ -n "$(awg_digest "$dir/release.json" "$f")" ] && { file="$f"; break; }
+		done
+
+		if [ -z "$file" ]; then
+			echo "No $name $ver build for this router ($*)" >&2
+			rm -rf "$dir"
+			return 1
+		fi
+
+		echo "Downloading $file..."
+
+		if ! fetch "https://github.com/$repo/releases/download/$ver/$file" "$dir/$file" || [ ! -s "$dir/$file" ]; then
+			echo "Download failed: $file" >&2
+			rm -rf "$dir"
+			return 1
+		fi
+
+		want="$(awg_digest "$dir/release.json" "$file")"
+		sum="$(sha256sum "$dir/$file" | awk '{ print $1 }')"
+
+		if [ "$sum" != "$want" ]; then
+			echo "Checksum mismatch for $file (got $sum, expected $want), refusing to install" >&2
+			rm -rf "$dir"
+			return 1
+		fi
+
+		case "$file" in
+			*.zip) unzip -o -q "$dir/$file" -d "$dir/x" ;;
+			*) tar -xzf "$dir/$file" -C "$dir/x" ;;
+		esac
+
+		f="$(find "$dir/x" -type f -name "$name" | head -n 1)"
+
+		if [ -z "$f" ] || [ ! -s "$f" ]; then
+			echo "No $name in $file" >&2
+			rm -rf "$dir"
+			return 1
+		fi
+
+		mkdir -p "$OBFS_DIR"
+
+		if ! cp "$f" "$bin.new" || ! chmod 755 "$bin.new" || ! mv -f "$bin.new" "$bin"; then
+			echo "Not enough flash space" >&2
+			rm -f "$bin.new"
+			rm -rf "$dir"
+			return 1
+		fi
+
+		rm -rf "$dir"
+		echo "$name ${ver#v} is installed"
+	fi
+
+	# phantun needs TUN devices from the kernel.
+	if [ "$kind" = faketcp ] && [ ! -e /dev/net/tun ] && ! pkg_has kmod-tun; then
+		pkg_update
+
+		if [ "$PM" = apk ]; then
+			apk add kmod-tun
+		else
+			opkg install kmod-tun
+		fi || { echo "Installing kmod-tun failed" >&2; return 1; }
+	fi
+
+	/etc/init.d/mayhem-obfs enable 2>/dev/null
+	echo "The obfuscator is ready"
 }
 
 first_file() {
@@ -489,6 +669,9 @@ case "$1" in
 		;;
 	dnsmasq-full)
 		cmd_dnsmasq_full
+		;;
+	obfs-install)
+		cmd_obfs_install "$2"
 		;;
 	auto-update)
 		# Run by the scheduler once a day: installs a newer release when

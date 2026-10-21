@@ -48,7 +48,7 @@ pkg_installable() {
 }
 
 # Everything Mayhem needs, checked before anything is installed.
-DEPS="ucode ucode-mod-fs ucode-mod-uci kmod-nft-tproxy ca-bundle unzip curl rpcd-mod-ucode luci-base"
+DEPS="ucode ucode-mod-fs ucode-mod-uci ucode-mod-socket kmod-nft-tproxy ca-bundle unzip curl rpcd-mod-ucode luci-base"
 
 check_deps() {
 	local p missing=""

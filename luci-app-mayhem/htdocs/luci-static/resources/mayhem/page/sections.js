@@ -26,19 +26,21 @@ const ROUTE_XRAY = _('Through Xray is more flexible: every rule works. Speed is 
 // Categories above this make xray use a lot of memory (same limit as the generator).
 const HEAVY = 50000;
 
-// Popular resolvers: [ id, name, plain address (UDP and TCP), DoH address ].
-// Comss and Xbox DNS only answer over DoH.
+// Popular resolvers: [ id, name, plain address (UDP and TCP), DoH address,
+// DoQ address ]. Comss and Xbox DNS only answer over DoH; of these only
+// AdGuard answers over QUIC.
 const PROVIDERS = [
-	[ 'cloudflare', 'Cloudflare', '1.1.1.1', 'https://1.1.1.1/dns-query' ],
-	[ 'google', 'Google', '8.8.8.8', 'https://8.8.8.8/dns-query' ],
-	[ 'quad9', 'Quad9', '9.9.9.9', 'https://9.9.9.9/dns-query' ],
-	[ 'adguard', 'AdGuard', '94.140.14.14', 'https://dns.adguard-dns.com/dns-query' ],
-	[ 'yandex', 'Yandex', '77.88.8.8', 'https://common.dot.dns.yandex.net/dns-query' ],
-	[ 'comss', 'Comss DNS', null, 'https://dns.comss.one/dns-query' ],
-	[ 'xbox', 'Xbox DNS', null, 'https://xbox-dns.ru/dns-query' ]
+	[ 'cloudflare', 'Cloudflare', '1.1.1.1', 'https://1.1.1.1/dns-query', null ],
+	[ 'google', 'Google', '8.8.8.8', 'https://8.8.8.8/dns-query', null ],
+	[ 'quad9', 'Quad9', '9.9.9.9', 'https://9.9.9.9/dns-query', null ],
+	[ 'adguard', 'AdGuard', '94.140.14.14', 'https://dns.adguard-dns.com/dns-query', 'quic://dns.adguard-dns.com' ],
+	[ 'yandex', 'Yandex', '77.88.8.8', 'https://common.dot.dns.yandex.net/dns-query', null ],
+	[ 'comss', 'Comss DNS', null, 'https://dns.comss.one/dns-query', null ],
+	[ 'xbox', 'Xbox DNS', null, 'https://xbox-dns.ru/dns-query', null ]
 ];
 
-const DNS_TYPES = [ [ 'udp', 'UDP' ], [ 'tcp', 'TCP' ], [ 'doh', 'DoH (HTTPS)' ] ];
+// DoQ: Xray asks it directly only, past the proxy and the tunnels.
+const DNS_TYPES = [ [ 'udp', 'UDP' ], [ 'tcp', 'TCP' ], [ 'doh', 'DoH (HTTPS)' ], [ 'doq', _('DoQ (QUIC, direct)') ] ];
 
 // A DNS server as written in the config -> [ type, address as shown ].
 function dnsSplit(v) {
@@ -47,6 +49,9 @@ function dnsSplit(v) {
 	if (/^https:\/\//i.test(v))
 		return [ 'doh', v ];
 
+	if (/^(quic|doq):\/\//i.test(v))
+		return [ 'doq', v.replace(/^doq:\/\//i, 'quic://') ];
+
 	if (/^tcp:\/\//i.test(v))
 		return [ 'tcp', v.replace(/^tcp:\/\//i, '') ];
 
@@ -54,7 +59,8 @@ function dnsSplit(v) {
 }
 
 // [ type, address ] -> the config form: 1.1.1.1, tcp://1.1.1.1:53,
-// https://1.1.1.1/dns-query (a bare host becomes a DoH URL with /dns-query).
+// https://1.1.1.1/dns-query (a bare host becomes a DoH URL with /dns-query),
+// quic://dns.adguard-dns.com.
 function dnsJoin(type, addr) {
 	addr = String(addr || '').trim();
 
@@ -70,9 +76,9 @@ function dnsJoin(type, addr) {
 		return 'https://' + host + '/dns-query';
 	}
 
-	addr = addr.replace(/^[a-z]+:\/\//i, '').replace(/\/.*$/, '');
+	addr = addr.replace(/^[a-z+]+:\/\//i, '').replace(/\/.*$/, '');
 
-	return type === 'tcp' ? 'tcp://' + addr : addr;
+	return type === 'tcp' ? 'tcp://' + addr : type === 'doq' ? 'quic://' + addr : addr;
 }
 
 function provider(id) {
@@ -83,7 +89,7 @@ function provider(id) {
 function dnsChoice(v) {
 	const sp = dnsSplit(v);
 	const plain = sp[1].replace(/:53$/, '');
-	const p = PROVIDERS.find((x) => sp[0] === 'doh' ? x[3] === sp[1] : x[2] === plain);
+	const p = PROVIDERS.find((x) => sp[0] === 'doh' ? x[3] === sp[1] : sp[0] === 'doq' ? x[4] === sp[1] : x[2] === plain);
 
 	return p ? p[0] : sp[1];
 }
@@ -95,49 +101,98 @@ function dnsEntry(type, choice) {
 	if (!p)
 		return dnsJoin(type, choice);
 
-	return type === 'doh' ? p[3] : (p[2] ? dnsJoin(type, p[2]) : '');
+	return type === 'doh' ? p[3] : type === 'doq' ? (p[4] || '') : (p[2] ? dnsJoin(type, p[2]) : '');
 }
 
-// One type for all servers of a list and the servers themselves ticked in one
-// drop-down: popular resolvers or any address typed in. The first one is the
-// main server, the next ones are fallbacks. Both options write the same UCI
-// list (dns.domestic or dns.remote).
+// A resolver that does not answer over the chosen type: why, or null.
+function dnsMismatch(type, p) {
+	if (type === 'doq' && !p[4])
+		return _('%s does not answer over DoQ').format(p[1]);
+
+	if ((type === 'udp' || type === 'tcp') && !p[2])
+		return _('%s only works over DoH').format(p[1]);
+
+	return null;
+}
+
+// Servers of a DNS list are the items of a dynamic list: the order of the
+// items is the order they are asked in, and an item is dragged to another
+// place with the mouse or a finger. The item's text lets the drop through to
+// the item itself, so a server dropped on a name lands before it rather
+// than at the end.
+const DnsList = form.DynamicList.extend({
+	__name__: 'CBI.MayhemDnsList',
+
+	renderWidget(section_id, option_index, cfgvalue) {
+		const node = this.super('renderWidget', [ section_id, option_index, cfgvalue ]);
+
+		node.classList.add('mh-dns-dynlist');
+
+		return node;
+	}
+});
+
+// The type and the servers of a DNS list: the global ones (section "dns") or
+// those of a routing section. Both options write the same UCI list.
 function dnsOptions(s, kind, labels, defType) {
 	const typeName = '_' + kind + '_type';
-	const list = (sid) => L.toArray(uci.get('mayhem', sid, kind));
-	const typeOf = (sid) => s.formvalue(sid, typeName) || defType;
+	const list = (o, sid) => L.toArray(o.map.data.get('mayhem', sid, kind));
+	// In a section's dialog the options are copies bound to the dialog's
+	// section: they are asked through this.section, not s.
+	const typeOf = (o, sid) => o.section.formvalue(sid, typeName) || defType;
 
 	const store = function(sid) {
-		const t = typeOf(sid);
-		const all = L.toArray(s.formvalue(sid, kind)).map((x) => dnsEntry(t, x)).filter((x) => x);
+		const t = typeOf(this, sid);
+		const all = L.toArray(this.section.formvalue(sid, kind)).map((x) => dnsEntry(t, x)).filter((x) => x);
 
 		if (all.length)
-			uci.set('mayhem', sid, kind, all);
+			this.map.data.set('mayhem', sid, kind, all);
 		else
-			uci.unset('mayhem', sid, kind);
+			this.map.data.unset('mayhem', sid, kind);
 	};
 
 	let o = s.option(form.ListValue, typeName, labels[0]);
 	DNS_TYPES.forEach((t) => o.value(t[0], t[1]));
-	o.cfgvalue = (sid) => list(sid).length ? dnsSplit(list(sid)[0])[0] : defType;
+	o.cfgvalue = function(sid) {
+		const l = list(this, sid);
+
+		return l.length ? dnsSplit(l[0])[0] : defType;
+	};
 	o.write = o.remove = store;
+	const typeOpt = o;
 
-	o = s.option(form.MultiValue, kind, labels[1], labels[2]);
-	o.create = true;
-	o.display_size = 3;
+	o = s.option(DnsList, kind, labels[1], labels[2]);
 	PROVIDERS.forEach((p) => o.value(p[0], p[2] ? '%s (%s)'.format(p[1], p[2]) : '%s (DoH)'.format(p[1])));
-	o.cfgvalue = (sid) => list(sid).map(dnsChoice);
-	o.validate = function(sid, v) {
-		for (const x of L.toArray(v)) {
+	o.cfgvalue = function(sid) {
+		return list(this, sid).map(dnsChoice);
+	};
+	// A server added to the list is checked as it is added; the whole list
+	// once more on saving, as the type may have changed since.
+	const mismatch = (o, sid, values) => {
+		for (const x of L.toArray(values)) {
 			const p = provider(x);
+			const why = p ? dnsMismatch(typeOf(o, sid), p) : null;
 
-			if (p && !p[2] && typeOf(sid) !== 'doh')
-				return _('%s only works over DoH').format(p[1]);
+			if (why)
+				return why;
 		}
 
 		return true;
 	};
+	o.validate = function(sid, v) {
+		return mismatch(this, sid, v);
+	};
+	o.isValid = function(sid) {
+		this.listError = this.isActive(sid) ? mismatch(this, sid, this.formvalue(sid)) : true;
+
+		return this.listError === true && form.DynamicList.prototype.isValid.call(this, sid);
+	};
+	o.getValidationError = function(sid) {
+		return this.listError !== true && this.listError != null ? this.listError
+			: form.DynamicList.prototype.getValidationError.call(this, sid);
+	};
 	o.write = o.remove = store;
+	o.typeOption = typeOpt;
 
 	return o;
 }
@@ -432,7 +487,7 @@ return baseclass.extend({
 		const kernelMain = mainSec && uci.get('mayhem', mainSec, 'type') === 'interface' &&
 			(uci.get('mayhem', mainSec, 'route_mode') || 'kernel') === 'kernel';
 
-		o = s.option(form.Flag, 'mode', _('The rest of the traffic through the tunnel'),
+		o = s.option(form.Flag, 'mode', _('Global mode'),
 			(now ? _('Traffic that matches no rule goes through the active server, now %s. When this is off, it goes direct.').format(now)
 				: _('Traffic that matches no rule goes through the active server. When this is off, it goes direct.')) +
 			(kernelMain ? ' ' + _('The main section is a tunnel in kernel mode: the rest goes into it in the kernel, past Xray. Exclusions and proxy sections by domain need dnsmasq-full. With torrents direct, only web traffic goes into it in the kernel, the rest through Xray.') : ''));
@@ -441,23 +496,23 @@ return baseclass.extend({
 		o.default = 'lists';
 		o.rmempty = false;
 
-		o = s.option(form.Flag, 'capture', _('Send all traffic to Xray'),
+		o = s.option(form.Flag, 'capture', _('Full capture (TPROXY)'),
 			_('Off (recommended): only traffic of the rules reaches Xray - domains of proxy sections get addresses from 198.18.0.0/15 that the router recognizes, subnets of their rules are matched in the kernel. The rest of the traffic never touches Xray, which then needs far less memory. On: every connection of the network goes through Xray, which also recognizes sites by their TLS name - for devices with a DNS of their own (DNS over HTTPS in the browser) whose sites should still go through the proxy.'));
 		o.enabled = 'all';
 		o.disabled = 'lists';
 		o.default = 'lists';
 		o.depends('mode', 'lists');
 
-		o = s.option(form.Flag, 'exclude_local', _('Keep local addresses out of routing'),
+		o = s.option(form.Flag, 'exclude_local', _('Bypass local networks'),
 			_('Addresses of local networks (10.0.0.0/8, 192.168.0.0/16 and others) always go direct.'));
 		o.default = '1';
 		o.rmempty = false;
 
-		o = s.option(form.Flag, 'block_quic', _('Turn QUIC off'),
+		o = s.option(form.Flag, 'block_quic', _('Block QUIC (UDP/443)'),
 			_('Browsers and apps fall back from QUIC (UDP 443) to TCP, which works better through a proxy.'));
 		o.rmempty = false;
 
-		o = s.option(form.Flag, 'torrent_direct', _('Torrents direct'),
+		o = s.option(form.Flag, 'torrent_direct', _('BitTorrent bypass'),
 			_('Xray recognizes BitTorrent by its first packets and sends it direct, past the proxy.'));
 		o.rmempty = false;
 
@@ -465,7 +520,7 @@ return baseclass.extend({
 			_('On: when the servers or the remote DNS do not answer, traffic waits for them and never goes direct; so does it while Xray restarts. Off: a section none of whose servers answers sends its traffic direct (with a fallback chain - only when every server of the chain is down), and names of the remote DNS go to the provider\'s DNS while it does not answer; everything comes back by itself when they answer again.'));
 		o.rmempty = false;
 
-		o = s.option(form.DynamicList, 'bypass', _('Exclude devices from routing'),
+		o = s.option(form.DynamicList, 'bypass', _('Excluded source IP/MAC'),
 			_('Traffic and DNS of these devices are left alone, in any mode: for a work laptop with a VPN of its own, a game console and the like. An IP address, a subnet or a MAC address. Only addresses from 198.18.0.0/15 still go to Xray, which the router\'s DNS gives out for proxied sites.'));
 		o.datatype = 'or(macaddr,cidr,ipaddr)';
 		o.placeholder = _('IP or MAC address');
@@ -508,7 +563,7 @@ return baseclass.extend({
 		o.editable = true;
 		o.rmempty = false;
 
-		o = ss.option(form.ListValue, 'type', _('Type'),
+		o = ss.option(form.ListValue, 'type', _('Section type'),
 			_('Proxy: through a server. Tunnel: into a network interface (AmneziaWG, WireGuard…). Direct: past the proxy. Block: the traffic is dropped.'));
 		o.value('proxy', _('Proxy'));
 		o.value('interface', _('Tunnel'));
@@ -527,7 +582,7 @@ return baseclass.extend({
 		// A section is a routing rule: by default its traffic goes through the
 		// active server of the server list; a separate server is for domains
 		// that need one of their own.
-		o = ss.option(form.ListValue, 'servers', _('Server'),
+		o = ss.option(form.ListValue, 'servers', _('Outbound'),
 			now ? _('The active server of the server list is the one chosen on the dashboard, now %s. A separate server is for domains that need a server of their own.').format(now)
 				: _('The active server of the server list is the one chosen on the dashboard. A separate server is for domains that need a server of their own.'));
 		o.value('pool', _('Active server of the server list'));
@@ -540,7 +595,7 @@ return baseclass.extend({
 			return ownServers(this.map.data, sid) ? 'own' : 'pool';
 		};
 
-		o = ss.option(form.TextValue, '_links', _('Server keys'),
+		o = ss.option(form.TextValue, '_links', _('Proxy URLs'),
 			_('One key per line: vless://, vmess://, trojan://, ss://, socks://, http(s)://, hysteria2://, wireguard://'));
 		o.rows = 4;
 		o.monospace = true;
@@ -577,7 +632,7 @@ return baseclass.extend({
 		notJson(o);
 		o.modalonly = true;
 
-		o = ss.option(form.ListValue, 'override', _('Server by default'),
+		o = ss.option(form.ListValue, 'override', _('Default outbound'),
 			_('Without it the fastest server by URL test is used. Either way, another server can be picked on the dashboard.'));
 		o.value('', _('The fastest (automatic)'));
 		o.depends('type', 'proxy');
@@ -614,19 +669,38 @@ return baseclass.extend({
 
 		// --- a tunnel section ---
 
-		o = ss.option(widgets.NetworkSelect, 'interface', _('Interface'),
+		o = ss.option(widgets.NetworkSelect, 'interface', _('Network interface'),
 			_('The network interface of the tunnel. When the tunnel stops working (no handshake for 3 minutes), its traffic goes direct until it is back.'));
 		o.nocreate = true;
 		o.exclude = 'lan';
 		o.depends('type', 'interface');
 		o.modalonly = true;
 
-		o = ss.option(form.ListValue, 'route_mode', _('Routing'), ROUTE_KERNEL + '<br>' + ROUTE_XRAY);
+		o = ss.option(form.ListValue, 'route_mode', _('Routing backend'), ROUTE_KERNEL + '<br>' + ROUTE_XRAY);
 		o.value('kernel', _('Kernel (fastest)'));
 		o.value('xray', _('Through Xray'));
 		o.default = 'kernel';
 		o.depends('type', 'interface');
 		o.modalonly = true;
+
+		// --- who ---
+
+		// Some devices only; none: the whole network. Other devices go on to
+		// the sections below.
+		o = ss.option(form.DynamicList, 'devices', _('Source IP/MAC'),
+			_('Empty: the whole network. Other devices go on to the sections below, as if this one did not exist. Xray tells devices by their address: a device given by MAC needs a lease (best a static one, under DHCP and DNS → Static leases).'));
+		o.datatype = 'or(macaddr,cidr,ipaddr)';
+		o.placeholder = _('The whole network');
+		o.depends('type', 'proxy');
+		o.depends('type', 'interface');
+		o.modalonly = true;
+		Object.keys(hosts).sort().forEach((mac) => {
+			const h = hosts[mac] || {};
+			const ip = L.toArray(h.ipaddrs || h.ipv4)[0];
+			const label = h.name ? '%s (%s)'.format(h.name, ip || mac) : (ip ? '%s (%s)'.format(ip, mac) : mac);
+
+			o.value(mac, label);
+		});
 
 		// --- rules ---
 
@@ -634,7 +708,7 @@ return baseclass.extend({
 		const heavyNote = _('Categories marked as heavy hold more than %s rules and make Xray use a lot of memory.').format(formatCount(HEAVY)) +
 			(noGeo ? ' ' + _('Categories appear in the list after the first geo data download.') : '');
 
-		o = ss.option(form.DynamicList, '_sites', _('Domain categories (geosite)'), heavyNote);
+		o = ss.option(form.DynamicList, '_sites', _('Geosite categories'), heavyNote);
 		o.modalonly = true;
 		geoChoices(o, 'geosite', cats.geosite);
 		o.cfgvalue = function(sid) {
@@ -647,7 +721,7 @@ return baseclass.extend({
 			setList(this, sid, 'domain', list(this, sid, 'domain').filter((x) => !isGeo(x)).concat(L.toArray(value)));
 		});
 
-		o = ss.option(form.DynamicList, '_geoips', _('Address categories (geoip)'));
+		o = ss.option(form.DynamicList, '_geoips', _('GeoIP categories'));
 		o.modalonly = true;
 		geoChoices(o, 'geoip', cats.geoip);
 		o.cfgvalue = function(sid) {
@@ -660,13 +734,13 @@ return baseclass.extend({
 			setList(this, sid, 'ip', list(this, sid, 'ip').filter((x) => !isGeo(x)).concat(L.toArray(value)));
 		});
 
-		o = ss.option(form.ListValue, 'rules_input', _('Own domains and addresses'));
+		o = ss.option(form.ListValue, 'rules_input', _('User list input type'));
 		o.value('text', _('As text'));
 		o.value('list', _('As a list'));
 		o.default = 'text';
 		o.modalonly = true;
 
-		o = ss.option(form.TextValue, '_text', _('Domains'),
+		o = ss.option(form.TextValue, '_text', _('User domains'),
 			_('One per line, or separated by commas or spaces; "#" starts a comment. example.com matches the domain and its subdomains; full: is the exact name, keyword: a substring, regexp: a regular expression.'));
 		o.rows = 6;
 		o.monospace = true;
@@ -693,7 +767,7 @@ return baseclass.extend({
 			setList(this, sid, 'domain', list(this, sid, 'domain').filter(isGeo).concat(tokens(value)));
 		});
 
-		o = ss.option(form.TextValue, '_text_ip', _('IP addresses and subnets'),
+		o = ss.option(form.TextValue, '_text_ip', _('User subnets'),
 			_('IPv4 or IPv6 addresses, CIDR allowed, one per line or separated by commas or spaces: 91.108.4.0/22, 2001:db8::/32.'));
 		o.rows = 4;
 		o.monospace = true;
@@ -714,7 +788,7 @@ return baseclass.extend({
 			setList(this, sid, 'ip', list(this, sid, 'ip').filter(isGeo).concat(tokens(value)));
 		});
 
-		o = ss.option(form.DynamicList, '_domains', _('Domains'),
+		o = ss.option(form.DynamicList, '_domains', _('User domains'),
 			_('example.com matches the domain and its subdomains; full: is the exact name, keyword: a substring, regexp: a regular expression.'));
 		o.depends('rules_input', 'list');
 		o.modalonly = true;
@@ -726,7 +800,7 @@ return baseclass.extend({
 			setList(this, sid, 'domain', list(this, sid, 'domain').filter(isGeo).concat(L.toArray(value)));
 		});
 
-		o = ss.option(form.DynamicList, '_ips', _('IP addresses and subnets'),
+		o = ss.option(form.DynamicList, '_ips', _('User subnets'),
 			_('IPv4 or IPv6 addresses, CIDR allowed: 91.108.4.0/22.'));
 		o.depends('rules_input', 'list');
 		o.modalonly = true;
@@ -738,23 +812,37 @@ return baseclass.extend({
 			setList(this, sid, 'ip', list(this, sid, 'ip').filter(isGeo).concat(L.toArray(value)));
 		});
 
-		o = ss.option(form.DynamicList, 'list_url', _('Lists by URL'),
+		o = ss.option(form.DynamicList, 'list_url', _('Remote lists'),
 			_('Text lists with one domain, rule or subnet per line, "#" for comments. They are downloaded and updated automatically.'));
 		o.modalonly = true;
 		o.validate = function(section_id, value) {
 			return (!value || /^https?:\/\/\S+$/.test(value)) ? true : _('Expected an http(s):// address');
 		};
 
-		o = ss.option(form.DynamicList, 'list_file', _('Lists from files'),
+		o = ss.option(form.DynamicList, 'list_file', _('Local lists'),
 			_('Files on the router in the same format, for example /etc/mayhem/my.lst.'));
 		o.modalonly = true;
 		o.validate = function(section_id, value) {
 			return (!value || /^\/\S+$/.test(value)) ? true : _('Expected an absolute path');
 		};
 
+		// --- DNS of the section ---
+
+		o = dnsOptions(ss, 'dns', [ _('DNS protocol'), _('DNS servers'),
+			_('Empty: the DNS of the DNS tab. The names of this section are asked here, through the section itself, in order: the first one is the main server. A proxy section with FakeDNS needs none: its server resolves the names.') ], 'udp');
+		o.placeholder = _('The DNS of the DNS tab');
+		o.modalonly = true;
+		o.depends('type', 'proxy');
+		o.depends('type', 'interface');
+		o.depends('type', 'exclusion');
+		o.typeOption.modalonly = true;
+		o.typeOption.depends('type', 'proxy');
+		o.typeOption.depends('type', 'interface');
+		o.typeOption.depends('type', 'exclusion');
+
 		// --- advanced ---
 
-		o = ss.option(form.Flag, '_more', _('Advanced settings'));
+		o = ss.option(form.Flag, '_more', _('Advanced'));
 		o.modalonly = true;
 		// Only proxy and tunnel sections have advanced options.
 		o.depends('type', 'proxy');
@@ -766,7 +854,7 @@ return baseclass.extend({
 			return (g('proxy_type') === 'json' || g('filter') || g('exclude') || g('local_port') || L.toArray(g('iface_node')).length) ? '1' : '0';
 		};
 
-		o = ss.option(form.ListValue, 'proxy_type', _('Servers from'));
+		o = ss.option(form.ListValue, 'proxy_type', _('Configuration type'));
 		o.value('link', _('Keys and subscriptions'));
 		o.value('json', _('Xray outbound JSON'));
 		o.default = 'link';
@@ -774,7 +862,7 @@ return baseclass.extend({
 		o.modalonly = true;
 		keepHidden(o);
 
-		o = ss.option(form.TextValue, 'outbound_json', _('Outbound JSON'),
+		o = ss.option(form.TextValue, 'outbound_json', _('Outbound configuration (JSON)'),
 			_('A single Xray outbound object. Its tag is replaced automatically.'));
 		o.rows = 12;
 		o.monospace = true;
@@ -794,7 +882,7 @@ return baseclass.extend({
 			}
 		};
 
-		o = ss.option(form.Value, 'filter', _('Take servers named'),
+		o = ss.option(form.Value, 'filter', _('Name filter (regexp)'),
 			_('A regular expression over server names, case-insensitive. Example: NL|DE'));
 		o.depends({ type: 'proxy', _more: '1' });
 		o.modalonly = true;
@@ -802,14 +890,14 @@ return baseclass.extend({
 		notJson(o);
 		keepHidden(o);
 
-		o = ss.option(form.Value, 'exclude', _('Skip servers named'));
+		o = ss.option(form.Value, 'exclude', _('Name exclusion (regexp)'));
 		o.depends({ type: 'proxy', _more: '1' });
 		o.modalonly = true;
 		o.validate = validateRegexp;
 		notJson(o);
 		keepHidden(o);
 
-		o = ss.option(widgets.NetworkSelect, 'iface_node', _('Tunnels as servers'),
+		o = ss.option(widgets.NetworkSelect, 'iface_node', _('Interface outbounds'),
 			_('Network interfaces (AmneziaWG, WireGuard…) that join the servers of this section: the fastest one wins.'));
 		o.multiple = true;
 		o.nocreate = true;
@@ -819,7 +907,7 @@ return baseclass.extend({
 		notJson(o);
 		keepHidden(o);
 
-		o = ss.option(form.Value, 'local_port', _('Local proxy port'),
+		o = ss.option(form.Value, 'local_port', _('Mixed proxy port'),
 			_('A SOCKS5 and HTTP proxy on the router that sends everything into this section, for apps and devices that can use a proxy. Reachable from the LAN; the firewall closes it from the internet.'));
 		o.datatype = 'range(1024,65535)';
 		o.placeholder = _('Not used');
@@ -828,13 +916,13 @@ return baseclass.extend({
 		o.modalonly = true;
 		keepHidden(o);
 
-		o = ss.option(form.Value, 'local_user', _('Proxy user'), _('Empty: a proxy without a password.'));
+		o = ss.option(form.Value, 'local_user', _('Mixed proxy user'), _('Empty: a proxy without a password.'));
 		o.depends({ type: 'proxy', local_port: /.+/, _more: '1' });
 		o.depends({ type: 'interface', local_port: /.+/, _more: '1' });
 		o.modalonly = true;
 		keepHidden(o);
 
-		o = ss.option(form.Value, 'local_pass', _('Proxy password'));
+		o = ss.option(form.Value, 'local_pass', _('Mixed proxy password'));
 		o.password = true;
 		o.depends({ type: 'proxy', local_port: /.+/, _more: '1' });
 		o.depends({ type: 'interface', local_port: /.+/, _more: '1' });
@@ -906,17 +994,17 @@ return baseclass.extend({
 		// --- DNS ---
 
 		s = m.section(form.NamedSection, 'dns', 'dns', _('DNS'),
-			_('Direct traffic is resolved by the domestic DNS. Domains of proxy sections get addresses from Xray itself and are resolved by the proxy server; the remote DNS serves tunnel sections and the rest of the traffic when everything goes through the proxy. The main server and its fallbacks share one type: UDP, TCP or DoH (Xray has no DNS over TLS).'));
+			_('Direct traffic is resolved by the domestic DNS. Domains of proxy sections get addresses from Xray itself and are resolved by the proxy server; the remote DNS serves tunnel sections and the rest of the traffic when everything goes through the proxy. The main server and its fallbacks share one type: UDP, TCP, DoH or DoQ (Xray has no DNS over TLS; DoQ always goes direct).'));
 		s.addremove = false;
 
 		const lan = String(L.toArray(uci.get('network', 'lan', 'ipaddr'))[0] || '192.168.1.1').split('/')[0];
 
-		o = dnsOptions(s, 'domestic', [ _('Domestic DNS type'), _('Domestic DNS'),
-			_('Tick one or several, or type your own address. The first one is the main server, the next ones are fallbacks. None: the DNS servers of the provider.') ], 'udp');
+		o = dnsOptions(s, 'domestic', [ _('Domestic DNS protocol'), _('Domestic DNS servers'),
+			_('Add one or several from the list or type your own address. They are asked in the order of the list: the first one is the main server, the next ones are fallbacks. Drag a server to change the order. None: the DNS servers of the provider.') ], 'udp');
 		o.placeholder = lan;
 
-		o = dnsOptions(s, 'remote', [ _('Remote DNS type'), _('Remote DNS'),
-			_('Tick one or several, or type your own address. The first one is the main server, the next ones are fallbacks.') ], 'doh');
+		o = dnsOptions(s, 'remote', [ _('Remote DNS protocol'), _('Remote DNS servers'),
+			_('Add one or several from the list or type your own address. They are asked in the order of the list: the first one is the main server, the next ones are fallbacks. Drag a server to change the order.') ], 'doh');
 		o.placeholder = _('Choose or type an address');
 
 		// Xray does not ask a DoH server again when its answer breaks off:
@@ -924,13 +1012,16 @@ return baseclass.extend({
 		if (L.toArray(uci.get('mayhem', 'dns', 'remote')).length === 1)
 			o.description += ' ' + _('With one server, a query it fails to answer fails on the device too: add a second one, Cloudflare or Google say, to take over.');
 
-		o = s.option(form.Flag, 'via_proxy', _('Remote DNS through the proxy'),
+		o = s.option(form.Flag, 'parallel', _('Parallel queries'),
+			_('On: every server of a list gets the query together and the first good answer counts, which is faster when one of them is slow. Off: the next server only when the one before fails.'));
+
+		o = s.option(form.Flag, 'via_proxy', _('Remote DNS via proxy'),
 			now ? _('On: queries go through the active server, now %s. Off: they go direct, encrypted when the server is DoH.').format(now)
 				: _('On: queries go through the active server. Off: they go direct, encrypted when the server is DoH.'));
 		o.default = '1';
 		o.rmempty = false;
 
-		o = s.option(form.ListValue, 'ip_family', _('IP version'));
+		o = s.option(form.ListValue, 'ip_family', _('Query strategy'));
 		o.ucisection = 'settings';
 		o.value('prefer_ipv4', _('Prefer IPv4'));
 		o.value('prefer_ipv6', _('Prefer IPv6'));
@@ -938,7 +1029,7 @@ return baseclass.extend({
 		o.value('ipv6_only', _('IPv6 only'));
 		o.default = 'prefer_ipv4';
 
-		o = s.option(form.Flag, 'hijack', _('Intercept DNS on port 53'),
+		o = s.option(form.Flag, 'hijack', _('DNS hijack (port 53)'),
 			_('Devices with their own DNS server (8.8.8.8 and others) get their answers from Mayhem as well.'));
 		o.default = '1';
 		o.rmempty = false;
@@ -952,12 +1043,12 @@ return baseclass.extend({
 			_('Mayhem downloads the geosite and geoip files and reads them on the fly. Only the categories that sections use stay on the router, so a 70 MB file takes just a few hundred kilobytes of flash. New categories are downloaded within a minute after saving, the rest is updated every night.'));
 		s.addremove = false;
 
-		o = s.option(form.ListValue, 'update_hour', _('Nightly update time'));
+		o = s.option(form.ListValue, 'update_hour', _('Update hour'));
 		for (let h = 0; h < 24; h++)
 			o.value(String(h), '%02d:00'.format(h));
 		o.default = '4';
 
-		o = s.option(form.Flag, 'via_xray', _('Download through Xray'),
+		o = s.option(form.Flag, 'via_xray', _('Download via proxy'),
 			now ? _('Geo data and lists are downloaded through the active server, now %s; when that fails, direct.').format(now)
 				: _('Geo data and lists are downloaded through the active server; when that fails, direct.'));
 		o.default = '1';
@@ -968,7 +1059,7 @@ return baseclass.extend({
 			return v != null ? v : (this.map.data.get('mayhem', sid, 'update_via') === 'direct' ? '0' : '1');
 		};
 
-		o = s.option(form.ListValue, 'lists_interval', _('List updates'));
+		o = s.option(form.ListValue, 'lists_interval', _('Lists update interval'));
 		o.value('6', _('Every 6 hours'));
 		o.value('12', _('Every 12 hours'));
 		o.value('24', _('Once a day'));
@@ -1004,7 +1095,7 @@ return baseclass.extend({
 		o.editable = true;
 		o.rmempty = false;
 
-		o = s.option(form.ListValue, 'kind', _('Type'));
+		o = s.option(form.ListValue, 'kind', _('Section type'));
 		o.value('geosite', 'geosite');
 		o.value('geoip', 'geoip');
 		o.default = 'geosite';

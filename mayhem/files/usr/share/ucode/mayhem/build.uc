@@ -256,6 +256,13 @@ function build_nft_text(S, v6, sets, tunnels, dns_redirect, fake_pool, kdef, cap
 		s += nft_set(`tun_${t.name}_6`, 'ipv6_addr', t.ip6);
 		s += `\tset tun_${t.name}_d4 {\n\t\ttype ipv4_addr\n\t}\n`;
 		s += `\tset tun_${t.name}_d6 {\n\t\ttype ipv6_addr\n\t}\n`;
+
+		// The devices of a section limited to some.
+		if (t.src) {
+			s += nft_set(`tun_${t.name}_s4`, 'ipv4_addr', t.src.ip4);
+			s += nft_set(`tun_${t.name}_s6`, 'ipv6_addr', t.src.ip6);
+			s += `\tset tun_${t.name}_sm {\n\t\ttype ether_addr\n${length(t.src.mac) ? `\t\telements = { ${join(', ', t.src.mac)} }\n` : ''}\t}\n`;
+		}
 	}
 
 	if (cap) {
@@ -320,10 +327,20 @@ function build_nft_text(S, v6, sets, tunnels, dns_redirect, fake_pool, kdef, cap
 	for (let t in tunnels) {
 		const m = `meta mark set meta mark & ${keep} | ${tun_mark(t.index)}`;
 
-		s += `\t\tip daddr @tun_${t.name}_4 ${m} counter return\n`;
-		s += `\t\tip daddr @tun_${t.name}_d4 ${m} counter return\n`;
-		s += `\t\tip6 daddr @tun_${t.name}_6 ${m} counter return\n`;
-		s += `\t\tip6 daddr @tun_${t.name}_d6 ${m} counter return\n`;
+		// A section limited to some devices: its lines once per way to
+		// tell them (MAC, IPv4, IPv6 address); other devices go on.
+		const w4 = t.src ? [ `ether saddr @tun_${t.name}_sm `, `ip saddr @tun_${t.name}_s4 ` ] : [ '' ];
+		const w6 = t.src ? [ `ether saddr @tun_${t.name}_sm `, `ip6 saddr @tun_${t.name}_s6 ` ] : [ '' ];
+
+		for (let w in w4) {
+			s += `\t\t${w}ip daddr @tun_${t.name}_4 ${m} counter return\n`;
+			s += `\t\t${w}ip daddr @tun_${t.name}_d4 ${m} counter return\n`;
+		}
+
+		for (let w in w6) {
+			s += `\t\t${w}ip6 daddr @tun_${t.name}_6 ${m} counter return\n`;
+			s += `\t\t${w}ip6 daddr @tun_${t.name}_d6 ${m} counter return\n`;
+		}
 	}
 
 	if (kdef) {
@@ -997,6 +1014,46 @@ function bypass_sets(S, warn) {
 	return { bypass4: b4, bypass6: b6, bypass_mac: mac };
 }
 
+// Devices a section is limited to ("devices": MAC, address or subnet), or
+// null for the whole network. xray matches by source address only: a MAC is
+// taken as the device's address from the DHCP leases (R.leases); the kernel
+// (tunnel sections) matches MACs itself.
+function section_devices(sec, R, warn) {
+	const list = entries(sec.devices);
+
+	if (!length(list))
+		return null;
+
+	const d = { xray: [], mac: [], ip4: [], ip6: [] };
+
+	for (let v in list) {
+		v = lc(trim(v));
+
+		if (match(v, /^([0-9a-f]{2}[:-]){5}[0-9a-f]{2}$/)) {
+			v = replace(v, /-/g, ':');
+			uniq_push(d.mac, v);
+
+			if (R.leases?.[v])
+				uniq_push(d.xray, R.leases[v]);
+			else
+				warn(`section "${sec['.name']}": device ${v} has no DHCP lease, only tunnels in kernel mode know it (fix its address under DHCP and DNS → Static leases)`);
+
+			continue;
+		}
+
+		const r = norm_ip(v);
+
+		if (r.error || r.geo)
+			warn(`section "${sec['.name']}": "${v}" is not a device (MAC, address or subnet), skipped`);
+		else {
+			uniq_push(r.family == 4 ? d.ip4 : d.ip6, r.cidr);
+			uniq_push(d.xray, r.cidr);
+		}
+	}
+
+	return d;
+}
+
 function memlimit_mib(S, R) {
 	const v = int_opt(S.memlimit, 0, 16, 4096);
 
@@ -1065,6 +1122,7 @@ export function build(model) {
 	const tun_domains4 = uset();		// tunnel sections without IPv6: no AAAA answers
 	const tun_domains = uset();
 	const xray_dns = [];		// { name, RL }: sections whose names dnsmasq sends to xray
+	const sec_dns = [];		// sections with DNS servers of their own
 	const tunnels = [];			// kernel-mode tunnel sections
 	const tun_all = [];			// every tunnel section, for the watchdog
 	const tun_rules = [];
@@ -1124,6 +1182,7 @@ export function build(model) {
 	const balancers = [];
 	const overrides = [];
 	const observe = [];
+	let observed = 0;
 	const state = { sections: {} };
 	let first_proxy = null;
 
@@ -1146,6 +1205,56 @@ export function build(model) {
 
 		const RL = collect_rules(sec, model, warn, { pending: geo_pending, files: geo_files, lists_missing: lists_missing });
 		const domains = RL.domains, ips4 = RL.ip4, ips6 = RL.ip6;
+
+		// "Who": the whole network, or some devices (proxy and tunnel
+		// sections). scope goes into the section's xray rules; null when
+		// none of its devices has an address xray could match.
+		let dev = section_devices(sec, R, warn);
+
+		if (dev && info.type != 'proxy' && info.type != 'interface') {
+			warn(`section "${name}": only proxy and tunnel sections can be limited to devices, it applies to the whole network`);
+			dev = null;
+		}
+
+		const scope = !dev ? {} : length(dev.xray) ? { source: dev.xray } : null;
+
+		if (dev)
+			info.devices = length(dev.mac) + length(dev.ip4) + length(dev.ip6);
+
+		// DNS servers of the section's own ("dns"); none: the global ones.
+		const own_dns = [];
+
+		for (let x in entries(sec.dns)) {
+			const r = dns_server(x);
+
+			if (r.error)
+				warn(`section "${name}": DNS: ${r.error}`);
+			else {
+				push(own_dns, r);
+
+				if (!is_ip(r.host))
+					uniq_push(server_hosts, `full:${r.host}`);
+			}
+		}
+
+		// Names of a section with DNS servers of its own are asked there (a
+		// direct section's too, so dnsmasq sends them to xray). Not for
+		// proxy sections with FakeDNS: the server resolves their names.
+		const add_dns = (target) => {
+			if (!length(own_dns) || !length(domains))
+				return;
+
+			if (info.type == 'block')
+				warn(`section "${name}": blocked names need no DNS server, its own is not used`);
+			else if (info.type == 'proxy' && fake)
+				warn(`section "${name}": with FakeDNS the proxy server resolves the names, the section's own DNS is not used`);
+			else {
+				push(sec_dns, { name: name, servers: own_dns, domains: domains, target: target, v4: info.type == 'interface' && !state.sections[name]?.v6 });
+
+				if (info.type == 'exclusion')
+					push(xray_dns, { name: name, RL: RL, type: info.type });
+			}
+		};
 
 		let target;
 
@@ -1314,8 +1423,10 @@ export function build(model) {
 				if (pick)
 					push(overrides, `${bal} ${pick.tag}`);
 
-				if (watched)
+				if (watched) {
 					push(observe, `n-${name}-`);
+					observed += length(nodes);
+				}
 
 				sinfo.balancer = bal;
 				target = { balancerTag: bal };
@@ -1411,7 +1522,7 @@ export function build(model) {
 				const t = {
 					name: name, index: tun_index, device: inf.device, v6: tv6,
 					ip4: [ ...ips4, ...RL.geo4 ], ip6: tv6 ? [ ...ips6, ...RL.geo6 ] : [],
-					domains: kernel_domains(name, RL, model, warn)
+					domains: kernel_domains(name, RL, model, warn), src: dev
 				};
 
 				push(tunnels, t);
@@ -1420,16 +1531,17 @@ export function build(model) {
 
 				// Kernel sections come first: same order in xray, which
 				// catches what the DNS path missed (by SNI).
-				if (length(domains))
-					push(tun_rules, { domain: domains, ...target });
+				if (length(domains) && scope)
+					push(tun_rules, { domain: domains, ...scope, ...target });
 
 				const tips = [ ...ips4, ...ips6, ...RL.geoip ];
 
-				if (length(tips))
-					push(tun_rules, { ip: tips, ...target });
+				if (length(tips) && scope)
+					push(tun_rules, { ip: tips, ...scope, ...target });
 
 				state.sections[name] = tinfo;
 				info.node = `${iface} (kernel)`;
+				add_dns(target);
 				info.ok = true;
 				add_local(sec, target);
 				continue;
@@ -1446,15 +1558,20 @@ export function build(model) {
 			continue;
 		}
 
+		add_dns(target);
+
 		const list = info.type == 'block' ? block_rules : section_rules;
 
-		if (length(domains))
-			push(list, { domain: domains, ...target });
+		if (scope == null)
+			warn(`section "${name}": none of its devices has an address yet, its rules wait for one`);
+
+		if (length(domains) && scope)
+			push(list, { domain: domains, ...scope, ...target });
 
 		const ips = [ ...ips4, ...ips6, ...RL.geoip ];
 
-		if (length(ips))
-			push(list, { ip: ips, ...target });
+		if (length(ips) && scope)
+			push(list, { ip: ips, ...scope, ...target });
 
 		push(routed, { type: info.type, name: name, RL: RL });
 		info.ok = true;
@@ -1489,7 +1606,7 @@ export function build(model) {
 		if (default_target)
 			final_target = default_target;
 		else
-			fail('the rest of the traffic needs a server: add one or a subscription on the Server list page, or turn "The rest of the traffic through the tunnel" off');
+			fail('the rest of the traffic needs a server: add one or a subscription on the Server list page, or turn "Global mode" off');
 	}
 
 	// A tunnel chosen by hand among the servers of the main section takes
@@ -1675,6 +1792,13 @@ export function build(model) {
 		for (let d in domestic)
 			push(servers, ns(d, { domains: host_rules, skipFallback: true }));
 
+	// Sections with DNS servers of their own: asked first for the names of the
+	// section, through the section itself (the tag routes the queries), with
+	// real addresses; no AAAA for a tunnel without IPv6.
+	for (let sd in sec_dns)
+		for (let r in sd.servers)
+			push(servers, ns(r, { domains: sd.domains, skipFallback: true, tag: `dns-sec-${sd.name}`, ...(sd.v4 ? { queryStrategy: 'UseIPv4' } : {}) }));
+
 	if (mode == 'lists') {
 		// Fake addresses need no remote server: the proxy resolves the
 		// domain on its side. Each DNS server with domains is a matcher of
@@ -1798,6 +1922,9 @@ export function build(model) {
 		push(helper_rules, { ruleTag: `h-${t}`, inboundTag: [ 'helper-in' ], user: [ t ], outboundTag: t });
 	}
 
+	for (let sd in sec_dns)
+		push(rules, { inboundTag: [ `dns-sec-${sd.name}` ], ...sd.target });
+
 	push(rules, { inboundTag: [ 'dns-in' ], outboundTag: 'dns-out' });
 
 	// Remote DNS goes through the active server of the main section unless
@@ -1888,6 +2015,9 @@ export function build(model) {
 			// renewed in the background. Kept an hour past its TTL at most.
 			serveStale: true,
 			serveExpiredTTL: DNS_STALE,
+			// "All at once": every server that may answer is asked together and
+			// the first good answer counts; otherwise one after another.
+			...(is_true(D.parallel ?? '0') ? { enableParallelQuery: true } : {}),
 			servers: servers
 		},
 		inbounds: [
@@ -1939,7 +2069,19 @@ export function build(model) {
 	// The same checks: GET, 5 s timeout; a server counts as working when its
 	// last check passed, and leastPing picks the fastest such.
 	if (length(observe)) {
-		const iv = match(S.probe_interval ?? '', /^[0-9]+[smh]$/) ? S.probe_interval : C.DEFAULT_PROBE_INTERVAL;
+		let iv = match(S.probe_interval ?? '', /^[0-9]+[smh]$/) ? S.probe_interval : C.DEFAULT_PROBE_INTERVAL;
+
+		// With many servers the interval grows: on average no more than one
+		// check every PROBE_SPACING seconds (150 servers: every 5 minutes),
+		// each check being a connection and a handshake through a server.
+		const m = match(iv, /^([0-9]+)([smh])$/);
+		const secs = int(m[1]) * ({ s: 1, m: 60, h: 3600 })[m[2]];
+		const need = observed * C.PROBE_SPACING;
+
+		if (need > secs)
+			iv = `${int((need + 59) / 60)}m`;
+
+		state.probe_interval = iv;
 		const url = match(S.probe_url ?? '', /^https?:\/\//) ? S.probe_url : C.DEFAULT_PROBE_URL;
 
 		xray.burstObservatory = {
