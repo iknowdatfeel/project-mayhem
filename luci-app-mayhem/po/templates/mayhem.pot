@@ -1150,10 +1150,6 @@ msgid "Obfuscator server port"
 msgstr ""
 
 #: htdocs/luci-static/resources/mayhem/page/sections.js
-msgid "Off (recommended): only traffic of the rules reaches Xray - domains of proxy sections get addresses from 198.18.0.0/15 that the router recognizes, subnets of their rules are matched in the kernel. The rest of the traffic never touches Xray, which then needs far less memory. On: every connection of the network goes through Xray, which also recognizes sites by their TLS name - for devices with a DNS of their own (DNS over HTTPS in the browser) whose sites should still go through the proxy."
-msgstr ""
-
-#: htdocs/luci-static/resources/mayhem/page/sections.js
 msgid "On: every server of a list gets the query together and the first good answer counts, which is faster when one of them is slow. Off: the next server only when the one before fails."
 msgstr ""
 
@@ -1194,7 +1190,7 @@ msgid "One per line, or separated by commas or spaces; \"#\" starts a comment. e
 msgstr ""
 
 #: htdocs/luci-static/resources/mayhem/page/sections.js
-msgid "Only matters when all traffic goes to Xray: proxied domains then get addresses from 198.18.0.0/15 as well (without it, they are recognized by their TLS name). By lists, Xray always does this. Cached fake addresses stop working while Mayhem is stopped."
+msgid "Only matters in global mode: domains get addresses from 198.18.0.0/15 (without it, they are recognized by their TLS name), and the traffic of excluded domains goes direct in the kernel, past Xray (needs dnsmasq-full). By lists, Xray always does this. Cached fake addresses stop working while Mayhem is stopped."
 msgstr ""
 
 #: htdocs/luci-static/resources/mayhem/tunnels.js
@@ -1399,10 +1395,6 @@ msgstr ""
 
 #: htdocs/luci-static/resources/mayhem/diag.js
 msgid "Restores a backup file. A backup without connections keeps the subscriptions and server keys this router has."
-msgstr ""
-
-#: htdocs/luci-static/resources/mayhem/page/sections.js
-msgid "Route all traffic through Xray"
 msgstr ""
 
 #: htdocs/luci-static/resources/view/mayhem/dashboard.js
