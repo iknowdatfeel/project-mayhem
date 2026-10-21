@@ -712,15 +712,26 @@ if start_mayhem uci; then
 		bad "renamed server: tag $(tag_of C2), was $c"
 	fi
 
-	# A new rule is not a server: xray has to restart (procd does it on the
-	# router, here only the key tells it).
+	# A new domain rule goes into running xray as well: by lists its names
+	# get fake addresses from a server without a list of domains, dnsmasq
+	# learns them from its own file.
 	write_uci "	option select 'auto'
 	list domain 'other.test'" direct
+	reload_live
+	if cmp -s "$MAYHEM_RUN_DIR/xray.key" "$MAYHEM_RUN_DIR/running.xray.key" && [ "$(proc_in router xray)" = "$pid" ]; then
+		ok "a new domain rule needs no restart"
+	else
+		bad "a new domain rule would restart xray"
+	fi
+
+	# Other changes (here the domestic DNS) leave xray to procd: only the
+	# key tells it here.
+	sed -i "s/list domestic '45.0.0.2'/list domestic '45.0.0.6'/" "$MAYHEM_UCI_DIR/mayhem"
 	reload_live
 	if ! cmp -s "$MAYHEM_RUN_DIR/xray.key" "$MAYHEM_RUN_DIR/running.xray.key" && [ "$(proc_in router xray)" = "$pid" ]; then
 		ok "other changes leave xray to procd"
 	else
-		bad "a rule change did not change the restart key"
+		bad "a DNS change did not change the restart key"
 	fi
 fi
 stop_mayhem
