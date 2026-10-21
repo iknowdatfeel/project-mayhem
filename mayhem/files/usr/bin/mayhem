@@ -23,6 +23,7 @@ Usage: mayhem <command>
                              updates are on (the scheduler runs it nightly)
   awg-install                install AmneziaWG (kernel module, tools, LuCI protocol)
                              from the awg-openwrt builds for this firmware
+  wg-install                 install WireGuard (kernel module, tools, LuCI protocol)
   tunnel-protos              restart the network if it has not loaded an installed
                              tunnel protocol (AmneziaWG, WireGuard) yet
   dnsmasq-full               replace dnsmasq with dnsmasq-full (needed for tunnel
@@ -259,6 +260,34 @@ tunnel_protos_load() {
 
 	echo "Restarting the network so that it loads:$missing"
 	/etc/init.d/network restart
+}
+
+# WireGuard from the official packages: the kernel module, the tools and the
+# LuCI protocol page; the network restarts if it has not loaded the protocol.
+cmd_wg_install() {
+	local p
+
+	if pkg_has kmod-wireguard && pkg_has wireguard-tools; then
+		echo "WireGuard is already installed"
+		tunnel_protos_load
+		return 0
+	fi
+
+	pkg_update
+
+	for p in kmod-wireguard wireguard-tools luci-proto-wireguard; do
+		pkg_has "$p" && continue
+		echo "Installing $p..."
+
+		if [ "$PM" = apk ]; then
+			apk add "$p"
+		else
+			opkg install "$p"
+		fi || { [ "$p" = luci-proto-wireguard ] && continue; echo "Installing $p failed" >&2; return 1; }
+	done
+
+	tunnel_protos_load
+	echo "WireGuard is installed"
 }
 
 cmd_awg_install() {
@@ -666,6 +695,9 @@ case "$1" in
 		;;
 	awg-install)
 		cmd_awg_install
+		;;
+	wg-install)
+		cmd_wg_install
 		;;
 	dnsmasq-full)
 		cmd_dnsmasq_full

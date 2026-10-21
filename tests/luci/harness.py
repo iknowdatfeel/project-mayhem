@@ -491,15 +491,9 @@ def main():
             text = pg.inner_text('.mh-sheet-body div[data-tab="device"]')
             if 'awg0' not in text or 'AmneziaWG' not in text:
                 raise RuntimeError('awg0 running as "none" is not listed as an AmneziaWG tunnel')
-            btn = pg.locator('.mh-sheet-body div[data-tab="device"] button', has_text=TRANSLATIONS.get('Restart the network', 'Restart the network'))
-            if not btn.count():
-                raise RuntimeError('no button to restart the network for the unloaded protocol')
-            n = len(installs)
-            btn.first.click()
-            pg.wait_for_timeout(800)
-            if 'protos' not in installs[n:]:
-                raise RuntimeError('the button does not start the network restart: %s' % installs[n:])
-            close_modal(pg)
+            # installations live on the components page now
+            if pg.locator('.mh-sheet-body div[data-tab="device"] button', has_text=TRANSLATIONS.get('Restart the network', 'Restart the network')).count():
+                raise RuntimeError('the tunnels tab still offers to restart the network')
             if not pg.locator('.mh-sheet-body div[data-tab="device"] input[placeholder="awg0"]').count():
                 raise RuntimeError('no field for the name of the tunnel')
             pg.click('.mh-sheet-body div[data-tab="device"] .mh-actions button[title]')
@@ -639,6 +633,16 @@ def main():
             if not pg.query_selector('.mh-sheet table') or not pg.query_selector('[data-name="auto_update"]'):
                 raise RuntimeError('no component table or automatic update')
             shot(pg, 'components')
+            # tunnel protocols and obfuscators are installed from here
+            row = pg.locator('.mh-sheet table tr', has_text='phantun')
+            if not row.count():
+                raise RuntimeError('no fake TCP obfuscator on the components page')
+            n = len(installs)
+            row.locator('button').first.click()
+            pg.wait_for_timeout(800)
+            if 'faketcp' not in installs[n:]:
+                raise RuntimeError('the install button does not install phantun: %s' % installs[n:])
+            close_modal(pg)
 
         def settings_tabs(pg):
             pg.click('[data-name="_reset"] button')

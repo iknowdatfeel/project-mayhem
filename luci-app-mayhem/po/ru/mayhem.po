@@ -45,10 +45,6 @@ msgid "%s is an address: it goes into the field below"
 msgstr "%s — это адрес, его место в поле ниже"
 
 #: htdocs/luci-static/resources/mayhem/tunnels.js
-msgid "%s is installed, but the network has not loaded it yet: its tunnels do not start."
-msgstr "%s установлен, но сеть его ещё не загрузила: туннели не запускаются."
-
-#: htdocs/luci-static/resources/mayhem/tunnels.js
 msgid "%s is not installed on the router."
 msgstr "%s не установлен на роутере."
 
@@ -684,6 +680,10 @@ msgstr "Не получилось, подробности в журнале вы
 msgid "Fake TCP (phantun)"
 msgstr "Фейк TCP (phantun)"
 
+#: htdocs/luci-static/resources/mayhem/page/components.js
+msgid "Fake TCP obfuscator (phantun)"
+msgstr "Обфускатор «фейк TCP» (phantun)"
+
 #: htdocs/luci-static/resources/mayhem/page/sections.js
 msgid "FakeDNS"
 msgstr "FakeDNS"
@@ -831,6 +831,10 @@ msgstr "Установлено"
 #: htdocs/luci-static/resources/mayhem/tunnels.js
 msgid "Installing AmneziaWG"
 msgstr "Установка AmneziaWG"
+
+#: htdocs/luci-static/resources/mayhem/tunnels.js
+msgid "Installing WireGuard"
+msgstr "Установка WireGuard"
 
 #: htdocs/luci-static/resources/mayhem/tunnels.js
 msgid "Installing dnsmasq-full"
@@ -1044,10 +1048,6 @@ msgstr "Фильтр по имени (regexp)"
 msgid "Needed by providers that limit the number of devices. The headers match the Happ client."
 msgstr "Нужно провайдерам, которые ограничивают число устройств. Заголовки такие же, как у клиента Happ."
 
-#: htdocs/luci-static/resources/mayhem/tunnels.js
-msgid "Network"
-msgstr "Сеть"
-
 #: htdocs/luci-static/resources/mayhem/page/sections.js
 msgid "Network interface"
 msgstr "Сетевой интерфейс"
@@ -1244,6 +1244,10 @@ msgstr "Вставьте ключ сервера: vless://, vmess://, trojan://,
 msgid "Phobos (wg-obfuscator)"
 msgstr "Phobos (wg-obfuscator)"
 
+#: htdocs/luci-static/resources/mayhem/page/components.js
+msgid "Phobos obfuscator (wg-obfuscator)"
+msgstr "Обфускатор Phobos (wg-obfuscator)"
+
 #: htdocs/luci-static/resources/view/mayhem/dashboard.js
 msgid "Ping time"
 msgstr "Пинг"
@@ -1291,10 +1295,6 @@ msgstr "Прокси — через сервер. Туннель — в сете
 #: htdocs/luci-static/resources/mayhem/page/sections.js
 msgid "Query strategy"
 msgstr "Стратегия запросов (IPv4/IPv6)"
-
-#: htdocs/luci-static/resources/mayhem/tunnels.js
-msgid "Ready"
-msgstr "Установлен"
 
 #: htdocs/luci-static/resources/mayhem/diag.js
 msgid "Redirect to xray"
@@ -1363,10 +1363,6 @@ msgstr "Сбросить настройки…"
 #: htdocs/luci-static/resources/mayhem/diag.js
 msgid "Restart Mayhem"
 msgstr "Перезапустить Mayhem"
-
-#: htdocs/luci-static/resources/mayhem/tunnels.js
-msgid "Restart the network"
-msgstr "Перезапустить сеть"
 
 #: htdocs/luci-static/resources/mayhem/tunnels.js
 msgid "Restarting the network"
@@ -1923,6 +1919,10 @@ msgstr "Сторож"
 #: htdocs/luci-static/resources/mayhem/page/settings.js
 msgid "Watchdog memory threshold"
 msgstr "Порог памяти сторожа"
+
+#: htdocs/luci-static/resources/mayhem/page/components.js
+msgid "When needed"
+msgstr "По необходимости"
 
 #: htdocs/luci-static/resources/mayhem/diag.js
 msgid "With connections: subscriptions, server keys and HWID"
