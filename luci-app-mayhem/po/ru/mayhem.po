@@ -324,6 +324,10 @@ msgstr "Проверка…"
 msgid "Checks every part of the traffic path. External addresses are requested through each section, so you can see where the traffic really leaves."
 msgstr "Проверяет каждое звено пути трафика. Внешний адрес запрашивается через каждую секцию: видно, откуда трафик на самом деле выходит в интернет."
 
+#: htdocs/luci-static/resources/mayhem/page/sections.js
+msgid "Choose"
+msgstr "Выберите"
+
 #: htdocs/luci-static/resources/mayhem/diag.js
 msgid "Choose a file…"
 msgstr "Выбрать файл…"
@@ -1565,8 +1569,8 @@ msgid "TB"
 msgstr "ТБ"
 
 #: htdocs/luci-static/resources/mayhem/page/sections.js
-msgid "TCP and UDP to these ports go direct, whatever the address: 4501 or a range 5000-5100. The domains and addresses of the section go direct on any port."
-msgstr "TCP и UDP на эти порты идут напрямую, к любому адресу: 4501 или диапазон 5000-5100. Домены и адреса секции идут напрямую на любом порту."
+msgid "TCP and UDP traffic to these destination ports goes past the routing to any address. A port or a range of ports. The domains and addresses of the section are excluded on any port."
+msgstr "TCP- и UDP-трафик на эти порты назначения не маршрутизируется, к какому бы адресу он ни шёл. Порт или диапазон портов. Домены и адреса секции исключаются на любом порту."
 
 #: htdocs/luci-static/resources/view/mayhem/dashboard.js
 msgid "TCP ping"

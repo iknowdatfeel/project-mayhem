@@ -686,9 +686,8 @@ return baseclass.extend({
 		// --- ports of a direct section ---
 
 		o = ss.option(form.DynamicList, 'ports', _('Bypass ports'),
-			_('TCP and UDP to these ports go direct, whatever the address: 4501 or a range 5000-5100. The domains and addresses of the section go direct on any port.'));
+			_('TCP and UDP traffic to these destination ports goes past the routing to any address. A port or a range of ports. The domains and addresses of the section are excluded on any port.'));
 		o.datatype = 'or(port,portrange)';
-		o.placeholder = '4501';
 		o.depends('type', 'exclusion');
 		o.modalonly = true;
 
@@ -718,6 +717,7 @@ return baseclass.extend({
 			(noGeo ? ' ' + _('Categories appear in the list after the first geo data download.') : '');
 
 		o = ss.option(form.DynamicList, '_sites', _('GeoSite categories'), heavyNote);
+		o.placeholder = _('Choose');
 		o.modalonly = true;
 		geoChoices(o, 'geosite', cats.geosite);
 		o.cfgvalue = function(sid) {
@@ -731,6 +731,7 @@ return baseclass.extend({
 		});
 
 		o = ss.option(form.DynamicList, '_geoips', _('GeoIP categories'));
+		o.placeholder = _('Choose');
 		o.modalonly = true;
 		geoChoices(o, 'geoip', cats.geoip);
 		o.cfgvalue = function(sid) {
@@ -753,7 +754,6 @@ return baseclass.extend({
 			_('One per line, or separated by commas or spaces; "#" starts a comment. example.com matches the domain and its subdomains; full: is the exact name, keyword: a substring, regexp: a regular expression.'));
 		o.rows = 6;
 		o.monospace = true;
-		o.placeholder = 'example.com\nfull:www.example.org\n# Comment';
 		o.depends('rules_input', 'text');
 		o.modalonly = true;
 		o.cfgvalue = function(sid) {
@@ -780,7 +780,6 @@ return baseclass.extend({
 			_('IPv4 or IPv6 addresses, CIDR allowed, one per line or separated by commas or spaces: 91.108.4.0/22, 2001:db8::/32.'));
 		o.rows = 4;
 		o.monospace = true;
-		o.placeholder = '91.108.4.0/22\n2001:db8::/32';
 		o.depends('rules_input', 'text');
 		o.modalonly = true;
 		o.cfgvalue = function(sid) {
