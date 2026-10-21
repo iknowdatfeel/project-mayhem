@@ -1077,6 +1077,57 @@ if start_mayhem uci; then
 fi
 stop_mayhem
 
+# --- servers that stop answering, kill switch ------------------------------------
+
+health() {
+	ip netns exec router "$UCODE" -L "$FILES/usr/share/ucode/*.uc" "$FILES/usr/share/mayhem/health.uc"
+}
+
+# The proxy server stops answering for the router: a rule in its namespace.
+server_down() {
+	ip netns exec router nft add table inet mhtest
+	ip netns exec router nft add chain inet mhtest out '{ type filter hook output priority 0; }'
+	ip netns exec router nft add rule inet mhtest out ip daddr 45.0.0.3 tcp dport 8443 reject with tcp reset
+}
+server_up() { ip netns exec router nft delete table inet mhtest 2>/dev/null; }
+
+for ks in 0 1; do
+	sed -e "s/\"mode\": \"global\",/\"mode\": \"global\", \"killswitch\": \"$ks\", \"probe_url\": \"http:\/\/45.0.0.2:8080\/\",/" \
+		"$WORK/global.json" > "$WORK/health.json"
+
+	echo "== servers that do not answer (kill switch $ks)"
+	if start_mayhem "$WORK/health.json"; then
+		expect "server works: through it" 45.0.0.3 http://45.0.0.2:8080/
+		server_down
+		health; health
+
+		if [ "$ks" = 0 ]; then
+			expect "no server answers: direct, Mayhem still on" 45.0.0.1 http://45.0.0.2:8080/
+			server_up
+			health
+			expect "the server answers again: through it" 45.0.0.3 http://45.0.0.2:8080/
+		else
+			expect "kill switch: nothing goes direct" failed http://45.0.0.2:8080/
+			server_up
+			expect "kill switch: back through the server" 45.0.0.3 http://45.0.0.2:8080/
+
+			kill -9 "$(proc_in router xray)" 2>/dev/null
+			sleep 2
+			if ip netns exec router nft list table inet mayhem >/dev/null 2>&1; then
+				ok "kill switch: rules stay after an xray crash"
+			else
+				bad "kill switch: rules removed after an xray crash"
+			fi
+			expect "kill switch: nothing goes direct while xray is down" failed http://45.0.0.2:8080/
+			# what the init script does on stop
+			# shellcheck disable=SC2016 # expanded by the inner shell
+			ip netns exec router sh -c '. "$MAYHEM_LIB_DIR/lib.sh"; mayhem_net_down; mayhem_dns_servers isp'
+		fi
+	fi
+	server_up
+	stop_mayhem
+done
+
 echo "== watchdog"
 if start_mayhem uci; then
 	for i in 1 2; do

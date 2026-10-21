@@ -15,6 +15,10 @@ config settings 'settings'
 	option block_quic '0'
 	# BitTorrent goes direct
 	option torrent_direct '0'
+	# kill switch: when the servers or the remote DNS stop answering (or xray
+	# restarts), traffic waits for them; 0 = it goes direct meanwhile and
+	# comes back by itself
+	option killswitch '0'
 	# prefer_ipv4 | prefer_ipv6 | ipv4_only | ipv6_only
 	option ip_family 'prefer_ipv4'
 	# debug | info | warning | error | none

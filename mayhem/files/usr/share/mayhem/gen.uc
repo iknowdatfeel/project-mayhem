@@ -93,7 +93,9 @@ put('nft.conf', res.nft);
 put('dnsmasq.conf', res.dnsmasq);
 // What dnsmasq asks while xray works (lib.sh, mayhem_dns_servers).
 put('dns.xray', res.dns_xray);
-put('env', `GOMEMLIMIT=${res.memlimit_mib}MiB\nMAYHEM_IPV6=${res.ipv6 ? 1 : 0}\nXRAY_LOCATION_ASSET=${GEO_DIR}\n`);
+// ...and while the remote DNS does not answer (health.uc); empty: no switch.
+put('dns.fallback', res.dns_fallback ?? '');
+put('env', `GOMEMLIMIT=${res.memlimit_mib}MiB\nMAYHEM_IPV6=${res.ipv6 ? 1 : 0}\nXRAY_LOCATION_ASSET=${GEO_DIR}\nMAYHEM_KILLSWITCH=${res.killswitch ? 1 : 0}\n`);
 
 // xray reads geo files only at start: procd watches this stamp to restart it
 // when a file it uses was updated.

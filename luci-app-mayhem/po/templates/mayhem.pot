@@ -426,6 +426,10 @@ msgid "Direct traffic is resolved by the domestic DNS. Domains of proxy sections
 msgstr ""
 
 #: htdocs/luci-static/resources/view/mayhem/dashboard.js
+msgid "Direct: the servers do not answer"
+msgstr ""
+
+#: htdocs/luci-static/resources/view/mayhem/dashboard.js
 msgid "Disabled subscription"
 msgstr ""
 
@@ -471,6 +475,10 @@ msgstr ""
 
 #: htdocs/luci-static/resources/view/mayhem/dashboard.js
 msgid "Down, traffic goes direct"
+msgstr ""
+
+#: htdocs/luci-static/resources/view/mayhem/dashboard.js
+msgid "Down, traffic waits for it (kill switch)"
 msgstr ""
 
 #: htdocs/luci-static/resources/mayhem/page/sections.js
@@ -845,6 +853,10 @@ msgstr ""
 msgid "Keys: %d"
 msgstr ""
 
+#: htdocs/luci-static/resources/mayhem/page/sections.js
+msgid "Kill switch"
+msgstr ""
+
 #: htdocs/luci-static/resources/mayhem/page/servers.js
 msgid "Language"
 msgstr ""
@@ -1042,6 +1054,10 @@ msgid "On: queries go through the active server. Off: they go direct, encrypted 
 msgstr ""
 
 #: htdocs/luci-static/resources/mayhem/page/sections.js
+msgid "On: when the servers or the remote DNS do not answer, traffic waits for them and never goes direct; so does it while Xray restarts. Off: a section none of whose servers answers sends its traffic direct (with a fallback chain - only when every server of the chain is down), and names of the remote DNS go to the provider's DNS while it does not answer; everything comes back by itself when they answer again."
+msgstr ""
+
+#: htdocs/luci-static/resources/mayhem/page/sections.js
 msgid "Once a day"
 msgstr ""
 
@@ -1147,6 +1163,10 @@ msgstr ""
 
 #: htdocs/luci-static/resources/mayhem/page/servers.js
 msgid "Protocol"
+msgstr ""
+
+#: htdocs/luci-static/resources/view/mayhem/dashboard.js
+msgid "Provider's: the remote DNS does not answer"
 msgstr ""
 
 #: htdocs/luci-static/resources/mayhem/page/sections.js

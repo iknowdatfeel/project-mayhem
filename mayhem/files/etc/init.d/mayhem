@@ -84,6 +84,7 @@ mayhem_start() {
 stop_service() {
 	mayhem_net_down
 	mayhem_dns_down
+	rm -f "$MAYHEM_RUN_DIR/health.json" "$MAYHEM_RUN_DIR/dns.degraded"
 }
 
 service_triggers() {

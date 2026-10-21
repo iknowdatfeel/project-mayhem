@@ -1888,3 +1888,22 @@ msgstr "Туннель %s добавлен в список серверов: н�
 
 msgid "With one server, a query it fails to answer fails on the device too: add a second one, Cloudflare or Google say, to take over."
 msgstr "С одним сервером запрос, на который он не ответил, не получит ответа и на устройстве: добавьте второй, например Cloudflare или Google, — он подхватит."
+
+msgid "Kill switch"
+msgstr "Kill switch"
+
+msgid "On: when the servers or the remote DNS do not answer, traffic waits for them and never goes direct; so does it while Xray restarts. Off: a section none of whose servers answers sends its traffic direct (with a fallback chain - only when every server of the chain is down), and names of the remote DNS go to the provider's DNS while it does not answer; everything comes back by itself when they answer again."
+msgstr "Включено: если серверы или удалённый DNS не отвечают, трафик ждёт их и никогда не идёт напрямую; так же и пока перезапускается Xray. Выключено: секция, у которой не отвечает ни один сервер, пускает свой трафик напрямую (с цепочкой резервных — только когда лежат все серверы цепочки), а имена удалённого DNS, пока он не отвечает, уходят к DNS провайдера; когда они снова отвечают, всё возвращается само."
+
+msgid "Direct: the servers do not answer"
+msgstr "Напрямую: серверы не отвечают"
+
+msgid "Provider's: the remote DNS does not answer"
+msgstr "Провайдера: удалённый DNS не отвечает"
+
+
+
+
+
+msgid "Down, traffic waits for it (kill switch)"
+msgstr "Не работает, трафик ждёт его (kill switch)"

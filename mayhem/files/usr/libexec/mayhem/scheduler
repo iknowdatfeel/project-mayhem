@@ -5,7 +5,8 @@
 # when its generated config or the geo files it uses really changed.
 # Then checks the tunnels, runs the watchdog (xray memory, dnsmasq) and, when
 # turned on, the nightly update of Mayhem itself. Fallback chains of servers
-# are checked every 20 seconds.
+# are checked every 20 seconds, and so are the servers and the remote DNS
+# (health.uc: direct while they do not answer, unless the kill switch is on).
 
 . "${MAYHEM_LIB_DIR:-/usr/share/mayhem}/lib.sh"
 
@@ -39,6 +40,11 @@ while :; do
 	# Only when a section has a chain: a ucode process costs a little.
 	grep -q '"mode": *"fallback"' "$MAYHEM_RUN_DIR/nodes.json" 2>/dev/null &&
 		ucode "$MAYHEM_LIB_DIR/fallback.uc" >/dev/null 2>&1
+
+	# Sections and remote DNS that stop answering go direct and come back
+	# (kill switch off), or get back from direct (kill switch on).
+	[ -f "$MAYHEM_RUN_DIR/active" ] &&
+		ucode "$MAYHEM_LIB_DIR/health.uc" >/dev/null 2>&1
 
 	tick=$((tick + 1))
 	sleep 20

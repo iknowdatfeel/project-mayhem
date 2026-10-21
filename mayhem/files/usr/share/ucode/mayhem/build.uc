@@ -1166,7 +1166,7 @@ export function build(model) {
 				add_local(sec, target);
 				proxy_domains.add_all(domains);
 				to_xray(name, RL);
-				push(xray_dns, { name: name, RL: RL });
+				push(xray_dns, { name: name, RL: RL, type: info.type });
 				break;
 			}
 
@@ -1329,7 +1329,7 @@ export function build(model) {
 
 			proxy_domains.add_all(domains);
 			to_xray(name, RL);
-			push(xray_dns, { name: name, RL: RL });
+			push(xray_dns, { name: name, RL: RL, type: info.type });
 			break;
 
 		case 'exclusion':
@@ -1349,7 +1349,7 @@ export function build(model) {
 			state.sections[name] = { type: 'block' };
 
 			block_domains.add_all(domains);
-			push(xray_dns, { name: name, RL: RL });
+			push(xray_dns, { name: name, RL: RL, type: info.type });
 
 			sets.block4.add_all(ips4);
 			sets.block4.add_all(RL.geo4);
@@ -1390,7 +1390,7 @@ export function build(model) {
 			const tline = { name: name, device: inf.device, mark: '-', table: '-', v6: tv6 };
 
 			push(tun_all, tline);
-			push(xray_dns, { name: name, RL: RL });
+			push(xray_dns, { name: name, RL: RL, type: info.type, kernel: kernel });
 
 			if (kernel)
 				(tv6 ? tun_domains : tun_domains4).add_all(domains);
@@ -1733,6 +1733,30 @@ export function build(model) {
 			push(servers, ns(r));
 	}
 
+	// When the remote DNS stops answering and the kill switch is off,
+	// dnsmasq sends the names that need it to the provider instead
+	// (health.uc, "dns.degraded"): dns_fallback replaces dns_xray then.
+	// Names answered with fake addresses need no remote server and stay
+	// with xray, so proxied sites keep going through the proxy. null: the
+	// remote DNS is not used, or its names cannot be told apart.
+	const remote_addrs = map(remote, (r) => r.address);
+	const remote_used = length(filter(servers, (x) => index(remote_addrs, x.address) >= 0)) > 0;
+	const isp = upstream ?? '@ISP@\n';
+	let dns_fallback = null;
+
+	if (remote_used) {
+		if (mode == 'lists' && split != null) {
+			// Real addresses come from the remote DNS: tunnels in kernel
+			// mode, and everything routed through xray without FakeDNS.
+			const remote_named = (x) => (x.type == 'interface' && x.kernel) || (!fake && (x.type == 'proxy' || x.type == 'interface'));
+			const keep = dns_names(filter(xray_dns, (x) => !remote_named(x)), model);
+
+			dns_fallback = isp + (keep.names ? server_lines(keep.names, `127.0.0.1#${C.DNS_PORT}`) : '');
+		}
+		else if (!fake)
+			dns_fallback = isp;
+	}
+
 	// Address for non-A/AAAA queries that the DNS outbound passes through.
 	const plain = filter(domestic, (d) => is_ip(d.address))[0] ??
 		{ address: C.FALLBACK_DOMESTIC_DNS[0] };
@@ -1955,6 +1979,12 @@ export function build(model) {
 	state.mode = mode;
 	state.capture = capture_all ? 'all' : 'lists';
 	state.dns = split != null ? { split: true, names: length(split) } : { split: false, why: split_why };
+	state.killswitch = is_true(S.killswitch ?? '0');
+	state.dns_check = dns_fallback != null ? {
+		servers: map(remote, (r) => ({ address: r.address, host: r.host, port: r.port })),
+		// the helper user of the path the remote DNS takes
+		via: (default_target && is_true(D.via_proxy ?? '1')) ? `sec-${default_name}` : null
+	} : null;
 	state.probe_url = xray.burstObservatory?.pingConfig?.destination ?? (match(S.probe_url ?? '', /^https?:\/\//) ? S.probe_url : C.DEFAULT_PROBE_URL);
 
 	return {
@@ -1975,6 +2005,7 @@ export function build(model) {
 		dns_xray: split != null
 			? (upstream ?? '@ISP@\n') + server_lines(split, `127.0.0.1#${C.DNS_PORT}`)
 			: `server=127.0.0.1#${C.DNS_PORT}\n`,
+		dns_fallback: dns_fallback,
 		dnsmasq: `no-resolv\nservers-file=${C.DNS_SERVERS}\n` +
 			(nftset ? join('', map(tunnels, (t) => nftset_lines(t.domains, `tun_${t.name}_d4`, `tun_${t.name}_d6`))) : '') +
 			(kdef ? nftset_lines(kdef.blkd, 'blk_d4', 'blk_d6') + nftset_lines(kdef.dird, 'dir_d4', 'dir_d6') +
@@ -1984,6 +2015,7 @@ export function build(model) {
 		tunnels: join('', map(tun_all, (t) => `${t.name} ${t.device} ${t.mark} ${t.table} ${t.v6 ? 1 : 0}${t.keep_bal ? ' 0' : ''}\n`)),
 		key: key,
 		memlimit_mib: memlimit_mib(S, R),
+		killswitch: is_true(S.killswitch ?? '0'),
 		ipv6: v6,
 		state: state,
 		overrides: overrides,

@@ -625,6 +625,11 @@ return view.extend({
 		if (s.type === 'interface')
 			return [ _('Server'), s.label ? '%s (%s)'.format(s.label, s.interface) : _('Interface %s').format(s.interface || '?') ];
 
+		// No server of the section answers: its traffic goes direct until
+		// one does (kill switch off).
+		if (s.down)
+			return [ _('Server'), _('Direct: the servers do not answer'), 'mh-warn' ];
+
 		const how = s.mode === 'auto' ? (s.pinned ? _('pinned by hand') : _('automatic'))
 			: s.mode === 'fallback' ? _('fallback chain') : null;
 
@@ -635,10 +640,16 @@ return view.extend({
 		const c = this.conn;
 		const sp = this.speed && working ? this.speed : null;
 		const rows = [
-			this.serverRow(d),
+			this.serverRow(d)
+		];
+
+		if (d.dns_down)
+			rows.push([ _('DNS'), _('Provider\'s: the remote DNS does not answer'), 'mh-warn' ]);
+
+		rows.push(
 			[ _('Incoming'), sp ? rate(sp.down) : '—' ],
 			[ _('Outgoing'), sp ? rate(sp.up) : '—' ]
-		];
+		);
 		const wait = '…';
 
 		if (!c) {
@@ -1111,6 +1122,7 @@ return view.extend({
 		const t = s.tunnel || {};
 		const state = t.state === 'up' ? [ 'mh-ok', '✔ ' + _('Works') ]
 			: t.state === 'down' ? [ 'mh-fail', '✘ ' + _('Down, traffic goes direct') ]
+			: t.state === 'held' ? [ 'mh-fail', '✘ ' + _('Down, traffic waits for it (kill switch)') ]
 			: [ 'mh-muted', _('Unknown') ];
 		const info = [ _('Interface %s').format(s.interface || '?'), s.mode === 'xray' ? _('Through Xray') : _('Kernel mode') ];
 
