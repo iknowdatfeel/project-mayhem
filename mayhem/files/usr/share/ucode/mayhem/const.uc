@@ -73,3 +73,7 @@ export const LOCAL6 = [
 	'::/127', '64:ff9b:1::/48', '100::/64', '2001:db8::/32',
 	'fc00::/7', 'fe80::/10', 'ff00::/8'
 ];
+
+// How long an address of a site that is not excluded keeps an excluded site
+// on the same address away from the kernel path (global mode, nft set).
+export const OTHER_ADDR_TTL = '12h';

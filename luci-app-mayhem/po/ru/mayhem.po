@@ -1181,8 +1181,8 @@ msgid "One per line, or separated by commas or spaces; \"#\" starts a comment. e
 msgstr "По одному в строке или через запятую или пробел; «#» — комментарий. example.com — домен и все поддомены; full: — точное имя, keyword: — подстрока, regexp: — регулярное выражение."
 
 #: htdocs/luci-static/resources/mayhem/page/sections.js
-msgid "Only matters in global mode: domains get addresses from 198.18.0.0/15 (without it, they are recognized by their TLS name), and the traffic of excluded domains goes direct in the kernel, past Xray (needs dnsmasq-full). By lists, Xray always does this. Cached fake addresses stop working while Mayhem is stopped."
-msgstr "Имеет значение только в глобальном режиме: домены получают адреса из 198.18.0.0/15 (без этого они узнаются по имени в TLS), а трафик исключённых доменов идёт напрямую в ядре, мимо Xray (нужен dnsmasq-full). В режиме «по спискам» Xray делает так всегда. Пока Mayhem остановлен, закэшированные фиктивные адреса не работают."
+msgid "Only matters in global mode: domains get addresses from 198.18.0.0/15 (without it, they are recognized by their TLS name). By lists, Xray always does this. Cached fake addresses stop working while Mayhem is stopped."
+msgstr "Имеет значение только в глобальном режиме: домены получают адреса из 198.18.0.0/15 (без этого они узнаются по имени в TLS). В режиме «по спискам» Xray делает так всегда. Пока Mayhem остановлен, закэшированные фиктивные адреса не работают."
 
 #: htdocs/luci-static/resources/mayhem/tunnels.js
 msgid "Only to route chosen sites into this tunnel; to use it for all traffic, choose it on the dashboard instead."

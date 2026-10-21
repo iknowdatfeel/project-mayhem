@@ -498,9 +498,9 @@ else
 	ok "huge category in a kernel tunnel goes through xray, small ones through dnsmasq"
 fi
 
-# Global mode with FakeDNS: excluded domains go direct in the kernel (their
-# addresses come from dnsmasq), not through xray. Not without FakeDNS (a
-# proxied site may share a CDN address) or without nftset in dnsmasq.
+# Global mode: excluded domains go direct in the kernel (their addresses come
+# from dnsmasq), not through xray, with FakeDNS or without; an address another
+# site also has goes to xray. Not without nftset in dnsmasq.
 gdir() {
 	# $1 name, $2 fakedns, $3 dnsmasq_nftset; prints "nft dnsmasq" counts
 	cat > "$OUT/gdir-$1.json" <<JSON
@@ -513,13 +513,13 @@ gdir() {
 JSON
 	mkdir -p "$OUT/gdir-$1"
 	uc "$FILES/usr/share/mayhem/gen.uc" --model "$OUT/gdir-$1.json" --out "$OUT/gdir-$1" 2>/dev/null || { echo fail; return; }
-	echo "$(grep -c '@dir_d4 counter return' "$OUT/gdir-$1/nft.conf") $(grep -c 'nftset=/gosuslugi.test/4#inet#mayhem#dir_d4' "$OUT/gdir-$1/dnsmasq.conf")"
+	echo "$(grep -c '@dir_d4 ip daddr != @oth_d4 counter return' "$OUT/gdir-$1/nft.conf") $(grep -c 'nftset=/gosuslugi.test/4#inet#mayhem#dir_d4\|nftset=/#/4#inet#mayhem#oth_d4' "$OUT/gdir-$1/dnsmasq.conf")"
 }
 got="$(gdir fake 1 true) / $(gdir real 0 true) / $(gdir plain 1 false)"
-if [ "$got" = "1 1 / 0 0 / 0 0" ]; then
-	ok "global mode: excluded domains go direct in the kernel with FakeDNS and dnsmasq-full only"
+if [ "$got" = "1 2 / 1 2 / 0 0" ]; then
+	ok "global mode: excluded domains go direct in the kernel with dnsmasq-full, FakeDNS or not"
 else
-	bad "global mode, excluded domains in the kernel: got $got, want 1 1 / 0 0 / 0 0"
+	bad "global mode, excluded domains in the kernel: got $got, want 1 2 / 1 2 / 0 0"
 fi
 
 # Firmware version, target and package arch for the AmneziaWG builds.

@@ -1042,7 +1042,7 @@ return baseclass.extend({
 		o.rmempty = false;
 
 		o = s.option(form.Flag, 'fakedns', _('FakeDNS'),
-			_('Only matters in global mode: domains get addresses from 198.18.0.0/15 (without it, they are recognized by their TLS name), and the traffic of excluded domains goes direct in the kernel, past Xray (needs dnsmasq-full). By lists, Xray always does this. Cached fake addresses stop working while Mayhem is stopped.'));
+			_('Only matters in global mode: domains get addresses from 198.18.0.0/15 (without it, they are recognized by their TLS name). By lists, Xray always does this. Cached fake addresses stop working while Mayhem is stopped.'));
 
 		// --- geo files ---
 

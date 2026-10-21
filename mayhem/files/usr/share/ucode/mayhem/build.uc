@@ -264,10 +264,13 @@ function build_nft_text(S, v6, sets, tunnels, dns_redirect, fake_pool, kdef, cap
 		}
 	}
 
-	// Addresses of excluded domains in global mode (dnsmasq fills them).
+	// Global mode: addresses of excluded domains and of all the others
+	// (dnsmasq fills them; the others expire, there are many).
 	if (sets.dir_domains && !kdef) {
 		s += '\tset dir_d4 {\n\t\ttype ipv4_addr\n\t}\n';
 		s += '\tset dir_d6 {\n\t\ttype ipv6_addr\n\t}\n';
+		s += `\tset oth_d4 {\n\t\ttype ipv4_addr\n\t\tflags timeout\n\t\ttimeout ${C.OTHER_ADDR_TTL}\n\t}\n`;
+		s += `\tset oth_d6 {\n\t\ttype ipv6_addr\n\t\tflags timeout\n\t\ttimeout ${C.OTHER_ADDR_TTL}\n\t}\n`;
 	}
 
 	if (cap) {
@@ -409,8 +412,8 @@ function build_nft_text(S, v6, sets, tunnels, dns_redirect, fake_pool, kdef, cap
 	s += '\t\tip6 daddr @direct6 counter return\n';
 
 	if (sets.dir_domains && !kdef) {
-		s += '\t\tip daddr @dir_d4 counter return\n';
-		s += '\t\tip6 daddr @dir_d6 counter return\n';
+		s += '\t\tip daddr @dir_d4 ip daddr != @oth_d4 counter return\n';
+		s += '\t\tip6 daddr @dir_d6 ip6 daddr != @oth_d6 counter return\n';
 	}
 
 	const tp4 = `meta l4proto { tcp, udp } meta mark set meta mark | ${mark} ${tag} tproxy ip to 127.0.0.1:${C.TPROXY_PORT} counter accept`;
@@ -1716,14 +1719,14 @@ export function build(model) {
 		};
 	}
 
-	// Global mode with the rest through xray: domains of exclusions get
-	// their real addresses, dnsmasq puts them into a set, and their traffic
-	// goes direct in the kernel, past xray (UDP included). Only with FakeDNS,
-	// where every other site gets a fake address: with real ones a proxied
-	// site on the same CDN address as an excluded one would go direct too.
+	// Global mode with the rest through xray: dnsmasq puts the addresses of
+	// excluded domains into one set and those of every other domain into
+	// another, and an address only in the first goes direct in the kernel,
+	// past xray (UDP included). An address an excluded site shares with
+	// another one (a CDN) still goes to xray, which tells them apart by name.
 	let gdir = null;
 
-	if (mode == 'global' && !kdef && fakedns && R.dnsmasq_nftset !== false) {
+	if (mode == 'global' && !kdef && R.dnsmasq_nftset !== false) {
 		const d = uset();
 
 		for (let r in routed)
@@ -2203,7 +2206,8 @@ export function build(model) {
 			(nftset ? join('', map(tunnels, (t) => nftset_lines(t.domains, `tun_${t.name}_d4`, `tun_${t.name}_d6`))) : '') +
 			(kdef ? nftset_lines(kdef.blkd, 'blk_d4', 'blk_d6') + nftset_lines(kdef.dird, 'dir_d4', 'dir_d6') +
 				nftset_lines(kdef.pxd, 'px_d4', 'px_d6') : '') +
-			(gdir ? nftset_lines(gdir, 'dir_d4', 'dir_d6') : ''),
+			(gdir ? nftset_lines(gdir, 'dir_d4', 'dir_d6') +
+				`nftset=/#/4#inet#${C.NFT_TABLE}#oth_d4,6#inet#${C.NFT_TABLE}#oth_d6\n` : ''),
 		// "section device mark table v6" per tunnel section; mark and table are
 		// "-" in xray mode.
 		tunnels: join('', map(tun_all, (t) => `${t.name} ${t.device} ${t.mark} ${t.table} ${t.v6 ? 1 : 0}${t.keep_bal ? ' 0' : ''}\n`)),
