@@ -21,6 +21,7 @@ const callAction = rpc.declare({ object: 'luci.mayhem', method: 'action', params
 const callSelect = rpc.declare({ object: 'luci.mayhem', method: 'select_node', params: [ 'section', 'tag' ], expect: { '': {} } });
 const callProbe = rpc.declare({ object: 'luci.mayhem', method: 'probe', params: [ 'tag', 'method' ], expect: { '': {} } });
 const callProbeIcmp = rpc.declare({ object: 'luci.mayhem', method: 'probe_icmp', params: [ 'tags' ], expect: { '': {} } });
+const callProbeTcp = rpc.declare({ object: 'luci.mayhem', method: 'probe_tcp', params: [ 'tags' ], expect: { '': {} } });
 const callWarm = rpc.declare({ object: 'luci.mayhem', method: 'warm', params: [ 'now' ], expect: { '': {} } });
 const callSubUpdate = rpc.declare({ object: 'luci.mayhem', method: 'sub_update', params: [ 'name' ], expect: { '': {} } });
 const callRefresh = rpc.declare({ object: 'luci.mayhem', method: 'refresh_servers', expect: { '': {} } });
@@ -536,13 +537,21 @@ return view.extend({
 
 		// A ping costs the router next to nothing, a call a whole process:
 		// ICMP asks for many servers at once.
-		if (method === 'icmp') {
+		// TCP too, in waves on the router; tunnels are tested one by one, through
+		// their interface.
+		if (method === 'icmp' || (method === 'tcp' && !cold)) {
+			const batch = method === 'tcp' ? queue.filter((n) => !n.iface) : queue;
+			const rest = method === 'tcp' ? queue.filter((n) => n.iface) : [];
+			const call = method === 'tcp' ? callProbeTcp : callProbeIcmp;
 			const chunks = [];
 
-			for (let i = 0; i < queue.length; i += ICMP_CHUNK)
-				chunks.push(queue.slice(i, i + ICMP_CHUNK));
+			for (let i = 0; i < batch.length; i += ICMP_CHUNK)
+				chunks.push(batch.slice(i, i + ICMP_CHUNK));
 
-			return Promise.all(chunks.map((c) => callProbeIcmp(c.map((n) => n.tag)).then((r) => {
+			if (rest.length)
+				delete this.busy[key];
+
+			return Promise.all(chunks.map((c) => call(c.map((n) => n.tag)).then((r) => {
 				for (const n of c) {
 					const x = (r.results || {})[n.tag] || { error: r.error || 'error' };
 
@@ -550,7 +559,7 @@ return view.extend({
 				}
 
 				this.redraw();
-			}).catch(() => {}))).finally(() => {
+			}).catch(() => {})).concat(rest.length ? [ this.probeSection(Object.assign({}, sec, { nodes: rest }), true) ] : [])).finally(() => {
 				delete this.busy[key];
 				this.redraw();
 			});

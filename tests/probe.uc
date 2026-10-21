@@ -55,18 +55,29 @@ expect('icmp: the tunnel ping goes through its interface', length(filter(pings, 
 // another 6 s; the tunnel fallback adds one more wave
 expect(`icmp: pings run at once (${took} s)`, took < 5);
 
-// --- TCP: the second connection counts -----------------------------------------------
+// --- TCP: one connection (as v2rayNG), many servers in waves ----------------------
 fs.writefile(log, '');
-fs.writefile(`${run}/curl.seq`, '0.001 0.050\n0.001 0.020\n');
+fs.writefile(`${run}/curl.seq`, '0.001 0.050\n');
 r = call('probe', { tag: 'n-a', method: 'tcp' });
-expect(`tcp: second connection ${r.ms} ${r.error}`, r.ms == 19);
-
-fs.writefile(`${run}/curl.seq`, '0.001 0.050\n0.000 0.000\n');
-r = call('probe', { tag: 'n-a', method: 'tcp' });
-expect(`tcp: first connection when the second fails ${r.ms} ${r.error}`, r.ms == 49);
+expect(`tcp: one connection ${r.ms} ${r.error}`, r.ms == 49);
 
 fs.writefile(`${run}/curl.seq`, '0.000 0.000\n');
 r = call('probe', { tag: 'n-a', method: 'tcp' });
 expect(`tcp: no connection ${r.ms} ${r.error}`, r.error == 'no connection');
+
+fs.writefile(`${run}/curl.seq`, '');
+fs.writefile(log, '');
+const t1 = clock(true);
+r = call('probe_tcp', { tags: [ 'n-a', 'n-a2', 'n-dead1', 'n-dead2', 'n-dead3', 'awg0', 'n-none' ] });
+const took2 = clock(true)[0] - t1[0];
+const rt = r.results ?? {};
+const curls = filter(split(fs.readfile(log) ?? '', '\n'), (l) => match(l, /^curl /));
+
+expect(`tcp batch: live ${rt['n-a']}`, rt['n-a']?.ms == 20 && rt['n-a2']?.ms == 20);
+expect(`tcp batch: dead ${rt['n-dead1']}`, rt['n-dead1']?.error == 'no connection');
+expect(`tcp batch: tunnel and unknown ${rt['awg0']} ${rt['n-none']}`, rt['awg0']?.error == 'tunnel' && rt['n-none']?.error == 'unknown server');
+expect(`tcp batch: one connection each, ${length(curls)}`, length(curls) == 5);
+// three dead servers of a second each: at once that is about a second
+expect(`tcp batch: in parallel (${took2} s)`, took2 < 3);
 
 exit(fails ? 1 : 0);

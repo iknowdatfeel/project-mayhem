@@ -747,13 +747,21 @@ cat > "$OUT/probe-bin/curl" <<'EOF'
 #!/bin/sh
 echo "curl $*" >> "$FAKE_LOG"
 f="$MAYHEM_RUN_DIR/curl.seq"
-head -n 1 "$f"
-sed -i 1d "$f"
+if [ -s "$f" ]; then
+	head -n 1 "$f"
+	sed -i 1d "$f"
+	exit 0
+fi
+for a; do url="$a"; done
+case "$url" in
+*10.0.0.1:*) printf '0.001 0.021' ;;
+*) sleep 1; printf '0.000000 0.000000' ;;
+esac
 EOF
 chmod +x "$OUT/probe-bin/ping" "$OUT/probe-bin/curl"
 if out="$(PATH="$OUT/probe-bin:$PATH" FAKE_LOG="$OUT/probe.log" MAYHEM_UCI_DIR="$OUT/probe-uci" MAYHEM_RUN_DIR="$OUT/probe-run" \
 	uc "$ROOT/tests/probe.uc" "$ROOT/luci-app-mayhem/root/usr/share/rpcd/ucode/luci.mayhem" 2>&1)"; then
-	ok "latency: ICMP of many servers at once, TCP counts the second connection"
+	ok "latency: ICMP and TCP of many servers at once, in waves"
 else
 	bad "latency: $out"
 fi
