@@ -149,6 +149,10 @@ function dnsOptions(s, kind, labels, defType) {
 			this.map.data.set('mayhem', sid, kind, all);
 		else
 			this.map.data.unset('mayhem', sid, kind);
+
+		// The type is kept even without servers: chosen first, the servers later.
+		if (t !== defType || this.map.data.get('mayhem', sid, kind + '_type'))
+			this.map.data.set('mayhem', sid, kind + '_type', t);
 	};
 
 	let o = s.option(form.ListValue, typeName, labels[0]);
@@ -156,9 +160,11 @@ function dnsOptions(s, kind, labels, defType) {
 	o.cfgvalue = function(sid) {
 		const l = list(this, sid);
 
-		return l.length ? dnsSplit(l[0])[0] : defType;
+		return l.length ? dnsSplit(l[0])[0] : (this.map.data.get('mayhem', sid, kind + '_type') || defType);
 	};
 	o.write = o.remove = store;
+	// Saved as its own value, so that a type chosen alone is saved too.
+	o.forcewrite = true;
 	const typeOpt = o;
 
 	o = s.option(DnsList, kind, labels[1], labels[2]);
