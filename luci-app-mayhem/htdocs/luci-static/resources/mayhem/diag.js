@@ -283,7 +283,7 @@ return baseclass.extend({
 			]),
 			E('div', { 'class': 'mh-drow-items mh-small' }, items.map((c) => E('div', {
 				'class': 'mh-item ' + ({ ok: 'mh-ok', warn: 'mh-warn', fail: 'mh-fail' }[c.status] || 'mh-muted')
-			}, [ mh.icon(ITEM_ICON[c.status] || 'circle-idle', true), E('b', checkName(c.name)), E('div', mh.ipSpan(checkDetail(c.detail), false)) ])))
+			}, [ mh.icon(ITEM_ICON[c.status] || 'circle-idle', true), E('b', checkName(c.name)), E('div', [ mh.ipSpan(checkDetail(c.detail), false) ]) ])))
 		]);
 	},
 
