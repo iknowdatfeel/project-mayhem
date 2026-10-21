@@ -42,10 +42,6 @@ msgid "%s is an address: it goes into the field below"
 msgstr ""
 
 #: htdocs/luci-static/resources/mayhem/tunnels.js
-msgid "%s is installed, but the network has not loaded it yet: its tunnels do not start."
-msgstr ""
-
-#: htdocs/luci-static/resources/mayhem/tunnels.js
 msgid "%s is not installed on the router."
 msgstr ""
 
@@ -689,6 +685,10 @@ msgstr ""
 msgid "Fake TCP (phantun)"
 msgstr ""
 
+#: htdocs/luci-static/resources/mayhem/page/components.js
+msgid "Fake TCP obfuscator (phantun)"
+msgstr ""
+
 #: htdocs/luci-static/resources/mayhem/page/sections.js
 msgid "FakeDNS"
 msgstr ""
@@ -821,7 +821,7 @@ msgstr ""
 msgid "Incoming"
 msgstr ""
 
-#: htdocs/luci-static/resources/mayhem/tunnels.js
+#: htdocs/luci-static/resources/mayhem/page/components.js
 msgid "Install"
 msgstr ""
 
@@ -835,6 +835,10 @@ msgstr ""
 
 #: htdocs/luci-static/resources/mayhem/tunnels.js
 msgid "Installing AmneziaWG"
+msgstr ""
+
+#: htdocs/luci-static/resources/mayhem/tunnels.js
+msgid "Installing WireGuard"
 msgstr ""
 
 #: htdocs/luci-static/resources/mayhem/tunnels.js
@@ -1049,10 +1053,6 @@ msgstr ""
 msgid "Needed by providers that limit the number of devices. The headers match the Happ client."
 msgstr ""
 
-#: htdocs/luci-static/resources/mayhem/tunnels.js
-msgid "Network"
-msgstr ""
-
 #: htdocs/luci-static/resources/mayhem/page/sections.js
 msgid "Network interface"
 msgstr ""
@@ -1113,7 +1113,7 @@ msgstr ""
 msgid "Not in the server list"
 msgstr ""
 
-#: htdocs/luci-static/resources/mayhem/tunnels.js
+#: htdocs/luci-static/resources/mayhem/page/components.js
 msgid "Not installed"
 msgstr ""
 
@@ -1257,6 +1257,10 @@ msgstr ""
 msgid "Phobos (wg-obfuscator)"
 msgstr ""
 
+#: htdocs/luci-static/resources/mayhem/page/components.js
+msgid "Phobos obfuscator (wg-obfuscator)"
+msgstr ""
+
 #: htdocs/luci-static/resources/view/mayhem/dashboard.js
 msgid "Ping time"
 msgstr ""
@@ -1307,10 +1311,6 @@ msgstr ""
 
 #: htdocs/luci-static/resources/mayhem/page/sections.js
 msgid "Query strategy"
-msgstr ""
-
-#: htdocs/luci-static/resources/mayhem/tunnels.js
-msgid "Ready"
 msgstr ""
 
 #: htdocs/luci-static/resources/mayhem/diag.js
@@ -1379,10 +1379,6 @@ msgstr ""
 
 #: htdocs/luci-static/resources/mayhem/diag.js
 msgid "Restart Mayhem"
-msgstr ""
-
-#: htdocs/luci-static/resources/mayhem/tunnels.js
-msgid "Restart the network"
 msgstr ""
 
 #: htdocs/luci-static/resources/mayhem/tunnels.js
@@ -1947,6 +1943,10 @@ msgstr ""
 
 #: htdocs/luci-static/resources/mayhem/page/settings.js
 msgid "Watchdog memory threshold"
+msgstr ""
+
+#: htdocs/luci-static/resources/mayhem/page/components.js
+msgid "When needed"
 msgstr ""
 
 #: htdocs/luci-static/resources/mayhem/diag.js

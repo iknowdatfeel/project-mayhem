@@ -2197,7 +2197,7 @@ const methods = {
 		args: { what: '', version: '' },
 		call: function(req) {
 			const ver = match(req.args?.version ?? '', /^[0-9][0-9A-Za-z.-]*$/) ? req.args.version : '';
-			const cmds = { awg: 'awg-install', protos: 'tunnel-protos', dnsmasq: 'dnsmasq-full', xray: `xray-install ${ver}`, mayhem: 'self-update',
+			const cmds = { awg: 'awg-install', protos: 'tunnel-protos', dnsmasq: 'dnsmasq-full', xray: `xray-install ${ver}`, mayhem: 'self-update', wg: 'wg-install',
 				phobos: 'obfs-install phobos', faketcp: 'obfs-install faketcp' };
 			const cmd = cmds[req.args?.what];
 
@@ -2746,7 +2746,12 @@ const methods = {
 				mayhem: mayhem_version(),
 				xray: xray_installed(),
 				xray_pinned: match(fs.readfile(`${LIB}/const.sh`) ?? '', /MAYHEM_XRAY_VERSION="([^"]*)"/)?.[1],
-				install: install_running() ? 'running' : null
+				install: install_running() ? 'running' : null,
+				// tunnel protocols and WireGuard obfuscators: installed or not
+				awg: has_awg(),
+				wireguard: has_wireguard(),
+				phobos: fs.access(OBFS_BIN.phobos, 'x') == true,
+				faketcp: fs.access(OBFS_BIN.faketcp, 'x') == true
 			};
 
 			if (req.args?.check) {

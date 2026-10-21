@@ -61,6 +61,10 @@ return baseclass.extend({
 				: E('span', { 'class': 'mh-ok' }, _('%s, up to date').format(cur || v)));
 			const btn = (what, v, cur) => (!checking && v && (newer(v, cur) || !cur))
 				? E('button', { 'class': 'btn cbi-button-action', 'click': ui.createHandlerFn(tunnels, 'install', what, v) }, _('Update to %s').format(v)) : '';
+			const pkg = (name, has, what) => row(name,
+				has ? E('span', { 'class': 'mh-ok' }, _('Installed')) : E('span', { 'class': 'mh-muted' }, _('Not installed')),
+				E('span', { 'class': 'mh-muted' }, _('When needed')),
+				(has || checking) ? '' : E('button', { 'class': 'btn cbi-button-action', 'click': ui.createHandlerFn(tunnels, 'install', what) }, _('Install')));
 			const data = (what) => E('button', {
 				'class': 'btn cbi-button',
 				'click': ui.createHandlerFn(this, () => callDataUpdate(what, '').then((r) => {
@@ -73,7 +77,13 @@ return baseclass.extend({
 				row('Xray', c.xray, latest(c.xray_latest, c.xray), btn('xray', c.xray_latest, c.xray)),
 				row('Mayhem', c.mayhem, latest(c.mayhem_latest, c.mayhem), btn('mayhem', c.mayhem_latest, c.mayhem)),
 				row(_('Geo data'), updated(geoTime), E('span', { 'class': 'mh-muted' }, _('Every night')), data('geo')),
-				row(_('Rule lists'), updated(listTime), E('span', { 'class': 'mh-muted' }, _('Automatically')), data('lists'))
+				row(_('Rule lists'), updated(listTime), E('span', { 'class': 'mh-muted' }, _('Automatically')), data('lists')),
+				// Tunnel protocols and WireGuard obfuscators: installed when needed.
+				// After a tunnel protocol the network restarts if it has not loaded it.
+				pkg('AmneziaWG', c.awg, 'awg'),
+				pkg('WireGuard', c.wireguard, 'wg'),
+				pkg(_('Phobos obfuscator (wg-obfuscator)'), c.phobos, 'phobos'),
+				pkg(_('Fake TCP obfuscator (phantun)'), c.faketcp, 'faketcp')
 			);
 		};
 

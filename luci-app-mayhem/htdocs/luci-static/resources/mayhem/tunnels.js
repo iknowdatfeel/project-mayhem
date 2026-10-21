@@ -35,6 +35,7 @@ const TITLES = {
 	dnsmasq: _('Installing dnsmasq-full'),
 	xray: _('Updating Xray'),
 	mayhem: _('Updating Mayhem'),
+	wg: _('Installing WireGuard'),
 	phobos: _('Installing wg-obfuscator'),
 	faketcp: _('Installing phantun')
 };
@@ -332,24 +333,6 @@ return baseclass.extend({
 		const usedBy = (iface) => sections.filter((s) =>
 			(s.type === 'interface' && s.interface === iface) || L.toArray(s.iface_node).indexOf(iface) >= 0).map((s) => s['.name']);
 		const tunnels = (info.interfaces || []).filter((i) => TUNNEL_PROTOS.indexOf(i.proto) >= 0);
-		const notes = [];
-		// A setting row as on the other pages: the title on the left, the state
-		// and its button on the right.
-		const row = (title, state, cls, button) => E('div', { 'class': 'cbi-value' }, [
-			E('label', { 'class': 'cbi-value-title' }, title),
-			E('div', { 'class': 'cbi-value-field mh-note' }, [ E('span', { 'class': cls || '' }, state), button || '' ])
-		]);
-
-		notes.push(info.awg
-			? row('AmneziaWG', _('Ready'), 'mh-ok')
-			: row('AmneziaWG', _('Not installed'), 'mh-muted',
-				E('button', { 'class': 'btn cbi-button cbi-button-action', 'click': ui.createHandlerFn(this, 'install', 'awg') }, _('Install'))));
-
-		if ((info.protos_missing || []).length)
-			notes.push(row(_('Network'), _('%s is installed, but the network has not loaded it yet: its tunnels do not start.').format(
-				info.protos_missing.map((p) => NAMES[p] || p).join(', ')), 'mh-warn',
-				E('button', { 'class': 'btn cbi-button', 'click': ui.createHandlerFn(this, 'install', 'protos') }, _('Restart the network'))));
-
 		// The name shown on the dashboard and in the server list; saved with
 		// the page.
 		const labelBox = (iface) => E('input', {
@@ -400,7 +383,6 @@ return baseclass.extend({
 				' ',
 				_('Every tunnel is also a server of the server list: choose it on the dashboard like any other server, or let the automatic choice by ping take it.')
 			]),
-			...notes,
 			rows.length ? E('table', { 'class': 'table mh-rtable' }, [
 				E('tr', { 'class': 'tr table-titles' }, [
 					E('th', { 'class': 'th' }, _('Tunnel name')), E('th', { 'class': 'th' }, _('Interface')), E('th', { 'class': 'th' }, _('Protocol')),
