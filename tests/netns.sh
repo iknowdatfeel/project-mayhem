@@ -122,6 +122,22 @@ expect_dns() {
 	if [ "$got" = "$6" ]; then ok "$1"; else bad "$1: expected $6, got $got"; fi
 }
 
+expect_fake() {
+	# $1 description, $2 namespace, $3 server, $4 port, $5 name: a fake address
+	local got
+	got="$(dns "$2" "$3" "$4" "$5")"
+	case "$got" in
+		198.1[89].*) ok "$1" ;;
+		*) bad "$1: expected an address from 198.18.0.0/15, got $got" ;;
+	esac
+}
+
+site() {
+	# $1 domain -> curl arguments: the client resolves it through the router's
+	# dnsmasq, as a device does, and connects to the answer
+	printf -- '--resolve %s:8080:%s http://%s:8080/' "$1" "$(dns client 192.168.1.1 53 "$1")" "$1"
+}
+
 cleanup() {
 	local n p
 	for n in client router wan tunnel; do
@@ -305,7 +321,8 @@ PY
 
 cat > "$WORK/server.json" <<EOF
 { "log": { "loglevel": "warning" },
-  "dns": { "hosts": { "youtube.test": "45.0.0.2" } },
+  "dns": { "hosts": { "youtube.test": "45.0.0.2", "www.youtube.test": "45.0.0.2", "mytube2.example": "45.0.0.2",
+    "www.yt.test": "45.0.0.2", "mytubekw.example": "45.0.0.2", "listed.test": "45.0.0.2" } },
   "inbounds": [
     { "tag": "a", "listen": "45.0.0.3", "port": 8443, "protocol": "shadowsocks",
       "settings": { "method": "2022-blake3-aes-128-gcm", "password": "$SS_KEY", "network": "tcp,udp" } },
@@ -315,8 +332,8 @@ cat > "$WORK/server.json" <<EOF
       "settings": { "method": "2022-blake3-aes-128-gcm", "password": "$SS_KEY", "network": "tcp,udp" } } ],
   "outbounds": [
     { "tag": "out-a", "protocol": "freedom", "sendThrough": "45.0.0.3", "streamSettings": { "sockopt": { "domainStrategy": "UseIP" } } },
-    { "tag": "out-b", "protocol": "freedom", "sendThrough": "45.0.0.8" },
-    { "tag": "out-c", "protocol": "freedom", "sendThrough": "45.0.0.9" } ],
+    { "tag": "out-b", "protocol": "freedom", "sendThrough": "45.0.0.8", "streamSettings": { "sockopt": { "domainStrategy": "UseIP" } } },
+    { "tag": "out-c", "protocol": "freedom", "sendThrough": "45.0.0.9", "streamSettings": { "sockopt": { "domainStrategy": "UseIP" } } } ],
   "routing": { "rules": [ { "inboundTag": [ "b" ], "outboundTag": "out-b" }, { "inboundTag": [ "c" ], "outboundTag": "out-c" } ] } }
 EOF
 
@@ -340,7 +357,7 @@ sleep 2
 
 cat > "$WORK/lists.json" <<EOF
 {
-  "settings": { "mode": "lists", "capture": "all", "interface": [ "br-lan" ], "ip_family": "ipv4_only", "log_level": "warning" },
+  "settings": { "mode": "lists", "interface": [ "br-lan" ], "ip_family": "ipv4_only", "log_level": "warning" },
   "dns": { "domestic": [ "45.0.0.2" ], "remote": [ "45.0.0.4" ], "via_proxy": "1", "proxy_section": "main", "hijack": "1" },
   "sections": [
     { ".name": "ads", "type": "block", "enabled": "1", "domain": [ "ads.test" ] },
@@ -352,42 +369,23 @@ cat > "$WORK/lists.json" <<EOF
 }
 EOF
 
-echo "== lists mode"
+echo "== lists mode: only listed traffic reaches xray"
 if start_mayhem "$WORK/lists.json"; then
-	expect "no rule -> xray direct" 45.0.0.1 http://45.0.0.2:8080/
-	expect "domain -> proxy" 45.0.0.3 -H 'Host: youtube.test' http://45.0.0.2:8080/
-	expect "subdomain -> proxy" 45.0.0.3 -H 'Host: www.youtube.test' http://45.0.0.2:8080/
-	expect "keyword -> proxy" 45.0.0.3 -H 'Host: mytube2.example' http://45.0.0.2:8080/
-	expect "block section" failed -H 'Host: ads.test' http://45.0.0.2:8080/
+	expect "no rule -> kernel direct, past xray" 192.168.1.2 http://45.0.0.2:8080/
+	expect "domain -> proxy" 45.0.0.3 $(site youtube.test)
+	expect "subdomain -> proxy" 45.0.0.3 $(site www.youtube.test)
+	expect "keyword -> proxy" 45.0.0.3 $(site mytube2.example)
+	expect "block section" failed $(site ads.test)
+	expect "other domain -> kernel direct" 192.168.1.2 $(site other.test)
 	expect "IP rule -> proxy" 45.0.0.3 http://45.0.0.7:8080/
 	expect "exclusion IP -> kernel direct" 192.168.1.2 http://45.0.0.6:8080/
-	expect_dns "proxy domain -> remote DNS" router 127.0.0.1 12753 youtube.test 45.0.0.7
+	expect_fake "proxy domain -> fake address from xray" router 127.0.0.1 12753 youtube.test
 	expect_dns "other domain -> domestic DNS" router 127.0.0.1 12753 other.test 45.0.0.2
-	expect_dns "DNS to 1.2.3.4:53 is intercepted" client 1.2.3.4 53 youtube.test 45.0.0.7
+	expect_fake "DNS to 1.2.3.4:53 is intercepted" client 1.2.3.4 53 youtube.test
 	expect_dns "DNS to 8.8.8.8:53 is intercepted" client 8.8.8.8 53 vk.test 45.0.0.2
 
 	got="$(udp 1)"
-	if [ "$got" = 45.0.0.1 ]; then ok "UDP, no rule -> xray direct"; else bad "UDP, no rule -> xray direct: got $got"; fi
-
-	# Every UDP flow is a session in xray: the ones that go direct close soon
-	# after their last packet, not 2-3 minutes later. Each session answers
-	# the client from a socket bound to the server's address (TPROXY).
-	udp_sessions() {
-		ip netns exec router ss -Huan src 45.0.0.2:9999 2>/dev/null | wc -l
-	}
-	udp 30 >/dev/null
-	open="$(udp_sessions)"
-	waited=0
-	while [ "$waited" -lt 130 ] && [ "$(udp_sessions)" -gt 0 ]; do sleep 5; waited=$((waited + 5)); done
-	left="$(udp_sessions)"
-	if [ "$open" -lt 20 ]; then
-		bad "UDP sessions are not counted: $open open after 30 flows"
-	# 45-90 s by the config; before, xray kept them 120-180 s.
-	elif [ "$left" = 0 ] && [ "$waited" -le 110 ]; then
-		ok "direct UDP sessions close soon after their last packet ($open -> 0 in $waited s)"
-	else
-		bad "direct UDP sessions stay open: $left of $open after $waited s"
-	fi
+	if [ "$got" = 192.168.1.2 ]; then ok "UDP, no rule -> kernel direct, past xray"; else bad "UDP, no rule -> kernel direct: got $got"; fi
 
 	kill -9 "$(proc_in router xray)" 2>/dev/null
 	sleep 2
@@ -397,23 +395,6 @@ if start_mayhem "$WORK/lists.json"; then
 		ok "rules removed after xray crash"
 	fi
 	expect "traffic goes direct while xray is down" 192.168.1.2 http://45.0.0.2:8080/
-fi
-stop_mayhem
-
-# --- only listed traffic to xray (the default of "lists") --------------------------
-
-echo "== only listed traffic to xray"
-sed 's/"capture": "all", //' "$WORK/lists.json" > "$WORK/capture.json"
-if start_mayhem "$WORK/capture.json"; then
-	expect "no rule -> kernel direct, past xray" 192.168.1.2 http://45.0.0.2:8080/
-	expect "IP rule -> proxy" 45.0.0.3 http://45.0.0.7:8080/
-	expect "excluded IP -> kernel direct" 192.168.1.2 http://45.0.0.6:8080/
-	fake="$(dns client 192.168.1.1 53 youtube.test)"
-	case "$fake" in
-		198.1[89].*) ok "domain of a rule -> fake address through dnsmasq" ;;
-		*) bad "domain of a rule -> fake address through dnsmasq: got $fake" ;;
-	esac
-	expect_dns "other domain -> provider DNS through dnsmasq" client 192.168.1.1 53 other.test 45.0.0.2
 fi
 stop_mayhem
 
@@ -469,7 +450,7 @@ cat > "$WORK/fakedns.json" <<EOF
   "dns": { "domestic": [ "45.0.0.2" ], "remote": [ "45.0.0.4" ], "hijack": "1", "fakedns": "1" },
   "sections": [
     { ".name": "main", "type": "proxy", "enabled": "1", "link": "$SS_LINK" },
-    { ".name": "ru", "type": "exclusion", "enabled": "1", "ip": [ "45.0.0.7" ] }
+    { ".name": "ru", "type": "exclusion", "enabled": "1", "ip": [ "45.0.0.7" ], "domain": [ "excl.test" ] }
   ],
   "runtime": { "wan_dns": [ "45.0.0.2" ], "ipv6": false, "mem_total_kb": 262144 }
 }
@@ -484,6 +465,7 @@ if start_mayhem "$WORK/fakedns.json"; then
 	esac
 	expect "fake address, excluded real IP -> xray direct" 45.0.0.1 --resolve "site.test:8080:$fake" http://site.test:8080/
 	expect "real excluded IP -> kernel direct" 192.168.1.2 http://45.0.0.7:8080/
+	expect "excluded domain -> kernel direct, past xray" 192.168.1.2 $(site excl.test)
 
 	# dnsmasq asks xray for the router's own lookups too (curl, apk, opkg).
 	rfake="$(dns router 127.0.0.1 12753 own.test)"
@@ -511,7 +493,6 @@ write_uci() {
 			"config settings 'settings'" \
 			"	option enabled '1'" \
 			"	option mode 'lists'" \
-			"	option capture 'all'" \
 			"	list interface 'br-lan'" \
 			"	option ip_family 'ipv4_only'" \
 			"	option probe_url 'http://45.0.0.2:8080/204'" \
@@ -612,7 +593,7 @@ else
 fi
 
 if start_mayhem uci; then
-	expect_one_of "automatic choice uses a subscription server" "45.0.0.3 45.0.0.8" -H 'Host: youtube.test' http://45.0.0.2:8080/
+	expect_one_of "automatic choice uses a subscription server" "45.0.0.3 45.0.0.8" $(site youtube.test)
 
 	i=0
 	while [ "$i" -lt 20 ] && ! rpc dashboard | grep -q '"delay": [0-9]'; do sleep 1; i=$((i + 1)); done
@@ -627,14 +608,14 @@ if start_mayhem uci; then
 	esac
 
 	if select_node main "$(tag_of B)" | grep -q '"ok": true'; then ok "pin server B"; else bad "pin server B"; fi
-	expect "pinned server is used at once" 45.0.0.8 -H 'Host: youtube.test' http://45.0.0.2:8080/
+	expect "pinned server is used at once" 45.0.0.8 $(site youtube.test)
 	case "$(rpc exit_info '{}')" in
 		*'"ip": "45.0.0.8"'*) ok "external address follows the pinned server" ;;
 		*) bad "external address after pinning B: $(rpc exit_info '{}')" ;;
 	esac
 	if grep -q "option override 'B'" "$MAYHEM_UCI_DIR/mayhem"; then ok "pinned server saved by name"; else bad "pinned server saved"; fi
 	select_node main "$(tag_of A)" >/dev/null
-	expect "switch to server A" 45.0.0.3 -H 'Host: youtube.test' http://45.0.0.2:8080/
+	expect "switch to server A" 45.0.0.3 $(site youtube.test)
 	case "$(rpc exit_info '{}')" in
 		*'"ip": "45.0.0.3"'*) ok "external address follows the switch" ;;
 		*) bad "external address after switching to A: $(rpc exit_info '{}')" ;;
@@ -677,11 +658,11 @@ if start_mayhem uci; then
 	select_node main "$b" >/dev/null
 	# the xray that runs from here on (picking B by hand restarted it)
 	pid="$(proc_in router xray)"
-	expect "pinned to server B" 45.0.0.8 -H 'Host: youtube.test' http://45.0.0.2:8080/
+	expect "pinned to server B" 45.0.0.8 $(site youtube.test)
 
 	# A download through server B goes on while B leaves the subscription
 	# and server C comes in.
-	ip netns exec client curl -s -m 20 -H 'Host: youtube.test' -o "$WORK/slow.out" http://45.0.0.2:8080/slow &
+	ip netns exec client curl -s -m 20 --resolve "youtube.test:8080:$(dns client 192.168.1.1 53 youtube.test)" -o "$WORK/slow.out" http://youtube.test:8080/slow &
 	slow=$!
 	sleep 1
 	printf '%s\n%s\n' "$SS_LINK_C" "$SS_LINK_A" | base64 | tr -d '\n' > "$WORK/sub.txt"
@@ -715,8 +696,8 @@ if start_mayhem uci; then
 	if rpc probe "{\"tag\":\"$c\",\"method\":\"url\"}" | grep -q '"ms": [0-9]'; then ok "URL test through the new server"; else bad "URL test through the new server"; fi
 	select_node main "$c" >/dev/null
 	pid="$(proc_in router xray)"
-	expect "new server can be pinned" 45.0.0.9 -H 'Host: youtube.test' http://45.0.0.2:8080/
-	expect "domain rules still apply" 45.0.0.1 http://45.0.0.2:8080/
+	expect "new server can be pinned" 45.0.0.9 $(site youtube.test)
+	expect "no rule -> kernel direct" 192.168.1.2 http://45.0.0.2:8080/
 
 	# Pinned server, its name changes: by name it is gone, so automatic again;
 	# the same tag stays.
@@ -748,7 +729,7 @@ write_uci "	option select 'manual'
 	option selected 'B'
 	option local_port '1080'" direct
 if start_mayhem uci; then
-	expect "manual choice is applied at start" 45.0.0.8 -H 'Host: youtube.test' http://45.0.0.2:8080/
+	expect "manual choice is applied at start" 45.0.0.8 $(site youtube.test)
 	expect "local SOCKS port of the section" 45.0.0.8 -x socks5h://192.168.1.1:1080 http://45.0.0.2:8080/
 	expect "local HTTP proxy port of the section" 45.0.0.8 -x http://192.168.1.1:1080 http://45.0.0.2:8080/
 
@@ -779,7 +760,6 @@ cat > "$MAYHEM_UCI_DIR/mayhem" <<EOF
 config settings 'settings'
 	option enabled '1'
 	option mode 'lists'
-	option capture 'all'
 	list interface 'br-lan'
 	option ip_family 'ipv4_only'
 
@@ -810,7 +790,7 @@ config section 'ru'
 EOF
 
 if start_mayhem uci; then
-	expect "category not downloaded yet -> direct" 45.0.0.1 -H 'Host: youtube.test' http://45.0.0.2:8080/
+	expect "category not downloaded yet -> direct" 192.168.1.2 $(site youtube.test)
 fi
 stop_mayhem
 
@@ -829,13 +809,13 @@ else
 fi
 
 if start_mayhem uci; then
-	expect "geosite domain -> proxy" 45.0.0.3 -H 'Host: youtube.test' http://45.0.0.2:8080/
-	expect "geosite full: -> proxy" 45.0.0.3 -H 'Host: www.yt.test' http://45.0.0.2:8080/
-	expect "geosite keyword: -> proxy" 45.0.0.3 -H 'Host: mytubekw.example' http://45.0.0.2:8080/
-	expect "domain from a list URL -> proxy" 45.0.0.3 -H 'Host: listed.test' http://45.0.0.2:8080/
-	expect "other domain -> xray direct" 45.0.0.1 -H 'Host: other.test' http://45.0.0.2:8080/
+	expect "geosite domain -> proxy" 45.0.0.3 $(site youtube.test)
+	expect "geosite full: -> proxy" 45.0.0.3 $(site www.yt.test)
+	expect "geosite keyword: -> proxy" 45.0.0.3 $(site mytubekw.example)
+	expect "domain from a list URL -> proxy" 45.0.0.3 $(site listed.test)
+	expect "other domain -> kernel direct" 192.168.1.2 $(site other.test)
 	expect "geoip exclusion -> kernel direct" 192.168.1.2 http://45.0.0.6:8080/
-	expect_dns "geosite domain -> remote DNS" router 127.0.0.1 12753 youtube.test 45.0.0.7
+	expect_fake "geosite domain -> fake address" router 127.0.0.1 12753 youtube.test
 fi
 stop_mayhem
 
@@ -851,7 +831,6 @@ cat > "$MAYHEM_UCI_DIR/mayhem" <<EOF
 config settings 'settings'
 	option enabled '1'
 	option mode 'lists'
-	option capture 'all'
 	list interface 'br-lan'
 	option ip_family 'ipv4_only'
 	option ip_check_url 'http://45.0.0.2:8080/'
@@ -895,9 +874,8 @@ if start_mayhem uci; then
 	expect_dns "client DNS goes through dnsmasq" client 192.168.1.1 53 tunnel.test 45.0.0.7
 	expect "resolved domain of a kernel tunnel section -> tunnel" 45.0.1.1 http://45.0.0.7:8080/
 	expect_dns "port 53 is redirected to dnsmasq" client 8.8.8.8 53 something.test 45.0.0.2
-	expect "domain missed by DNS -> xray backup -> tunnel" 45.0.1.1 -H 'Host: backup.test' http://45.0.0.2:8080/
-	expect "tunnel section through xray" 45.0.1.1 -H 'Host: viaxray.test' http://45.0.0.2:8080/
-	expect "tunnel as a server of a proxy section" 45.0.1.1 -H 'Host: mixed.test' http://45.0.0.2:8080/
+	expect "tunnel section through xray" 45.0.1.1 $(site viaxray.test)
+	expect "tunnel as a server of a proxy section" 45.0.1.1 $(site mixed.test)
 
 	out="$(rpc diagnose '{"part":"local"}')"
 	case "$out" in
@@ -920,15 +898,14 @@ if start_mayhem uci; then
 	tunnels_check
 	if [ "$(cat "$MAYHEM_RUN_DIR/tunnel.awg" 2>/dev/null)" = down ]; then ok "watchdog sees the tunnel down"; else bad "tunnel state after link down"; fi
 	expect "tunnel down: kernel section goes direct" 192.168.1.2 http://45.0.0.6:8080/
-	expect "tunnel down: xray backup goes direct" 45.0.0.1 -H 'Host: backup.test' http://45.0.0.2:8080/
-	expect "tunnel down: xray mode goes direct" 45.0.0.1 -H 'Host: viaxray.test' http://45.0.0.2:8080/
+	expect "tunnel down: xray mode goes direct" 45.0.0.1 $(site viaxray.test)
 
 	ip -n router link set tun0 up
 	ip -n router addr add 10.99.0.1/24 dev tun0 2>/dev/null
 	sleep 1
 	tunnels_check
 	expect "tunnel back: kernel section uses it again" 45.0.1.1 http://45.0.0.6:8080/
-	expect "tunnel back: xray mode uses it again" 45.0.1.1 -H 'Host: viaxray.test' http://45.0.0.2:8080/
+	expect "tunnel back: xray mode uses it again" 45.0.1.1 $(site viaxray.test)
 fi
 stop_mayhem
 

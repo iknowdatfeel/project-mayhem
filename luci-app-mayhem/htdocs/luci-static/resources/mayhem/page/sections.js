@@ -502,13 +502,6 @@ return baseclass.extend({
 		o.default = 'lists';
 		o.rmempty = false;
 
-		o = s.option(form.Flag, 'capture', _('Route all traffic through Xray'),
-			_('Off (recommended): only traffic of the rules reaches Xray - domains of proxy sections get addresses from 198.18.0.0/15 that the router recognizes, subnets of their rules are matched in the kernel. The rest of the traffic never touches Xray, which then needs far less memory. On: every connection of the network goes through Xray, which also recognizes sites by their TLS name - for devices with a DNS of their own (DNS over HTTPS in the browser) whose sites should still go through the proxy.'));
-		o.enabled = 'all';
-		o.disabled = 'lists';
-		o.default = 'lists';
-		o.depends('mode', 'lists');
-
 		o = s.option(form.Flag, 'exclude_local', _('Bypass local networks'),
 			_('Addresses of local networks (10.0.0.0/8, 192.168.0.0/16 and others) always go direct.'));
 		o.default = '1';
@@ -1049,7 +1042,7 @@ return baseclass.extend({
 		o.rmempty = false;
 
 		o = s.option(form.Flag, 'fakedns', _('FakeDNS'),
-			_('Only matters when all traffic goes to Xray: proxied domains then get addresses from 198.18.0.0/15 as well (without it, they are recognized by their TLS name). By lists, Xray always does this. Cached fake addresses stop working while Mayhem is stopped.'));
+			_('Only matters in global mode: domains get addresses from 198.18.0.0/15 (without it, they are recognized by their TLS name), and the traffic of excluded domains goes direct in the kernel, past Xray (needs dnsmasq-full). By lists, Xray always does this. Cached fake addresses stop working while Mayhem is stopped.'));
 
 		// --- geo files ---
 

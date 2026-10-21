@@ -208,7 +208,8 @@ function runtime(sections) {
 		mem_total_kb: mem_total_kb(),
 		router_ips: router_ips(),
 		ifaces: ifaces(names),
-		dnsmasq_nftset: length(names) ? dnsmasq_nftset(command('dnsmasq --version 2>/dev/null')) : null,
+		// tunnels in kernel mode and excluded domains in global mode need it
+		dnsmasq_nftset: dnsmasq_nftset(command('dnsmasq --version 2>/dev/null')),
 		// the servers fallback chains use now (fallback.uc): { section: tag }
 		fallback: fallback_now(),
 		dnsmasq_servers: dnsmasq_servers(),

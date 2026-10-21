@@ -1145,10 +1145,6 @@ msgid "Obfuscator server port"
 msgstr "Порт обфускатора на сервере"
 
 #: htdocs/luci-static/resources/mayhem/page/sections.js
-msgid "Off (recommended): only traffic of the rules reaches Xray - domains of proxy sections get addresses from 198.18.0.0/15 that the router recognizes, subnets of their rules are matched in the kernel. The rest of the traffic never touches Xray, which then needs far less memory. On: every connection of the network goes through Xray, which also recognizes sites by their TLS name - for devices with a DNS of their own (DNS over HTTPS in the browser) whose sites should still go through the proxy."
-msgstr "Выключено (рекомендуется): в Xray попадает только трафик правил — домены прокси-секций получают адреса из 198.18.0.0/15, которые роутер узнаёт, подсети их правил сравниваются в ядре. Остальной трафик Xray не трогает, и памяти ему нужно гораздо меньше. Включено: каждое соединение сети идёт через Xray, который узнаёт сайты ещё и по имени в TLS — для устройств со своим DNS (DNS over HTTPS в браузере), сайты которых тоже должны идти через прокси."
-
-#: htdocs/luci-static/resources/mayhem/page/sections.js
 msgid "On: every server of a list gets the query together and the first good answer counts, which is faster when one of them is slow. Off: the next server only when the one before fails."
 msgstr "Включено — запрос уходит всем серверам списка сразу и берётся первый годный ответ: быстрее, когда один из них медлит. Выключено — следующий сервер спрашивается, только когда предыдущий не ответил."
 
@@ -1185,8 +1181,8 @@ msgid "One per line, or separated by commas or spaces; \"#\" starts a comment. e
 msgstr "По одному в строке или через запятую или пробел; «#» — комментарий. example.com — домен и все поддомены; full: — точное имя, keyword: — подстрока, regexp: — регулярное выражение."
 
 #: htdocs/luci-static/resources/mayhem/page/sections.js
-msgid "Only matters when all traffic goes to Xray: proxied domains then get addresses from 198.18.0.0/15 as well (without it, they are recognized by their TLS name). By lists, Xray always does this. Cached fake addresses stop working while Mayhem is stopped."
-msgstr "Имеет значение, только когда весь трафик идёт в Xray: тогда домены через прокси тоже получают адреса из 198.18.0.0/15 (без этого они узнаются по имени в TLS). В режиме «по спискам» Xray делает так всегда. Пока Mayhem остановлен, закэшированные фиктивные адреса не работают."
+msgid "Only matters in global mode: domains get addresses from 198.18.0.0/15 (without it, they are recognized by their TLS name), and the traffic of excluded domains goes direct in the kernel, past Xray (needs dnsmasq-full). By lists, Xray always does this. Cached fake addresses stop working while Mayhem is stopped."
+msgstr "Имеет значение только в глобальном режиме: домены получают адреса из 198.18.0.0/15 (без этого они узнаются по имени в TLS), а трафик исключённых доменов идёт напрямую в ядре, мимо Xray (нужен dnsmasq-full). В режиме «по спискам» Xray делает так всегда. Пока Mayhem остановлен, закэшированные фиктивные адреса не работают."
 
 #: htdocs/luci-static/resources/mayhem/tunnels.js
 msgid "Only to route chosen sites into this tunnel; to use it for all traffic, choose it on the dashboard instead."
@@ -1383,10 +1379,6 @@ msgstr "Сброс к настройкам по умолчанию"
 #: htdocs/luci-static/resources/mayhem/diag.js
 msgid "Restores a backup file. A backup without connections keeps the subscriptions and server keys this router has."
 msgstr "Восстанавливает настройки из файла. Копия без подключений оставляет подписки и ключи серверов, которые уже есть на роутере."
-
-#: htdocs/luci-static/resources/mayhem/page/sections.js
-msgid "Route all traffic through Xray"
-msgstr "Маршрутизировать весь трафик через Xray"
 
 #: htdocs/luci-static/resources/view/mayhem/dashboard.js
 msgid "Router"
