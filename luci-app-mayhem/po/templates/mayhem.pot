@@ -190,10 +190,6 @@ msgid "All traffic goes direct."
 msgstr ""
 
 #: htdocs/luci-static/resources/mayhem/tunnels.js
-msgid "AmneziaWG is not installed."
-msgstr ""
-
-#: htdocs/luci-static/resources/mayhem/tunnels.js
 msgid "AmneziaWG is not installed: only plain WireGuard configs can be imported."
 msgstr ""
 
@@ -830,14 +826,6 @@ msgid "Install"
 msgstr ""
 
 #: htdocs/luci-static/resources/mayhem/tunnels.js
-msgid "Install AmneziaWG"
-msgstr ""
-
-#: htdocs/luci-static/resources/mayhem/tunnels.js
-msgid "Install dnsmasq-full"
-msgstr ""
-
-#: htdocs/luci-static/resources/mayhem/tunnels.js
 msgid "Installation"
 msgstr ""
 
@@ -1061,6 +1049,10 @@ msgstr ""
 msgid "Needed by providers that limit the number of devices. The headers match the Happ client."
 msgstr ""
 
+#: htdocs/luci-static/resources/mayhem/tunnels.js
+msgid "Network"
+msgstr ""
+
 #: htdocs/luci-static/resources/mayhem/page/sections.js
 msgid "Network interface"
 msgstr ""
@@ -1121,7 +1113,7 @@ msgstr ""
 msgid "Not in the server list"
 msgstr ""
 
-#: htdocs/luci-static/resources/view/mayhem/dashboard.js
+#: htdocs/luci-static/resources/mayhem/tunnels.js
 msgid "Not installed"
 msgstr ""
 
@@ -1315,6 +1307,10 @@ msgstr ""
 
 #: htdocs/luci-static/resources/mayhem/page/sections.js
 msgid "Query strategy"
+msgstr ""
+
+#: htdocs/luci-static/resources/mayhem/tunnels.js
+msgid "Ready"
 msgstr ""
 
 #: htdocs/luci-static/resources/mayhem/diag.js
@@ -1825,10 +1821,6 @@ msgstr ""
 msgid "Tunnel name"
 msgstr ""
 
-#: htdocs/luci-static/resources/mayhem/tunnels.js
-msgid "Tunnel sections in kernel mode need dnsmasq-full: until it is installed, their domains go through Xray."
-msgstr ""
-
 #: htdocs/luci-static/resources/mayhem/diag.js
 msgid "Tunnels"
 msgstr ""
@@ -2027,10 +2019,6 @@ msgstr ""
 
 #: htdocs/luci-static/resources/view/mayhem/dashboard.js
 msgid "automatic"
-msgstr ""
-
-#: htdocs/luci-static/resources/mayhem/tunnels.js
-msgid "dnsmasq-full is needed only for tunnel sections in kernel mode; tunnels in the server list work without it."
 msgstr ""
 
 #: htdocs/luci-static/resources/mayhem/page/sections.js
