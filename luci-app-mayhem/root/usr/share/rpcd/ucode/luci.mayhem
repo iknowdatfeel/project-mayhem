@@ -595,6 +595,9 @@ const TUNNEL_PING_HOST = '1.1.1.1';
 // second), pings run at once by probe_icmp, servers in one probe_icmp call.
 const ICMP_WAIT = 2;
 const ICMP_WAVE = 32;
+// TCP: connections at once (a curl each), seconds to connect.
+const TCP_WAVE = 16;
+const TCP_WAIT = 4;
 const ICMP_MAX = 256;
 
 // URL test over kept-alive connections: the process, the servers it keeps.
@@ -1762,10 +1765,8 @@ const methods = {
 				const host = index(addr, ':') >= 0 ? `[${addr}]` : addr;
 				const one = `curl -s -o /dev/null --connect-timeout 5 -m 6 -w '%{time_namelookup} %{time_connect}\n' ${q(`http://${host}:${n.port}/`)}`;
 
-				// Two connections, the second counts: the first warms up the
-				// path (route, ARP, the server's queue), and a lost SYN in it
-				// costs a second or more that is no delay of the server.
-				return last_tcp_time(run(`r="$(${one})"; echo "$r"; case "$r" in *' 0.000000'|'') ;; *) ${one} ;; esac`));
+				// One connection, as v2rayNG measures it.
+				return last_tcp_time(run(one));
 
 			case 'icmp':
 				out = run(`ping -c 1 -W ${ICMP_WAIT} ${q(addr)} 2>&1`) ?? '';
@@ -1818,6 +1819,73 @@ const methods = {
 	// One ping per address, all at once, in waves of ICMP_WAVE; servers on
 	// one address share its answer. A tunnel pings its server, through the
 	// tunnel when the server does not answer, as probe() does.
+	// TCP ping of many servers in one call, as v2rayNG does it: the time of one
+	// connection to the server's address and port, straight from the router.
+	// Waves of TCP_WAVE at once (a curl each; more would load a small router
+	// and the numbers with it), one connection per address in a wave: many
+	// servers of a subscription share a host, whose firewall drops a burst.
+	probe_tcp: {
+		args: { tags: [] },
+		call: function(req) {
+			const state = read_json(`${RUN}/nodes.json`);
+			const want = type(req.args?.tags) == 'array' ? slice(req.args.tags, 0, ICMP_MAX) : [];
+			const res = {}, waves = [];
+
+			for (let tag in want) {
+				const f = find_node(state, tag);
+				const n = f?.node;
+
+				if (!n)
+					res[tag] = { error: 'unknown server' };
+				else if (n.iface)
+					res[tag] = { error: 'tunnel' };
+				else if (n.udp)
+					res[tag] = { error: 'UDP protocol' };
+				else if (!n.port)
+					res[tag] = { error: 'no port' };
+				else if (!match(n.address ?? '', /^[A-Za-z0-9.:_-]+$/))
+					res[tag] = { error: 'no address' };
+				else {
+					// the first wave without this address and with room
+					let w = 0;
+
+					while (w < length(waves) && (length(waves[w]) >= TCP_WAVE || length(filter(waves[w], (x) => x.addr == n.address))))
+						w++;
+
+					waves[w] ??= [];
+					push(waves[w], { tag: tag, addr: n.address, port: n.port });
+				}
+			}
+
+			let cmd = '', i = 0;
+			const byi = [];
+
+			for (let wave in waves) {
+				for (let t in wave) {
+					const host = index(t.addr, ':') >= 0 ? `[${t.addr}]` : t.addr;
+
+					byi[i] = t.tag;
+					cmd += `( echo "${i} $(curl -s -o /dev/null --connect-timeout ${TCP_WAIT} -m ${TCP_WAIT + 1} -w '%{time_namelookup} %{time_connect}' ${q(`http://${host}:${t.port}/`)})" ) & `;
+					i++;
+				}
+
+				cmd += 'wait; ';
+			}
+
+			for (let l in split(length(cmd) ? (run(cmd) ?? '') : '', '\n')) {
+				const m = match(l, /^([0-9]+) (.*)$/);
+
+				if (m && byi[int(m[1])] != null)
+					res[byi[int(m[1])]] = tcp_time(m[2]);
+			}
+
+			for (let t in byi)
+				res[t] ??= { error: 'no connection' };
+
+			return { results: res };
+		}
+	},
+
 	probe_icmp: {
 		args: { tags: [] },
 		call: function(req) {
@@ -3193,7 +3261,7 @@ const methods = {
 // status`, `xray api`, logread, an init script) and would hold rpcd meanwhile
 // (see deferred_sh() above). They run in a child process (call.uc) instead,
 // and rpcd answers when it exits; outside rpcd they run in place.
-const APART = [ 'probe', 'probe_icmp', 'exit_info', 'sub_update', 'refresh_servers', 'components', 'diagnose',
+const APART = [ 'probe', 'probe_icmp', 'probe_tcp', 'exit_info', 'sub_update', 'refresh_servers', 'components', 'diagnose',
 	'status', 'check', 'sysinfo', 'logs', 'tunnel_info', 'action', 'select_node', 'backup_import', 'reset_config' ];
 const CALL = getenv('MAYHEM_RPC_CALL') ?? '/usr/share/mayhem-luci/call.uc';
 
