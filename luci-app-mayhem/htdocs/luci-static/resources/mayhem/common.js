@@ -93,17 +93,22 @@ function readOnly(data) {
 
 	const post = R.post;
 
+	// A connection to the router can be gone for a few seconds (seen on a
+	// router: 2-4 s when the computer's Wi-Fi reconnects), so the calls are
+	// repeated over about six seconds.
+	const WAITS = [ 500, 1000, 2000, 3000 ];
+
 	R.mhRetry = true;
 	R.post = function(url, data, options) {
 		const args = arguments;
-		const again = (left) => post.apply(R, args).catch((e) => {
-			if (left > 0 && /aborted by browser/.test(String(e && e.message)) && /\/ubus\//.test(String(url)) && readOnly(data))
-				return new Promise((res) => window.setTimeout(res, 600)).then(() => again(left - 1));
+		const again = (n) => post.apply(R, args).catch((e) => {
+			if (n < WAITS.length && /aborted by browser/.test(String(e && e.message)) && /\/ubus\//.test(String(url)) && readOnly(data))
+				return new Promise((res) => window.setTimeout(res, WAITS[n])).then(() => again(n + 1));
 
 			throw e;
 		});
 
-		return again(3);
+		return again(0);
 	};
 })();
 

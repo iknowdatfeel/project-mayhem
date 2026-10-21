@@ -547,7 +547,7 @@ fi
 if command -v shellcheck >/dev/null 2>&1; then
 	if out="$(shellcheck -s sh -f gcc -e SC1091,SC2034,SC3043,SC2086,SC2046,SC2317,SC2329 \
 		"$FILES/usr/bin/mayhem" "$FILES/usr/libexec/mayhem/xray-run" "$FILES/usr/libexec/mayhem/scheduler" \
-		"$FILES/etc/uci-defaults/90-mayhem" "$ROOT/tests/netns.sh" "$ROOT/tests/build-ucode.sh" \
+		"$FILES/etc/uci-defaults/90-mayhem" "$ROOT/tests/netns.sh" "$ROOT/tests/build-ucode.sh" "$ROOT/tests/health.sh" \
 		"$FILES/usr/share/mayhem/lib.sh" "$FILES/usr/share/mayhem/const.sh" "$ROOT/install.sh" 2>&1)"; then
 		ok "shellcheck"
 	else
@@ -630,6 +630,31 @@ if out="$(PATH="$OUT/bin:$PATH" MAYHEM_UCI_DIR="$OUT/backup-uci" MAYHEM_RUN_DIR=
 	ok "backup with and without connections"
 else
 	bad "backup: $out"
+fi
+
+# Servers or remote DNS that stop answering: direct and back, or the kill switch.
+if out="$(UCODE="$UCODE" sh "$ROOT/tests/health.sh" 2>&1)"; then
+	ok "health: sections and remote DNS go direct and come back, kill switch"
+else
+	bad "health: $(printf '%s' "$out" | grep -v '^ok')"
+fi
+
+# What dnsmasq asks while the remote DNS is down: names with fake addresses
+# stay with xray, tunnel names go to the provider; nothing without remote DNS.
+mkdir -p "$OUT/dnsfb"
+sed -e 's/"keyword:tube",//' -e 's/"regexp:[^"]*"/"full:a1.test"/' -e 's/"settings": {/"settings": {\n    "killswitch": "1",/' "$ROOT/tests/models/tunnels.json" > "$OUT/dnsfb.json"
+if ! uc "$FILES/usr/share/mayhem/gen.uc" --model "$OUT/dnsfb.json" --out "$OUT/dnsfb" 2>"$OUT/dnsfb.log"; then
+	bad "dns fallback: generator failed: $(cat "$OUT/dnsfb.log")"
+elif ! grep -q '^@ISP@$' "$OUT/dnsfb/dns.fallback" || ! grep -q 'instagram.com' "$OUT/dnsfb/dns.fallback" || \
+     ! grep -q 'chatgpt.com' "$OUT/dnsfb/dns.fallback" || grep -q 'youtube.com\|down.test' "$OUT/dnsfb/dns.fallback" || \
+     ! grep -q 'youtube.com' "$OUT/dnsfb/dns.xray"; then
+	bad "dns fallback: $(tr '\n' '|' < "$OUT/dnsfb/dns.fallback") / $(tr '\n' '|' < "$OUT/dnsfb/dns.xray")"
+elif ! grep -q '^MAYHEM_KILLSWITCH=1$' "$OUT/dnsfb/env" || ! grep -q '"killswitch": *true' "$OUT/dnsfb/nodes.json"; then
+	bad "kill switch is not passed on (env, nodes.json)"
+elif [ -s "$OUT/lists/dns.fallback" ]; then
+	bad "dns fallback without a remote DNS in use: $(cat "$OUT/lists/dns.fallback")"
+else
+	ok "dns fallback: provider for tunnel names, fake names stay with xray; kill switch passed on"
 fi
 
 for f in "$ROOT"/luci-app-mayhem/root/usr/share/luci/menu.d/*.json "$ROOT"/luci-app-mayhem/root/usr/share/rpcd/acl.d/*.json; do

@@ -137,6 +137,20 @@ while :; do
 done
 
 rm -f "$MAYHEM_RUN_DIR/active" "$MAYHEM_RUN_DIR/xray.pid" "$MAYHEM_RUN_DIR/xray-run.pid" "$MAYHEM_RUN_DIR/watchdog.mem" "$MAYHEM_RUN_DIR/watchdog.hang"
+
+# Kill switch: the interception stays and the traffic waits for the next
+# xray (procd starts it again). Stopping or turning Mayhem off removes the
+# rules in the init script before xray gets the signal.
+if [ "$ready" = 1 ] && mayhem_killswitch; then
+	if [ "$stopping" = 1 ]; then
+		mayhem_log "xray stopped; the kill switch keeps the traffic waiting for it"
+		exit 0
+	fi
+
+	mayhem_log "xray exited (code $rc); the kill switch keeps the traffic waiting until it is restarted" err
+	exit 1
+fi
+
 # The provider's DNS until xray is back: dnsmasq keeps running and answering.
 mayhem_dns_servers isp
 mayhem_net_down

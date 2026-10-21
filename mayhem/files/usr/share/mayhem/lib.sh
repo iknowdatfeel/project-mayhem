@@ -96,6 +96,12 @@ mayhem_net_down() {
 	return 0
 }
 
+# Kill switch (settings.killswitch): nothing goes direct when the servers,
+# the remote DNS, a tunnel or xray itself fail; the traffic waits instead.
+mayhem_killswitch() {
+	grep -q '^MAYHEM_KILLSWITCH=1$' "$MAYHEM_RUN_DIR/env" 2>/dev/null
+}
+
 # --- tunnel sections ---------------------------------------------------------
 # $MAYHEM_RUN_DIR/tunnels: "section device mark table v6 [bal]" per line. In kernel
 # mode, marked packets use the section's routing table, which holds a default
@@ -195,6 +201,23 @@ mayhem_tunnels_check() {
 				mayhem_select "bal-$name" ""
 				[ -n "$was" ] && mayhem_log "tunnel $dev of section $name works again"
 			fi
+		elif mayhem_killswitch; then
+			# The traffic stays with the tunnel and waits for it: its
+			# route stays (a blackhole when the device is gone), its
+			# balancer keeps the tunnel.
+			state=held
+
+			if [ "$table" != - ]; then
+				ip route replace default dev "$dev" table "$table" 2>/dev/null ||
+					ip route replace blackhole default table "$table" 2>/dev/null
+				if [ "$v6" = 1 ]; then
+					ip -6 route replace default dev "$dev" table "$table" 2>/dev/null ||
+						ip -6 route replace blackhole default table "$table" 2>/dev/null
+				fi
+			fi
+
+			[ "$was" = down ] && [ "${bal:-1}" != 0 ] && mayhem_select "bal-$name" ""
+			[ "$was" != held ] && mayhem_log "tunnel $dev of section $name does not work, its traffic waits for it (kill switch)" warn
 		else
 			state=down
 
@@ -411,9 +434,15 @@ mayhem_dns_servers() {
 
 	mkdir -p "$MAYHEM_RUN_DIR" "$(dirname "$MAYHEM_DNS_SERVERS")"
 
-	if [ "$1" = xray ] && [ -s "$MAYHEM_RUN_DIR/dns.xray" ]; then
+	local src="$MAYHEM_RUN_DIR/dns.xray"
+
+	# The remote DNS does not answer and the kill switch is off (health.uc):
+	# its names go to the provider.
+	[ -f "$MAYHEM_RUN_DIR/dns.degraded" ] && [ -s "$MAYHEM_RUN_DIR/dns.fallback" ] && src="$MAYHEM_RUN_DIR/dns.fallback"
+
+	if [ "$1" = xray ] && [ -s "$src" ]; then
 		mayhem_isp_dns > "$new.isp"
-		sed -e "/^@ISP@\$/{r $new.isp" -e 'd;}' "$MAYHEM_RUN_DIR/dns.xray" > "$new"
+		sed -e "/^@ISP@\$/{r $new.isp" -e 'd;}' "$src" > "$new"
 		rm -f "$new.isp"
 	elif [ "$1" = xray ]; then
 		echo "server=127.0.0.1#$MAYHEM_DNS_PORT" > "$new"

@@ -622,7 +622,7 @@ function diag_local() {
 		const t = tunnel_state(sn, s.device);
 		const age = t.handshake ? time() - t.handshake : null;
 
-		check(res, 'tunnels', `${sn} (${s.interface})`, t.state == 'up' ? 'ok' : (t.state == 'down' ? 'fail' : 'info'),
+		check(res, 'tunnels', `${sn} (${s.interface})`, t.state == 'up' ? 'ok' : ((t.state == 'down' || t.state == 'held') ? 'fail' : 'info'),
 			(t.state ?? 'unknown') + (age != null ? sprintf(', last handshake %d s ago', age) : ''));
 	}
 
@@ -1333,6 +1333,8 @@ function dashboard(pid, state, out) {
 		const sections = [];
 		const totals = { proxy: { up: 0, down: 0 }, direct: { up: 0, down: 0 }, all: { up: 0, down: 0 } };
 		const kernel_tun = {};
+		// Sections whose servers do not answer go direct (kill switch off).
+		const health = pid ? (read_json(`${RUN}/health.json`) ?? {}) : {};
 
 		for (let sn in keys(state.sections ?? {})) {
 			const s = state.sections[sn];
@@ -1358,7 +1360,9 @@ function dashboard(pid, state, out) {
 				name: sn, type: s.type, mode: s.mode, balancer: s.balancer, pool: s.pool == true,
 				active: s.type == 'proxy' ? active_tag(s, m.observatory) : null,
 				pinned: s.override ?? null, nodes: nodes, traffic: traffic,
-				chain: s.chain ?? null
+				chain: s.chain ?? null,
+				down: health.sections?.[sn]?.down == true,
+				down_since: health.sections?.[sn]?.since ?? null
 			};
 
 			// A tunnel chosen among the section's servers carries the rest
@@ -1432,6 +1436,9 @@ function dashboard(pid, state, out) {
 			probe_url: state.probe_url,
 			default_section: default_section(state),
 			ping_method: c.get('mayhem', 'settings', 'ping_method') ?? 'url',
+			// the remote DNS does not answer: its names go to the provider
+			dns_down: health.dns?.down == true,
+			dns_down_since: health.dns?.since ?? null,
 			model: trim(fs.readfile('/tmp/sysinfo/model') ?? '') || null,
 			system: os_release(),
 			sections: sections,

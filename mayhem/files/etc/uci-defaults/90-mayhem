@@ -35,6 +35,25 @@ if ! uci -q show mayhem | grep -q '=geo_source$'; then
 	uci set mayhem.rf_geoip.url="$base/geoip.dat"
 fi
 
+# The web interface: without keep-alive. Chrome keeps idle connections to the
+# router, uhttpd closes them after 20 s, and a Mac whose Wi-Fi dozes misses
+# that: the next call goes over a dead connection and LuCI shows "XHR request
+# aborted by browser", on any page. Without keep-alive every call opens its
+# own connection (a few ms on a LAN). Once, and only over the default value:
+# a value set by hand stays, and so does putting it back after this.
+if [ -z "$(uci -q get mayhem.settings.uhttpd_tuned)" ] && uci -q get uhttpd.main >/dev/null; then
+	ka="$(uci -q get uhttpd.main.http_keepalive)"
+
+	if [ -z "$ka" ] || [ "$ka" = 20 ]; then
+		uci set uhttpd.main.http_keepalive='0'
+		uci commit uhttpd
+		# later: an update from LuCI is still talking to uhttpd now
+		( sleep 10; /etc/init.d/uhttpd restart ) >/dev/null 2>&1 </dev/null &
+	fi
+
+	uci set mayhem.settings.uhttpd_tuned='1'
+fi
+
 uci commit mayhem
 
 # Older configurations: the server list (0.12) and what comes after.
