@@ -134,12 +134,14 @@ const DnsList = form.DynamicList.extend({
 
 // The type and the servers of a DNS list: the global ones (section "dns") or
 // those of a routing section. Both options write the same UCI list.
-function dnsOptions(s, kind, labels, defType) {
+// udpOnly: the list has no type of its own, it is plain UDP (the domestic DNS).
+function dnsOptions(s, kind, labels, defType, udpOnly) {
 	const typeName = '_' + kind + '_type';
 	const list = (o, sid) => L.toArray(o.map.data.get('mayhem', sid, kind));
 	// In a section's dialog the options are copies bound to the dialog's
 	// section: they are asked through this.section, not s.
-	const typeOf = (o, sid) => o.section.formvalue(sid, typeName) || defType;
+	const typeOf = (o, sid) => udpOnly ? defType : (o.section.formvalue(sid, typeName) || defType);
+	const plainAddr = (x) => ((/^(\d{1,3}\.){3}\d{1,3}(:\d+)?$/).test(x) || (/^\[[0-9a-f:.]+\](:\d+)?$/i).test(x) || (/^[0-9a-f]*:[0-9a-f:]+$/i).test(x));
 
 	const store = function(sid) {
 		const t = typeOf(this, sid);
@@ -151,24 +153,31 @@ function dnsOptions(s, kind, labels, defType) {
 			this.map.data.unset('mayhem', sid, kind);
 
 		// The type is kept even without servers: chosen first, the servers later.
-		if (t !== defType || this.map.data.get('mayhem', sid, kind + '_type'))
+		if (udpOnly)
+			this.map.data.unset('mayhem', sid, kind + '_type');
+		else if (t !== defType || this.map.data.get('mayhem', sid, kind + '_type'))
 			this.map.data.set('mayhem', sid, kind + '_type', t);
 	};
 
-	let o = s.option(form.ListValue, typeName, labels[0]);
-	DNS_TYPES.forEach((t) => o.value(t[0], t[1]));
-	o.cfgvalue = function(sid) {
-		const l = list(this, sid);
+	let o;
+	let typeOpt = null;
 
-		return l.length ? dnsSplit(l[0])[0] : (this.map.data.get('mayhem', sid, kind + '_type') || defType);
-	};
-	o.write = o.remove = store;
-	// Saved as its own value, so that a type chosen alone is saved too.
-	o.forcewrite = true;
-	const typeOpt = o;
+	if (!udpOnly) {
+		o = s.option(form.ListValue, typeName, labels[0]);
+		DNS_TYPES.forEach((t) => o.value(t[0], t[1]));
+		o.cfgvalue = function(sid) {
+			const l = list(this, sid);
+
+			return l.length ? dnsSplit(l[0])[0] : (this.map.data.get('mayhem', sid, kind + '_type') || defType);
+		};
+		o.write = o.remove = store;
+		// Saved as its own value, so that a type chosen alone is saved too.
+		o.forcewrite = true;
+		typeOpt = o;
+	}
 
 	o = s.option(DnsList, kind, labels[1], labels[2]);
-	PROVIDERS.forEach((p) => o.value(p[0], p[2] ? '%s (%s)'.format(p[1], p[2]) : '%s (DoH)'.format(p[1])));
+	PROVIDERS.filter((p) => !udpOnly || p[2]).forEach((p) => o.value(p[0], p[2] ? '%s (%s)'.format(p[1], p[2]) : '%s (DoH)'.format(p[1])));
 	o.cfgvalue = function(sid) {
 		return list(this, sid).map(dnsChoice);
 	};
@@ -177,6 +186,10 @@ function dnsOptions(s, kind, labels, defType) {
 	const mismatch = (o, sid, values) => {
 		for (const x of L.toArray(values)) {
 			const p = provider(x);
+
+			if (udpOnly && !p && !plainAddr(String(x).trim()))
+				return _('The domestic DNS is plain UDP: enter an IP address, or choose a provider that has one');
+
 			const why = p ? dnsMismatch(typeOf(o, sid), p) : null;
 
 			if (why)
@@ -1006,8 +1019,8 @@ return baseclass.extend({
 
 		const lan = String(L.toArray(uci.get('network', 'lan', 'ipaddr'))[0] || '192.168.1.1').split('/')[0];
 
-		o = dnsOptions(s, 'domestic', [ _('Domestic DNS protocol'), _('Domestic DNS servers'),
-			_('Add one or several from the list or type your own address. They are asked in the order of the list: the first one is the main server, the next ones are fallbacks. Drag a server to change the order. None: the DNS servers of the provider.') ], 'udp');
+		o = dnsOptions(s, 'domestic', [ null, _('Domestic DNS servers'),
+			_('Add one or several from the list or type your own address. They are asked in the order of the list: the first one is the main server, the next ones are fallbacks. Drag a server to change the order. None: the DNS servers of the provider.') ], 'udp', true);
 		o.placeholder = lan;
 
 		o = dnsOptions(s, 'remote', [ _('Remote DNS protocol'), _('Remote DNS servers'),

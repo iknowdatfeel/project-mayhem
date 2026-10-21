@@ -703,6 +703,27 @@ else
 	ok "section DNS: own servers first and through the section, DoQ, all at once"
 fi
 
+# The domestic DNS is plain UDP: DoH and TCP entries are skipped with a
+# warning (xray refuses a DoH server that has to resolve its own name), so
+# the split of dnsmasq stays on and the plain servers are the upstream. A
+# server in both the domestic and the remote list is warned about.
+if ! uc -e "
+	const x = json(require('fs').readfile('$OUT/doh-domestic/xray.json'));
+	const addrs = map(x.dns.servers, (q) => q.address);
+	exit((length(filter(addrs, (a) => match(a, /^(https|tcp):/) && !match(a, /1\.1\.1\.1|dns\.google/))) == 0 &&
+		index(addrs, '1.1.1.1') >= 0 && index(addrs, '9.9.9.9') >= 0) ? 0 : 1);
+" 2>/dev/null; then
+	bad "domestic DNS: a DoH or TCP server is still among the xray DNS servers"
+elif ! grep -q 'dns.comss.one/dns-query.* is skipped' "$OUT/doh-domestic/status.json" || ! grep -q 'tcp://77.88.8.8.* is skipped' "$OUT/doh-domestic/status.json"; then
+	bad "domestic DNS: no warning for a skipped DoH or TCP server"
+elif ! grep -q 'DNS server 1.1.1.1 is in both' "$OUT/doh-domestic/status.json"; then
+	bad "domestic DNS: no warning for a server in both lists"
+elif ! grep -q '^server=1.1.1.1$' "$OUT/doh-domestic/dns.xray" || ! grep -q '^server=9.9.9.9$' "$OUT/doh-domestic/dns.xray" || grep -q 'comss' "$OUT/doh-domestic/dns.xray"; then
+	bad "domestic DNS: dnsmasq does not ask the plain servers"
+else
+	ok "domestic DNS: only plain UDP, DoH and TCP skipped with a warning"
+fi
+
 # Ports of a direct section: direct in the kernel and in xray, bad ones warned.
 if ! grep -q 'meta l4proto { tcp, udp } th dport { 4501, 5000-5100 } counter return' "$OUT/secdns/nft.conf"; then
 	bad "direct ports: not in the kernel"
