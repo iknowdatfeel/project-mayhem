@@ -3,7 +3,7 @@
 # Paths can be overridden from the environment for off-device tests.
 
 MAYHEM_VERSION="__MAYHEM_VERSION__"
-MAYHEM_XRAY_VERSION="26.9.30"
+MAYHEM_XRAY_VERSION="26.10.21"
 
 MAYHEM_TPROXY_PORT=12701
 MAYHEM_DNS_PORT=12753
