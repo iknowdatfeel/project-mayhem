@@ -1190,7 +1190,7 @@ msgid "One per line, or separated by commas or spaces; \"#\" starts a comment. e
 msgstr ""
 
 #: htdocs/luci-static/resources/mayhem/page/sections.js
-msgid "Only matters in global mode: domains get addresses from 198.18.0.0/15 (without it, they are recognized by their TLS name), and the traffic of excluded domains goes direct in the kernel, past Xray (needs dnsmasq-full). By lists, Xray always does this. Cached fake addresses stop working while Mayhem is stopped."
+msgid "Only matters in global mode: domains get addresses from 198.18.0.0/15 (without it, they are recognized by their TLS name). By lists, Xray always does this. Cached fake addresses stop working while Mayhem is stopped."
 msgstr ""
 
 #: htdocs/luci-static/resources/mayhem/tunnels.js

@@ -419,6 +419,8 @@ if start_mayhem "$WORK/global.json"; then
 	expect "exclusion IP -> kernel direct" 192.168.1.2 http://45.0.0.6:8080/
 	expect_dns "exclusion domain -> domestic DNS" client 1.1.1.1 53 gosuslugi.test 45.0.0.2
 	expect_dns "other domain -> remote DNS" client 1.1.1.1 53 anything.test 45.0.0.7
+	expect "excluded domain resolved by the router -> kernel direct, past xray" 192.168.1.2 $(site gosuslugi.test)
+	expect "address of another site -> proxy" 45.0.0.3 $(site anything.test)
 
 	# Every query comes from a new port, like dnsmasq's: each is a DNS session
 	# in xray that has to go away soon after its answer, not after 5 minutes.
