@@ -34,6 +34,8 @@ const CSS = `
 .mh-actions > div > .btn { flex:0 0 auto; margin:0; }
 .mh-note { display:flex; flex-wrap:wrap; align-items:center; gap:6px 10px; }
 .mh-note > .btn { margin:0; }
+.mh-dns-dynlist > .item { cursor:grab; }
+.mh-dns-dynlist > .item > span { pointer-events:none; }
 /* Tables of keys and tunnels: on a narrow screen every row is a card, each cell
    with the name of its column, the buttons in one line at the bottom. */
 @media (max-width: 800px) {

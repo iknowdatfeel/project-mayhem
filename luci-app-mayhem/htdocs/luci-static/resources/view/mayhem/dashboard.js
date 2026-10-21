@@ -20,6 +20,8 @@ const callDashboard = rpc.declare({ object: 'luci.mayhem', method: 'dashboard', 
 const callAction = rpc.declare({ object: 'luci.mayhem', method: 'action', params: [ 'name' ], expect: { '': {} } });
 const callSelect = rpc.declare({ object: 'luci.mayhem', method: 'select_node', params: [ 'section', 'tag' ], expect: { '': {} } });
 const callProbe = rpc.declare({ object: 'luci.mayhem', method: 'probe', params: [ 'tag', 'method' ], expect: { '': {} } });
+const callProbeIcmp = rpc.declare({ object: 'luci.mayhem', method: 'probe_icmp', params: [ 'tags' ], expect: { '': {} } });
+const callWarm = rpc.declare({ object: 'luci.mayhem', method: 'warm', params: [ 'now' ], expect: { '': {} } });
 const callSubUpdate = rpc.declare({ object: 'luci.mayhem', method: 'sub_update', params: [ 'name' ], expect: { '': {} } });
 const callRefresh = rpc.declare({ object: 'luci.mayhem', method: 'refresh_servers', expect: { '': {} } });
 const callExitInfo = rpc.declare({ object: 'luci.mayhem', method: 'exit_info', params: [ 'section', 'lang' ], expect: { '': {} } });
@@ -32,6 +34,8 @@ const callServerDelete = rpc.declare({ object: 'luci.mayhem', method: 'server_de
 const callServerEdit = rpc.declare({ object: 'luci.mayhem', method: 'server_edit', params: [ 'section', 'old', 'link' ], expect: { '': {} } });
 
 const PROBE_PARALLEL = 4;
+// ICMP: servers per call; the router pings all of them at once.
+const ICMP_CHUNK = 64;
 const DAY = 86400;
 const PROBES = [ [ 'url', _('URL test') ], [ 'tcp', _('TCP ping') ], [ 'icmp', _('ICMP ping') ] ];
 
@@ -376,7 +380,13 @@ return view.extend({
 
 		// The same check is the server's latency in its box: one number for
 		// one server, not two from two checks.
-		const ping = main.node
+		const warm = (method === 'url' && main.node) ? this.warmResult(main.node.tag) : null;
+		const ping = warm
+			? Promise.resolve().then(() => {
+				conn.ms = warm.ms;
+				conn.pingError = warm.error;
+			})
+			: main.node
 			? callProbe(main.node.tag, method).then((r) => {
 				conn.ms = r.ms;
 				conn.pingError = r.error;
@@ -434,13 +444,69 @@ return view.extend({
 	setMethod(m) {
 		this.method = m;
 		callSetPing(m);
+
+		if (m === 'url')
+			this.pollWarm(false);
+	},
+
+	// URL test over kept-alive connections: the router keeps a connection
+	// through every server open while the dashboard asks (every poll), and
+	// sends a request over it every few seconds. The numbers are there at
+	// once and stay current. now: every server is asked at once.
+	pollWarm(now) {
+		return callWarm(now ? true : false).then((r) => {
+			this.warm = (r && r.ok) ? r : null;
+
+			if (this.warm && this.method === 'url') {
+				for (const tag in r.results) {
+					const x = r.results[tag];
+
+					this.probes[tag] = { method: 'url', value: (x.ms != null) ? x.ms : (x.error || 'error'), at: x.at };
+				}
+
+				this.redraw();
+			}
+
+			return this.warm;
+		}).catch(() => null);
+	},
+
+	warmResult(tag) {
+		const r = this.warm && this.warm.results && this.warm.results[tag];
+
+		return r || null;
+	},
+
+	// "Test latency" with kept-alive connections: every server at once, then
+	// a few looks until each has a number newer than the press.
+	probeWarm(nodes) {
+		return this.pollWarm(true).then((w) => {
+			if (!w)
+				return nodes;
+
+			const since = w.now;
+			const covered = nodes.filter((n) => w.tags.indexOf(n.tag) >= 0);
+			const rest = nodes.filter((n) => w.tags.indexOf(n.tag) < 0);
+			let tries = 0;
+
+			const look = () => new Promise((r) => window.setTimeout(r, 700)).then(() => this.pollWarm(false)).then((w2) => {
+				const res = (w2 && w2.results) || {};
+
+				if (++tries < 15 && covered.some((n) => !(res[n.tag] && res[n.tag].at >= since)))
+					return look();
+
+				return rest;
+			});
+
+			return covered.length ? look() : rest;
+		});
 	},
 
 	// Checks every server of the section with the chosen method, a few at a
 	// time, but never two of one address at once: subscriptions often have
 	// many servers on one host, and a burst of connections to it makes its
 	// firewall drop some (a lost SYN costs a second or three of "ping").
-	probeSection(sec) {
+	probeSection(sec, cold) {
 		const method = this.method;
 		const queue = sec.nodes.slice();
 		const key = 'probe:' + sec.name;
@@ -451,6 +517,44 @@ return view.extend({
 
 		this.busy[key] = true;
 		this.redraw();
+
+		// The URL test goes over the kept-alive connections; servers they do
+		// not cover (too many, or the router cannot keep them) are tested one
+		// by one as before.
+		if (method === 'url' && this.warm && !cold) {
+			return this.probeWarm(queue.slice()).then((rest) => {
+				delete this.busy[key];
+
+				if (!rest.length) {
+					this.redraw();
+					return;
+				}
+
+				return this.probeSection(Object.assign({}, sec, { nodes: rest }), true);
+			});
+		}
+
+		// A ping costs the router next to nothing, a call a whole process:
+		// ICMP asks for many servers at once.
+		if (method === 'icmp') {
+			const chunks = [];
+
+			for (let i = 0; i < queue.length; i += ICMP_CHUNK)
+				chunks.push(queue.slice(i, i + ICMP_CHUNK));
+
+			return Promise.all(chunks.map((c) => callProbeIcmp(c.map((n) => n.tag)).then((r) => {
+				for (const n of c) {
+					const x = (r.results || {})[n.tag] || { error: r.error || 'error' };
+
+					this.probes[n.tag] = { method: method, value: (x.ms != null) ? x.ms : (x.error || 'error') };
+				}
+
+				this.redraw();
+			}).catch(() => {}))).finally(() => {
+				delete this.busy[key];
+				this.redraw();
+			});
+		}
 
 		const next = () => {
 			const i = queue.findIndex((n) => !n.address || !busyHost[n.address]);
@@ -1197,7 +1301,10 @@ return view.extend({
 		window.setTimeout(() => {
 			const proxies = (d.sections || []).filter((s) => s.type === 'proxy' && (s.nodes || []).length);
 
-			return (this.method !== 'url' && proxies.length) ? this.probeAll(proxies) : this.checkConnection();
+			if (this.method === 'url')
+				return this.pollWarm(false).then(() => this.checkConnection());
+
+			return proxies.length ? this.probeAll(proxies) : this.checkConnection();
 		}, 0);
 
 		// Behind an open window or dialog, in a hidden tab or while the last answer has
@@ -1212,7 +1319,8 @@ return view.extend({
 
 			polling = true;
 
-			return this.refresh().catch(() => {}).finally(() => { polling = false; });
+			return this.refresh().then(() => (this.method === 'url' && this.data && this.data.running) ? this.pollWarm(false) : null)
+				.catch(() => {}).finally(() => { polling = false; });
 		}, 3);
 
 		// First: the section headers draw its buttons.

@@ -150,6 +150,44 @@ function dnsmasq_servers() {
 	return out;
 }
 
+// IPv4 addresses of devices by MAC: static leases (DHCP and DNS → Static
+// leases), then the current leases of dnsmasq. A section limited to some
+// devices finds a device given by MAC through them (xray sees addresses).
+function leases() {
+	const out = {};
+	const mac_re = /^([0-9a-f]{2}:){5}[0-9a-f]{2}$/;
+
+	try {
+		const c = cursor(UCI_DIR);
+
+		c.load('dhcp');
+		c.foreach('dhcp', 'host', (h) => {
+			if (!is_ip(h.ip ?? ''))
+				return;
+
+			for (let m in split(join(' ', entries(h.mac)), /[ ,]+/)) {
+				m = lc(replace(m, /-/g, ':'));
+
+				if (match(m, mac_re))
+					out[m] = h.ip;
+			}
+		});
+	}
+	catch (e) {
+		// no dhcp config (tests)
+	}
+
+	for (let l in split(readfile(getenv('MAYHEM_LEASES') ?? '/tmp/dhcp.leases') ?? '', '\n')) {
+		const f = split(l, ' ');
+		const m = lc(f[1] ?? '');
+
+		if (match(m, mac_re) && is_ip(f[2] ?? '') && index(f[2], ':') < 0)
+			out[m] ??= f[2];
+	}
+
+	return out;
+}
+
 function runtime(sections) {
 	const names = [];
 
@@ -173,7 +211,8 @@ function runtime(sections) {
 		dnsmasq_nftset: length(names) ? dnsmasq_nftset(command('dnsmasq --version 2>/dev/null')) : null,
 		// the servers fallback chains use now (fallback.uc): { section: tag }
 		fallback: fallback_now(),
-		dnsmasq_servers: dnsmasq_servers()
+		dnsmasq_servers: dnsmasq_servers(),
+		leases: leases()
 	};
 }
 

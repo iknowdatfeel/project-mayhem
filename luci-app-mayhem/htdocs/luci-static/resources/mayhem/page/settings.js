@@ -52,7 +52,7 @@ return baseclass.extend({
 		[ 'debug', 'info', 'warning', 'error', 'none' ].forEach((l) => o.value(l));
 		o.default = 'warning';
 
-		o = s.option(form.Value, 'memlimit', _('Xray memory limit, MiB'),
+		o = s.option(form.Value, 'memlimit', _('Xray memory limit (GOMEMLIMIT), MiB'),
 			_('A soft limit: Xray frees memory more often when it gets close. Empty: a quarter of the router memory.'));
 		o.datatype = 'range(16,4096)';
 		o.placeholder = _('Auto');
@@ -62,19 +62,20 @@ return baseclass.extend({
 		o.default = '1';
 		o.rmempty = false;
 
-		o = s.option(form.ListValue, 'watchdog_mem', _('Restart Xray above'));
+		o = s.option(form.ListValue, 'watchdog_mem', _('Watchdog memory threshold'));
 		[ 30, 40, 50, 60 ].forEach((p) => o.value(String(p), _('%d%% of memory').format(p)));
 		o.default = '40';
 		o.depends('watchdog', '1');
 
-		o = s.option(form.Value, 'probe_url', _('Address for server checks'),
+		o = s.option(form.Value, 'probe_url', _('URLTest URL'),
 			_('The automatic server choice and the URL test request it through each server.'));
 		o.placeholder = 'http://www.gstatic.com/generate_204';
 		o.validate = function(section_id, value) {
 			return (!value || /^https?:\/\/\S+$/.test(value)) ? true : _('Expected an http(s):// address');
 		};
 
-		o = s.option(form.ListValue, 'probe_interval', _('Check servers'));
+		o = s.option(form.ListValue, 'probe_interval', _('URLTest interval'),
+			_('With many servers the checks are spread out: at least two seconds per server, so 150 servers are checked every 5 minutes.'));
 		o.value('1m', _('Every minute'));
 		o.value('3m', _('Every 3 minutes'));
 		o.value('5m', _('Every 5 minutes'));
@@ -82,7 +83,7 @@ return baseclass.extend({
 		o.value('30m', _('Every 30 minutes'));
 		o.default = '3m';
 
-		o = s.option(form.Value, 'ip_check_url', _('Address for the external IP check'),
+		o = s.option(form.Value, 'ip_check_url', _('External IP check URL'),
 			_('Diagnostics request it directly and through every section; it must answer with the IP address as plain text.'));
 		o.placeholder = 'https://api.ipify.org';
 		o.validate = function(section_id, value) {

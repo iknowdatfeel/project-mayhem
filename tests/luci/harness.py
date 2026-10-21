@@ -411,6 +411,64 @@ def main():
             if got.get('domain') != ['geosite:youtube', 'youtube.test', 'example.org'] or got.get('ip') != ['geoip:telegram', '91.108.4.0/22']:
                 raise RuntimeError('text rules were saved as %s' % got)
 
+        def section_who_dns(pg):
+            # "Applies to": some devices; the section's own DNS servers in
+            # their order and type; both saved with the dialog
+            pg.reload()
+            pg.wait_for_selector('.mh-sheet-body .cbi-map', timeout=15000)
+            pg.wait_for_timeout(500)
+            pg.query_selector_all('[data-tab="settings"] .cbi-section-table-row .cbi-button-edit')[0].click()
+            pg.wait_for_selector('.modal [data-name="_who"]', timeout=5000)
+            if pg.is_visible('.modal [data-name="devices"]'):
+                raise RuntimeError('the device list is shown for the whole network')
+            pg.select_option('.modal select[id$="._who"]', 'devices')
+            pg.wait_for_selector('.modal [data-name="devices"]', state='visible', timeout=3000)
+            pg.evaluate("""() => {
+                const q = (n) => L.dom.findClassInstance(document.querySelector('.modal [data-name="' + n + '"] .cbi-dynlist'));
+                q('devices').setValue(['aa:bb:cc:dd:ee:01', '192.168.1.50']);
+                q('dns').setValue(['quad9', '9.9.9.10']);
+            }""")
+            pg.select_option('.modal select[id$="._dns_type"]', 'tcp')
+            pg.wait_for_timeout(300)
+            shot(pg, 'section_who_dns')
+            n = len(uci_writes)
+            pg.click('.modal .cbi-button-positive')
+            pg.wait_for_timeout(1500)
+            got = {}
+            for method, args in uci_writes[n:]:
+                if method == 'set' and args.get('section') == 'main':
+                    got.update(args.get('values', {}))
+            if got.get('devices') != ['aa:bb:cc:dd:ee:01', '192.168.1.50'] or got.get('dns') != ['tcp://9.9.9.9', 'tcp://9.9.9.10']:
+                raise RuntimeError('devices and section DNS were saved as %s' % got)
+
+        def section_who_dns(pg):
+            # devices of a section and its own DNS servers: empty means the
+            # whole network and the global DNS; both saved with the dialog
+            pg.reload()
+            pg.wait_for_selector('.mh-sheet-body .cbi-map', timeout=15000)
+            pg.wait_for_timeout(500)
+            pg.query_selector_all('[data-tab="settings"] .cbi-section-table-row .cbi-button-edit')[0].click()
+            pg.wait_for_selector('.modal [data-name="devices"]', state='visible', timeout=5000)
+            shot(pg, 'section_who_dns_empty')
+            pg.evaluate("""() => {
+                const q = (n) => L.dom.findClassInstance(document.querySelector('.modal [data-name="' + n + '"] .cbi-dynlist'));
+                q('devices').setValue(['aa:bb:cc:dd:ee:01', '192.168.1.50']);
+                q('dns').setValue(['quad9', '9.9.9.10']);
+            }""")
+            pg.select_option('.modal select[id$="._dns_type"]', 'tcp')
+            pg.wait_for_timeout(300)
+            pg.locator('.modal [data-name="dns"]').scroll_into_view_if_needed()
+            shot(pg, 'section_who_dns')
+            n = len(uci_writes)
+            pg.click('.modal .cbi-button-positive')
+            pg.wait_for_timeout(1500)
+            got = {}
+            for method, args in uci_writes[n:]:
+                if method == 'set' and args.get('section') == 'main':
+                    got.update(args.get('values', {}))
+            if got.get('devices') != ['aa:bb:cc:dd:ee:01', '192.168.1.50'] or got.get('dns') != ['tcp://9.9.9.9', 'tcp://9.9.9.10']:
+                raise RuntimeError('devices and section DNS were saved as %s' % got)
+
         def main_section(pg):
             # the main section is chosen on the dashboard, not here; the switch
             # for the rest of the traffic names the active server
@@ -471,6 +529,24 @@ def main():
             pg.wait_for_selector('.modal textarea', timeout=5000)
             shot(pg, 'sections_import')
             close_modal(pg)
+            # the tunnel's dialog: its .conf and the obfuscator to choose;
+            # Phobos shows the key and masking, the missing binary an install button
+            edit = pg.locator('.mh-sheet-body div[data-tab="device"] button:has-text("Edit"), .mh-sheet-body div[data-tab="device"] button:has-text("Изменить")')
+            if edit.count():
+                edit.first.click()
+                pg.wait_for_selector('.modal textarea', timeout=5000)
+                sel = pg.locator('.modal select').first
+                sel.select_option('phobos')
+                pg.wait_for_timeout(300)
+                if not pg.locator('.modal input[type="password"]').is_visible():
+                    raise RuntimeError('no key field for Phobos')
+                shot(pg, 'tunnel_obfs_phobos')
+                sel.select_option('faketcp')
+                pg.wait_for_timeout(300)
+                if pg.locator('.modal input[type="password"]').is_visible():
+                    raise RuntimeError('the key field is shown for fake TCP')
+                shot(pg, 'tunnel_obfs_faketcp')
+                close_modal(pg)
 
         def run_diag(pg):
             pg.click('#mayhem-body .mh-side button >> nth=-4')
@@ -538,17 +614,37 @@ def main():
             pg.click('.cbi-tabmenu [data-tab="dns"] a')
             pg.wait_for_selector('[data-tab="dns"] [data-name="remote"]', state='visible', timeout=5000)
             shot(pg, 'routing_dns')
-            # one type for the list, a resolver from the drop-down: saved as one entry
+            # one type for the list, resolvers in the order of the list: saved
+            # as entries of that type, the one dragged up first
             pg.select_option('[data-tab="dns"] select[id$="._domestic_type"]', 'tcp')
-            pg.evaluate("""() => {
-                const w = L.dom.findClassInstance(document.querySelector('[data-tab="dns"] [data-name="domestic"] .cbi-dropdown'));
-                w.setValue(['google', 'quad9']);
-            }""")
+            dyn = '[data-tab="dns"] [data-name="domestic"] .cbi-dynlist'
+            pg.evaluate("""(sel) => L.dom.findClassInstance(document.querySelector(sel)).setValue(['google', 'quad9'])""", dyn)
+            items = dyn + ' > .item'
+            if len(pg.query_selector_all(items)) != 2:
+                raise RuntimeError('domestic DNS list does not show two servers')
+            pg.drag_and_drop(items + ':nth-child(2)', items + ':nth-child(1)')
+            order = pg.eval_on_selector_all(items + ' > input[type="hidden"]', 'l => l.map((i) => i.value)')
+            if order != ['quad9', 'google']:
+                raise RuntimeError('dragging did not move the server: %s' % order)
+            shot(pg, 'routing_dns_order')
+            # a resolver that only answers over DoH stops the save over TCP
+            dl = dyn + ' .cbi-dropdown'
+            pg.click(dl)
+            pg.click(dl + ' li[data-value="comss"]')
+            err = pg.evaluate("""(sel) => {
+                const map = L.dom.findClassInstance(document.querySelector(sel).closest('.cbi-map'));
+                const o = map.lookupOption('domestic', 'dns')[0];
+                return o.isValid('dns') ? null : o.getValidationError('dns');
+            }""", dyn)
+            if not err or 'DoH' not in err:
+                raise RuntimeError('a DoH-only server over TCP is not an error: %s' % err)
+            pg.evaluate("""(sel) => { const w = L.dom.findClassInstance(document.querySelector(sel));
+                w.setValue(w.getValue().filter((v) => v !== 'comss')); }""", dyn)
             n = len(uci_writes)
             pg.click('.mh-sheet-foot .cbi-button-save')
             pg.wait_for_timeout(1000)
             got = [a.get('values', {}).get('domestic') for m, a in uci_writes[n:] if m == 'set' and a.get('section') == 'dns']
-            if ['tcp://8.8.8.8', 'tcp://9.9.9.9'] not in got:
+            if ['tcp://9.9.9.9', 'tcp://8.8.8.8'] not in got:
                 raise RuntimeError('domestic DNS saved as %s' % uci_writes[n:])
 
         def upload_modal(pg):
@@ -572,6 +668,9 @@ def main():
         def dashboard_buttons(pg):
             if not pg.query_selector('#mayhem-body .mh-tile'):
                 raise RuntimeError('no servers on the dashboard')
+            # the URL test asks for the kept-alive connections when the page opens
+            if pg.evaluate("document.querySelector('#mayhem-body .mh-side select').value") == 'url' and 'luci.mayhem.warm' not in calls:
+                raise RuntimeError('the dashboard did not ask for the kept-alive URL test: %s' % calls)
             # like Happ: servers by link in one box, every subscription in its own
             titles = pg.eval_on_selector_all('#mayhem-body .mh-section .mh-ghead > .mh-title', 'es => es.map(e => e.textContent)')
             if not any(x in ('Server list', 'Список серверов') for x in titles) or len(titles) < 2:
@@ -590,6 +689,14 @@ def main():
             if not DEMO:  # a screenshot shows the demo delays, not failed checks
                 pg.click('#mayhem-body .mh-side button >> nth=0')
                 pg.wait_for_timeout(1500)
+                # ICMP asks for the servers of a section in one call
+                pg.select_option('#mayhem-body .mh-side select', 'icmp')
+                n = len(calls)
+                pg.click('#mayhem-body .mh-side button >> nth=0')
+                pg.wait_for_timeout(2500)
+                got = calls[n:]
+                if 'luci.mayhem.probe_icmp' not in got or got.count('luci.mayhem.probe') > 1:
+                    raise RuntimeError('ICMP did not go as one call per section: %s' % got)
             else:
                 pg.wait_for_timeout(4500)  # two polls: the speed widget has numbers
 
@@ -753,7 +860,7 @@ def main():
                                   ('edit a server', edit_server), ('delete a server', delete_server), ('choose how', choose_mode),
                                   ('delete a tunnel', delete_tunnel), ('services', services_badge), ('pages in a window', nav_pages)]),
             ('mayhem/dashboard#sections', [('sections tab', lambda pg: shot(pg, 'routing_sections')), ('main section', main_section),
-                                 ('edit sections', lambda pg: open_modals(pg, '[data-tab="settings"]')), ('domains as text', section_text),
+                                 ('edit sections', lambda pg: open_modals(pg, '[data-tab="settings"]')), ('domains as text', section_text), ('who and DNS of a section', section_who_dns), ('who and DNS of a section', section_who_dns),
                                  ('tunnel options', type_tunnel), ('DNS tab', dns_tab), ('edit geo sources', geo_tab), ('upload dialog', upload_modal),
                                  ('add a section', add_section), ('add a section without subscriptions', lambda pg: add_section(pg, True))]),
             ('mayhem/dashboard#servers', [('server list tabs', servers_tabs), ('import dialog', import_modal), ('vpn key as a server', add_vpn_key)]),

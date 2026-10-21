@@ -346,6 +346,156 @@ function proto_handlers() {
 	}
 }
 
+// --- WireGuard obfuscation ------------------------------------------------------
+// A tunnel's UDP goes to a local obfuscator, which carries it to the server:
+//   phobos   wg-obfuscator: the packets XORed with a key, optionally dressed as
+//            STUN; the server runs wg-obfuscator with the same key;
+//   faketcp  phantun: the packets as a TCP connection, for networks that cut
+//            or slow down UDP; the server runs phantun_server.
+// The peer's endpoint then is 127.0.0.1:<lport>. Mayhem keeps the real one in
+// "config obfs 'ob_<iface>'" (iface, kind, host, eport, port, lport, key,
+// masking, mtu) and shows it in the .conf. Fake TCP takes 12 bytes more than
+// UDP: the tunnel's MTU is 1428 at most then.
+const OBFS_BIN = {
+	phobos: getenv('MAYHEM_WG_OBFUSCATOR') ?? '/usr/libexec/mayhem/wg-obfuscator',
+	faketcp: getenv('MAYHEM_PHANTUN') ?? '/usr/libexec/mayhem/phantun_client'
+};
+const OBFS_MASKING = [ 'AUTO', 'STUN', 'NONE' ];
+const FT_MTU = 1428;
+const OBFS_PORT0 = 41820;
+
+function obfs_record(cm, iface) {
+	return cm.get('mayhem', `ob_${iface}`) == 'obfs' ? cm.get_all('mayhem', `ob_${iface}`) : null;
+}
+
+function obfs_first_peer(cn, proto, iface) {
+	let first = null;
+
+	cn.foreach('network', `${proto}_${iface}`, (p) => { first ??= p; });
+
+	return first;
+}
+
+// The firewall zone of the fake TCP devices (mhft*): out to the WAN, which
+// masquerades them like the LAN.
+function obfs_zone(cf) {
+	let found = false;
+
+	cf.foreach('firewall', 'zone', (z) => {
+		if (z.name == 'mayhem_ft')
+			found = true;
+	});
+
+	if (found)
+		return;
+
+	const zone = cf.add('firewall', 'zone');
+
+	cf.set('firewall', zone, 'name', 'mayhem_ft');
+	cf.set('firewall', zone, 'device', [ 'mhft+' ]);
+	cf.set('firewall', zone, 'input', 'REJECT');
+	cf.set('firewall', zone, 'output', 'ACCEPT');
+	cf.set('firewall', zone, 'forward', 'REJECT');
+
+	const fwd = cf.add('firewall', 'forwarding');
+
+	cf.set('firewall', fwd, 'src', 'mayhem_ft');
+	cf.set('firewall', fwd, 'dest', 'wan');
+}
+
+// Sets the obfuscation of a tunnel: o = { kind: 'phobos'|'faketcp', port,
+// key, masking } or null for none. The peer's endpoint in cn is the real one
+// (from the .conf) or 127.0.0.1 with the record. Returns an error or null.
+function obfs_apply(cn, cm, cf, iface, proto, o) {
+	const rec = obfs_record(cm, iface);
+	const sid = `ob_${iface}`;
+	const peer = obfs_first_peer(cn, proto, iface);
+
+	if (!peer)
+		return 'the tunnel has no peer';
+
+	const local = peer.endpoint_host == '127.0.0.1' && rec;
+	const host = local ? rec.host : peer.endpoint_host;
+	const eport = local ? rec.eport : (peer.endpoint_port ?? '51820');
+	const mtu_now = cn.get('network', iface, 'mtu');
+	// The tunnel's own MTU: from the record while fake TCP has set its own.
+	const mtu = (rec?.kind == 'faketcp' && rec.mtu != null) ? rec.mtu : (mtu_now ?? '-');
+
+	const restore = () => {
+		cn.set('network', peer['.name'], 'endpoint_host', host);
+		cn.set('network', peer['.name'], 'endpoint_port', `${eport}`);
+
+		if (mtu == '-')
+			cn.delete('network', iface, 'mtu');
+		else
+			cn.set('network', iface, 'mtu', mtu);
+	};
+
+	if (!o) {
+		if (rec) {
+			restore();
+			cm.delete('mayhem', sid);
+		}
+
+		return null;
+	}
+
+	if (!OBFS_BIN[o.kind])
+		return 'unknown obfuscator';
+
+	if (!host || !match(host, /^[A-Za-z0-9.:_-]+$/))
+		return 'the peer has no endpoint';
+
+	if (o.port < 1 || o.port > 65535)
+		return 'invalid obfuscator port';
+
+	if (o.kind == 'phobos' && !match(o.key ?? '', /^[!-~]{1,255}$/))
+		return 'the obfuscation key must have 1 to 255 visible characters, no spaces';
+
+	let lport = int(rec?.lport ?? 0);
+
+	if (!lport) {
+		const used = {};
+
+		cm.foreach('mayhem', 'obfs', (r) => { used[r.lport] = true; });
+
+		for (lport = OBFS_PORT0; used[`${lport}`]; lport++)
+			;
+	}
+
+	if (!rec)
+		cm.set('mayhem', sid, 'obfs');
+
+	cm.set('mayhem', sid, 'iface', iface);
+	cm.set('mayhem', sid, 'kind', o.kind);
+	cm.set('mayhem', sid, 'host', host);
+	cm.set('mayhem', sid, 'eport', `${eport}`);
+	cm.set('mayhem', sid, 'port', `${o.port}`);
+	cm.set('mayhem', sid, 'lport', `${lport}`);
+	cm.set('mayhem', sid, 'mtu', mtu);
+
+	if (o.kind == 'phobos') {
+		cm.set('mayhem', sid, 'key', o.key);
+		cm.set('mayhem', sid, 'masking', index(OBFS_MASKING, o.masking) >= 0 ? o.masking : 'AUTO');
+
+		if (mtu == '-')
+			cn.delete('network', iface, 'mtu');
+		else
+			cn.set('network', iface, 'mtu', mtu);
+	}
+	else {
+		cm.delete('mayhem', sid, 'key');
+		cm.delete('mayhem', sid, 'masking');
+		cn.set('network', iface, 'mtu', `${(mtu != '-' && int(mtu) < FT_MTU) ? int(mtu) : FT_MTU}`);
+		obfs_zone(cf);
+	}
+
+	cn.set('network', peer['.name'], 'endpoint_host', '127.0.0.1');
+	cn.set('network', peer['.name'], 'endpoint_port', `${lport}`);
+
+	return null;
+}
+
 function network_cursor() {
 	const c = uci_open();
 
@@ -441,6 +591,15 @@ function rename_link(link, name) {
 const TUNNEL_PROBE_URL = 'http://1.1.1.1/';
 const TUNNEL_PROBE_URL2 = 'http://1.0.0.1/';
 const TUNNEL_PING_HOST = '1.1.1.1';
+// ICMP: seconds to wait for a reply (a live server answers in well under a
+// second), pings run at once by probe_icmp, servers in one probe_icmp call.
+const ICMP_WAIT = 2;
+const ICMP_WAVE = 32;
+const ICMP_MAX = 256;
+
+// URL test over kept-alive connections: the process, the servers it keeps.
+const WARM = getenv('MAYHEM_RPC_WARM') ?? '/usr/share/mayhem-luci/warm.uc';
+const WARM_MAX = 64;
 
 // The server of a tunnel: the endpoint of its first peer.
 function tunnel_endpoint(iface) {
@@ -1277,18 +1436,20 @@ function tcp_time(out) {
 	return { ms: int((m[2] * 1 - m[1] * 1) * 1000) || 1 };
 }
 
-// The shortest of several lines in the format of tcp_time().
-function best_tcp_time(out) {
-	let best = null;
+// The last of several lines in the format of tcp_time(): the second
+// connection is timed on a path the first one has warmed up. When the second
+// one fails, the first one counts.
+function last_tcp_time(out) {
+	let last = null;
 
 	for (let l in split(out ?? '', '\n')) {
 		const r = tcp_time(l);
 
-		if (r.ms != null && (best == null || r.ms < best))
-			best = r.ms;
+		if (r.ms != null)
+			last = r.ms;
 	}
 
-	return best != null ? { ms: best } : { error: 'no connection' };
+	return last != null ? { ms: last } : { error: 'no connection' };
 }
 
 // --- the dashboard ---------------------------------------------------------------
@@ -1568,19 +1729,19 @@ const methods = {
 				// An idle WireGuard/AmneziaWG tunnel first makes a handshake
 				// (the first packet waits for it, a lost one costs 5 s): a
 				// ping through it wakes the tunnel, then two connections
-				// through it are timed and the shorter one counts.
+				// through it are timed and the second one counts.
 				if (req.args?.method == 'tcp')
-					return best_tcp_time(run(`ping -c 1 -W 3 -I ${q(dev)} ${TUNNEL_PING_HOST} >/dev/null 2>&1; ` +
+					return last_tcp_time(run(`ping -c 1 -W 3 -I ${q(dev)} ${TUNNEL_PING_HOST} >/dev/null 2>&1; ` +
 						`curl -s --interface ${q(dev)} --connect-timeout 4 -m 5 -o /dev/null -o /dev/null ` +
 						`-w '%{time_namelookup} %{time_connect}\n' ${q(TUNNEL_PROBE_URL)} ${q(TUNNEL_PROBE_URL2)}`));
 
 				const ep = tunnel_endpoint(n.iface);
 
-				out = (ep ? run(`ping -c 1 -W 3 ${q(ep)} 2>&1`) : '') ?? '';
+				out = (ep ? run(`ping -c 1 -W ${ICMP_WAIT} ${q(ep)} 2>&1`) : '') ?? '';
 				m = match(out, /time=([0-9.]+)/);
 
 				if (!m) {
-					out = run(`ping -c 1 -W 3 -I ${q(dev)} ${TUNNEL_PING_HOST} 2>&1`) ?? '';
+					out = run(`ping -c 1 -W ${ICMP_WAIT} -I ${q(dev)} ${TUNNEL_PING_HOST} 2>&1`) ?? '';
 					m = match(out, /time=([0-9.]+)/);
 				}
 
@@ -1601,12 +1762,13 @@ const methods = {
 				const host = index(addr, ':') >= 0 ? `[${addr}]` : addr;
 				const one = `curl -s -o /dev/null --connect-timeout 5 -m 6 -w '%{time_namelookup} %{time_connect}\n' ${q(`http://${host}:${n.port}/`)}`;
 
-				// Two connections, the shorter counts: a lost SYN costs a
-				// second or more and is no delay of the server.
-				return best_tcp_time(run(`r="$(${one})"; echo "$r"; case "$r" in *' 0.000000'|'') ;; *) ${one} ;; esac`));
+				// Two connections, the second counts: the first warms up the
+				// path (route, ARP, the server's queue), and a lost SYN in it
+				// costs a second or more that is no delay of the server.
+				return last_tcp_time(run(`r="$(${one})"; echo "$r"; case "$r" in *' 0.000000'|'') ;; *) ${one} ;; esac`));
 
 			case 'icmp':
-				out = run(`ping -c 1 -W 3 ${q(addr)} 2>&1`) ?? '';
+				out = run(`ping -c 1 -W ${ICMP_WAIT} ${q(addr)} 2>&1`) ?? '';
 				m = match(out, /time=([0-9.]+)/);
 
 				return m ? { ms: int(m[1] * 1) || 1 } : { error: 'no reply' };
@@ -1648,6 +1810,168 @@ const methods = {
 			default:
 				return { error: 'unknown method' };
 			}
+		}
+	},
+
+	// ICMP ping of many servers in one call: a ping is cheap, the process of
+	// a call is not (each probe() call starts ucode with the whole plugin).
+	// One ping per address, all at once, in waves of ICMP_WAVE; servers on
+	// one address share its answer. A tunnel pings its server, through the
+	// tunnel when the server does not answer, as probe() does.
+	probe_icmp: {
+		args: { tags: [] },
+		call: function(req) {
+			const state = read_json(`${RUN}/nodes.json`);
+			const targets = [], index_of = {}, res = {};
+			const want = type(req.args?.tags) == 'array' ? slice(req.args.tags, 0, ICMP_MAX) : [];
+
+			const target = (addr, dev) => {
+				const k = `${dev ?? ''} ${addr}`;
+
+				if (index_of[k] == null) {
+					index_of[k] = length(targets);
+					push(targets, { addr: addr, dev: dev });
+				}
+
+				return index_of[k];
+			};
+
+			const pings = (list) => {
+				let cmd = '';
+
+				for (let i, t in list) {
+					const dev = t.dev ? `-I ${q(t.dev)} ` : '';
+
+					cmd += `( r="$(ping -c 1 -W ${ICMP_WAIT} ${dev}${q(t.addr)} 2>/dev/null | sed -n 's/.*time=\\([0-9.]*\\).*/\\1/p' | head -n 1)"; ` +
+						`echo "${i} \${r:--}" ) & `;
+
+					if ((i + 1) % ICMP_WAVE == 0)
+						cmd += 'wait; ';
+				}
+
+				const ms = [];
+
+				for (let l in split(run(cmd + 'wait') ?? '', '\n')) {
+					const m = match(l, /^([0-9]+) ([0-9.]+)$/);
+
+					if (m)
+						ms[int(m[1])] = int(m[2] * 1) || 1;
+				}
+
+				return ms;
+			};
+
+			const plan = {};
+
+			for (let tag in want) {
+				const f = find_node(state, tag);
+
+				if (!f) {
+					res[tag] = { error: 'unknown server' };
+					continue;
+				}
+
+				const n = f.node;
+
+				if (n.iface) {
+					const dev = n.device ?? n.iface;
+
+					if (!match(dev, /^[A-Za-z0-9_.@-]+$/)) {
+						res[tag] = { error: 'no interface' };
+						continue;
+					}
+
+					const ep = tunnel_endpoint(n.iface);
+
+					plan[tag] = { first: ep ? target(ep) : null, dev: dev };
+				}
+				else if (match(n.address ?? '', /^[A-Za-z0-9.:_-]+$/))
+					plan[tag] = { first: target(n.address) };
+				else
+					res[tag] = { error: 'no address' };
+			}
+
+			const ms = pings(targets);
+			const second = [], via = {};
+
+			for (let tag, p in plan) {
+				if (p.first != null && ms[p.first] != null)
+					res[tag] = { ms: ms[p.first] };
+				else if (p.dev) {
+					if (via[p.dev] == null) {
+						push(second, { addr: TUNNEL_PING_HOST, dev: p.dev });
+						via[p.dev] = length(second) - 1;
+					}
+
+					p.second = via[p.dev];
+				}
+				else
+					res[tag] = { error: 'no reply' };
+			}
+
+			const ms2 = length(second) ? pings(second) : [];
+
+			for (let tag, p in plan)
+				if (p.second != null)
+					res[tag] = ms2[p.second] != null ? { ms: ms2[p.second] } : { error: 'no reply' };
+
+			return { results: res };
+		}
+	},
+
+	// URL test over kept-alive connections (warm.uc): starts it when it does
+	// not run, keeps it running (it stops a minute after the last call) and
+	// answers with what it measured. now: check every server at once.
+	warm: {
+		args: { now: false },
+		call: function(req) {
+			try {
+				require('socket');
+			}
+			catch (e) {
+				return { error: 'no socket module' };
+			}
+
+			if (!xray_pid())
+				return { error: 'xray is not running' };
+
+			const state = read_json(`${RUN}/nodes.json`);
+
+			if (!match(state?.probe_url ?? C.DEFAULT_PROBE_URL, /^http:\/\//))
+				return { error: 'not an http:// URL' };
+
+			fs.mkdir(RUN, 0700);
+			fs.writefile(`${RUN}/warm.alive`, `${time()}\n`);
+
+			if (req.args?.now)
+				fs.writefile(`${RUN}/warm.now`, '');
+
+			const pid = trim(fs.readfile(`${RUN}/warm.pid`) ?? '');
+
+			if (!match(pid, /^[0-9]+$/) || index(fs.readfile(`/proc/${pid}/cmdline`) ?? '', 'warm.uc') < 0)
+				system(`(ucode ${q(WARM)} >/dev/null 2>&1 </dev/null & echo $! > ${q(RUN + '/warm.pid')}) >/dev/null 2>&1 </dev/null`);
+
+			const tags = [], seen = {};
+
+			for (let sn in sort(keys(state?.sections ?? {})))
+				for (let n in state.sections[sn].nodes ?? [])
+					if (n.tag && !seen[n.tag] && length(tags) < WARM_MAX) {
+						seen[n.tag] = true;
+						push(tags, n.tag);
+					}
+
+			const j = read_json(`${RUN}/warm.json`);
+			const now = time();
+			const period = j?.period ?? 10;
+			const results = {};
+
+			// A result older than three rounds is from a connection that
+			// stalled, or from an earlier run.
+			for (let tag, r in j?.results ?? {})
+				if (seen[tag] && r?.at >= now - 3 * period)
+					results[tag] = r;
+
+			return { ok: true, now: now, period: period, tags: tags, results: results };
 		}
 	},
 
@@ -1805,7 +2129,8 @@ const methods = {
 		args: { what: '', version: '' },
 		call: function(req) {
 			const ver = match(req.args?.version ?? '', /^[0-9][0-9A-Za-z.-]*$/) ? req.args.version : '';
-			const cmds = { awg: 'awg-install', protos: 'tunnel-protos', dnsmasq: 'dnsmasq-full', xray: `xray-install ${ver}`, mayhem: 'self-update' };
+			const cmds = { awg: 'awg-install', protos: 'tunnel-protos', dnsmasq: 'dnsmasq-full', xray: `xray-install ${ver}`, mayhem: 'self-update',
+				phobos: 'obfs-install phobos', faketcp: 'obfs-install faketcp' };
 			const cmd = cmds[req.args?.what];
 
 			if (!cmd)
@@ -2130,10 +2455,18 @@ const methods = {
 				c.delete('mayhem', from);
 			}
 
+			// The obfuscation of the tunnel goes along.
+			if (c.get('mayhem', `ob_${from}`) == 'obfs') {
+				c.set('mayhem', `ob_${to}`, 'obfs');
+				copy_opts('mayhem', `ob_${from}`, `ob_${to}`);
+				c.set('mayhem', `ob_${to}`, 'iface', to);
+				c.delete('mayhem', `ob_${from}`);
+			}
+
 			if (!commit_all(c, 'network', 'firewall', 'mayhem'))
 				return { error: 'the config could not be saved' };
 
-			apply_bg('/etc/init.d/network reload; /etc/init.d/firewall reload; /etc/init.d/mayhem reload');
+			apply_bg('/etc/init.d/mayhem-obfs restart; /etc/init.d/network reload; /etc/init.d/firewall reload; /etc/init.d/mayhem reload');
 
 			return { ok: true, interface: to };
 		}
@@ -2553,6 +2886,9 @@ const methods = {
 				if (c.get('mayhem', iface) == 'tunnel')
 					c.delete('mayhem', iface);
 
+				if (c.get('mayhem', `ob_${iface}`) == 'obfs')
+					c.delete('mayhem', `ob_${iface}`);
+
 				if (index(gone, c.get('mayhem', 'settings', 'default_section')) >= 0)
 					c.delete('mayhem', 'settings', 'default_section');
 			}
@@ -2561,7 +2897,7 @@ const methods = {
 				return { error: 'the config could not be saved' };
 
 			apply_bg(mode == 'full'
-				? `ifdown ${q(iface)}; /etc/init.d/network reload; /etc/init.d/firewall reload; /etc/init.d/mayhem reload`
+				? `ifdown ${q(iface)}; /etc/init.d/mayhem-obfs restart; /etc/init.d/network reload; /etc/init.d/firewall reload; /etc/init.d/mayhem reload`
 				: '/etc/init.d/mayhem reload');
 
 			return { ok: true };
@@ -2666,12 +3002,30 @@ const methods = {
 			if (proto != 'amneziawg' && proto != 'wireguard')
 				return { error: 'only AmneziaWG and WireGuard tunnels can be edited here' };
 
-			const opts = c.get_all('network', iface) ?? {};
+			const opts = { ...(c.get_all('network', iface) ?? {}) };
 			const peers = [];
 
-			c.foreach('network', `${proto}_${iface}`, (p) => push(peers, p));
+			c.foreach('network', `${proto}_${iface}`, (p) => push(peers, { ...p }));
 
-			return { ok: true, proto: proto, conf: to_conf(opts, peers) };
+			// With an obfuscator the .conf shows the server and the MTU of the
+			// tunnel itself, not the local obfuscator.
+			const rec = obfs_record(uci_cursor(), iface);
+
+			if (rec && length(peers) && peers[0].endpoint_host == '127.0.0.1') {
+				peers[0].endpoint_host = rec.host;
+				peers[0].endpoint_port = rec.eport;
+
+				if (rec.mtu == '-')
+					delete opts.mtu;
+				else if (rec.mtu)
+					opts.mtu = rec.mtu;
+			}
+
+			return {
+				ok: true, proto: proto, conf: to_conf(opts, peers),
+				obfs: rec ? { kind: rec.kind, port: int(rec.port), key: rec.key, masking: rec.masking } : null,
+				installed: { phobos: fs.access(OBFS_BIN.phobos, 'x') == true, faketcp: fs.access(OBFS_BIN.faketcp, 'x') == true }
+			};
 		}
 	},
 
@@ -2679,7 +3033,7 @@ const methods = {
 	// protocol, firewall zone and Mayhem settings; its keys, addresses,
 	// obfuscation parameters and peers are replaced. The tunnel reconnects.
 	tunnel_set: {
-		args: { iface: '', conf: '' },
+		args: { iface: '', conf: '', obfs: '', obfs_port: 0, obfs_key: '', obfs_masking: '' },
 		call: function(req) {
 			const iface = req.args?.iface ?? '';
 			const c = uci_open();
@@ -2733,10 +3087,36 @@ const methods = {
 					c.set('network', sid, k, p[k]);
 			}
 
-			if (!c.commit('network'))
+			// Obfuscation: no "obfs" keeps it as it was, "none" turns it off,
+			// "phobos" or "faketcp" turns it on with the port (and key).
+			const cm = uci_cursor();
+			const rec = obfs_record(cm, iface);
+			const kind = req.args?.obfs ?? '';
+			let o = null;
+
+			if (kind == '' && rec)
+				o = { kind: rec.kind, port: int(rec.port), key: rec.key, masking: rec.masking };
+			else if (kind != '' && kind != 'none')
+				o = { kind: kind, port: int(req.args?.obfs_port ?? 0), key: req.args?.obfs_key, masking: req.args?.obfs_masking };
+
+			if (o && OBFS_BIN[o.kind] && !fs.access(OBFS_BIN[o.kind], 'x'))
+				return { error: `${o.kind == 'phobos' ? 'wg-obfuscator' : 'phantun'} is not installed` };
+
+			// The .conf brings the tunnel's own MTU: the record learns it.
+			if (rec)
+				cm.set('mayhem', `ob_${iface}`, 'mtu', c.get('network', iface, 'mtu') ?? '-');
+
+			c.load('firewall');
+
+			const err = obfs_apply(c, cm, c, iface, proto, o);
+
+			if (err)
+				return { error: err };
+
+			if (!commit_all(c, 'network', 'firewall') || !cm.commit('mayhem'))
 				return { error: 'the config could not be saved' };
 
-			apply_bg(`/etc/init.d/network reload; sleep 2; ifup ${iface}; /etc/init.d/mayhem reload`);
+			apply_bg(`/etc/init.d/mayhem-obfs restart; /etc/init.d/firewall reload; /etc/init.d/network reload; sleep 2; ifup ${iface}; /etc/init.d/mayhem reload`);
 
 			return { ok: true };
 		}
@@ -2813,7 +3193,7 @@ const methods = {
 // status`, `xray api`, logread, an init script) and would hold rpcd meanwhile
 // (see deferred_sh() above). They run in a child process (call.uc) instead,
 // and rpcd answers when it exits; outside rpcd they run in place.
-const APART = [ 'probe', 'exit_info', 'sub_update', 'refresh_servers', 'components', 'diagnose',
+const APART = [ 'probe', 'probe_icmp', 'exit_info', 'sub_update', 'refresh_servers', 'components', 'diagnose',
 	'status', 'check', 'sysinfo', 'logs', 'tunnel_info', 'action', 'select_node', 'backup_import', 'reset_config' ];
 const CALL = getenv('MAYHEM_RPC_CALL') ?? '/usr/share/mayhem-luci/call.uc';
 

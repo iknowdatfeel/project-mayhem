@@ -2,6 +2,7 @@
 'require baseclass';
 'require rpc';
 'require ui';
+'require dom';
 'require poll';
 'require uci';
 'require mayhem.vpnkey as vpnkey';
@@ -17,7 +18,7 @@ const callImport = rpc.declare({ object: 'luci.mayhem', method: 'awg_import', pa
 const callRename = rpc.declare({ object: 'luci.mayhem', method: 'rename_interface', params: [ 'from', 'to' ], expect: { '': {} } });
 const callTunnelGet = rpc.declare({ object: 'luci.mayhem', method: 'tunnel_get', params: [ 'iface' ], expect: { '': {} } });
 const callTunnelDelete = rpc.declare({ object: 'luci.mayhem', method: 'tunnel_delete', params: [ 'iface', 'mode' ], expect: { '': {} } });
-const callTunnelSet = rpc.declare({ object: 'luci.mayhem', method: 'tunnel_set', params: [ 'iface', 'conf' ], expect: { '': {} } });
+const callTunnelSet = rpc.declare({ object: 'luci.mayhem', method: 'tunnel_set', params: [ 'iface', 'conf', 'obfs', 'obfs_port', 'obfs_key', 'obfs_masking' ], expect: { '': {} } });
 
 const IFACE_RE = /^[a-z][a-z0-9_]{0,14}$/;
 
@@ -33,8 +34,17 @@ const TITLES = {
 	protos: _('Restarting the network'),
 	dnsmasq: _('Installing dnsmasq-full'),
 	xray: _('Updating Xray'),
-	mayhem: _('Updating Mayhem')
+	mayhem: _('Updating Mayhem'),
+	phobos: _('Installing wg-obfuscator'),
+	faketcp: _('Installing phantun')
 };
+
+// WireGuard obfuscators: [ value, title, binary, what the server runs ].
+const OBFS = [
+	[ 'none', _('None'), null, null ],
+	[ 'phobos', _('Phobos (wg-obfuscator)'), 'wg-obfuscator', _('wg-obfuscator with the same key in front of WireGuard') ],
+	[ 'faketcp', _('Fake TCP (phantun)'), 'phantun', _('phantun_server in front of WireGuard') ]
+];
 
 return baseclass.extend({
 	info() {
@@ -161,23 +171,72 @@ return baseclass.extend({
 
 			const msg = E('div', { 'class': 'mh-small' });
 			const text = E('textarea', {
-				'class': 'cbi-input-textarea', 'rows': 22, 'spellcheck': 'false',
+				'class': 'cbi-input-textarea', 'rows': 18, 'spellcheck': 'false',
 				'style': 'width:100%;font-family:monospace;font-size:90%;box-sizing:border-box'
 			}, r.conf);
+			const ob = r.obfs || {};
+			const installed = r.installed || {};
+			const field = (title, widget, note) => E('div', { 'class': 'cbi-value' }, [
+				E('label', { 'class': 'cbi-value-title' }, title),
+				E('div', { 'class': 'cbi-value-field' }, [ widget, note ? E('div', { 'class': 'cbi-value-description' }, note) : '' ])
+			]);
+			const kind = E('select', { 'class': 'cbi-input-select' },
+				OBFS.map((o) => E('option', { 'value': o[0], 'selected': (ob.kind || 'none') === o[0] ? '' : null }, o[1])));
+			const port = E('input', { 'class': 'cbi-input-text', 'type': 'number', 'min': 1, 'max': 65535, 'value': ob.port || '', 'placeholder': '13255' });
+			const key = E('input', { 'class': 'cbi-input-text', 'type': 'password', 'value': ob.key || '', 'autocomplete': 'new-password' });
+			const masking = E('select', { 'class': 'cbi-input-select' }, [ 'AUTO', 'STUN', 'NONE' ].map((m) =>
+				E('option', { 'value': m, 'selected': (ob.masking || 'AUTO') === m ? '' : null }, m)));
+			const missing = E('div', { 'class': 'mh-note mh-small' });
+			const rowPort = field(_('Obfuscator server port'), port);
+			const rowKey = field(_('Obfuscation key'), key, _('The same key as in the server\'s wg-obfuscator.'));
+			const rowMask = field(_('Masking'), masking, _('AUTO and STUN dress the packets as STUN; NONE leaves them as they are.'));
+			const note = E('div', { 'class': 'cbi-value-description', 'style': 'margin:0 0 1em' });
+
+			const sync = () => {
+				const o = OBFS.find((x) => x[0] === kind.value);
+				const on = kind.value !== 'none';
+
+				rowPort.style.display = on ? '' : 'none';
+				rowKey.style.display = rowMask.style.display = kind.value === 'phobos' ? '' : 'none';
+				note.textContent = on ? _('The tunnel sends its UDP to the obfuscator on the router, which carries it to the endpoint of the .conf on this port; the server runs %s. Fake TCP lowers the MTU to 1428.').format(o[3]) : '';
+
+				dom.content(missing, (on && !installed[kind.value]) ? [
+					E('span', { 'class': 'mh-warn' }, _('%s is not installed on the router.').format(o[2])),
+					E('button', { 'class': 'btn cbi-button-action', 'click': ui.createHandlerFn(this, () => this.install(kind.value)) }, _('Install'))
+				] : []);
+			};
+
+			kind.addEventListener('change', sync);
 
 			ui.showModal(_('Edit tunnel %s').format(iface), [
 				E('p', { 'class': 'mh-muted mh-small' }, _('Saved over interface %s: its name, firewall zone and Mayhem settings stay. The tunnel reconnects.').format(iface)),
 				text,
+				E('h5', { 'style': 'margin-top:1em' }, _('Obfuscation')),
+				field(_('Obfuscator'), kind),
+				note,
+				rowPort, rowKey, rowMask,
+				missing,
 				msg,
 				E('div', { 'class': 'right', 'style': 'margin-top:1em' }, [
 					E('button', { 'class': 'btn', 'click': ui.hideModal }, _('Cancel')), ' ',
 					E('button', { 'class': 'btn cbi-button-action', 'click': ui.createHandlerFn(this, () => {
-						if (text.value.trim() === String(r.conf).trim()) {
+						const k = kind.value;
+						const p = parseInt(port.value, 10) || 0;
+						const same = text.value.trim() === String(r.conf).trim() && k === (ob.kind || 'none') &&
+							(k === 'none' || (p === ob.port && (k !== 'phobos' || (key.value === ob.key && masking.value === (ob.masking || 'AUTO')))));
+
+						if (same) {
 							ui.hideModal();
 							return;
 						}
 
-						return callTunnelSet(iface, text.value).then((res) => {
+						if (k !== 'none' && (p < 1 || p > 65535)) {
+							msg.className = 'mh-small mh-fail';
+							msg.textContent = _('The obfuscator server port is a number from 1 to 65535');
+							return;
+						}
+
+						return callTunnelSet(iface, text.value, k, p, key.value, masking.value).then((res) => {
 							if (res.error) {
 								msg.className = 'mh-small mh-fail';
 								msg.textContent = res.error;
@@ -194,6 +253,7 @@ return baseclass.extend({
 				])
 			]);
 
+			sync();
 			text.focus();
 		});
 	},

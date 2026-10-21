@@ -37,12 +37,20 @@ msgid "%s MB/s"
 msgstr "%s МБ/с"
 
 #: htdocs/luci-static/resources/mayhem/page/sections.js
+msgid "%s does not answer over DoQ"
+msgstr "%s не отвечает по DoQ"
+
+#: htdocs/luci-static/resources/mayhem/page/sections.js
 msgid "%s is an address: it goes into the field below"
 msgstr "%s — это адрес, его место в поле ниже"
 
 #: htdocs/luci-static/resources/mayhem/tunnels.js
 msgid "%s is installed, but the network has not loaded it yet: its tunnels do not start."
 msgstr "%s установлен, но сеть его ещё не загрузила: туннели не запускаются."
+
+#: htdocs/luci-static/resources/mayhem/tunnels.js
+msgid "%s is not installed on the router."
+msgstr "%s не установлен на роутере."
 
 #: htdocs/luci-static/resources/view/mayhem/dashboard.js
 msgid "%s of %s"
@@ -100,6 +108,10 @@ msgstr "Мягкий лимит: приближаясь к нему, Xray чащ
 msgid "A tunnel is a network interface: AmneziaWG, WireGuard, OpenVPN or another one. A tunnel section sends its traffic into it, and a proxy section can use it as one of its servers."
 msgstr "Туннель — это сетевой интерфейс: AmneziaWG, WireGuard, OpenVPN или другой. Секция-туннель отправляет в него свой трафик, а прокси-секция может использовать его как один из своих серверов."
 
+#: htdocs/luci-static/resources/mayhem/tunnels.js
+msgid "AUTO and STUN dress the packets as STUN; NONE leaves them as they are."
+msgstr "AUTO и STUN маскируют пакеты под STUN; NONE оставляет как есть."
+
 #: htdocs/luci-static/resources/mayhem/page/sections.js
 msgid "Active server of the server list"
 msgstr "Активный сервер из списка"
@@ -119,6 +131,14 @@ msgstr "Добавить сервер…"
 #: htdocs/luci-static/resources/view/mayhem/dashboard.js
 msgid "Add connection"
 msgstr "Добавить подключение"
+
+#: htdocs/luci-static/resources/mayhem/page/sections.js
+msgid "Add one or several from the list or type your own address. They are asked in the order of the list: the first one is the main server, the next ones are fallbacks. Drag a server to change the order."
+msgstr "Добавьте один или несколько серверов из списка или впишите свой адрес. Опрашиваются по порядку: первый — основной, остальные — резервные. Чтобы поменять порядок, перетащите сервер."
+
+#: htdocs/luci-static/resources/mayhem/page/sections.js
+msgid "Add one or several from the list or type your own address. They are asked in the order of the list: the first one is the main server, the next ones are fallbacks. Drag a server to change the order. None: the DNS servers of the provider."
+msgstr "Добавьте один или несколько серверов из списка или впишите свой адрес. Опрашиваются по порядку: первый — основной, остальные — резервные. Чтобы поменять порядок, перетащите сервер. Ничего не выбрано — DNS-серверы провайдера."
 
 #: htdocs/luci-static/resources/mayhem/page/sections.js
 msgid "Add section"
@@ -153,28 +173,12 @@ msgid "Address"
 msgstr "Адрес"
 
 #: htdocs/luci-static/resources/mayhem/page/sections.js
-msgid "Address categories (geoip)"
-msgstr "Категории адресов (geoip)"
-
-#: htdocs/luci-static/resources/mayhem/page/settings.js
-msgid "Address for server checks"
-msgstr "Адрес для проверки серверов"
-
-#: htdocs/luci-static/resources/mayhem/page/settings.js
-msgid "Address for the external IP check"
-msgstr "Адрес для проверки внешнего IP"
-
-#: htdocs/luci-static/resources/mayhem/page/sections.js
 msgid "Addresses of local networks (10.0.0.0/8, 192.168.0.0/16 and others) always go direct."
 msgstr "Адреса локальных сетей (10.0.0.0/8, 192.168.0.0/16 и другие) всегда идут напрямую."
 
 #: htdocs/luci-static/resources/mayhem/page/servers.js
 msgid "Advanced"
 msgstr "Дополнительно"
-
-#: htdocs/luci-static/resources/mayhem/page/sections.js
-msgid "Advanced settings"
-msgstr "Дополнительные настройки"
 
 #: htdocs/luci-static/resources/mayhem/diag.js
 msgid "All checks passed"
@@ -261,12 +265,24 @@ msgid "Backup…"
 msgstr "Резервная копия…"
 
 #: htdocs/luci-static/resources/mayhem/page/sections.js
+msgid "BitTorrent bypass"
+msgstr "Обход для BitTorrent"
+
+#: htdocs/luci-static/resources/mayhem/page/sections.js
 msgid "Block"
 msgstr "Блокировка"
 
 #: htdocs/luci-static/resources/mayhem/page/sections.js
+msgid "Block QUIC (UDP/443)"
+msgstr "Блокировка QUIC (UDP/443)"
+
+#: htdocs/luci-static/resources/mayhem/page/sections.js
 msgid "Browsers and apps fall back from QUIC (UDP 443) to TCP, which works better through a proxy."
 msgstr "Браузеры и приложения переходят с QUIC (UDP 443) на TCP, который лучше работает через прокси."
+
+#: htdocs/luci-static/resources/mayhem/page/sections.js
+msgid "Bypass local networks"
+msgstr "Обход локальных сетей"
 
 #: htdocs/luci-static/resources/mayhem/linkedit.js
 msgid "Cancel"
@@ -295,10 +311,6 @@ msgstr "Сменить"
 #: htdocs/luci-static/resources/view/mayhem/dashboard.js
 msgid "Check method"
 msgstr "Способ проверки"
-
-#: htdocs/luci-static/resources/mayhem/page/settings.js
-msgid "Check servers"
-msgstr "Проверять серверы"
 
 #: htdocs/luci-static/resources/mayhem/diag.js
 msgid "Checking…"
@@ -352,6 +364,10 @@ msgstr "Конфиг или ключ"
 msgid "Configuration"
 msgstr "Конфигурация"
 
+#: htdocs/luci-static/resources/mayhem/page/sections.js
+msgid "Configuration type"
+msgstr "Тип конфигурации"
+
 #: htdocs/luci-static/resources/view/mayhem/dashboard.js
 msgid "Connection state"
 msgstr "Состояние подключения"
@@ -375,6 +391,22 @@ msgstr "Создать секцию маршрутизации"
 #: htdocs/luci-static/resources/mayhem/diag.js
 msgid "DNS"
 msgstr "DNS"
+
+#: htdocs/luci-static/resources/mayhem/page/sections.js
+msgid "DNS hijack (port 53)"
+msgstr "Перехват DNS (порт 53)"
+
+#: htdocs/luci-static/resources/mayhem/page/sections.js
+msgid "DNS protocol"
+msgstr "Протокол DNS"
+
+#: htdocs/luci-static/resources/mayhem/page/sections.js
+msgid "DNS servers"
+msgstr "DNS-серверы"
+
+#: htdocs/luci-static/resources/mayhem/page/sections.js
+msgid "Default outbound"
+msgstr "Исходящее по умолчанию"
 
 #: htdocs/luci-static/resources/mayhem/page/servers.js
 msgid "Delete"
@@ -421,8 +453,8 @@ msgid "Direct"
 msgstr "Напрямую"
 
 #: htdocs/luci-static/resources/mayhem/page/sections.js
-msgid "Direct traffic is resolved by the domestic DNS. Domains of proxy sections get addresses from Xray itself and are resolved by the proxy server; the remote DNS serves tunnel sections and the rest of the traffic when everything goes through the proxy. The main server and its fallbacks share one type: UDP, TCP or DoH (Xray has no DNS over TLS)."
-msgstr "Прямой трафик разрешается домашним DNS. Домены прокси-секций получают адреса от самого Xray и разрешаются на прокси-сервере; удалённый DNS нужен туннельным секциям и остальному трафику, когда всё идёт через прокси. У основного и резервных серверов один тип: UDP, TCP или DoH (DNS over TLS в Xray нет)."
+msgid "Direct traffic is resolved by the domestic DNS. Domains of proxy sections get addresses from Xray itself and are resolved by the proxy server; the remote DNS serves tunnel sections and the rest of the traffic when everything goes through the proxy. The main server and its fallbacks share one type: UDP, TCP, DoH or DoQ (Xray has no DNS over TLS; DoQ always goes direct)."
+msgstr "Прямой трафик разрешается домашним DNS. Домены прокси-секций получают адреса от самого Xray и разрешаются на прокси-сервере; удалённый DNS нужен туннельным секциям и остальному трафику, когда всё идёт через прокси. У основного и резервных серверов один тип: UDP, TCP, DoH или DoQ (DNS over TLS в Xray нет; DoQ всегда идёт напрямую)."
 
 #: htdocs/luci-static/resources/view/mayhem/dashboard.js
 msgid "Disabled subscription"
@@ -432,33 +464,29 @@ msgstr "Выключена"
 msgid "Discard changes"
 msgstr "Отменить изменения"
 
+#: htdocs/luci-static/resources/mayhem/page/sections.js
+msgid "DoQ (QUIC, direct)"
+msgstr "DoQ (QUIC, напрямую)"
+
 #: htdocs/luci-static/resources/mayhem/tunnels.js
 msgid "Does not work"
 msgstr "Не работает"
-
-#: htdocs/luci-static/resources/mayhem/page/sections.js
-msgid "Domain categories (geosite)"
-msgstr "Категории доменов (geosite)"
 
 #: htdocs/luci-static/resources/mayhem/diag.js
 msgid "Domain outside the lists (openwrt.org)"
 msgstr "Домен вне списков (openwrt.org)"
 
 #: htdocs/luci-static/resources/mayhem/page/sections.js
-msgid "Domains"
-msgstr "Домены"
-
-#: htdocs/luci-static/resources/mayhem/page/sections.js
 msgid "Domains: %d, addresses: %d"
 msgstr "Доменов: %d, адресов: %d"
 
 #: htdocs/luci-static/resources/mayhem/page/sections.js
-msgid "Domestic DNS"
-msgstr "Домашний DNS"
+msgid "Domestic DNS protocol"
+msgstr "Протокол домашнего DNS"
 
 #: htdocs/luci-static/resources/mayhem/page/sections.js
-msgid "Domestic DNS type"
-msgstr "Тип домашнего DNS"
+msgid "Domestic DNS servers"
+msgstr "Домашние DNS-серверы"
 
 #: htdocs/luci-static/resources/mayhem/tunnels.js
 msgid "Done."
@@ -488,6 +516,10 @@ msgstr "Скачать список категорий"
 msgid "Download through Xray"
 msgstr "Скачивать через Xray"
 
+#: htdocs/luci-static/resources/mayhem/page/components.js
+msgid "Download via proxy"
+msgstr "Загрузка через прокси"
+
 #: htdocs/luci-static/resources/mayhem/page/servers.js
 msgid "Drop: browsers fall back to TCP"
 msgstr "Отбрасывать: браузеры перейдут на TCP"
@@ -508,9 +540,17 @@ msgstr "Изменить туннель %s"
 msgid "Empty: a proxy without a password."
 msgstr "Если пусто, прокси работает без пароля."
 
+#: htdocs/luci-static/resources/mayhem/page/sections.js
+msgid "Empty: the DNS of the DNS tab. The names of this section are asked here, through the section itself, in order: the first one is the main server. A proxy section with FakeDNS needs none: its server resolves the names."
+msgstr "Пусто — DNS со вкладки «DNS». Имена этой секции спрашиваются здесь, через саму секцию, по порядку: первый — основной. Прокси-секции с FakeDNS он не нужен: имена разрешает её сервер."
+
 #: htdocs/luci-static/resources/mayhem/page/servers.js
 msgid "Empty: the HWID of the router, %s."
 msgstr "Если пусто, используется HWID роутера: %s."
+
+#: htdocs/luci-static/resources/mayhem/page/sections.js
+msgid "Empty: the whole network. Other devices go on to the sections below, as if this one did not exist. Xray tells devices by their address: a device given by MAC needs a lease (best a static one, under DHCP and DNS → Static leases)."
+msgstr "Пусто — вся сеть. Остальные устройства идут к секциям ниже, как будто этой нет. Xray различает устройства по адресу: устройству, заданному по MAC, нужна аренда адреса (лучше постоянная: DHCP и DNS → Постоянные аренды)."
 
 #: htdocs/luci-static/resources/view/mayhem/dashboard.js
 msgid "Enable"
@@ -573,8 +613,8 @@ msgid "Everything"
 msgstr "Всё"
 
 #: htdocs/luci-static/resources/mayhem/page/sections.js
-msgid "Exclude devices from routing"
-msgstr "Исключить устройства из маршрутизации"
+msgid "Excluded source IP/MAC"
+msgstr "Исключённые IP/MAC источников"
 
 #: htdocs/luci-static/resources/mayhem/page/sections.js
 msgid "Expected an IP address or a subnet in CIDR form"
@@ -616,6 +656,10 @@ msgstr "Сохранить все настройки Mayhem в файл или �
 msgid "External IP"
 msgstr "Внешний IP"
 
+#: htdocs/luci-static/resources/mayhem/page/settings.js
+msgid "External IP check URL"
+msgstr "URL проверки внешнего IP"
+
 #: htdocs/luci-static/resources/mayhem/diag.js
 msgid "External address"
 msgstr "Внешний адрес"
@@ -623,6 +667,10 @@ msgstr "Внешний адрес"
 #: htdocs/luci-static/resources/mayhem/tunnels.js
 msgid "Failed, see the log above. Nothing else was changed."
 msgstr "Не получилось, подробности в журнале выше. Больше ничего не изменено."
+
+#: htdocs/luci-static/resources/mayhem/tunnels.js
+msgid "Fake TCP (phantun)"
+msgstr "Фейк TCP (phantun)"
 
 #: htdocs/luci-static/resources/mayhem/page/sections.js
 msgid "FakeDNS"
@@ -643,6 +691,10 @@ msgstr "Файлы на роутере в том же формате, напри
 #: htdocs/luci-static/resources/mayhem/tunnels.js
 msgid "For example, Netherlands"
 msgstr "Например, Нидерланды"
+
+#: htdocs/luci-static/resources/mayhem/page/sections.js
+msgid "Full capture (TPROXY)"
+msgstr "Полный перехват (TPROXY)"
 
 #: htdocs/luci-static/resources/mayhem/common.js
 msgid "GB"
@@ -680,6 +732,18 @@ msgstr "Геоданные, списки и подписки"
 msgid "Geo source"
 msgstr "Источник геоданных"
 
+#: htdocs/luci-static/resources/mayhem/page/sections.js
+msgid "GeoIP categories"
+msgstr "Категории GeoIP"
+
+#: htdocs/luci-static/resources/mayhem/page/sections.js
+msgid "Geosite categories"
+msgstr "Категории geosite"
+
+#: htdocs/luci-static/resources/mayhem/page/sections.js
+msgid "Global mode"
+msgstr "Глобальный режим"
+
 #: htdocs/luci-static/resources/mayhem/page/servers.js
 msgid "HWID"
 msgstr "HWID"
@@ -697,16 +761,8 @@ msgid "ICMP ping"
 msgstr "ICMP-пинг"
 
 #: htdocs/luci-static/resources/mayhem/page/sections.js
-msgid "IP addresses and subnets"
-msgstr "IP-адреса и подсети"
-
-#: htdocs/luci-static/resources/mayhem/page/sections.js
 msgid "IP or MAC address"
 msgstr "IP- или MAC-адрес"
-
-#: htdocs/luci-static/resources/mayhem/page/sections.js
-msgid "IP version"
-msgstr "Версия IP"
 
 #: htdocs/luci-static/resources/mayhem/page/sections.js
 msgid "IPv4 only"
@@ -745,6 +801,10 @@ msgid "Incoming"
 msgstr "Входящее соединение"
 
 #: htdocs/luci-static/resources/mayhem/tunnels.js
+msgid "Install"
+msgstr "Установить"
+
+#: htdocs/luci-static/resources/mayhem/tunnels.js
 msgid "Install AmneziaWG"
 msgstr "Установить AmneziaWG"
 
@@ -768,9 +828,13 @@ msgstr "Установка AmneziaWG"
 msgid "Installing dnsmasq-full"
 msgstr "Установка dnsmasq-full"
 
-#: htdocs/luci-static/resources/mayhem/page/sections.js
-msgid "Intercept DNS on port 53"
-msgstr "Перехватывать DNS на порту 53"
+#: htdocs/luci-static/resources/mayhem/tunnels.js
+msgid "Installing phantun"
+msgstr "Установка phantun"
+
+#: htdocs/luci-static/resources/mayhem/tunnels.js
+msgid "Installing wg-obfuscator"
+msgstr "Установка wg-obfuscator"
 
 #: htdocs/luci-static/resources/mayhem/page/sections.js
 msgid "Interface"
@@ -801,6 +865,10 @@ msgid "Interface name"
 msgstr "Имя интерфейса"
 
 #: htdocs/luci-static/resources/mayhem/page/sections.js
+msgid "Interface outbounds"
+msgstr "Интерфейсы как outbound"
+
+#: htdocs/luci-static/resources/mayhem/page/sections.js
 msgid "Invalid JSON: %s"
 msgstr "Некорректный JSON: %s"
 
@@ -811,10 +879,6 @@ msgstr "Некорректное регулярное выражение"
 #: htdocs/luci-static/resources/mayhem/common.js
 msgid "KB"
 msgstr "КБ"
-
-#: htdocs/luci-static/resources/mayhem/page/sections.js
-msgid "Keep local addresses out of routing"
-msgstr "Не маршрутизировать локальные адреса"
 
 #: htdocs/luci-static/resources/mayhem/page/settings.js
 msgid "Keep subscriptions, server keys and HWID"
@@ -861,24 +925,16 @@ msgid "List"
 msgstr "Список"
 
 #: htdocs/luci-static/resources/mayhem/page/sections.js
-msgid "List updates"
-msgstr "Обновление списков"
-
-#: htdocs/luci-static/resources/mayhem/page/sections.js
-msgid "Lists by URL"
-msgstr "Списки по URL"
-
-#: htdocs/luci-static/resources/mayhem/page/sections.js
-msgid "Lists from files"
-msgstr "Списки из файлов"
+msgid "Lists update interval"
+msgstr "Интервал обновления списков"
 
 #: htdocs/luci-static/resources/mayhem/diag.js
 msgid "Loading…"
 msgstr "Загрузка…"
 
 #: htdocs/luci-static/resources/mayhem/page/sections.js
-msgid "Local proxy port"
-msgstr "Локальный прокси-порт"
+msgid "Local lists"
+msgstr "Локальные списки"
 
 #: htdocs/luci-static/resources/view/mayhem/dashboard.js
 msgid "Location"
@@ -908,9 +964,17 @@ msgstr "Основная секция"
 msgid "Main section: %s"
 msgstr "Основная секция: %s"
 
+#: htdocs/luci-static/resources/mayhem/tunnels.js
+msgid "Masking"
+msgstr "Маскировка"
+
 #: root/usr/share/luci/menu.d/luci-app-mayhem.json
 msgid "Mayhem"
 msgstr "Mayhem"
+
+#: htdocs/luci-static/resources/mayhem/page/components.js
+msgid "Mayhem auto-update"
+msgstr "Автообновление Mayhem"
 
 #: htdocs/luci-static/resources/view/mayhem/dashboard.js
 msgid "Mayhem cannot work like this"
@@ -936,13 +1000,41 @@ msgstr "Использование памяти"
 msgid "Messages of Mayhem, xray and dnsmasq from the system log. At the debug level xray logs every connection and DNS query: turn it back down when you are done."
 msgstr "Сообщения Mayhem, Xray и dnsmasq из системного журнала. На уровне debug Xray пишет каждое соединение и DNS-запрос: после отладки верните прежний уровень."
 
+#: htdocs/luci-static/resources/mayhem/page/sections.js
+msgid "Mixed proxy password"
+msgstr "Пароль mixed-прокси"
+
+#: htdocs/luci-static/resources/mayhem/page/sections.js
+msgid "Mixed proxy port"
+msgstr "Порт mixed-прокси"
+
+#: htdocs/luci-static/resources/mayhem/page/sections.js
+msgid "Mixed proxy user"
+msgstr "Пользователь mixed-прокси"
+
+#: htdocs/luci-static/resources/mayhem/page/servers.js
+msgid "Mux concurrency (TCP)"
+msgstr "Mux: concurrency (TCP)"
+
 #: htdocs/luci-static/resources/mayhem/page/servers.js
 msgid "Mux for VLESS"
 msgstr "Mux для VLESS"
 
+#: htdocs/luci-static/resources/mayhem/page/sections.js
+msgid "Name exclusion (regexp)"
+msgstr "Исключение по имени (regexp)"
+
+#: htdocs/luci-static/resources/mayhem/page/sections.js
+msgid "Name filter (regexp)"
+msgstr "Фильтр по имени (regexp)"
+
 #: htdocs/luci-static/resources/mayhem/page/servers.js
 msgid "Needed by providers that limit the number of devices. The headers match the Happ client."
 msgstr "Нужно провайдерам, которые ограничивают число устройств. Заголовки такие же, как у клиента Happ."
+
+#: htdocs/luci-static/resources/mayhem/page/sections.js
+msgid "Network interface"
+msgstr "Сетевой интерфейс"
 
 #: htdocs/luci-static/resources/mayhem/page/sections.js
 msgid "Network interfaces (AmneziaWG, WireGuard…) that join the servers of this section: the fastest one wins."
@@ -951,10 +1043,6 @@ msgstr "Сетевые интерфейсы (AmneziaWG, WireGuard…), кото�
 #: htdocs/luci-static/resources/mayhem/diag.js
 msgid "Nftables and routing"
 msgstr "Nftables и маршрутизация"
-
-#: htdocs/luci-static/resources/mayhem/page/sections.js
-msgid "Nightly update time"
-msgstr "Время ночного обновления"
 
 #: htdocs/luci-static/resources/view/mayhem/dashboard.js
 msgid "No answer"
@@ -983,6 +1071,10 @@ msgstr "Подписок пока нет: добавьте их кнопкой �
 #: htdocs/luci-static/resources/mayhem/tunnels.js
 msgid "No tunnels yet."
 msgstr "Туннелей пока нет."
+
+#: htdocs/luci-static/resources/mayhem/tunnels.js
+msgid "None"
+msgstr "Нет"
 
 #: htdocs/luci-static/resources/mayhem/page/sections.js
 msgid "Not a server key: %s"
@@ -1028,9 +1120,29 @@ msgstr "ОС"
 msgid "OS version"
 msgstr "Версия ОС"
 
+#: htdocs/luci-static/resources/mayhem/tunnels.js
+msgid "Obfuscation"
+msgstr "Обфускация"
+
+#: htdocs/luci-static/resources/mayhem/tunnels.js
+msgid "Obfuscation key"
+msgstr "Ключ обфускации"
+
+#: htdocs/luci-static/resources/mayhem/tunnels.js
+msgid "Obfuscator"
+msgstr "Обфускатор"
+
+#: htdocs/luci-static/resources/mayhem/tunnels.js
+msgid "Obfuscator server port"
+msgstr "Порт обфускатора на сервере"
+
 #: htdocs/luci-static/resources/mayhem/page/sections.js
 msgid "Off (recommended): only traffic of the rules reaches Xray - domains of proxy sections get addresses from 198.18.0.0/15 that the router recognizes, subnets of their rules are matched in the kernel. The rest of the traffic never touches Xray, which then needs far less memory. On: every connection of the network goes through Xray, which also recognizes sites by their TLS name - for devices with a DNS of their own (DNS over HTTPS in the browser) whose sites should still go through the proxy."
 msgstr "Выключено (рекомендуется): в Xray попадает только трафик правил — домены прокси-секций получают адреса из 198.18.0.0/15, которые роутер узнаёт, подсети их правил сравниваются в ядре. Остальной трафик Xray не трогает, и памяти ему нужно гораздо меньше. Включено: каждое соединение сети идёт через Xray, который узнаёт сайты ещё и по имени в TLS — для устройств со своим DNS (DNS over HTTPS в браузере), сайты которых тоже должны идти через прокси."
+
+#: htdocs/luci-static/resources/mayhem/page/sections.js
+msgid "On: every server of a list gets the query together and the first good answer counts, which is faster when one of them is slow. Off: the next server only when the one before fails."
+msgstr "Включено — запрос уходит всем серверам списка сразу и берётся первый годный ответ: быстрее, когда один из них медлит. Выключено — следующий сервер спрашивается, только когда предыдущий не ответил."
 
 #: htdocs/luci-static/resources/mayhem/page/sections.js
 msgid "On: queries go through the active server, now %s. Off: they go direct, encrypted when the server is DoH."
@@ -1085,20 +1197,24 @@ msgid "Out of the server list: the tunnel stays a network interface, Mayhem no l
 msgstr "«Убрать из списка серверов»: туннель остаётся сетевым интерфейсом, Mayhem больше не использует его как сервер. «Удалить туннель»: удаляются интерфейс, его пиры и туннельные секции, которые его используют; сеть перезапустится."
 
 #: htdocs/luci-static/resources/mayhem/page/sections.js
-msgid "Outbound JSON"
-msgstr "Outbound JSON"
+msgid "Outbound"
+msgstr "Исходящее подключение"
+
+#: htdocs/luci-static/resources/mayhem/page/sections.js
+msgid "Outbound configuration (JSON)"
+msgstr "Конфигурация outbound (JSON)"
 
 #: htdocs/luci-static/resources/view/mayhem/dashboard.js
 msgid "Outgoing"
 msgstr "Исходящее соединение"
 
 #: htdocs/luci-static/resources/mayhem/page/sections.js
-msgid "Own domains and addresses"
-msgstr "Свои домены и адреса"
-
-#: htdocs/luci-static/resources/mayhem/page/sections.js
 msgid "Own file"
 msgstr "Свой файл"
+
+#: htdocs/luci-static/resources/mayhem/page/sections.js
+msgid "Parallel queries"
+msgstr "Параллельные запросы"
 
 #: htdocs/luci-static/resources/mayhem/tunnels.js
 msgid "Paste a WireGuard or AmneziaWG config (.conf) or an AmneziaVPN key (vpn://), or pick a .conf file. The tunnel is created without a default route: only traffic of Mayhem sections goes into it."
@@ -1111,6 +1227,10 @@ msgstr "Сначала вставьте ключ сервера."
 #: htdocs/luci-static/resources/mayhem/page/servers.js
 msgid "Paste a server key: vless://, vmess://, trojan://, ss://, hysteria2://, socks://, http(s)://, wireguard://, or an AmneziaVPN key (vpn://) or a WireGuard/AmneziaWG config. Several keys go one per line."
 msgstr "Вставьте ключ сервера: vless://, vmess://, trojan://, ss://, hysteria2://, socks://, http(s)://, wireguard://, ключ AmneziaVPN (vpn://) или конфиг WireGuard/AmneziaWG. Несколько ключей — по одному в строке."
+
+#: htdocs/luci-static/resources/mayhem/tunnels.js
+msgid "Phobos (wg-obfuscator)"
+msgstr "Phobos (wg-obfuscator)"
 
 #: htdocs/luci-static/resources/view/mayhem/dashboard.js
 msgid "Ping time"
@@ -1149,20 +1269,16 @@ msgid "Proxy"
 msgstr "Прокси"
 
 #: htdocs/luci-static/resources/mayhem/page/sections.js
-msgid "Proxy password"
-msgstr "Пароль прокси"
-
-#: htdocs/luci-static/resources/mayhem/page/sections.js
-msgid "Proxy user"
-msgstr "Пользователь прокси"
+msgid "Proxy URLs"
+msgstr "URL прокси-серверов"
 
 #: htdocs/luci-static/resources/mayhem/page/sections.js
 msgid "Proxy: through a server. Tunnel: into a network interface (AmneziaWG, WireGuard…). Direct: past the proxy. Block: the traffic is dropped."
 msgstr "Прокси — через сервер. Туннель — в сетевой интерфейс (AmneziaWG, WireGuard…). Напрямую — минуя прокси. Блокировка — трафик отбрасывается."
 
-#: htdocs/luci-static/resources/mayhem/page/servers.js
-msgid "QUIC (UDP 443) with Mux"
-msgstr "QUIC (UDP 443) при включённом Mux"
+#: htdocs/luci-static/resources/mayhem/page/sections.js
+msgid "Query strategy"
+msgstr "Стратегия запросов (IPv4/IPv6)"
 
 #: htdocs/luci-static/resources/mayhem/diag.js
 msgid "Redirect to xray"
@@ -1177,20 +1293,24 @@ msgid "Refresh the dashboard"
 msgstr "Обновить дашборд"
 
 #: htdocs/luci-static/resources/mayhem/page/sections.js
-msgid "Remote DNS"
-msgstr "Удалённый DNS"
+msgid "Remote DNS protocol"
+msgstr "Протокол удалённого DNS"
 
 #: htdocs/luci-static/resources/mayhem/page/sections.js
-msgid "Remote DNS through the proxy"
+msgid "Remote DNS servers"
+msgstr "Удалённые DNS-серверы"
+
+#: htdocs/luci-static/resources/mayhem/page/sections.js
+msgid "Remote DNS via proxy"
 msgstr "Удалённый DNS через прокси"
-
-#: htdocs/luci-static/resources/mayhem/page/sections.js
-msgid "Remote DNS type"
-msgstr "Тип удалённого DNS"
 
 #: htdocs/luci-static/resources/view/mayhem/dashboard.js
 msgid "Remote DNS, downloads and the rest of the traffic go through the active server of %s. New connections go there at once, open ones finish where they are."
 msgstr "Удалённый DNS, загрузки и остальной трафик пойдут через активный сервер %s. Новые соединения пойдут туда сразу, открытые доработают на прежнем."
+
+#: htdocs/luci-static/resources/mayhem/page/sections.js
+msgid "Remote lists"
+msgstr "Удалённые списки"
 
 #: htdocs/luci-static/resources/view/mayhem/dashboard.js
 msgid "Remove"
@@ -1228,10 +1348,6 @@ msgstr "Сбросить настройки…"
 msgid "Restart Mayhem"
 msgstr "Перезапустить Mayhem"
 
-#: htdocs/luci-static/resources/mayhem/page/settings.js
-msgid "Restart Xray above"
-msgstr "Порог памяти для перезапуска Xray"
-
 #: htdocs/luci-static/resources/mayhem/tunnels.js
 msgid "Restart the network"
 msgstr "Перезапустить сеть"
@@ -1264,6 +1380,10 @@ msgstr "Роутер"
 msgid "Routing"
 msgstr "Маршрутизация"
 
+#: htdocs/luci-static/resources/mayhem/page/sections.js
+msgid "Routing backend"
+msgstr "Механизм маршрутизации"
+
 #: htdocs/luci-static/resources/mayhem/page/components.js
 msgid "Rule lists"
 msgstr "Списки правил"
@@ -1293,12 +1413,12 @@ msgid "Section"
 msgstr "Секция"
 
 #: htdocs/luci-static/resources/mayhem/page/sections.js
-msgid "Sections"
-msgstr "Секции"
+msgid "Section type"
+msgstr "Тип секции"
 
 #: htdocs/luci-static/resources/mayhem/page/sections.js
-msgid "Send all traffic to Xray"
-msgstr "Отправлять весь трафик в Xray"
+msgid "Sections"
+msgstr "Секции"
 
 #: htdocs/luci-static/resources/mayhem/page/servers.js
 msgid "Send device data"
@@ -1321,10 +1441,6 @@ msgid "Server"
 msgstr "Сервер"
 
 #: htdocs/luci-static/resources/mayhem/page/sections.js
-msgid "Server by default"
-msgstr "Сервер по умолчанию"
-
-#: htdocs/luci-static/resources/mayhem/page/sections.js
 msgid "Server keys"
 msgstr "Ключи серверов"
 
@@ -1339,10 +1455,6 @@ msgstr "Имя сервера"
 #: htdocs/luci-static/resources/mayhem/page/sections.js
 msgid "Servers"
 msgstr "Серверы"
-
-#: htdocs/luci-static/resources/mayhem/page/sections.js
-msgid "Servers from"
-msgstr "Серверы из"
 
 #: htdocs/luci-static/resources/mayhem/page/servers.js
 msgid "Servers go into the server list on the dashboard and are applied at once."
@@ -1380,13 +1492,13 @@ msgstr "Настройки восстановлены, подписки и кл�
 msgid "Several connections share one connection to the server. Applies to every VLESS server; with XTLS Vision only UDP is multiplexed."
 msgstr "Несколько соединений идут через одно соединение с сервером. Действует на все серверы VLESS; с XTLS Vision мультиплексируется только UDP."
 
-#: htdocs/luci-static/resources/mayhem/page/sections.js
-msgid "Skip servers named"
-msgstr "Пропускать серверы с именами"
-
 #: htdocs/luci-static/resources/mayhem/page/servers.js
 msgid "Skipped: %s"
 msgstr "Пропущен: %s"
+
+#: htdocs/luci-static/resources/mayhem/page/sections.js
+msgid "Source IP/MAC"
+msgstr "IP/MAC источников"
 
 #: htdocs/luci-static/resources/mayhem/page/sections.js
 msgid "Source name"
@@ -1428,17 +1540,9 @@ msgstr "Система"
 msgid "TB"
 msgstr "ТБ"
 
-#: htdocs/luci-static/resources/mayhem/page/servers.js
-msgid "TCP connections per Mux connection"
-msgstr "TCP-соединений на одно соединение Mux"
-
 #: htdocs/luci-static/resources/view/mayhem/dashboard.js
 msgid "TCP ping"
 msgstr "TCP-пинг"
-
-#: htdocs/luci-static/resources/mayhem/page/sections.js
-msgid "Take servers named"
-msgstr "Брать серверы с именами"
 
 #: htdocs/luci-static/resources/view/mayhem/dashboard.js
 msgid "Test latency"
@@ -1447,6 +1551,10 @@ msgstr "Проверить задержку"
 #: htdocs/luci-static/resources/mayhem/page/sections.js
 msgid "Text lists with one domain, rule or subnet per line, \"#\" for comments. They are downloaded and updated automatically."
 msgstr "Текстовые списки: один домен, правило или подсеть в строке, «#» — комментарий. Скачиваются и обновляются автоматически."
+
+#: htdocs/luci-static/resources/mayhem/page/sections.js
+msgid "The DNS of the DNS tab"
+msgstr "DNS со вкладки «DNS»"
 
 #: htdocs/luci-static/resources/mayhem/page/sections.js
 msgid "The active server of the server list is the one chosen on the dashboard, now %s. A separate server is for domains that need a server of their own."
@@ -1532,6 +1640,10 @@ msgstr "Сетевой интерфейс туннеля. Если туннел�
 msgid "The network interface, its firewall zone and every Mayhem setting that names it are renamed. The tunnel reconnects."
 msgstr "Переименуются сетевой интерфейс, его зона файрвола и все настройки Mayhem, где он указан. Туннель переподключится."
 
+#: htdocs/luci-static/resources/mayhem/tunnels.js
+msgid "The obfuscator server port is a number from 1 to 65535"
+msgstr "Порт обфускатора — число от 1 до 65535"
+
 #: htdocs/luci-static/resources/mayhem/page/sections.js
 msgid "The object has no \"protocol\""
 msgstr "В объекте нет «protocol»"
@@ -1544,13 +1656,13 @@ msgstr "В outbound нужен \"protocol\""
 msgid "The provider expects an HWID: turn on \"Send device data\""
 msgstr "Провайдер ждёт HWID: включите «Отправлять данные устройства»"
 
-#: htdocs/luci-static/resources/mayhem/page/sections.js
-msgid "The rest of the traffic through the tunnel"
-msgstr "Остальной трафик через туннель"
-
 #: htdocs/luci-static/resources/mayhem/diag.js
 msgid "The router did not return a backup."
 msgstr "Роутер не вернул резервную копию."
+
+#: htdocs/luci-static/resources/mayhem/tunnels.js
+msgid "The same key as in the server's wg-obfuscator."
+msgstr "Тот же ключ, что у wg-obfuscator на сервере."
 
 #: htdocs/luci-static/resources/mayhem/page/sections.js
 msgid "The section name may only contain letters, digits and _"
@@ -1570,9 +1682,17 @@ msgstr "Настройки сброшены. Страница перезагру
 
 #: htdocs/luci-static/resources/view/mayhem/dashboard.js
 
+#: htdocs/luci-static/resources/mayhem/tunnels.js
+msgid "The tunnel sends its UDP to the obfuscator on the router, which carries it to the endpoint of the .conf on this port; the server runs %s. Fake TCP lowers the MTU to 1428."
+msgstr "Туннель отдаёт UDP обфускатору на роутере, а тот несёт его на Endpoint из .conf, на этот порт; на сервере нужен %s. Фейк TCP снижает MTU до 1428."
+
 #: htdocs/luci-static/resources/mayhem/page/components.js
 msgid "The update runs in the background. Open this window again in a few minutes to see the result."
 msgstr "Обновление идёт в фоне. Откройте это окно снова через несколько минут, чтобы увидеть результат."
+
+#: htdocs/luci-static/resources/mayhem/page/sections.js
+msgid "The whole network"
+msgstr "Вся сеть"
 
 #: htdocs/luci-static/resources/mayhem/page/servers.js
 msgid "These keys cannot be added:"
@@ -1605,18 +1725,6 @@ msgstr "Через активный сервер (сейчас — %s), а ес�
 #: htdocs/luci-static/resources/mayhem/page/servers.js
 msgid "Through the active server; when that fails, direct."
 msgstr "Через активный сервер, а если не получится — напрямую."
-
-#: htdocs/luci-static/resources/mayhem/page/sections.js
-msgid "Tick one or several, or type your own address. The first one is the main server, the next ones are fallbacks."
-msgstr "Отметьте один или несколько серверов или впишите свой адрес. Первый — основной, остальные — резервные."
-
-#: htdocs/luci-static/resources/mayhem/page/sections.js
-msgid "Tick one or several, or type your own address. The first one is the main server, the next ones are fallbacks. None: the DNS servers of the provider."
-msgstr "Отметьте один или несколько серверов или впишите свой адрес. Первый — основной, остальные — резервные. Ничего не выбрано — DNS-серверы провайдера."
-
-#: htdocs/luci-static/resources/mayhem/page/sections.js
-msgid "Torrents direct"
-msgstr "Торренты напрямую"
 
 #: htdocs/luci-static/resources/mayhem/page/sections.js
 msgid "Traffic and DNS of these devices are left alone, in any mode: for a work laptop with a VPN of its own, a game console and the like. An IP address, a subnet or a MAC address. Only addresses from 198.18.0.0/15 still go to Xray, which the router's DNS gives out for proxied sites."
@@ -1668,14 +1776,6 @@ msgstr "Секциям-туннелям в режиме ядра нужен dnsm
 msgid "Tunnels"
 msgstr "Туннели"
 
-#: htdocs/luci-static/resources/mayhem/page/sections.js
-msgid "Tunnels as servers"
-msgstr "Туннели как серверы"
-
-#: htdocs/luci-static/resources/mayhem/page/sections.js
-msgid "Turn QUIC off"
-msgstr "Отключить QUIC"
-
 #: htdocs/luci-static/resources/mayhem/diag.js
 msgid "Turn autostart off"
 msgstr "Выключить автозапуск"
@@ -1693,10 +1793,6 @@ msgid "Type"
 msgstr "Тип"
 
 #: htdocs/luci-static/resources/mayhem/page/servers.js
-msgid "UDP connections per Mux connection (XUDP)"
-msgstr "UDP-соединений на одно соединение Mux (XUDP)"
-
-#: htdocs/luci-static/resources/mayhem/page/servers.js
 msgid "URL"
 msgstr "URL"
 
@@ -1707,6 +1803,14 @@ msgstr "URL или файл"
 #: htdocs/luci-static/resources/view/mayhem/dashboard.js
 msgid "URL test"
 msgstr "URL-тест"
+
+#: htdocs/luci-static/resources/mayhem/page/settings.js
+msgid "URLTest URL"
+msgstr "URL для URLTest"
+
+#: htdocs/luci-static/resources/mayhem/page/settings.js
+msgid "URLTest interval"
+msgstr "Интервал URLTest"
 
 #: htdocs/luci-static/resources/mayhem/page/components.js
 msgid "Unknown"
@@ -1728,13 +1832,13 @@ msgstr "Выше"
 msgid "Update"
 msgstr "Обновить"
 
-#: htdocs/luci-static/resources/mayhem/page/components.js
-msgid "Update Mayhem automatically"
-msgstr "Обновлять Mayhem автоматически"
-
 #: htdocs/luci-static/resources/mayhem/page/servers.js
 msgid "Update every, hours"
 msgstr "Интервал автообновления, ч"
+
+#: htdocs/luci-static/resources/mayhem/page/sections.js
+msgid "Update hour"
+msgstr "Час обновления"
 
 #: htdocs/luci-static/resources/mayhem/page/components.js
 msgid "Update now"
@@ -1764,6 +1868,18 @@ msgstr "Загрузить .dat…"
 msgid "Upload a .dat file"
 msgstr "Загрузка файла .dat"
 
+#: htdocs/luci-static/resources/mayhem/page/sections.js
+msgid "User domains"
+msgstr "Пользовательские домены"
+
+#: htdocs/luci-static/resources/mayhem/page/sections.js
+msgid "User list input type"
+msgstr "Тип ввода пользовательских списков"
+
+#: htdocs/luci-static/resources/mayhem/page/sections.js
+msgid "User subnets"
+msgstr "Пользовательские подсети"
+
 #: htdocs/luci-static/resources/mayhem/diag.js
 msgid "Version"
 msgstr "Версия"
@@ -1780,9 +1896,17 @@ msgstr "Предупреждение"
 msgid "Watchdog"
 msgstr "Сторож"
 
+#: htdocs/luci-static/resources/mayhem/page/settings.js
+msgid "Watchdog memory threshold"
+msgstr "Порог памяти сторожа"
+
 #: htdocs/luci-static/resources/mayhem/diag.js
 msgid "With connections: subscriptions, server keys and HWID"
 msgstr "С подключениями: подписки, ключи серверов и HWID"
+
+#: htdocs/luci-static/resources/mayhem/page/settings.js
+msgid "With many servers the checks are spread out: at least two seconds per server, so 150 servers are checked every 5 minutes."
+msgstr "Когда серверов много, проверки разносятся: не меньше двух секунд на сервер, так что 150 серверов проверяются раз в 5 минут."
 
 #: htdocs/luci-static/resources/mayhem/diag.js
 msgid "With subscriptions and server keys."
@@ -1804,6 +1928,14 @@ msgstr "Работает"
 msgid "Works, with warnings"
 msgstr "Работает, есть предупреждения"
 
+#: htdocs/luci-static/resources/mayhem/page/servers.js
+msgid "XUDP UDP/443 policy"
+msgstr "Mux: xudpProxyUDP443"
+
+#: htdocs/luci-static/resources/mayhem/page/servers.js
+msgid "XUDP concurrency"
+msgstr "Mux: xudpConcurrency (UDP)"
+
 #: htdocs/luci-static/resources/mayhem/page/components.js
 msgid "Xray and Mayhem are updated from their releases on GitHub. Updating restarts Xray, connections break for a moment."
 msgstr "Xray и Mayhem обновляются из их релизов на GitHub. При обновлении Xray перезапускается, и соединения ненадолго прерываются."
@@ -1813,8 +1945,8 @@ msgid "Xray is not installed: run \"mayhem xray-install\""
 msgstr "Xray не установлен: выполните «mayhem xray-install»"
 
 #: htdocs/luci-static/resources/mayhem/page/settings.js
-msgid "Xray memory limit, MiB"
-msgstr "Лимит памяти Xray, МиБ"
+msgid "Xray memory limit (GOMEMLIMIT), MiB"
+msgstr "Лимит памяти Xray (GOMEMLIMIT), МиБ"
 
 #: htdocs/luci-static/resources/mayhem/page/sections.js
 msgid "Xray outbound JSON"
@@ -1855,6 +1987,10 @@ msgstr "списков: %d"
 #: htdocs/luci-static/resources/mayhem/common.js
 msgid "never"
 msgstr "никогда"
+
+#: htdocs/luci-static/resources/mayhem/tunnels.js
+msgid "phantun_server in front of WireGuard"
+msgstr "phantun_server перед WireGuard"
 
 #: htdocs/luci-static/resources/view/mayhem/dashboard.js
 msgid "pinned by hand"
@@ -1907,3 +2043,7 @@ msgstr "Провайдера: удалённый DNS не отвечает"
 
 msgid "Down, traffic waits for it (kill switch)"
 msgstr "Не работает, трафик ждёт его (kill switch)"
+
+#: htdocs/luci-static/resources/mayhem/tunnels.js
+msgid "wg-obfuscator with the same key in front of WireGuard"
+msgstr "wg-obfuscator с тем же ключом перед WireGuard"

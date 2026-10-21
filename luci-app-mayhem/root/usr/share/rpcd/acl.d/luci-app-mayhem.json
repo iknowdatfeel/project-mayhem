@@ -9,7 +9,7 @@
 		},
 		"write": {
 			"ubus": {
-				"luci.mayhem": [ "action", "select_node", "probe", "sub_update", "data_update", "geo_import", "system_install", "awg_import", "rename_interface", "rename_server", "diagnose", "set_log_level", "set_ping_method", "backup_export", "backup_import", "reset_config", "rename_section", "refresh_servers", "set_main_section", "set_select", "server_edit", "server_delete", "tunnel_set", "tunnel_delete" ]
+				"luci.mayhem": [ "action", "select_node", "probe", "probe_icmp", "warm", "sub_update", "data_update", "geo_import", "system_install", "awg_import", "rename_interface", "rename_server", "diagnose", "set_log_level", "set_ping_method", "backup_export", "backup_import", "reset_config", "rename_section", "refresh_servers", "set_main_section", "set_select", "server_edit", "server_delete", "tunnel_set", "tunnel_delete" ]
 			},
 			"file": {
 				"/tmp/mayhem-upload.dat": [ "write" ]

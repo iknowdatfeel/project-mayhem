@@ -5,8 +5,8 @@
 #   UCODE=/opt/ucode-24.10/ucode tests/run.sh
 # RELEASE is an OpenWrt branch (24.10, 25.12, ...) or "master" for the latest
 # ucode. Needs git, curl, cmake, json-c, libubox and libuci with headers
-# (CMAKE_EXTRA can add -D options to find them). Only the fs and uci modules
-# are built: the mayhem package depends on nothing else.
+# (CMAKE_EXTRA can add -D options to find them). Only the fs, uci and socket
+# modules are built: the packages depend on nothing else.
 
 set -eu
 
@@ -27,13 +27,13 @@ git clone -q https://github.com/jow-/ucode.git "$src"
 git -C "$src" checkout -q "$ref"
 
 off=""
-for m in DEBUG IO MATH NETADDR FFI UBUS RTNL NL80211 RESOLV STRUCT ULOOP LOG SOCKET SERIAL ZLIB DIGEST; do
+for m in DEBUG IO MATH NETADDR FFI UBUS RTNL NL80211 RESOLV STRUCT ULOOP LOG SERIAL ZLIB DIGEST; do
 	off="$off -D${m}_SUPPORT=OFF"
 done
 
 # shellcheck disable=SC2086
 cmake -S "$src" -B "$src/build" -Wno-dev -DCMAKE_INSTALL_PREFIX="$prefix" \
-	-DFS_SUPPORT=ON -DUCI_SUPPORT=ON $off ${CMAKE_EXTRA:-} >/dev/null
+	-DFS_SUPPORT=ON -DUCI_SUPPORT=ON -DSOCKET_SUPPORT=ON $off ${CMAKE_EXTRA:-} >/dev/null
 cmake --build "$src/build" --target install -j4 >/dev/null
 
 # On OpenWrt (musl) `ucode script --opt` passes --opt to the script. glibc's

@@ -199,10 +199,18 @@ export function dns_server(s) {
 	if (s == '')
 		return { error: 'empty DNS server' };
 
-	if (match(s, /^(tls|dot|quic):\/\//))
-		return { error: `"${s}": DNS-over-TLS/QUIC is not supported by Xray, use https:// (DoH)` };
+	if (match(s, /^(tls|dot):\/\//))
+		return { error: `"${s}": DNS over TLS is not supported by Xray, use https:// (DoH) or quic:// (DoQ)` };
 
 	let m;
+
+	// DNS over QUIC: xray only asks it directly (quic+local), past the
+	// routing; port 853 unless given.
+	if ((m = match(s, /^(quic|doq|quic\+local):\/\/(\[[0-9A-Fa-f:.]+\]|[^/:]+)(:([0-9]+))?\/?$/))) {
+		const host = replace(m[2], /^\[|\]$/g, '');
+
+		return { address: `quic+local://${m[2]}${m[3] ?? ''}`, host: host, direct: true };
+	}
 
 	if ((m = match(s, /^https:\/\/(\[[0-9A-Fa-f:.]+\]|[^/:]+)(:[0-9]+)?(\/.*)?$/))) {
 		const host = replace(m[1], /^\[|\]$/g, '');

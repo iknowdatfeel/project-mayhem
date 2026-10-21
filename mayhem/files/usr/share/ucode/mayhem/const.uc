@@ -52,6 +52,9 @@ export const FAKEDNS_POOL_SIZE = 8192;
 // takes two round trips less (no TLS with the site), so it varies less.
 export const DEFAULT_PROBE_URL = 'http://www.gstatic.com/generate_204';
 export const DEFAULT_PROBE_INTERVAL = '3m';
+// Automatic choice: the check interval is at least this many seconds per
+// server (150 servers: every 5 minutes).
+export const PROBE_SPACING = 2;
 
 export const DEFAULT_REMOTE_DNS = [ 'https://1.1.1.1/dns-query', 'https://8.8.8.8/dns-query' ];
 export const FALLBACK_DOMESTIC_DNS = [ '77.88.8.8', '77.88.8.1' ];
