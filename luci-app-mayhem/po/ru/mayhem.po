@@ -193,10 +193,6 @@ msgid "All traffic goes direct."
 msgstr "Весь трафик идёт напрямую."
 
 #: htdocs/luci-static/resources/mayhem/tunnels.js
-msgid "AmneziaWG is not installed."
-msgstr "AmneziaWG не установлен."
-
-#: htdocs/luci-static/resources/mayhem/tunnels.js
 msgid "AmneziaWG is not installed: only plain WireGuard configs can be imported."
 msgstr "AmneziaWG не установлен: можно импортировать только обычные конфиги WireGuard."
 
@@ -825,14 +821,6 @@ msgid "Install"
 msgstr "Установить"
 
 #: htdocs/luci-static/resources/mayhem/tunnels.js
-msgid "Install AmneziaWG"
-msgstr "Установить AmneziaWG"
-
-#: htdocs/luci-static/resources/mayhem/tunnels.js
-msgid "Install dnsmasq-full"
-msgstr "Установить dnsmasq-full"
-
-#: htdocs/luci-static/resources/mayhem/tunnels.js
 msgid "Installation"
 msgstr "Установка"
 
@@ -1055,6 +1043,10 @@ msgstr "Фильтр по имени (regexp)"
 #: htdocs/luci-static/resources/mayhem/page/servers.js
 msgid "Needed by providers that limit the number of devices. The headers match the Happ client."
 msgstr "Нужно провайдерам, которые ограничивают число устройств. Заголовки такие же, как у клиента Happ."
+
+#: htdocs/luci-static/resources/mayhem/tunnels.js
+msgid "Network"
+msgstr "Сеть"
 
 #: htdocs/luci-static/resources/mayhem/page/sections.js
 msgid "Network interface"
@@ -1299,6 +1291,10 @@ msgstr "Прокси — через сервер. Туннель — в сете
 #: htdocs/luci-static/resources/mayhem/page/sections.js
 msgid "Query strategy"
 msgstr "Стратегия запросов (IPv4/IPv6)"
+
+#: htdocs/luci-static/resources/mayhem/tunnels.js
+msgid "Ready"
+msgstr "Установлен"
 
 #: htdocs/luci-static/resources/mayhem/diag.js
 msgid "Redirect to xray"
@@ -1800,10 +1796,6 @@ msgstr "Туннель %s сохранён и переподключается."
 msgid "Tunnel name"
 msgstr "Название"
 
-#: htdocs/luci-static/resources/mayhem/tunnels.js
-msgid "Tunnel sections in kernel mode need dnsmasq-full: until it is installed, their domains go through Xray."
-msgstr "Секциям-туннелям в режиме ядра нужен dnsmasq-full. Пока он не установлен, их домены идут через Xray."
-
 #: htdocs/luci-static/resources/mayhem/diag.js
 msgid "Tunnels"
 msgstr "Туннели"
@@ -1995,10 +1987,6 @@ msgstr "Xray, Mayhem, геоданные и списки скачиваются 
 #: htdocs/luci-static/resources/view/mayhem/dashboard.js
 msgid "automatic"
 msgstr "автоматически"
-
-#: htdocs/luci-static/resources/mayhem/tunnels.js
-msgid "dnsmasq-full is needed only for tunnel sections in kernel mode; tunnels in the server list work without it."
-msgstr "dnsmasq-full нужен только для секций-туннелей в режиме ядра; туннели в списке серверов работают без него."
 
 #: htdocs/luci-static/resources/mayhem/page/sections.js
 msgid "example.com matches the domain and its subdomains; full: is the exact name, keyword: a substring, regexp: a regular expression."

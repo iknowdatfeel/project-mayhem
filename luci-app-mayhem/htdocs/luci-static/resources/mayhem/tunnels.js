@@ -10,7 +10,7 @@
 
 // Tunnels: network interfaces (AmneziaWG, WireGuard and others) that tunnel
 // sections and proxy sections use. Lists them, imports configs and keys,
-// installs AmneziaWG and dnsmasq-full.
+// installs AmneziaWG.
 
 const callTunnelInfo = rpc.declare({ object: 'luci.mayhem', method: 'tunnel_info', expect: { '': {} } });
 const callInstall = rpc.declare({ object: 'luci.mayhem', method: 'system_install', params: [ 'what', 'version' ], expect: { '': {} } });
@@ -332,28 +332,23 @@ return baseclass.extend({
 		const usedBy = (iface) => sections.filter((s) =>
 			(s.type === 'interface' && s.interface === iface) || L.toArray(s.iface_node).indexOf(iface) >= 0).map((s) => s['.name']);
 		const tunnels = (info.interfaces || []).filter((i) => TUNNEL_PROTOS.indexOf(i.proto) >= 0);
-		const kernel = sections.some((x) => x.type === 'interface' && x.enabled !== '0' && (x.route_mode || 'kernel') === 'kernel');
 		const notes = [];
+		// A setting row as on the other pages: the title on the left, the state
+		// and its button on the right.
+		const row = (title, state, cls, button) => E('div', { 'class': 'cbi-value' }, [
+			E('label', { 'class': 'cbi-value-title' }, title),
+			E('div', { 'class': 'cbi-value-field mh-note' }, [ E('span', { 'class': cls || '' }, state), button || '' ])
+		]);
 
-		if (!info.awg)
-			notes.push(E('p', { 'class': 'mh-note' }, [
-				E('span', _('AmneziaWG is not installed.')),
-				E('button', { 'class': 'btn cbi-button', 'click': ui.createHandlerFn(this, 'install', 'awg') }, _('Install AmneziaWG'))
-			]));
+		notes.push(info.awg
+			? row('AmneziaWG', _('Ready'), 'mh-ok')
+			: row('AmneziaWG', _('Not installed'), 'mh-muted',
+				E('button', { 'class': 'btn cbi-button cbi-button-action', 'click': ui.createHandlerFn(this, 'install', 'awg') }, _('Install'))));
 
 		if ((info.protos_missing || []).length)
-			notes.push(E('p', { 'class': 'mh-note mh-warn' }, [
-				E('span', _('%s is installed, but the network has not loaded it yet: its tunnels do not start.').format(
-					info.protos_missing.map((p) => NAMES[p] || p).join(', '))),
-				E('button', { 'class': 'btn cbi-button', 'click': ui.createHandlerFn(this, 'install', 'protos') }, _('Restart the network'))
-			]));
-
-		if (info.nftset === false)
-			notes.push(E('p', { 'class': 'mh-note' + (kernel ? ' mh-warn' : '') }, [
-				E('span', kernel ? _('Tunnel sections in kernel mode need dnsmasq-full: until it is installed, their domains go through Xray.')
-					: _('dnsmasq-full is needed only for tunnel sections in kernel mode; tunnels in the server list work without it.')),
-				E('button', { 'class': 'btn cbi-button', 'click': ui.createHandlerFn(this, 'install', 'dnsmasq') }, _('Install dnsmasq-full'))
-			]));
+			notes.push(row(_('Network'), _('%s is installed, but the network has not loaded it yet: its tunnels do not start.').format(
+				info.protos_missing.map((p) => NAMES[p] || p).join(', ')), 'mh-warn',
+				E('button', { 'class': 'btn cbi-button', 'click': ui.createHandlerFn(this, 'install', 'protos') }, _('Restart the network'))));
 
 		// The name shown on the dashboard and in the server list; saved with
 		// the page.
@@ -400,17 +395,18 @@ return baseclass.extend({
 		});
 
 		return E('div', Object.assign({ 'class': 'cbi-section' }, attrs || {}), [
-			E('div', { 'class': 'cbi-section-descr' },
-				_('A tunnel is a network interface: AmneziaWG, WireGuard, OpenVPN or another one. A tunnel section sends its traffic into it, and a proxy section can use it as one of its servers.')),
-			E('div', { 'class': 'cbi-section-descr' },
-				_('Every tunnel is also a server of the server list: choose it on the dashboard like any other server, or let the automatic choice by ping take it.')),
+			E('div', { 'class': 'cbi-section-descr' }, [
+				_('A tunnel is a network interface: AmneziaWG, WireGuard, OpenVPN or another one. A tunnel section sends its traffic into it, and a proxy section can use it as one of its servers.'),
+				' ',
+				_('Every tunnel is also a server of the server list: choose it on the dashboard like any other server, or let the automatic choice by ping take it.')
+			]),
 			...notes,
 			rows.length ? E('table', { 'class': 'table mh-rtable' }, [
 				E('tr', { 'class': 'tr table-titles' }, [
 					E('th', { 'class': 'th' }, _('Tunnel name')), E('th', { 'class': 'th' }, _('Interface')), E('th', { 'class': 'th' }, _('Protocol')),
 					E('th', { 'class': 'th' }, _('State')), E('th', { 'class': 'th' }, _('Sections')), E('th', { 'class': 'th' }, '')
 				])
-			].concat(rows)) : E('p', { 'class': 'mh-muted' }, _('No tunnels yet.')),
+			].concat(rows)) : E('p', { 'class': 'mh-muted', 'style': 'margin:1em 0' }, _('No tunnels yet.')),
 			E('button', { 'class': 'btn cbi-button-add', 'click': ui.createHandlerFn(this, 'importDialog', info) }, _('Import AmneziaWG / WireGuard…'))
 		]);
 	}
