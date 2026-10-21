@@ -676,14 +676,6 @@ msgstr "Внешний адрес"
 msgid "Failed, see the log above. Nothing else was changed."
 msgstr "Не получилось, подробности в журнале выше. Больше ничего не изменено."
 
-#: htdocs/luci-static/resources/mayhem/tunnels.js
-msgid "Fake TCP (phantun)"
-msgstr "Фейк TCP (phantun)"
-
-#: htdocs/luci-static/resources/mayhem/page/components.js
-msgid "Fake TCP obfuscator (phantun)"
-msgstr "Обфускатор «фейк TCP» (phantun)"
-
 #: htdocs/luci-static/resources/mayhem/page/sections.js
 msgid "FakeDNS"
 msgstr "FakeDNS"
@@ -1239,6 +1231,14 @@ msgstr "Сначала вставьте ключ сервера."
 #: htdocs/luci-static/resources/mayhem/page/servers.js
 msgid "Paste a server key: vless://, vmess://, trojan://, ss://, hysteria2://, socks://, http(s)://, wireguard://, or an AmneziaVPN key (vpn://) or a WireGuard/AmneziaWG config. Several keys go one per line."
 msgstr "Вставьте ключ сервера: vless://, vmess://, trojan://, ss://, hysteria2://, socks://, http(s)://, wireguard://, ключ AmneziaVPN (vpn://) или конфиг WireGuard/AmneziaWG. Несколько ключей — по одному в строке."
+
+#: htdocs/luci-static/resources/mayhem/tunnels.js
+msgid "Phantun (wg-phantun)"
+msgstr "Phantun (wg-phantun)"
+
+#: htdocs/luci-static/resources/mayhem/page/components.js
+msgid "Phantun obfuscator (wg-phantun)"
+msgstr "Обфускатор Phantun (wg-phantun)"
 
 #: htdocs/luci-static/resources/mayhem/tunnels.js
 msgid "Phobos (wg-obfuscator)"

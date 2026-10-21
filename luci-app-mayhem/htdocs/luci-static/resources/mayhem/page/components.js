@@ -83,7 +83,7 @@ return baseclass.extend({
 				pkg('AmneziaWG', c.awg, 'awg'),
 				pkg('WireGuard', c.wireguard, 'wg'),
 				pkg(_('Phobos obfuscator (wg-obfuscator)'), c.phobos, 'phobos'),
-				pkg(_('Fake TCP obfuscator (phantun)'), c.faketcp, 'faketcp')
+				pkg(_('Phantun obfuscator (wg-phantun)'), c.faketcp, 'faketcp')
 			);
 		};
 

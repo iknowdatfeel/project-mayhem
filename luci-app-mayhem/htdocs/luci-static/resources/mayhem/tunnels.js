@@ -44,7 +44,7 @@ const TITLES = {
 const OBFS = [
 	[ 'none', _('None'), null, null ],
 	[ 'phobos', _('Phobos (wg-obfuscator)'), 'wg-obfuscator', _('wg-obfuscator with the same key in front of WireGuard') ],
-	[ 'faketcp', _('Fake TCP (phantun)'), 'phantun', _('phantun_server in front of WireGuard') ]
+	[ 'faketcp', _('Phantun (wg-phantun)'), 'phantun', _('phantun_server in front of WireGuard') ]
 ];
 
 return baseclass.extend({

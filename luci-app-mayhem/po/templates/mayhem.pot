@@ -681,14 +681,6 @@ msgstr ""
 msgid "Failed, see the log above. Nothing else was changed."
 msgstr ""
 
-#: htdocs/luci-static/resources/mayhem/tunnels.js
-msgid "Fake TCP (phantun)"
-msgstr ""
-
-#: htdocs/luci-static/resources/mayhem/page/components.js
-msgid "Fake TCP obfuscator (phantun)"
-msgstr ""
-
 #: htdocs/luci-static/resources/mayhem/page/sections.js
 msgid "FakeDNS"
 msgstr ""
@@ -1251,6 +1243,14 @@ msgstr ""
 
 #: htdocs/luci-static/resources/mayhem/page/servers.js
 msgid "Paste a server key: vless://, vmess://, trojan://, ss://, hysteria2://, socks://, http(s)://, wireguard://, or an AmneziaVPN key (vpn://) or a WireGuard/AmneziaWG config. Several keys go one per line."
+msgstr ""
+
+#: htdocs/luci-static/resources/mayhem/tunnels.js
+msgid "Phantun (wg-phantun)"
+msgstr ""
+
+#: htdocs/luci-static/resources/mayhem/page/components.js
+msgid "Phantun obfuscator (wg-phantun)"
 msgstr ""
 
 #: htdocs/luci-static/resources/mayhem/tunnels.js
