@@ -340,9 +340,11 @@ mayhem_watchdog() {
 		limit=$(( ${total:-0} * ${pct:-40} / 100 ))
 		# xray's own limit (GOMEMLIMIT) is where its garbage collector holds
 		# it: a lower watchdog limit would restart xray for using what it was
-		# allowed to. A quarter above it at least.
+		# allowed to. A quarter above it at least, unless the limit is given
+		# explicitly (MAYHEM_WATCHDOG_MEM).
 		gml="$(sed -n 's/^GOMEMLIMIT=\([0-9]*\)MiB$/\1/p' "$MAYHEM_RUN_DIR/env" 2>/dev/null)"
-		[ -n "$gml" ] && [ "$limit" -lt $(( gml * 1024 * 5 / 4 )) ] && limit=$(( gml * 1024 * 5 / 4 ))
+		[ -z "${MAYHEM_WATCHDOG_MEM:-}" ] && [ -n "$gml" ] && [ "$limit" -lt $(( gml * 1024 * 5 / 4 )) ] &&
+			limit=$(( gml * 1024 * 5 / 4 ))
 
 		if [ "${rss:-0}" -gt "$limit" ]; then
 			n=$(( $(cat "$MAYHEM_RUN_DIR/watchdog.mem" 2>/dev/null || echo 0) + 1 ))
