@@ -28,6 +28,8 @@ Usage: mayhem <command>
                              tunnel protocol (AmneziaWG, WireGuard) yet
   dnsmasq-full               replace dnsmasq with dnsmasq-full (needed for tunnel
                              sections in kernel mode); rolls back on failure
+  bbr                        install the TCP BBR module and switch the router's TCP
+                             to it (kept across reboots)
   obfs-install phobos|faketcp
                              install a WireGuard obfuscator: wg-obfuscator (Phobos)
                              or phantun (fake TCP)
@@ -288,6 +290,54 @@ cmd_wg_install() {
 
 	tunnel_protos_load
 	echo "WireGuard is installed"
+}
+
+# TCP BBR for the router's own connections: xray's connections to its
+# servers carry all the proxied TCP, and BBR keeps them fast on lossy and
+# long links. The kernel module comes from the feeds; the setting is kept in
+# /etc/sysctl.d for the next boot. Nothing changes when the firmware has no
+# such module. --no-install: only switch it on if the module is there (the
+# package scripts, while the package manager is busy).
+BBR_SYSCTL="${MAYHEM_BBR_SYSCTL:-/etc/sysctl.d/12-mayhem-bbr.conf}"
+BBR_AVAIL="${MAYHEM_BBR_AVAIL:-/proc/sys/net/ipv4/tcp_available_congestion_control}"
+
+bbr_on() {
+	local f="$BBR_AVAIL"
+
+	grep -qw bbr "$f" 2>/dev/null || modprobe tcp_bbr >/dev/null 2>&1 || insmod tcp_bbr >/dev/null 2>&1
+	grep -qw bbr "$f" 2>/dev/null || return 1
+
+	mkdir -p "$(dirname "$BBR_SYSCTL")"
+	printf '# Mayhem: TCP BBR for the connections of the router (xray to its servers)\nnet.ipv4.tcp_congestion_control=bbr\n' > "$BBR_SYSCTL"
+	sysctl -w net.ipv4.tcp_congestion_control=bbr >/dev/null 2>&1
+}
+
+cmd_bbr() {
+	if bbr_on; then
+		echo "TCP BBR is on"
+		return 0
+	fi
+
+	[ "$1" = --no-install ] && return 1
+
+	if ! pkg_has kmod-tcp-bbr; then
+		pkg_update
+		echo "Installing kmod-tcp-bbr..."
+
+		if [ "$PM" = apk ]; then
+			apk add kmod-tcp-bbr
+		else
+			opkg install kmod-tcp-bbr
+		fi || { echo "Installing kmod-tcp-bbr failed: the firmware keeps its TCP congestion control" >&2; return 1; }
+	fi
+
+	if bbr_on; then
+		echo "TCP BBR is on"
+		return 0
+	fi
+
+	echo "The BBR module does not load on this firmware: TCP congestion control stays as it was" >&2
+	return 1
 }
 
 cmd_awg_install() {
@@ -701,6 +751,9 @@ case "$1" in
 		;;
 	dnsmasq-full)
 		cmd_dnsmasq_full
+		;;
+	bbr)
+		cmd_bbr "$2"
 		;;
 	obfs-install)
 		cmd_obfs_install "$2"

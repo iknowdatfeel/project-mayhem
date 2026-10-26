@@ -56,6 +56,10 @@ fi
 
 uci commit mayhem
 
+# TCP BBR when its module is there (an update through the package manager:
+# the installer also installs the module).
+/usr/bin/mayhem bbr --no-install >/dev/null 2>&1
+
 # Older configurations: the server list (0.12) and what comes after.
 ucode /usr/share/mayhem/migrate.uc >/dev/null 2>&1
 
