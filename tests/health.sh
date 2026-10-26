@@ -175,7 +175,7 @@ if grep -q direct "$T/xray.log" || [ -f "$T/run/dns.degraded" ]; then bad "kill 
 
 # Tunnels: with the kill switch the route stays and the balancer keeps the tunnel.
 rm -rf "$T/net"; mkdir -p "$T/net"
-# shellcheck disable=SC2016
+
 # A server chosen on the dashboard while the section is direct: the section
 # is no longer down, and the check keeps it on the server when it answers.
 nodes false
@@ -216,6 +216,7 @@ else
 fi
 : > "$T/dead"
 
+# shellcheck disable=SC2016
 printf '#!/bin/sh\necho "ip $*" >> "$STUB/ip.log"\n' > "$T/bin/ip"
 printf '#!/bin/sh\nexit 1\n' > "$T/bin/ping"
 chmod +x "$T/bin/ip" "$T/bin/ping"
