@@ -139,6 +139,35 @@ function write_json(path, v) {
 	return fs.writefile(tmp, sprintf('%J\n', v)) != null && fs.rename(tmp, path);
 }
 
+// Where the choice of a dashboard section is kept: a subscription's group
+// (section sub_<name>) keeps it with the subscription.
+function choice_target(c, sn) {
+	if (c.get('mayhem', sn) == 'subscription')
+		return sn;
+
+	const m = match(sn ?? '', /^sub_(.+)$/);
+
+	return (m && c.get('mayhem', m[1]) == 'subscription') ? m[1] : sn;
+}
+
+// A server chosen by hand while its section went direct (its servers did not
+// answer): the choice is tried at once instead of on the next check, 20 s
+// later. The section is no longer "down" (the dashboard says so), and a
+// check runs now: it puts the section back to direct if the new server does
+// not answer either, and brings the remote DNS back when it does.
+function health_now(sn, after) {
+	const h = read_json(`${RUN}/health.json`);
+
+	if (type(h?.sections?.[sn]) == 'object' && h.sections[sn].down) {
+		h.sections[sn] = { down: false, fails: 0, picked: time() };
+		write_json(`${RUN}/health.json`, h);
+	}
+
+	const lib = getenv('MAYHEM_LIB_DIR') ?? '/usr/share/mayhem';
+
+	system(`(${after ? after + '; ' : ''}ucode ${q(lib + '/health.uc')}) >/dev/null 2>&1 </dev/null &`);
+}
+
 // A UCI cursor for any config. MAYHEM_UCI_SAVE_DIR: the tests keep UCI
 // deltas next to their config (a shared /tmp/.uci may belong to another user).
 function uci_open() {
@@ -1458,6 +1487,270 @@ function last_tcp_time(out) {
 // --- the dashboard ---------------------------------------------------------------
 // Everything it shows that needs a process, in one shell command: xray's
 // counters, whether dnsmasq runs and the latest handshake of every tunnel.
+// --- active connections ---------------------------------------------------------
+// xray writes every connection it takes ("from A accepted tcp:B [in >> out]")
+// and every DNS answer it gives to CONN_LOG, which is a file only while the
+// dashboard asks (mayhem_conn_log in lib.sh). The connections still in the
+// kernel's table are the active ones.
+const CONN_READ_MAX = 262144;
+const CONN_KEEP = 131072;
+const CONN_ROWS = 300;
+
+// The last bytes of a file (whole lines).
+function file_tail(path, n) {
+	const st = fs.stat(path);
+
+	if (!st || st.type != 'file')
+		return '';
+
+	const fh = fs.open(path, 'r');
+
+	if (!fh)
+		return '';
+
+	if (st.size > n)
+		fh.seek(st.size - n);
+
+	const text = fh.read('all') ?? '';
+
+	fh.close();
+
+	if (st.size > n) {
+		const nl = index(text, '\n');
+
+		return nl < 0 ? '' : substr(text, nl + 1);
+	}
+
+	return text;
+}
+
+// Device names by address, from the DHCP leases.
+function lease_names() {
+	const out = {};
+
+	for (let l in split(fs.readfile(getenv('MAYHEM_LEASES') ?? '/tmp/dhcp.leases') ?? '', '\n')) {
+		const f = split(l, ' ');
+
+		if (length(f) >= 4 && f[3] != '*')
+			out[f[2]] = f[3];
+	}
+
+	return out;
+}
+
+// What an outbound tag stands for: a server of a section, direct, blocked.
+function route_of(tag, state) {
+	if (tag == 'direct' || tag == 'direct-udp')
+		return { kind: 'direct' };
+
+	if (tag == 'block')
+		return { kind: 'block' };
+
+	if (tag == 'dns-out')
+		return { kind: 'dns' };
+
+	for (let sn in keys(state?.sections ?? {})) {
+		const s = state.sections[sn];
+
+		if (tag == `f-${sn}`)
+			return { kind: 'proxy', section: sn, server: s.nodes?.[0]?.name, protocol: s.nodes?.[0]?.protocol, pool: s.pool == true };
+
+		for (let n in s.nodes ?? [])
+			if (n.tag == tag)
+				return { kind: n.iface ? 'tunnel' : 'proxy', section: sn, server: n.name, protocol: n.tproto ?? n.protocol, pool: s.pool == true };
+	}
+
+	return { kind: 'other', tag: tag };
+}
+
+// Every connection the kernel tracks: { network, src, sport, dst, dport,
+// rdst (where the answers go: a router address when NAT took it), bytes,
+// mark }. Read line by line: a busy router tracks thousands.
+function conntrack_each(fn) {
+	const fh = fs.open(getenv('MAYHEM_CONNTRACK') ?? '/proc/net/nf_conntrack', 'r');
+
+	if (!fh)
+		return false;
+
+	let l;
+
+	while ((l = fh.read('line')) != null && l != '') {
+		const t = filter(split(rtrim(l, '\n'), ' '), (x) => x != '');
+		const proto = t[2];
+
+		if (proto != 'tcp' && proto != 'udp')
+			continue;
+
+		if (proto == 'tcp' && index([ 'TIME_WAIT', 'CLOSE', 'CLOSE_WAIT', 'LAST_ACK', 'FIN_WAIT' ], t[5]) >= 0)
+			continue;
+
+		const f = { src: [], dst: [], sport: [], dport: [], bytes: [] };
+		let mark = 0;
+
+		for (let x in t) {
+			const e = index(x, '=');
+
+			if (e < 0)
+				continue;
+
+			const k = substr(x, 0, e), v = substr(x, e + 1);
+
+			if (f[k])
+				push(f[k], v);
+			else if (k == 'mark')
+				mark = int(v);
+		}
+
+		if (!length(f.src) || !length(f.dport))
+			continue;
+
+		fn({ network: proto, src: f.src[0], sport: f.sport[0], dst: f.dst[0], dport: int(f.dport[0]), rdst: f.dst[1],
+			bytes: int(f.bytes[0] ?? 0) + int(f.bytes[1] ?? 0), mark: mark });
+	}
+
+	fh.close();
+
+	return true;
+}
+
+// The router's addresses and the device each is on.
+function router_addrs() {
+	const out = {};
+
+	for (let l in split(run(getenv('MAYHEM_ADDRS_CMD') ?? 'ip -o addr show 2>/dev/null') ?? '', '\n')) {
+		const m = match(l, /^[0-9]+: ([^ ]+) +inet6? ([^/ ]+)/);
+
+		if (m && m[1] != 'lo')
+			out[m[2]] = replace(m[1], /@.*$/, '');
+	}
+
+	return out;
+}
+
+// A path in the kernel: the tunnel devices of sections and servers.
+function tunnel_devices(state) {
+	const out = {};
+
+	for (let sn in keys(state?.sections ?? {})) {
+		const s = state.sections[sn];
+
+		if (s.type == 'interface' && s.device)
+			out[s.device] = { section: sn, server: s.label ?? s.interface ?? s.device, protocol: s.tproto };
+
+		for (let n in s.nodes ?? [])
+			if (n.iface && n.device)
+				out[n.device] ??= { section: sn, server: n.name, protocol: n.tproto };
+	}
+
+	return out;
+}
+
+function connections(stop) {
+	if (stop) {
+		system(`sh -c '. ${LIB}/lib.sh; mayhem_conn_log off' >/dev/null 2>&1`);
+		return { ok: true };
+	}
+
+	// xray's log says which server and which name, for what went through it.
+	if (xray_pid())
+		system(`sh -c '. ${LIB}/lib.sh; mayhem_conn_log on' >/dev/null 2>&1`);
+
+	const log = C.CONN_LOG;
+	const state = read_json(`${RUN}/nodes.json`) ?? { sections: {} };
+	const names = lease_names();
+	const mine = router_addrs();
+	const tuns = tunnel_devices(state);
+	const host_of = {};
+	const via_xray = {};
+
+	for (let l in split(file_tail(log, CONN_READ_MAX), '\n')) {
+		// DNS answers: which name an address came for.
+		let m = match(l, /(got answer:|cache HIT:|cache OPTIMISTE:) ([^ ]+) -> \[([^]]*)\]/);
+
+		if (m) {
+			const name = rtrim(m[2], '.');
+
+			for (let ip in split(m[3], ', '))
+				if (ip != '' && !match(ip, /^198\.1[89]\./))
+					host_of[ip] = name;
+
+			continue;
+		}
+
+		m = match(l, /^[0-9\/]+ [0-9:.]+ from (tcp:|udp:)?(.+):([0-9]+) accepted (tcp|udp):(.+):([0-9]+) \[([^]]+)\]/);
+
+		if (!m)
+			continue;
+
+		const det = split(m[7], ' ');
+
+		via_xray[`${m[4]} ${trim(m[2], '[]')}:${m[3]}`] = route_of(det[length(det) - 1], state);
+	}
+
+	// The log only needs to cover a few minutes.
+	const st = fs.stat(log);
+
+	if (st?.type == 'file' && st.size > 2 * CONN_KEEP)
+		system(`f=${q(log)}; tail -c ${CONN_KEEP} "$f" > "$f.t" 2>/dev/null && cat "$f.t" > "$f"; rm -f "$f.t"`);
+
+	const rows = {};
+	const order = [];
+	const gen_mask = C.CT_GEN_MASK;
+
+	const ok = conntrack_each((c) => {
+		const marked = (c.mark & gen_mask) != 0;
+
+		// The router's own connections only when they went through Mayhem
+		// (to xray): the rest is xray reaching its servers, DNS and the like.
+		if (mine[c.src] && !marked)
+			return;
+
+		// To the router itself (DNS, the web interface), local and multicast.
+		if (mine[c.dst] || match(c.dst, /^(127\.|22[4-9]\.|23[0-9]\.|255\.|ff|fe80:|::1$)/))
+			return;
+
+		let route = via_xray[`${c.network} ${c.src}:${c.sport}`];
+
+		if (!route) {
+			const nat = mine[c.rdst];
+
+			if (nat && tuns[nat])
+				route = { kind: 'tunnel', section: tuns[nat].section, server: tuns[nat].server, protocol: tuns[nat].protocol };
+			else if (nat)
+				route = { kind: 'direct', via: nat };
+			else if (marked)
+				route = { kind: 'xray' };
+			else
+				route = { kind: 'direct' };
+		}
+
+		const fake = match(c.dst, /^198\.1[89]\./) != null;
+		const key = `${c.network} ${c.src} ${c.dst} ${c.dport} ${route.kind} ${route.server ?? ''}`;
+
+		if (!rows[key]) {
+			rows[key] = {
+				device: mine[c.src] ? 'router' : (names[c.src] ?? null), ip: c.src, network: c.network,
+				host: c.dst, port: c.dport, fake: fake, domain: fake ? null : host_of[c.dst],
+				route: route, count: 0, bytes: 0
+			};
+			push(order, key);
+		}
+
+		rows[key].count++;
+		rows[key].bytes += c.bytes;
+	});
+
+	if (!ok)
+		return { error: 'the kernel does not list its connections (/proc/net/nf_conntrack)' };
+
+	const out = map(order, (k) => rows[k]);
+
+	// The busiest first.
+	sort(out, (a, b) => b.bytes - a.bytes);
+
+	return { rows: slice(out, 0, CONN_ROWS), total: length(out), log: xray_pid() != null };
+}
+
 const MARK = '@@mayhem@@';
 
 function dashboard_cmd(pid, state) {
@@ -1521,7 +1814,7 @@ function dashboard(pid, state, out) {
 			}
 
 			const sec = {
-				name: sn, type: s.type, mode: s.mode, balancer: s.balancer, pool: s.pool == true,
+				name: sn, type: s.type, mode: s.mode, balancer: s.balancer, pool: s.pool == true, group: s.group,
 				active: s.type == 'proxy' ? active_tag(s, m.observatory) : null,
 				pinned: s.override ?? null, nodes: nodes, traffic: traffic,
 				chain: s.chain ?? null,
@@ -1633,6 +1926,15 @@ const methods = {
 		}
 	},
 
+	// The connections xray took since the dashboard started asking, the
+	// active ones first; stop: the window closed, the log goes off.
+	connections: {
+		args: { stop: false },
+		call: function(req) {
+			return connections(req.args?.stop == true);
+		}
+	},
+
 	select_node: {
 		args: { section: '', tag: '' },
 		call: function(req) {
@@ -1666,17 +1968,18 @@ const methods = {
 			// A tunnel by its interface, which its name can change without.
 			const c = uci_cursor();
 			const key = node?.iface ?? node?.name;
+			const ut = choice_target(c, sn);
 
 			if (s.mode == 'manual') {
-				c.set('mayhem', sn, 'selected', key);
+				c.set('mayhem', ut, 'selected', key);
 				s.selected = tag;
 			}
 			else if (tag != '') {
-				c.set('mayhem', sn, 'override', key);
+				c.set('mayhem', ut, 'override', key);
 				s.override = tag;
 			}
 			else {
-				c.delete('mayhem', sn, 'override');
+				c.delete('mayhem', ut, 'override');
 				delete s.override;
 			}
 
@@ -1694,6 +1997,8 @@ const methods = {
 				fs.writefile(`${RUN}/${f}.tmp`, length(lines) ? join('\n', lines) + '\n' : '');
 				fs.rename(`${RUN}/${f}.tmp`, `${RUN}/${f}`);
 			}
+
+			health_now(sn);
 
 			// A tunnel of the main section takes the rest of the traffic in
 			// the kernel: choosing it, or leaving it, changes the kernel rules.
@@ -3243,16 +3548,30 @@ const methods = {
 	set_select: {
 		args: { section: '', mode: '', chain: [] },
 		call: function(req) {
-			const sn = req.args?.section ?? '';
-			const mode = req.args?.mode ?? '';
 			const c = uci_cursor();
+			const sn = choice_target(c, req.args?.section ?? '');
+			const mode = req.args?.mode ?? '';
 			const kind = c.get('mayhem', sn);
 
-			if (index([ 'auto', 'manual', 'fallback' ], mode) < 0)
+			// "pool": a subscription's servers go back into the server list.
+			if (index([ 'auto', 'manual', 'fallback' ], mode) < 0 && !(mode == 'pool' && kind == 'subscription'))
 				return { error: 'unknown mode' };
 
-			if (kind != 'pool' && (kind != 'section' || (c.get('mayhem', sn, 'type') ?? 'proxy') != 'proxy'))
+			if (kind != 'pool' && kind != 'subscription' && (kind != 'section' || (c.get('mayhem', sn, 'type') ?? 'proxy') != 'proxy'))
 				return { error: 'not a proxy section' };
+
+			if (mode == 'pool') {
+				for (let o in [ 'select', 'chain', 'selected', 'override' ])
+					c.delete('mayhem', sn, o);
+
+				if (c.get('mayhem', 'settings', 'default_section') == `sub_${sn}`)
+					c.delete('mayhem', 'settings', 'default_section');
+
+				c.commit('mayhem');
+				apply_bg('/etc/init.d/mayhem reload');
+
+				return { ok: true };
+			}
 
 			const chain = filter(type(req.args?.chain) == 'array' ? req.args.chain : [], (n) => type(n) == 'string' && n != '' && length(n) <= 128);
 
@@ -3274,6 +3593,7 @@ const methods = {
 			c.commit('mayhem');
 			fs.unlink(`${RUN}/fallback.fails`);
 			apply_bg('/etc/init.d/mayhem reload');
+			health_now(req.args?.section ?? sn, 'sleep 3');
 
 			return { ok: true };
 		}
@@ -3287,9 +3607,11 @@ const methods = {
 			const c = uci_cursor();
 			const sn = req.args?.section ?? '';
 
+			const group = choice_target(c, sn) != sn;
+
 			if (sn == 'pool' || sn == '')
 				c.delete('mayhem', 'settings', 'default_section');
-			else if (c.get('mayhem', sn) != 'section' || index([ 'proxy', 'interface' ], c.get('mayhem', sn, 'type') ?? 'proxy') < 0)
+			else if (!group && (c.get('mayhem', sn) != 'section' || index([ 'proxy', 'interface' ], c.get('mayhem', sn, 'type') ?? 'proxy') < 0))
 				return { error: 'not a proxy or tunnel section' };
 			else
 				c.set('mayhem', 'settings', 'default_section', sn);
@@ -3307,7 +3629,7 @@ const methods = {
 // status`, `xray api`, logread, an init script) and would hold rpcd meanwhile
 // (see deferred_sh() above). They run in a child process (call.uc) instead,
 // and rpcd answers when it exits; outside rpcd they run in place.
-const APART = [ 'probe', 'probe_icmp', 'probe_tcp', 'exit_info', 'sub_update', 'refresh_servers', 'components', 'diagnose',
+const APART = [ 'probe', 'probe_icmp', 'probe_tcp', 'exit_info', 'sub_update', 'refresh_servers', 'components', 'diagnose', 'connections',
 	'status', 'check', 'sysinfo', 'logs', 'tunnel_info', 'action', 'select_node', 'backup_import', 'reset_config' ];
 const CALL = getenv('MAYHEM_RPC_CALL') ?? '/usr/share/mayhem-luci/call.uc';
 

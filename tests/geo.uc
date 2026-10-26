@@ -29,6 +29,7 @@ out.close();
 check('geosite categories', r.categories, { youtube: 4, gov: 1, heavy: HEAVY + 1, empty: 0 });
 check('geosite copied', sort(r.copied), [ 'gov', 'youtube' ]);
 check('geosite size', r.bytes, length(fs.readfile(`${dir}/geosite.dat`)));
+check('geosite kind from the content', r.kind, 'geosite');
 
 // Reading through a small pipe exercises the chunk boundaries.
 const p = fs.popen(`cat ${dir}/geosite.dat`, 'r');
@@ -47,6 +48,7 @@ r = scan(fs.open(`${dir}/geoip.dat`, 'r'), { RU: true, TELEGRAM: true }, out);
 out.close();
 
 check('geoip categories', r.categories, { ru: 2, telegram: 2, private: 2 });
+check('geoip kind from the content', r.kind, 'geoip');
 
 const ips = geoip_cidrs(`${dir}/ip-trim.dat`, [ 'RU', 'telegram' ]);
 check('geoip ru', ips.ru, { v4: [ '45.0.0.6/32' ], v6: [ '2001:db8:1:0:0:0:0:0/48' ], reverse: false });

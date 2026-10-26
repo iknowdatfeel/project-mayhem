@@ -33,6 +33,7 @@ const callSetSelect = rpc.declare({ object: 'luci.mayhem', method: 'set_select',
 const callParseOne = rpc.declare({ object: 'luci.mayhem', method: 'parse_link', params: [ 'link' ], expect: { '': {} } });
 const callServerDelete = rpc.declare({ object: 'luci.mayhem', method: 'server_delete', params: [ 'section', 'tag' ], expect: { '': {} } });
 const callServerEdit = rpc.declare({ object: 'luci.mayhem', method: 'server_edit', params: [ 'section', 'old', 'link' ], expect: { '': {} } });
+const callConns = rpc.declare({ object: 'luci.mayhem', method: 'connections', params: [ 'stop' ], expect: { '': {} } });
 
 const PROBE_PARALLEL = 4;
 // ICMP: servers per call; the router pings all of them at once.
@@ -724,7 +725,14 @@ return view.extend({
 				return this.setMain(ev.target.value);
 			})
 		}, targets.map((s) => E('option', { 'value': s.name, 'selected': s.name === cur ? '' : null },
-			s.name === 'pool' ? _('Server list') : s.name)));
+			s.name === 'pool' ? _('Server list') : s.group ? this.groupTitle(d, s.group) : s.name)));
+	},
+
+	// The title of a subscription: the one its provider gives, or its name.
+	groupTitle(d, name) {
+		const sub = (d.subscriptions || []).find((x) => x.name === name);
+
+		return (sub && sub.info && sub.info.title) || name;
 	},
 
 	// The server the main traffic uses now and how it was chosen.
@@ -951,6 +959,31 @@ return view.extend({
 		return E('div', { 'class': 'mh-ghead' }, parts);
 	},
 
+	// How a subscription in the server list chooses its server: with the
+	// list (as now), or as a group of its own.
+	groupChoice(name, nodes) {
+		const modes = [ [ 'pool', _('In the server list') ], [ 'auto', _('Fastest server') ], [ 'manual', _('Chosen by hand') ], [ 'fallback', _('Fallback chain') ] ];
+		const pend = this.pendingSel[name];
+
+		return E('select', {
+			'class': 'cbi-input-select mh-small',
+			'title': _('How the server is chosen'),
+			'change': ui.createHandlerFn(this, (ev) => {
+				const v = ev.target.value;
+
+				ev.target.blur();
+
+				if (v === 'pool')
+					return;
+
+				if (v === 'fallback')
+					return this.chainDialog({ name: name, nodes: nodes, mode: 'pool', chain: [] });
+
+				return this.saveSelect(name, v, []);
+			})
+		}, modes.map((m) => E('option', { 'value': m[0], 'selected': m[0] === (pend ? pend.mode : 'pool') ? '' : null }, m[1])));
+	},
+
 	// The servers of a proxy section as boxes by where they come from: links
 	// first ("Server list"), then every subscription, then tunnels. With
 	// several proxy sections each box names its section.
@@ -1012,6 +1045,11 @@ return view.extend({
 
 				sub.shown = true;
 				head = this.subHead(sub, now, note);
+
+				// In the server list: its servers can become a group of
+				// their own, with a choice of its own.
+				if (pool)
+					head.insertBefore(this.groupChoice(src, by[src]), head.lastChild);
 			}
 
 			return E('div', { 'class': 'mh-box mh-section' }, [
@@ -1063,6 +1101,11 @@ return view.extend({
 		(s.nodes || []).forEach((n) => byTag[n.tag] = n);
 
 		const modes = [ [ 'auto', _('Fastest server') ], [ 'manual', _('Chosen by hand') ], [ 'fallback', _('Fallback chain') ] ];
+
+		// A subscription's group can go back into the server list.
+		if (s.group)
+			modes.unshift([ 'pool', _('In the server list') ]);
+
 		const pend = this.pendingSel[s.name];
 		const mode = pend ? pend.mode : s.mode;
 		const sel = E('select', {
@@ -1220,6 +1263,8 @@ return view.extend({
 				click: ui.createHandlerFn(this, 'refreshServers')
 			}));
 
+		side.push(mh.button({ icon: 'activity', text: _('Active connections'), click: () => this.openConns() }));
+
 		// The pages that open over the dashboard.
 		side.push(E('div', { 'class': 'mh-side-gap' }));
 		side.push(this.navButton('servers', 'plus', 'cbi-button-add mh-navbtn', _('Add connection')));
@@ -1229,6 +1274,104 @@ return view.extend({
 		side.push(E('div', { 'class': 'mh-side-gap' }));
 
 		return E('div', { 'class': 'mh-box mh-side' }, side.concat(diag.controls()));
+	},
+
+	// --- active connections ----------------------------------------------------
+	// What each device connects to, over which protocol, and which way it
+	// goes: a server through xray, a tunnel in the kernel, or direct. From the
+	// kernel's connection table; servers and names from xray's log while the
+	// window is open.
+
+	openConns() {
+		this.conns = null;
+		this.connsOpen = true;
+
+		const body = E('div', { 'id': 'mh-conns' }, E('p', { 'class': 'mh-muted' }, [ mh.icon('loader', true), ' ', _('Loading…') ]));
+
+		ui.showModal(_('Active connections'), [
+			E('p', { 'class': 'mh-muted mh-small' },
+				_('Every connection of the network that is open now. Servers and site names of connections through Xray show up for those opened while this window is open.')),
+			body,
+			E('div', { 'class': 'right' }, E('button', { 'class': 'btn', 'click': () => this.closeConns() }, _('Close')))
+		], 'mh-conns-modal');
+
+		const loop = () => {
+			if (!this.connsOpen)
+				return;
+
+			callConns(false).then((r) => {
+				this.conns = r;
+				this.drawConns();
+			}).catch(() => {}).finally(() => {
+				if (this.connsOpen)
+					this.connsTimer = window.setTimeout(loop, 3000);
+			});
+		};
+
+		loop();
+	},
+
+	closeConns() {
+		this.connsOpen = false;
+		window.clearTimeout(this.connsTimer);
+		ui.hideModal();
+		callConns(true).catch(() => {});
+	},
+
+	connRoute(r) {
+		const x = r.route || {};
+		const proto = x.protocol ? ' · ' + protocolName({ protocol: x.protocol }) : '';
+		const where = x.section ? (x.pool ? _('Server list') : x.section) : '';
+
+		switch (x.kind) {
+		case 'proxy': return [ '%s%s'.format(x.server || '?', proto), where, 'mh-ok' ];
+		case 'tunnel': return [ _('Tunnel %s').format(x.server || '?') + proto, where, 'mh-ok' ];
+		case 'xray': return [ _('Through Xray'), _('opened before the window'), 'mh-ok' ];
+		case 'block': return [ _('Blocked'), '', 'mh-fail' ];
+		case 'dns': return [ 'DNS', '', '' ];
+		case 'direct': return [ _('Direct'), x.via || '', 'mh-muted' ];
+		default: return [ x.tag || '?', '', '' ];
+		}
+	},
+
+	drawConns() {
+		const box = document.getElementById('mh-conns');
+		const r = this.conns;
+
+		if (!box || !r)
+			return;
+
+		if (r.error) {
+			box.replaceChildren(E('p', { 'class': 'mh-fail' }, r.error));
+			return;
+		}
+
+		const rows = r.rows || [];
+
+		if (!rows.length) {
+			box.replaceChildren(E('p', { 'class': 'mh-muted' }, _('No connections yet.')));
+			return;
+		}
+
+		const tr = (cells, cls) => E('tr', { 'class': 'tr' + (cls ? ' ' + cls : '') }, cells);
+		const td = (title, content) => E('td', { 'class': 'td', 'data-title': title }, content);
+
+		box.replaceChildren(E('table', { 'class': 'table mh-rtable mh-conns' }, [
+			tr([ _('Device'), _('Destination'), _('Protocol'), _('Route'), _('Traffic') ].map((h) => E('th', { 'class': 'th' }, h)), 'table-titles'),
+			...rows.map((c) => {
+				const rt = this.connRoute(c);
+				const dest = (c.domain || mh.ipText(c.host)) + ':' + c.port;
+
+				return tr([
+					td(_('Device'), c.device === 'router' ? _('This router') : (c.device || mh.ipText(c.ip))),
+					td(_('Destination'), [ E('span', { 'title': mh.ipText(c.host) }, dest),
+						c.fake ? E('span', { 'class': 'mh-muted mh-small' }, ' FakeDNS') : '' ]),
+					td(_('Protocol'), c.network.toUpperCase()),
+					td(_('Route'), [ E('span', { 'class': rt[2] }, rt[0]), rt[1] ? E('span', { 'class': 'mh-muted mh-small' }, ' ' + rt[1]) : '' ]),
+					td(_('Traffic'), mh.bytes(c.bytes) + (c.count > 1 ? ' ×' + c.count : ''))
+				]);
+			})
+		]), r.total > rows.length ? E('p', { 'class': 'mh-muted mh-small' }, _('The %d busiest of %d.').format(rows.length, r.total)) : '');
 	},
 
 	renderTunnel(s, now) {

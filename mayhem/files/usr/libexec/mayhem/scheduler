@@ -34,6 +34,7 @@ while :; do
 
 		mayhem_tunnels_check
 		mayhem_watchdog
+		mayhem_conn_log_idle
 		mayhem_auto_update
 	fi
 

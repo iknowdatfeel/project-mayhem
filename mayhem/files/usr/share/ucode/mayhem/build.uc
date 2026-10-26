@@ -30,6 +30,13 @@ const SERVICE_PROTOCOLS = [ 'freedom', 'direct', 'blackhole', 'block', 'dns', 'l
 const DNS_LEVEL = 1;
 const DNS_IDLE = 4;
 
+// One after another, xray waits for a server that does not answer for its
+// timeout (4 s by default) before it asks the next one, and the session of
+// the query may already be gone by then: the answer of the second server was
+// lost. With several servers in a row each gets DNS_TRY_MS, and the session
+// lives long enough for the whole row.
+const DNS_TRY_MS = 2000;
+
 // How long xray may answer with an expired DNS record while it asks again.
 const DNS_STALE = 3600;
 
@@ -121,11 +128,26 @@ function apply_sockopt(ob, strategy) {
 	ob.streamSettings.sockopt.domainStrategy ??= strategy;
 }
 
+// The user of a VLESS outbound: the flat form keeps it in "settings", the
+// "vnext" form (JSON subscriptions) in settings.vnext[0].users[0].
+function vless_user(ob) {
+	const s = ob.settings ?? {};
+
+	return type(s.vnext) == 'array' && length(s.vnext) ? (s.vnext[0]?.users?.[0] ?? {}) : s;
+}
+
 function apply_mux(ob, S) {
 	if (ob.protocol != 'vless' || ob.mux != null || !is_true(S.mux))
 		return;
 
-	const vision = match(ob.settings?.flow ?? '', /^xtls-rprx-vision/);
+	// XHTTP multiplexes on its own (xmux): Mux.Cool on top only adds a layer
+	// the server did not ask for.
+	if (index([ 'xhttp', 'splithttp' ], ob.streamSettings?.network) >= 0)
+		return;
+
+	// A Vision server breaks Mux connections that carry TCP, so with Vision
+	// only UDP goes through XUDP. The flow may be in either form.
+	const vision = match(vless_user(ob).flow ?? ob.settings?.flow ?? '', /^xtls-rprx-vision/);
 
 	ob.mux = {
 		enabled: true,
@@ -294,9 +316,18 @@ function build_nft_text(S, v6, sets, tunnels, dns_redirect, fake_pool, kdef, cap
 	s += '\n\tchain prerouting {\n';
 	s += '\t\ttype filter hook prerouting priority mangle; policy accept;\n';
 
-	// The router's own connections to FakeDNS addresses (chain output) come
-	// back through lo with the mark.
-	if (fake_pool)
+	// The router's own connections (chain output) come back through lo with
+	// the mark: those to FakeDNS addresses, and with "router through the
+	// proxy" its TCP connections.
+	const router = is_true(S.router_traffic ?? '0');
+
+	if (router) {
+		s += `\t\tiifname "lo" meta mark & ${mark} == ${mark} meta nfproto ipv4 meta l4proto { tcp, udp } tproxy ip to 127.0.0.1:${C.TPROXY_PORT} counter accept\n`;
+
+		if (v6)
+			s += `\t\tiifname "lo" meta mark & ${mark} == ${mark} meta nfproto ipv6 meta l4proto tcp tproxy ip6 to [::1]:${C.TPROXY_PORT} counter accept\n`;
+	}
+	else if (fake_pool)
 		s += `\t\tiifname "lo" meta mark & ${mark} == ${mark} ip daddr ${fake_pool} meta l4proto { tcp, udp } tproxy ip to 127.0.0.1:${C.TPROXY_PORT} counter accept\n`;
 
 	s += '\t\tiifname != @ifaces return\n';
@@ -448,10 +479,50 @@ function build_nft_text(S, v6, sets, tunnels, dns_redirect, fake_pool, kdef, cap
 	// dnsmasq asks xray for the router's own lookups too, so with FakeDNS the
 	// router gets fake addresses as well (curl, package updates): send those
 	// connections to xray, which knows the domain behind them.
-	if (fake_pool) {
+	// "Router through the proxy" (settings.router_traffic): new TCP
+	// connections of the router go to xray as well, by the same rules as the
+	// network's (in "lists" mode only what the rules send to a proxy). Only
+	// TCP: the router's UDP is its clock (NTP), DNS and the packets of its
+	// WireGuard/AmneziaWG tunnels, which must leave as they are. xray's own
+	// sockets carry XRAY_OUT_MARK and leave untouched.
+	if (fake_pool || router) {
+		const xm = sprintf('0x%x', C.XRAY_OUT_MARK);
+		const to_x = `meta mark set meta mark | ${mark} counter`;
+
 		s += '\n\tchain output {\n';
 		s += '\t\ttype route hook output priority mangle; policy accept;\n';
-		s += `\t\tip daddr ${fake_pool} meta l4proto { tcp, udp } meta mark set meta mark | ${mark} counter\n`;
+		s += `\t\tmeta mark & ${xm} == ${xm} return\n`;
+
+		if (fake_pool)
+			s += `\t\tip daddr ${fake_pool} meta l4proto { tcp, udp } ${to_x}\n`;
+
+		if (router) {
+			s += '\t\tmeta l4proto != tcp return\n';
+			s += '\t\tct direction reply return\n';
+			s += '\t\tfib daddr type { local, broadcast, multicast } return\n';
+			s += '\t\tip daddr @local4 return\n';
+			s += '\t\tip6 daddr @local6 return\n';
+			s += '\t\tth dport 53 return\n';
+			s += '\t\tip daddr @direct4 return\n';
+			s += '\t\tip6 daddr @direct6 return\n';
+
+			if (length(sets.direct_ports ?? []))
+				s += `\t\tth dport { ${join(', ', sets.direct_ports)} } return\n`;
+
+			if (cap) {
+				s += `\t\tip daddr @px4 ${to_x}\n`;
+
+				if (v6)
+					s += `\t\tip6 daddr @px6 ${to_x}\n`;
+			}
+			else {
+				s += `\t\tmeta nfproto ipv4 ${to_x}\n`;
+
+				if (v6)
+					s += `\t\tmeta nfproto ipv6 ${to_x}\n`;
+			}
+		}
+
 		s += '\t}\n';
 	}
 
@@ -745,10 +816,12 @@ function collect_nodes(sec, model, warn) {
 			continue;
 		}
 
+		const sx = name_regexp(model.sub_exclude?.[sub], `subscription "${sub}": exclude`, warn);
+
 		for (let node in cache.nodes ?? []) {
 			const nn = node.name ?? '';
 
-			if ((inc && !match(nn, inc)) || (exc && match(nn, exc)) || model.hidden?.[sub]?.[nn])
+			if ((inc && !match(nn, inc)) || (exc && match(nn, exc)) || (sx && match(nn, sx)) || model.hidden?.[sub]?.[nn])
 				continue;
 
 			try {
@@ -799,7 +872,7 @@ function collect_rules(sec, model, warn, G) {
 	const name = sec['.name'];
 	const sources = model.geo?.sources ?? [];
 	const domains = uset(), ip4 = uset(), ip6 = uset(), geoip = uset();
-	const geo4 = [], geo6 = [], sites = [], geo_nosub = [];
+	const geo4 = [], geo6 = [], sites = [], geo_nosub = [], geoip_xray = [];
 
 	const geo = (g, text) => {
 		const x = resolve(sources, g);
@@ -816,7 +889,8 @@ function collect_rules(sec, model, warn, G) {
 			return;
 		}
 
-		if (x.count > HEAVY)
+		// A block section's category goes to dnsmasq, not into xray.
+		if (x.count > HEAVY && (sec.type != 'block' || !is_true(model.dns?.hijack ?? '1') || x.count > KERNEL_DOMAINS_MAX))
 			warn(`section "${name}": ${text} has ${x.count} rules, xray may need a lot of memory for it`);
 
 		uniq_push(G.files, x.file);
@@ -835,8 +909,10 @@ function collect_rules(sec, model, warn, G) {
 			for (let v in c.v4) push(geo4, v);
 			for (let v in c.v6) push(geo6, v);
 		}
-		else
+		else {
 			push(geo_nosub, text);
+			push(geoip_xray, `ext:${x.file}:${g.neg ? '!' : ''}${x.cat}`);
+		}
 	};
 
 	const add_domain = (d) => {
@@ -919,7 +995,7 @@ function collect_rules(sec, model, warn, G) {
 
 	return {
 		domains: domains.items, ip4: ip4.items, ip6: ip6.items,
-		geoip: geoip.items, geo4: geo4, geo6: geo6, sites: sites, geo_nosub: geo_nosub
+		geoip: geoip.items, geo4: geo4, geo6: geo6, sites: sites, geo_nosub: geo_nosub, geoip_xray: geoip_xray
 	};
 }
 
@@ -971,6 +1047,79 @@ function kernel_domains(name, RL, model, warn, fallback) {
 	return out.items;
 }
 
+
+// A block section's domains for dnsmasq: it answers them itself (NXDOMAIN)
+// with "local=" lines, so a blocked name fails at once instead of the device
+// opening a connection that xray then drops (an ad held a page until the
+// device gave up), and xray keeps no matcher of its own for them. dnsmasq
+// adds "local=" lines one by one (its "server=" lines are compared with each
+// other on load), so even a big ad category loads quickly; ~65 bytes each.
+// Returns { names: [ spelled-out domains ], keep: [ domain rules xray still
+// needs ], sites: [ categories xray still needs ] }: keyword/regexp rules,
+// categories with an attribute or not spelled out, and categories that hold
+// such rules besides their domains.
+function block_for_dnsmasq(RL, model) {
+	const names = uset(), keep = [], sites = [];
+	const spelled = {};
+
+	for (let g in RL.sites) {
+		const list = model.geo?.domains?.[g.key];
+
+		if (g.attr != '' || list == null || (g.count ?? 0) > KERNEL_DOMAINS_MAX) {
+			push(sites, g);
+			continue;
+		}
+
+		let all = true;
+
+		for (let d in list) {
+			const m = match(d, /^(domain|full):(.+)$/);
+
+			if (m)
+				names.add(lc(m[2]));
+			else
+				all = false;
+		}
+
+		if (all)
+			spelled[`ext:${split(g.key, ':')[0]}.dat:${split(g.key, ':')[1]}`] = true;
+		else
+			push(sites, g);
+	}
+
+	for (let d in RL.domains) {
+		const m = match(d, /^(domain|full):(.+)$/);
+
+		if (m)
+			names.add(lc(m[2]));
+		else if (!spelled[d])
+			push(keep, d);
+	}
+
+	if (length(names.items) > KERNEL_DOMAINS_MAX)
+		return null;
+
+	return { names: names.items, keep: keep, sites: sites };
+}
+
+// dnsmasq lines that answer the names with NXDOMAIN (subdomains included).
+function local_lines(names) {
+	let out = '', line = '';
+
+	for (let d in names) {
+		if (length(line) + length(d) > 900) {
+			out += `local=/${line}/\n`;
+			line = '';
+		}
+
+		line += (line != '' ? '/' : '') + d;
+	}
+
+	if (line != '')
+		out += `local=/${line}/\n`;
+
+	return out;
+}
 
 // Tag of a server: section and a hash of its outbound. It stays the same while
 // the server does, whatever the order or the names in the subscription, so a
@@ -1122,6 +1271,8 @@ export function build(model) {
 
 	const proxy_domains = uset();
 	const block_domains = uset();
+	const dns_block = uset();		// names dnsmasq refuses itself (block sections)
+	const dns_redirect = is_true(D.hijack ?? '1');
 	const excl_domains = uset();
 	const px4 = uset(), px6 = uset();	// subnets that reach xray when only the lists are captured
 
@@ -1222,6 +1373,7 @@ export function build(model) {
 
 		const RL = collect_rules(sec, model, warn, { pending: geo_pending, files: geo_files, lists_missing: lists_missing });
 		const domains = RL.domains, ips4 = RL.ip4, ips6 = RL.ip6;
+		let rule_domains = domains;
 
 		// "Who": the whole network, or some devices (proxy and tunnel
 		// sections). scope goes into the section's xray rules; null when
@@ -1321,6 +1473,10 @@ export function build(model) {
 
 			const smode = index([ 'manual', 'fallback' ], sec.select) >= 0 ? sec.select : 'auto';
 			const sinfo = { type: 'proxy', mode: length(nodes) > 1 ? smode : 'single', nodes: [] };
+
+			// A subscription with a choice of its own (its group).
+			if (sec.group)
+				sinfo.group = sec.group;
 			const used = {};
 
 			for (let i = 0; i < length(nodes); i++) {
@@ -1494,8 +1650,20 @@ export function build(model) {
 			target = { outboundTag: 'block' };
 			state.sections[name] = { type: 'block' };
 
-			block_domains.add_all(domains);
-			push(xray_dns, { name: name, RL: RL, type: info.type });
+			// Spelled-out domains are refused by dnsmasq (DNS of the network
+			// redirected to it); xray keeps only what dnsmasq cannot match.
+			const bd = dns_redirect ? block_for_dnsmasq(RL, model) : null;
+
+			if (bd) {
+				dns_block.add_all(bd.names);
+				rule_domains = bd.keep;
+				state.sections[name].dnsmasq = length(bd.names);
+				push(xray_dns, { name: name, RL: { ...RL, domains: bd.keep, sites: bd.sites }, type: info.type });
+			}
+			else
+				push(xray_dns, { name: name, RL: RL, type: info.type });
+
+			block_domains.add_all(rule_domains);
 
 			sets.block4.add_all(ips4);
 			sets.block4.add_all(RL.geo4);
@@ -1600,10 +1768,17 @@ export function build(model) {
 		if (scope == null)
 			warn(`section "${name}": none of its devices has an address yet, its rules wait for one`);
 
-		if (length(domains) && scope)
-			push(list, { domain: domains, ...scope, ...target });
+		if (length(rule_domains) && scope)
+			push(list, { domain: rule_domains, ...scope, ...target });
 
-		const ips = [ ...ips4, ...ips6, ...RL.geoip ];
+		// Subnets of a direct or block section stay out of xray in the
+		// kernel (sets direct4/block4), so tproxy traffic to them never
+		// reaches it: a geoip category there would be a matcher in xray's
+		// memory for nothing (geoip:ru is 25 thousand subnets). Except in
+		// global mode with FakeDNS, where xray resolves a domain to match
+		// IP rules (IPOnDemand), and categories the kernel has no subnets of.
+		const kernel_ips = (info.type == 'exclusion' || info.type == 'block') && !(fake && mode == 'global');
+		const ips = [ ...ips4, ...ips6, ...(kernel_ips ? RL.geoip_xray : RL.geoip) ];
 
 		if (length(ips) && scope)
 			push(list, { ip: ips, ...scope, ...target });
@@ -1673,7 +1848,6 @@ export function build(model) {
 	// Without nftset support in dnsmasq, kernel sections only get the
 	// subnets from their rules; domains go through xray.
 	const nftset = length(tunnels) && R.dnsmasq_nftset !== false;
-	const dns_redirect = is_true(D.hijack ?? '1');
 
 	if (length(tunnels) && !nftset)
 		warn('kernel mode needs dnsmasq-full (nftset support): domains of tunnel sections go through xray until it is installed');
@@ -1944,6 +2118,40 @@ export function build(model) {
 			dns_fallback = isp;
 	}
 
+	// All at once: the remote servers race and the first good answer counts.
+	// Only safe in "everything through the proxy" without FakeDNS: there the
+	// servers without domains are the remote ones alone. Elsewhere xray would
+	// also ask the provider's DNS (or FakeDNS) in the same race, and the
+	// provider would see the names of proxied sites (the generator warns).
+	// Off by default: the servers are asked one after another (fallback).
+	const parallel_safe = mode == 'global' && !fake;
+	let parallel = false;
+
+	if (is_true(D.parallel ?? '0')) {
+		parallel = true;
+
+		if (!parallel_safe)
+			warn('parallel DNS queries: the provider\'s DNS gets the names of proxied sites too (they are asked together); without that leak only when all traffic goes through the proxy without FakeDNS');
+	}
+
+	// One after another: a short timeout per server when there is a next one.
+	let dns_idle = DNS_IDLE;
+
+	if (!parallel) {
+		const remote_addrs2 = map(remote, (r) => r.address);
+		const domestic_addrs = map(domestic, (d) => d.address);
+		const row = max(length(remote), length(domestic));
+
+		for (let x in servers) {
+			if ((length(remote) > 1 && index(remote_addrs2, x.address) >= 0) ||
+			    (length(domestic) > 1 && index(domestic_addrs, x.address) >= 0))
+				x.timeoutMs = DNS_TRY_MS;
+		}
+
+		if (row > 1)
+			dns_idle = max(DNS_IDLE, int((row * DNS_TRY_MS + 999) / 1000) + 1);
+	}
+
 	// Address for non-A/AAAA queries that the DNS outbound passes through.
 	const plain = filter(domestic, (d) => is_ip(d.address))[0] ??
 		{ address: C.FALLBACK_DOMESTIC_DNS[0] };
@@ -2062,11 +2270,23 @@ export function build(model) {
 	// listed domains get fake addresses, and their domain rules match first.
 	const ip_strategy = (fake && mode == 'global' && length(filter(rules, (r) => r.ip))) ? 'IPOnDemand' : 'AsIs';
 
+	// The router's traffic through xray: xray's own sockets get a mark of
+	// their own, so the chain output lets them out instead of back to xray.
+	if (is_true(S.router_traffic ?? '0'))
+		for (let ob in outbounds)
+			if (ob.protocol != 'blackhole' && ob.protocol != 'loopback') {
+				ob.streamSettings ??= {};
+				ob.streamSettings.sockopt ??= {};
+				ob.streamSettings.sockopt.mark = C.XRAY_OUT_MARK;
+			}
+
 	const xray = {
+		// Connections and DNS answers go to CONN_LOG, which is /dev/null
+		// unless the dashboard shows the active connections; debug: stdout.
 		log: {
 			loglevel: log_level,
-			access: log_level == 'debug' ? '' : 'none',
-			dnsLog: log_level == 'debug'
+			access: log_level == 'debug' ? '' : C.CONN_LOG,
+			dnsLog: true
 		},
 		dns: {
 			tag: 'dns-module',
@@ -2080,7 +2300,7 @@ export function build(model) {
 			serveExpiredTTL: DNS_STALE,
 			// "All at once": every server that may answer is asked together and
 			// the first good answer counts; otherwise one after another.
-			...(is_true(D.parallel ?? '0') ? { enableParallelQuery: true } : {}),
+			...(parallel ? { enableParallelQuery: true } : {}),
 			servers: servers
 		},
 		inbounds: [
@@ -2103,12 +2323,12 @@ export function build(model) {
 		],
 		outbounds: outbounds,
 		routing: { domainStrategy: ip_strategy, rules: rules, balancers: balancers },
-		api: { tag: 'api', listen: `127.0.0.1:${C.API_PORT}`, services: [ 'RoutingService', 'HandlerService' ] },
+		api: { tag: 'api', listen: `127.0.0.1:${C.API_PORT}`, services: [ 'RoutingService', 'HandlerService', 'LoggerService' ] },
 		metrics: { tag: 'metrics', listen: `127.0.0.1:${C.METRICS_PORT}` },
 		stats: {},
 		policy: {
 			// '1' is DNS_LEVEL, '2' is UDP_LEVEL
-			levels: { '1': { connIdle: DNS_IDLE }, '2': { connIdle: UDP_IDLE } },
+			levels: { '1': { connIdle: dns_idle }, '2': { connIdle: UDP_IDLE } },
 			system: { statsOutboundUplink: true, statsOutboundDownlink: true }
 		}
 	};
@@ -2217,7 +2437,8 @@ export function build(model) {
 			(kdef ? nftset_lines(kdef.blkd, 'blk_d4', 'blk_d6') + nftset_lines(kdef.dird, 'dir_d4', 'dir_d6') +
 				nftset_lines(kdef.pxd, 'px_d4', 'px_d6') : '') +
 			(gdir ? nftset_lines(gdir, 'dir_d4', 'dir_d6') +
-				`nftset=/#/4#inet#${C.NFT_TABLE}#oth_d4,6#inet#${C.NFT_TABLE}#oth_d6\n` : ''),
+				`nftset=/#/4#inet#${C.NFT_TABLE}#oth_d4,6#inet#${C.NFT_TABLE}#oth_d6\n` : '') +
+			local_lines(dns_block.items),
 		// "section device mark table v6" per tunnel section; mark and table are
 		// "-" in xray mode.
 		tunnels: join('', map(tun_all, (t) => `${t.name} ${t.device} ${t.mark} ${t.table} ${t.v6 ? 1 : 0}${t.keep_bal ? ' 0' : ''}\n`)),

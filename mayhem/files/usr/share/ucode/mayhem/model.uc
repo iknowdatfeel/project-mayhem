@@ -317,8 +317,8 @@ function geo_cidrs(sections, sources) {
 	return out;
 }
 
-// Domains of the geosite categories that kernel-mode tunnel sections use:
-// dnsmasq needs them spelled out. Cached in RAM like the subnets. With the
+// Domains of the geosite categories that kernel-mode tunnel sections and block
+// sections use: dnsmasq needs them spelled out. Cached in RAM like the subnets. With the
 // rest of the traffic going into a kernel tunnel (all), the categories of
 // every section: their addresses must be told apart in the kernel.
 function geo_domains(sections, sources, all, split) {
@@ -334,7 +334,8 @@ function geo_domains(sections, sources, all, split) {
 		// Kernel tunnels need their categories spelled out for dnsmasq's
 		// nftset; other sections only small ones, for the names dnsmasq
 		// sends to xray (DNS_SPLIT_MAX).
-		const kernel = sec.type == 'interface' && (sec.route_mode ?? 'kernel') != 'xray';
+		// Block sections too: dnsmasq refuses their names itself.
+		const kernel = (sec.type == 'interface' && (sec.route_mode ?? 'kernel') != 'xray') || sec.type == 'block';
 		const most = kernel ? KERNEL_DOMAINS_MAX : DNS_SPLIT_MAX;
 
 		if (!all && !kernel && !split)
@@ -456,6 +457,30 @@ function pool_tunnels(c, p) {
 	return out;
 }
 
+// A subscription with a way of choosing of its own ("select": auto, manual,
+// fallback) is a group: a proxy section of its own, sub_<name>, which can be
+// the main section. Without it, its servers are in the server list.
+const GROUP_MODES = [ 'auto', 'manual', 'fallback' ];
+
+function sub_grouped(s) {
+	return index(GROUP_MODES, s?.select) >= 0;
+}
+
+function sub_groups(c) {
+	const out = [];
+
+	c.foreach('mayhem', 'subscription', (s) => {
+		if (is_true(s.enabled ?? '1') && sub_grouped(s))
+			push(out, {
+				'.name': `sub_${s['.name']}`, '.type': 'subgroup', type: 'proxy', enabled: '1', servers: 'own',
+				group: s['.name'], subscription: [ s['.name'] ],
+				select: s.select, selected: s.selected, override: s.override, chain: s.chain
+			});
+	});
+
+	return out;
+}
+
 function pool_section(c) {
 	const p = c.get_all('mayhem', 'pool');
 
@@ -465,7 +490,7 @@ function pool_section(c) {
 	const subs = [];
 
 	c.foreach('mayhem', 'subscription', (s) => {
-		if (is_true(s.enabled ?? '1'))
+		if (is_true(s.enabled ?? '1') && !sub_grouped(s))
 			push(subs, s['.name']);
 	});
 
@@ -486,6 +511,9 @@ function load_model() {
 
 	if (pool)
 		push(sections, pool);
+
+	for (let g in sub_groups(c))
+		push(sections, g);
 
 	c.foreach('mayhem', 'section', (s) => {
 		if (s['.name'] == 'pool')
@@ -514,8 +542,14 @@ function load_model() {
 	// Servers the user deleted from a subscription (the provider's names);
 	// they stay out of the list when the subscription is updated.
 	const hidden = {};
+	// Servers to leave out of a subscription by a regular expression on
+	// their names ("exclude" of the subscription).
+	const sub_exclude = {};
 
 	c.foreach('mayhem', 'subscription', (s) => {
+		if (type(s.exclude) == 'string' && s.exclude != '')
+			sub_exclude[s['.name']] = s.exclude;
+
 		for (let h in (type(s.hidden) == 'array' ? s.hidden : (s.hidden != null ? [ s.hidden ] : []))) {
 			hidden[s['.name']] ??= {};
 			hidden[s['.name']][h] = true;
@@ -565,6 +599,7 @@ function load_model() {
 		tunnel_labels: tunnel_labels,
 		aliases: aliases,
 		hidden: hidden,
+		sub_exclude: sub_exclude,
 		dns: c.get_all('mayhem', 'dns') ?? {},
 		sections: sections,
 		runtime: runtime(sections)

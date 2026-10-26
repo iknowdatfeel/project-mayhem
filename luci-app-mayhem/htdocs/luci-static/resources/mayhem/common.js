@@ -40,6 +40,11 @@ const CSS = `
 .mh-ip-eye .mh-icon { width:14px; height:14px; }
 .mh-dns-dynlist > .item { cursor:grab; }
 .mh-dns-dynlist > .item > span { pointer-events:none; }
+/* Active connections: wide enough for the table, the table scrolls inside. */
+.modal.mh-conns-modal { max-width:min(1100px, 96vw); width:96vw; }
+#mh-conns { max-height:65vh; overflow:auto; }
+.mh-conns .td { white-space:nowrap; }
+.mh-conns .td:nth-child(2) { white-space:normal; word-break:break-all; }
 /* Tables of keys and tunnels: on a narrow screen every row is a card, each cell
    with the name of its column, the buttons in one line at the bottom. */
 @media (max-width: 800px) {
@@ -136,6 +141,7 @@ const ICONS = {
 	logs: [ [], [ 'M4 6h16', 'M4 12h10', 'M4 18h13' ] ],
 	copy: [ [], [ 'M8 8h12v12H8z', 'M16 8V4H4v12h4' ] ],
 	zap: [ [], [ 'M13 2 4 14h7l-1 8 9-12h-7l1-8Z' ] ],
+	activity: [ [], [ 'M22 12h-4l-3 9L9 3l-3 9H2' ] ],
 	refresh: [ [], [ 'M21 12a9 9 0 0 1-15 6.7L3 16', 'M3 12a9 9 0 0 1 15-6.7L21 8', 'M21 3v5h-5', 'M3 21v-5h5' ] ],
 	download: [ [], [ 'M12 3v12', 'm7 10 5 5 5-5', 'M5 21h14' ] ],
 	upload: [ [], [ 'M12 15V3', 'm7 8 5-5 5 5', 'M5 21h14' ] ],

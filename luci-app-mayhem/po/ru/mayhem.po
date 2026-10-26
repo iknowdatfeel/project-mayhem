@@ -2065,3 +2065,83 @@ msgstr "Удалённых серверов возвращено: %d. Mayhem п�
 #: htdocs/luci-static/resources/mayhem/page/servers.js
 msgid "Servers deleted from the list on the dashboard do not come back when the subscription is updated. This brings them back."
 msgstr "Серверы, удалённые из списка на дашборде, не возвращаются при обновлении подписки. Эта кнопка возвращает их."
+
+#: htdocs/luci-static/resources/mayhem/page/sections.js
+msgid "Route router traffic through VPN"
+msgstr "Пустить трафик роутера через VPN"
+
+#: htdocs/luci-static/resources/mayhem/page/sections.js
+msgid "The router's own TCP connections (package updates, downloads, scripts) follow the same rules as the network's. Its UDP (time, DNS, WireGuard and AmneziaWG tunnels) goes direct as before."
+msgstr "Собственные TCP-соединения роутера (обновления пакетов, загрузки, скрипты) идут по тем же правилам, что и трафик сети. UDP роутера (время, DNS, туннели WireGuard и AmneziaWG) идёт напрямую, как и раньше."
+
+#: htdocs/luci-static/resources/mayhem/page/sections.js
+msgid "On: the remote servers get the query together and the first good answer counts, so a server that does not answer slows nothing down. Works when all traffic goes through the proxy without FakeDNS (otherwise the provider's DNS would get the names too). Off (fallback): the servers are asked one after another, the next one after 2 s without an answer."
+msgstr "Вкл.: запрос уходит на все удалённые серверы сразу и засчитывается первый хороший ответ, поэтому неотвечающий сервер ничего не замедляет. Работает, когда весь трафик идёт через прокси без FakeDNS (иначе имена получал бы и DNS провайдера). Выкл. (фоллбек): серверы опрашиваются по очереди, следующий — через 2 с без ответа."
+
+#: htdocs/luci-static/resources/mayhem/page/servers.js
+msgid "Enter a name"
+msgstr "Введите название"
+
+#: htdocs/luci-static/resources/mayhem/page/servers.js
+msgid "Remove servers by name"
+msgstr "Удалять серверы по названию"
+
+#: htdocs/luci-static/resources/mayhem/page/servers.js
+msgid "A regular expression: servers whose names match it are left out of the list, now and after every update. Case does not matter. For example: Россия|LTE|Torrent"
+msgstr "Регулярное выражение: серверы с подходящими названиями не попадают в список — сейчас и после каждого обновления. Регистр не важен. Например: Россия|LTE|Torrent"
+
+#: htdocs/luci-static/resources/mayhem/page/servers.js
+msgid "Not a valid regular expression"
+msgstr "Неверное регулярное выражение"
+
+#: htdocs/luci-static/resources/view/mayhem/dashboard.js
+msgid "In the server list"
+msgstr "В общем списке"
+
+#: htdocs/luci-static/resources/view/mayhem/dashboard.js
+msgid "Active connections"
+msgstr "Активные подключения"
+
+#: htdocs/luci-static/resources/view/mayhem/dashboard.js
+msgid "Every connection of the network that is open now. Servers and site names of connections through Xray show up for those opened while this window is open."
+msgstr "Все соединения сети, открытые сейчас. Сервер и имя сайта у соединений через Xray видны для тех, что открылись, пока это окно открыто."
+
+#: htdocs/luci-static/resources/view/mayhem/dashboard.js
+msgid "opened before the window"
+msgstr "открыто до этого окна"
+
+#: htdocs/luci-static/resources/view/mayhem/dashboard.js
+msgid "Blocked"
+msgstr "Заблокировано"
+
+#: htdocs/luci-static/resources/view/mayhem/dashboard.js
+msgid "No connections yet."
+msgstr "Соединений пока нет."
+
+#: htdocs/luci-static/resources/view/mayhem/dashboard.js
+msgid "Device"
+msgstr "Устройство"
+
+#: htdocs/luci-static/resources/view/mayhem/dashboard.js
+msgid "Destination"
+msgstr "Куда"
+
+#: htdocs/luci-static/resources/view/mayhem/dashboard.js
+msgid "Route"
+msgstr "Через что"
+
+#: htdocs/luci-static/resources/view/mayhem/dashboard.js
+msgid "Traffic"
+msgstr "Трафик"
+
+#: htdocs/luci-static/resources/view/mayhem/dashboard.js
+msgid "This router"
+msgstr "Роутер"
+
+#: htdocs/luci-static/resources/view/mayhem/dashboard.js
+msgid "The %d busiest of %d."
+msgstr "Показаны %d самых загруженных из %d."
+
+#: htdocs/luci-static/resources/mayhem/page/sections.js
+msgid "On: the remote servers get the query together and the first good answer counts, so a server that does not answer slows nothing down. By lists or with FakeDNS the provider's DNS gets the names of proxied sites too. Off (fallback): the servers are asked one after another, the next one after 2 s without an answer."
+msgstr "Вкл.: запрос уходит на все удалённые серверы сразу и засчитывается первый хороший ответ, поэтому неотвечающий сервер ничего не замедляет. В режиме «по спискам» или с FakeDNS имена проксируемых сайтов получает и DNS провайдера. Выкл. (фоллбек): серверы опрашиваются по очереди, следующий — через 2 с без ответа."

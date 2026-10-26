@@ -291,8 +291,40 @@ mayhem_auto_update() {
 	fi
 }
 
+# The connection log of xray (conn.log): a file while the dashboard shows the
+# active connections, /dev/null otherwise. xray opens the path again when
+# its logger restarts, so no restart of xray is needed.
+#   mayhem_conn_log on|off
+mayhem_conn_log() {
+	local f="$MAYHEM_RUN_DIR/conn.log"
+
+	if [ "$1" = on ]; then
+		date +%s > "$MAYHEM_RUN_DIR/conn.watch"
+		[ -f "$f" ] && [ ! -L "$f" ] && return 0
+		: > "$f.new" && mv -f "$f.new" "$f"
+	else
+		rm -f "$MAYHEM_RUN_DIR/conn.watch"
+		[ -L "$f" ] && return 0
+		ln -sfn /dev/null "$f.new" && mv -f "$f.new" "$f"
+	fi
+
+	[ -n "$(cat "$MAYHEM_RUN_DIR/xray.pid" 2>/dev/null)" ] &&
+		"$MAYHEM_XRAY_BIN" api restartlogger --server="127.0.0.1:$MAYHEM_API_PORT" >/dev/null 2>&1
+	return 0
+}
+
+# Nobody looked at the connections for a minute (the window closed without
+# saying so): the log goes back to /dev/null.
+mayhem_conn_log_idle() {
+	local t
+
+	t="$(cat "$MAYHEM_RUN_DIR/conn.watch" 2>/dev/null)" || return 0
+	[ $(( $(date +%s) - ${t:-0} )) -gt 60 ] && mayhem_conn_log off
+	return 0
+}
+
 mayhem_watchdog() {
-	local pid rss total pct limit n
+	local pid rss total pct limit n gml
 
 	[ "${MAYHEM_WATCHDOG:-$(uci -q get mayhem.settings.watchdog)}" = 0 ] && return 0
 
@@ -306,6 +338,11 @@ mayhem_watchdog() {
 		total="$(awk '/^MemTotal:/ { print $2 }' /proc/meminfo)"
 		pct="${MAYHEM_WATCHDOG_MEM:-$(uci -q get mayhem.settings.watchdog_mem)}"
 		limit=$(( ${total:-0} * ${pct:-40} / 100 ))
+		# xray's own limit (GOMEMLIMIT) is where its garbage collector holds
+		# it: a lower watchdog limit would restart xray for using what it was
+		# allowed to. A quarter above it at least.
+		gml="$(sed -n 's/^GOMEMLIMIT=\([0-9]*\)MiB$/\1/p' "$MAYHEM_RUN_DIR/env" 2>/dev/null)"
+		[ -n "$gml" ] && [ "$limit" -lt $(( gml * 1024 * 5 / 4 )) ] && limit=$(( gml * 1024 * 5 / 4 ))
 
 		if [ "${rss:-0}" -gt "$limit" ]; then
 			n=$(( $(cat "$MAYHEM_RUN_DIR/watchdog.mem" 2>/dev/null || echo 0) + 1 ))
