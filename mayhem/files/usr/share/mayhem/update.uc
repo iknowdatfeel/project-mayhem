@@ -137,6 +137,15 @@ function load() {
 	return cfg;
 }
 
+// Writes the type a source's file holds into its settings.
+function set_kind(name, kind) {
+	const c = require('uci').cursor(C.UCI_DIR);
+
+	c.load('mayhem');
+	c.set('mayhem', name, 'kind', kind);
+	c.commit('mayhem');
+}
+
 // The default section: downloads go through its active server, like the
 // remote DNS. The generator wrote which one it is.
 function route_section(cfg) {
@@ -290,6 +299,18 @@ function update_source(cfg, src, cats, state, now) {
 		try {
 			res = fetch_geo(src, cats, proxy, tmp);
 			via = proxy ? 'xray' : 'direct';
+
+			// The type in the settings does not match the file (a geoip.dat
+			// added as geosite): the type comes from the file, and the
+			// categories to keep are picked again for it.
+			if (res.kind && res.kind != src.kind) {
+				log(`geo source ${src.name} holds ${res.kind} data: the type is set to ${res.kind}`, 'warn');
+				set_kind(src.name, res.kind);
+				src.kind = res.kind;
+				cats = wanted(cfg.sections, cfg.sources)[src.name] ?? [];
+				res = fetch_geo(src, cats, proxy, tmp);
+			}
+
 			break;
 		}
 		catch (e) {

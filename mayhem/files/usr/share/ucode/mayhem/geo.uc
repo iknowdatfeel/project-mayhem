@@ -171,11 +171,19 @@ function entry_head(r) {
 //   fh    handle to read from (file, pipe, stdin)
 //   want  { CATEGORY (upper case): true } - entries to copy to `out`
 //   out   handle to write the copied entries to (or null)
-// Returns { categories: { name (lower case): rule count }, copied: [ names ], bytes }.
+// Returns { categories: { name (lower case): rule count }, copied: [ names ],
+// bytes, kind }. kind is what the rules hold, from the first byte of the first
+// rule: a geoip CIDR starts with its ip (field 1, bytes), a geosite Domain with
+// its type (field 1, varint) or value (field 2). null without rules.
+function rule_kind(b) {
+	return b == 0x0a ? 'geoip' : (b == 0x08 || b == 0x12) ? 'geosite' : null;
+}
+
 export function scan(fh, want, out) {
 	const r = reader(fh);
 	const cats = {};
 	const copied = [];
+	let kind = null;
 
 	want ??= {};
 
@@ -213,6 +221,9 @@ export function scan(fh, want, out) {
 				const l = ord(buf, pos + 1);
 
 				if (l < 0x80 && pos + 2 + l <= blen) {
+					if (kind == null && l > 0)
+						kind = rule_kind(ord(buf, pos + 2));
+
 					pos += 2 + l;
 					count++;
 					continue;
@@ -237,7 +248,18 @@ export function scan(fh, want, out) {
 				}
 			}
 			else if (field == 2) {
-				r.skip_field(wt);
+				if (kind == null && wt == 2) {
+					const l = r.varint();
+
+					if (l > 0 && r.fill(1))
+						kind = rule_kind(ord(r.buf, r.pos));
+
+					r.skip(l);
+				}
+				else {
+					r.skip_field(wt);
+				}
+
 				count++;
 			}
 			else {
@@ -261,7 +283,7 @@ export function scan(fh, want, out) {
 		cats[lc(name)] = (cats[lc(name)] ?? 0) + count;
 	}
 
-	return { categories: cats, copied: copied, bytes: r.at() };
+	return { categories: cats, copied: copied, bytes: r.at(), kind: kind };
 };
 
 // Trimmed files are small (the categories in use), so they are read whole and

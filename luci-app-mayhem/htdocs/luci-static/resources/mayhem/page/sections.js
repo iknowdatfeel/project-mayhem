@@ -225,8 +225,20 @@ const GEO_PRESETS = [
 	[ 'geosite', 'MetaCubeX', 'https://github.com/MetaCubeX/meta-rules-dat/releases/latest/download/geosite.dat' ],
 	[ 'geoip', 'MetaCubeX', 'https://github.com/MetaCubeX/meta-rules-dat/releases/latest/download/geoip.dat' ],
 	[ 'geosite', 'v2fly', 'https://github.com/v2fly/domain-list-community/releases/latest/download/dlc.dat' ],
-	[ 'geoip', 'v2fly', 'https://github.com/v2fly/geoip/releases/latest/download/geoip.dat' ]
+	[ 'geoip', 'v2fly', 'https://github.com/v2fly/geoip/releases/latest/download/geoip.dat' ],
+	[ 'geosite', 'Re:filter', 'https://github.com/1andrevich/Re-filter-lists/releases/latest/download/geosite.dat' ],
+	[ 'geoip', 'Re:filter', 'https://github.com/1andrevich/Re-filter-lists/releases/latest/download/geoip.dat' ],
+	[ 'geosite', 'geosite_russia', 'https://raw.githubusercontent.com/yularzhi/geosite_russia/release/geosite.dat' ]
 ];
+
+// The type of a .dat file by its name: geoip*.dat holds geoip, geosite*.dat
+// and dlc*.dat geosite. null when the name does not tell (the router checks
+// the content on download anyway).
+function guessGeoKind(url) {
+	const file = String(url || '').split(/[?#]/)[0].split('/').pop().toLowerCase();
+
+	return (/geoip/).test(file) ? 'geoip' : (/geosite|^dlc/).test(file) ? 'geosite' : null;
+}
 
 // A proxy section without servers of its own uses the server list. Older
 // configs have no "servers" option: links, subscriptions, a JSON outbound or
@@ -518,6 +530,10 @@ return baseclass.extend({
 		o = s.option(form.Flag, 'exclude_local', _('Bypass local networks'),
 			_('Addresses of local networks (10.0.0.0/8, 192.168.0.0/16 and others) always go direct.'));
 		o.default = '1';
+		o.rmempty = false;
+
+		o = s.option(form.Flag, 'router_traffic', _('Route router traffic through VPN'),
+			_('The router\'s own TCP connections (package updates, downloads, scripts) follow the same rules as the network\'s. Its UDP (time, DNS, WireGuard and AmneziaWG tunnels) goes direct as before.'));
 		o.rmempty = false;
 
 		o = s.option(form.Flag, 'block_quic', _('Block QUIC (UDP/443)'),
@@ -1033,7 +1049,7 @@ return baseclass.extend({
 			o.description += ' ' + _('With one server, a query it fails to answer fails on the device too: add a second one, Cloudflare or Google say, to take over.');
 
 		o = s.option(form.Flag, 'parallel', _('Parallel queries'),
-			_('On: every server of a list gets the query together and the first good answer counts, which is faster when one of them is slow. Off: the next server only when the one before fails.'));
+			_('On: the remote servers get the query together and the first good answer counts, so a server that does not answer slows nothing down. By lists or with FakeDNS the provider\'s DNS gets the names of proxied sites too. Off (fallback): the servers are asked one after another, the next one after 2 s without an answer.'));
 
 		o = s.option(form.Flag, 'via_proxy', _('Remote DNS via proxy'),
 			now ? _('On: queries go through the active server, now %s. Off: they go direct, encrypted when the server is DoH.').format(now)
@@ -1124,12 +1140,13 @@ return baseclass.extend({
 			_('A known source from the list, an https:// address of a .dat file or a path to a file on the router.'));
 		o.rmempty = false;
 		GEO_PRESETS.forEach((g) => o.value(g[2], '%s — %s'.format(g[1], g[0])));
-		// A known source sets its type itself.
+		// A known source sets its type itself, another one by its file name.
 		o.write = function(sid, value) {
 			const g = GEO_PRESETS.find((x) => x[2] === value);
+			const kind = g ? g[0] : guessGeoKind(value);
 
-			if (g)
-				this.map.data.set('mayhem', sid, 'kind', g[0]);
+			if (kind)
+				this.map.data.set('mayhem', sid, 'kind', kind);
 
 			return form.Value.prototype.write.call(this, sid, value);
 		};

@@ -85,6 +85,10 @@ msgstr ""
 msgid "A regular expression over server names, case-insensitive. Example: NL|DE"
 msgstr ""
 
+#: htdocs/luci-static/resources/mayhem/page/servers.js
+msgid "A regular expression: servers whose names match it are left out of the list, now and after every update. Case does not matter. For example: Россия|LTE|Torrent"
+msgstr ""
+
 #: htdocs/luci-static/resources/mayhem/page/sections.js
 msgid "A section is a set of rules and the way its traffic leaves the router. Sections are checked from top to bottom; blocking always goes first."
 msgstr ""
@@ -103,6 +107,10 @@ msgstr ""
 
 #: htdocs/luci-static/resources/mayhem/tunnels.js
 msgid "AUTO and STUN dress the packets as STUN; NONE leaves them as they are."
+msgstr ""
+
+#: htdocs/luci-static/resources/view/mayhem/dashboard.js
+msgid "Active connections"
 msgstr ""
 
 #: htdocs/luci-static/resources/mayhem/page/sections.js
@@ -269,6 +277,10 @@ msgstr ""
 msgid "Block QUIC (UDP/443)"
 msgstr ""
 
+#: htdocs/luci-static/resources/view/mayhem/dashboard.js
+msgid "Blocked"
+msgstr ""
+
 #: htdocs/luci-static/resources/mayhem/page/sections.js
 msgid "Browsers and apps fall back from QUIC (UDP 443) to TCP, which works better through a proxy."
 msgstr ""
@@ -429,6 +441,14 @@ msgstr ""
 msgid "Deleted servers restored: %d. Mayhem applies the list now."
 msgstr ""
 
+#: htdocs/luci-static/resources/view/mayhem/dashboard.js
+msgid "Destination"
+msgstr ""
+
+#: htdocs/luci-static/resources/view/mayhem/dashboard.js
+msgid "Device"
+msgstr ""
+
 #: htdocs/luci-static/resources/mayhem/page/servers.js
 msgid "Device data"
 msgstr ""
@@ -573,6 +593,10 @@ msgstr ""
 msgid "Enabled"
 msgstr ""
 
+#: htdocs/luci-static/resources/mayhem/page/servers.js
+msgid "Enter a name"
+msgstr ""
+
 #: htdocs/luci-static/resources/mayhem/diag.js
 msgid "Error"
 msgstr ""
@@ -603,6 +627,10 @@ msgstr ""
 
 #: htdocs/luci-static/resources/mayhem/page/sections.js
 msgid "Every 6 hours"
+msgstr ""
+
+#: htdocs/luci-static/resources/view/mayhem/dashboard.js
+msgid "Every connection of the network that is open now. Servers and site names of connections through Xray show up for those opened while this window is open."
 msgstr ""
 
 #: htdocs/luci-static/resources/mayhem/page/settings.js
@@ -807,6 +835,10 @@ msgstr ""
 
 #: htdocs/luci-static/resources/mayhem/page/sections.js
 msgid "In sections a category is written as geosite:category or geosite:source:category. When several sources have the category, it is taken from the one higher in this list."
+msgstr ""
+
+#: htdocs/luci-static/resources/view/mayhem/dashboard.js
+msgid "In the server list"
 msgstr ""
 
 #: htdocs/luci-static/resources/view/mayhem/dashboard.js
@@ -1061,6 +1093,10 @@ msgstr ""
 msgid "No answer"
 msgstr ""
 
+#: htdocs/luci-static/resources/view/mayhem/dashboard.js
+msgid "No connections yet."
+msgstr ""
+
 #: htdocs/luci-static/resources/mayhem/diag.js
 msgid "No messages yet."
 msgstr ""
@@ -1095,6 +1131,10 @@ msgstr ""
 
 #: htdocs/luci-static/resources/mayhem/page/sections.js
 msgid "Not a server key: %s"
+msgstr ""
+
+#: htdocs/luci-static/resources/mayhem/page/servers.js
+msgid "Not a valid regular expression"
 msgstr ""
 
 #: htdocs/luci-static/resources/mayhem/diag.js
@@ -1154,15 +1194,15 @@ msgid "Obfuscator server port"
 msgstr ""
 
 #: htdocs/luci-static/resources/mayhem/page/sections.js
-msgid "On: every server of a list gets the query together and the first good answer counts, which is faster when one of them is slow. Off: the next server only when the one before fails."
-msgstr ""
-
-#: htdocs/luci-static/resources/mayhem/page/sections.js
 msgid "On: queries go through the active server, now %s. Off: they go direct, encrypted when the server is DoH."
 msgstr ""
 
 #: htdocs/luci-static/resources/mayhem/page/sections.js
 msgid "On: queries go through the active server. Off: they go direct, encrypted when the server is DoH."
+msgstr ""
+
+#: htdocs/luci-static/resources/mayhem/page/sections.js
+msgid "On: the remote servers get the query together and the first good answer counts, so a server that does not answer slows nothing down. By lists or with FakeDNS the provider's DNS gets the names of proxied sites too. Off (fallback): the servers are asked one after another, the next one after 2 s without an answer."
 msgstr ""
 
 #: htdocs/luci-static/resources/mayhem/page/sections.js
@@ -1349,6 +1389,10 @@ msgstr ""
 msgid "Remove"
 msgstr ""
 
+#: htdocs/luci-static/resources/mayhem/page/servers.js
+msgid "Remove servers by name"
+msgstr ""
+
 #: htdocs/luci-static/resources/mayhem/page/sections.js
 msgid "Rename"
 msgstr ""
@@ -1403,6 +1447,14 @@ msgstr ""
 
 #: htdocs/luci-static/resources/mayhem/diag.js
 msgid "Restores a backup file. A backup without connections keeps the subscriptions and server keys this router has."
+msgstr ""
+
+#: htdocs/luci-static/resources/view/mayhem/dashboard.js
+msgid "Route"
+msgstr ""
+
+#: htdocs/luci-static/resources/mayhem/page/sections.js
+msgid "Route router traffic through VPN"
 msgstr ""
 
 #: htdocs/luci-static/resources/view/mayhem/dashboard.js
@@ -1601,6 +1653,10 @@ msgstr ""
 msgid "Text lists with one domain, rule or subnet per line, \"#\" for comments. They are downloaded and updated automatically."
 msgstr ""
 
+#: htdocs/luci-static/resources/view/mayhem/dashboard.js
+msgid "The %d busiest of %d."
+msgstr ""
+
 #: htdocs/luci-static/resources/mayhem/page/sections.js
 msgid "The DNS of the DNS tab"
 msgstr ""
@@ -1713,6 +1769,10 @@ msgstr ""
 msgid "The router did not return a backup."
 msgstr ""
 
+#: htdocs/luci-static/resources/mayhem/page/sections.js
+msgid "The router's own TCP connections (package updates, downloads, scripts) follow the same rules as the network's. Its UDP (time, DNS, WireGuard and AmneziaWG tunnels) goes direct as before."
+msgstr ""
+
 #: htdocs/luci-static/resources/mayhem/tunnels.js
 msgid "The same key as in the server's wg-obfuscator."
 msgstr ""
@@ -1761,6 +1821,10 @@ msgstr ""
 msgid "This is an Amnezia subscription key (%s): it holds only access to the account, the tunnel config is issued to the AmneziaVPN app alone. In the app, open this subscription, export the AmneziaWG configuration file for the country you need and paste its text or pick the file here."
 msgstr ""
 
+#: htdocs/luci-static/resources/view/mayhem/dashboard.js
+msgid "This router"
+msgstr ""
+
 #: htdocs/luci-static/resources/mayhem/tunnels.js
 msgid "This takes a minute. Do not close the page."
 msgstr ""
@@ -1779,6 +1843,10 @@ msgstr ""
 
 #: htdocs/luci-static/resources/mayhem/page/servers.js
 msgid "Through the active server; when that fails, direct."
+msgstr ""
+
+#: htdocs/luci-static/resources/view/mayhem/dashboard.js
+msgid "Traffic"
 msgstr ""
 
 #: htdocs/luci-static/resources/mayhem/page/sections.js
@@ -2047,6 +2115,10 @@ msgstr ""
 
 #: htdocs/luci-static/resources/mayhem/common.js
 msgid "never"
+msgstr ""
+
+#: htdocs/luci-static/resources/view/mayhem/dashboard.js
+msgid "opened before the window"
 msgstr ""
 
 #: htdocs/luci-static/resources/mayhem/tunnels.js

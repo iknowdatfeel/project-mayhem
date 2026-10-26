@@ -75,6 +75,36 @@ else
 	bad "new servers: $out"
 fi
 
+# Mux: Vision servers (flat or "vnext" form) get UDP only, XHTTP none.
+if out="$(uc "$ROOT/tests/mux.uc" 2>&1)"; then
+	ok "mux by flow and transport"
+else
+	bad "mux: $out"
+fi
+
+# Block sections: spelled-out domains refused by dnsmasq, the rest in xray.
+if out="$(uc "$ROOT/tests/block.uc" 2>&1)"; then
+	ok "block sections in dnsmasq"
+else
+	bad "block: $out"
+fi
+
+# Several DNS servers: fallback with a short timeout each, parallel on request.
+if out="$(uc "$ROOT/tests/dnsrow.uc" 2>&1)"; then
+	ok "DNS servers in a row"
+else
+	bad "DNS servers in a row: $out"
+fi
+
+# The router's own TCP through xray: marks, chain output, nftables syntax.
+if ! out="$(uc "$ROOT/tests/router.uc" "$OUT/router.nft" 2>&1)"; then
+	bad "router traffic through xray: $out"
+elif command -v nft >/dev/null 2>&1 && ! out="$(nft -c -f "$OUT/router.nft" 2>&1)"; then
+	bad "router traffic through xray: nftables: $out"
+else
+	ok "router traffic through xray"
+fi
+
 # subscription responses
 sub_check() {
 	# $1 file, $2 jq-free expectation: substring that must appear in the output
@@ -308,6 +338,8 @@ elif ! grep -q 'domain:listed.test' "$OUT/geo-run/xray.json"; then
 	bad "config with geo categories: the list file was not used"
 elif ! grep -q '45.0.0.6/32' "$OUT/geo-run/nft.conf"; then
 	bad "config with geo categories: geoip:ru is not in the kernel bypass"
+elif grep -q '"ext:ip.dat:ru"' "$OUT/geo-run/xray.json"; then
+	bad "config with geo categories: geoip:ru of a direct section is in xray as well (the kernel has it)"
 elif ! grep -q 'no-such-category' "$OUT/geo-run/status.json"; then
 	bad "config with geo categories: no warning for an unknown category"
 elif ! out="$(XRAY_LOCATION_ASSET="$MAYHEM_GEO_DIR" "$XRAY" run -test -c "$OUT/geo-run/xray.json" 2>&1)"; then
@@ -326,6 +358,29 @@ if [ "$rc" = 0 ] && cmp -s "$OUT/before" "$OUT/after"; then
 	ok "geo update is not repeated when nothing is due"
 else
 	bad "geo update repeated: exit code $rc"
+fi
+
+# A geoip file added with the type geosite: the type is taken from the file and
+# the categories are picked again for it.
+mkdir -p "$OUT/geo-kind/uci" "$OUT/geo-kind/geo" "$OUT/geo-kind/run"
+cat > "$OUT/geo-kind/uci/mayhem" <<EOF
+config geo_source 'ip2'
+	option kind 'geosite'
+	option url '$OUT/geo/geoip.dat'
+
+config section 'main'
+	option type 'proxy'
+	list link 'trojan://pw@de.example:443?sni=de.example#DE'
+	list ip 'geoip:ip2:telegram'
+EOF
+out="$(MAYHEM_UCI_DIR="$OUT/geo-kind/uci" MAYHEM_GEO_DIR="$OUT/geo-kind/geo" MAYHEM_RUN_DIR="$OUT/geo-kind/run" \
+	uc "$FILES/usr/share/mayhem/update.uc" geo ip2 --force 2>&1)"
+if ! grep -q "option kind 'geoip'" "$OUT/geo-kind/uci/mayhem"; then
+	bad "geo source type from the file: the type stayed geosite: $out"
+elif ! grep -q '"telegram"' "$OUT/geo-kind/geo/ip2.json"; then
+	bad "geo source type from the file: geoip:ip2:telegram was not kept: $out"
+else
+	ok "geo source type from the file"
 fi
 
 for m in "$ROOT"/tests/models/*.json; do
@@ -571,7 +626,7 @@ fi
 if command -v shellcheck >/dev/null 2>&1; then
 	if out="$(shellcheck -s sh -f gcc -e SC1091,SC2034,SC3043,SC2086,SC2046,SC2317,SC2329 \
 		"$FILES/usr/bin/mayhem" "$FILES/usr/libexec/mayhem/xray-run" "$FILES/usr/libexec/mayhem/scheduler" \
-		"$FILES/etc/uci-defaults/90-mayhem" "$ROOT/tests/netns.sh" "$ROOT/tests/build-ucode.sh" "$ROOT/tests/health.sh" \
+		"$FILES/etc/uci-defaults/90-mayhem" "$ROOT/tests/netns.sh" "$ROOT/tests/build-ucode.sh" "$ROOT/tests/health.sh" "$ROOT/tests/conns.sh" \
 		"$FILES/usr/share/mayhem/lib.sh" "$FILES/usr/share/mayhem/const.sh" "$ROOT/install.sh" 2>&1)"; then
 		ok "shellcheck"
 	else
@@ -649,6 +704,13 @@ if out="$(UCODE="$UCODE" sh "$ROOT/tests/hidden.sh" 2>&1)"; then
 	ok "deleted subscription servers: generator, delete and restore, migration"
 else
 	bad "deleted subscription servers: $out"
+fi
+
+# Active connections: the log switched on and off, read into rows.
+if out="$(UCODE="$UCODE" sh "$ROOT/tests/conns.sh" 2>&1)"; then
+	ok "active connections"
+else
+	bad "active connections: $(printf '%s' "$out" | grep -v '^ok')"
 fi
 
 # Backup and restore of the config, with and without subscriptions and keys.

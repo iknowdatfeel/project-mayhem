@@ -394,6 +394,15 @@ return baseclass.extend({
 		s.nodescriptions = true;
 		s.addbtntitle = _('Add subscription');
 		s.modaltitle = (section_id) => _('Subscription') + ' » ' + section_id;
+		s.renderSectionAdd = function(extra_class) {
+			const el = form.GridSection.prototype.renderSectionAdd.call(this, extra_class);
+			const name = el.querySelector('.cbi-section-create-name');
+
+			if (name)
+				name.placeholder = _('Enter a name');
+
+			return el;
+		};
 
 		s.tab('main', _('Subscription'));
 		s.tab('device', _('Device data'));
@@ -414,6 +423,22 @@ return baseclass.extend({
 		o.datatype = 'range(1,720)';
 		o.default = '12';
 		o.rmempty = false;
+
+		o = s.taboption('main', form.Value, 'exclude', _('Remove servers by name'),
+			_('A regular expression: servers whose names match it are left out of the list, now and after every update. Case does not matter. For example: Россия|LTE|Torrent'));
+		o.modalonly = true;
+		o.validate = function(section_id, value) {
+			if (!value)
+				return true;
+
+			try {
+				new RegExp(value, 'i');
+				return true;
+			}
+			catch (e) {
+				return _('Not a valid regular expression');
+			}
+		};
 
 		o = s.taboption('main', form.Flag, 'via_xray', _('Download through Xray'),
 			now ? _('Through the active server, now %s; when that fails, direct.').format(now)

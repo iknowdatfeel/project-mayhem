@@ -14,6 +14,9 @@ export const HELPER_PORT = 12782;
 export const HELPER_PASS = 'mayhem';
 export const FWMARK = 0x2000000;
 export const RT_TABLE = 109;
+// xray's own sockets when the router's traffic goes through it: its
+// connections leave the router as they are, the chain output skips them.
+export const XRAY_OUT_MARK = 0x1000000;
 // Tunnel sections in kernel mode: mark TUN_MARK | n (n = 1..TUN_MAX) selects
 // routing table TUN_TABLE + n; their ip rules go in at priority TUN_RULE_PRIO.
 export const TUN_MARK = 0x4000000;
@@ -33,6 +36,9 @@ export const TUN_MAX = 32;
 export const TUN_RULE_PRIO = 108;
 export const NFT_TABLE = 'mayhem';
 export const RUN_DIR = getenv('MAYHEM_RUN_DIR') ?? '/var/run/mayhem';
+// xray's access and DNS log: a link to /dev/null, and a file only while the
+// dashboard shows the active connections (see "connections" in rpcd).
+export const CONN_LOG = `${RUN_DIR}/conn.log`;
 // dnsmasq runs in a jail that sees only some paths: /var/run/dnsmasq is one.
 export const DNS_SERVERS = getenv('MAYHEM_DNS_SERVERS') ?? '/var/run/dnsmasq/mayhem.servers';
 export const SUBS_DIR = getenv('MAYHEM_SUBS_DIR') ?? '/etc/mayhem/subs';

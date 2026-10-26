@@ -176,6 +176,46 @@ if grep -q direct "$T/xray.log" || [ -f "$T/run/dns.degraded" ]; then bad "kill 
 # Tunnels: with the kill switch the route stays and the balancer keeps the tunnel.
 rm -rf "$T/net"; mkdir -p "$T/net"
 # shellcheck disable=SC2016
+# A server chosen on the dashboard while the section is direct: the section
+# is no longer down, and the check keeps it on the server when it answers.
+nodes false
+rm -f "$T/run/health.json"
+printf 'n-pool-a\n' > "$T/dead"
+tick; tick
+if down pool; then
+	# what select_node does: the choice, the section up, a check at once
+	"$UCODE" -e "const fs = require('fs'); const h = json(fs.readfile('$T/run/health.json')); h.sections.pool = { down: false, fails: 0, picked: time() }; fs.writefile('$T/run/health.json', sprintf('%J', h));"
+	: > "$T/dead"
+	tick
+	if ! down pool && [ "$(bo bal-pool direct)" = 0 ]; then
+		ok "a server chosen while direct is used at once"
+	else
+		bad "chosen while direct: $(cat "$T/xray.log")"
+	fi
+else
+	bad "chosen while direct: the section did not go direct first"
+fi
+
+# Two checks at once: the second one leaves it to the first.
+sleep 30 & live=$!
+mkdir -p "$T/run/health.lock" && echo "$live" > "$T/run/health.lock/pid"
+printf 'n-pool-a\n' > "$T/dead"
+cp "$T/run/health.json" "$T/before.json"
+tick; tick
+if cmp -s "$T/before.json" "$T/run/health.json" && [ ! -s "$T/xray.log" ]; then
+	ok "a check does not run while another one does"
+else
+	bad "concurrent checks: $(cat "$T/xray.log")"
+fi
+kill "$live" 2>/dev/null; wait "$live" 2>/dev/null
+tick
+if [ -s "$T/run/health.json" ] && [ ! -d "$T/run/health.lock" ]; then
+	ok "a lock left by a process that is gone is taken over"
+else
+	bad "stale lock: $(ls "$T/run")"
+fi
+: > "$T/dead"
+
 printf '#!/bin/sh\necho "ip $*" >> "$STUB/ip.log"\n' > "$T/bin/ip"
 printf '#!/bin/sh\nexit 1\n' > "$T/bin/ping"
 chmod +x "$T/bin/ip" "$T/bin/ping"

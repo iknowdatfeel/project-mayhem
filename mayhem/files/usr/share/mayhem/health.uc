@@ -77,7 +77,26 @@ const pid = trim(fs.readfile(`${RUN_DIR}/xray.pid`) ?? '');
 if (!state || !fs.access(`${RUN_DIR}/active`) || pid == '')
 	exit(0);
 
+// One check at a time: the scheduler's and one started by a choice on the
+// dashboard may meet. A lock left by a process that is gone is taken over.
+const LOCK = `${RUN_DIR}/health.lock`;
+
+if (!fs.mkdir(LOCK)) {
+	const owner = trim(fs.readfile(`${LOCK}/pid`) ?? '');
+
+	if (owner != '' && fs.access(`/proc/${owner}`))
+		exit(0);
+}
+
+fs.writefile(`${LOCK}/pid`, `${fs.readfile('/proc/self/stat') ? split(fs.readfile('/proc/self/stat'), ' ')[0] : ''}\n`);
+
+function unlock() {
+	fs.unlink(`${LOCK}/pid`);
+	fs.rmdir(LOCK);
+}
+
 const ks = state.killswitch == true;
+const started = time();
 let h = read_json('health.json') ?? {};
 
 // Another xray: its balancers start from the saved choices, nothing in it
@@ -402,5 +421,14 @@ else {
 if (dns_changed)
 	system(`sh -c ${q(`. ${LIB}/lib.sh; mayhem_dns_servers xray`)} >/dev/null 2>&1`);
 
+// A server chosen on the dashboard while this check ran: that choice wins
+// over what this check saw for the section.
+const disk = read_json('health.json');
+
+for (let sn in keys(disk?.sections ?? {}))
+	if ((disk.sections[sn]?.picked ?? 0) >= started)
+		h.sections[sn] = disk.sections[sn];
+
 write('health.json', sprintf('%J\n', h));
+unlock();
 exit(0);
