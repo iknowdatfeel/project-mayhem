@@ -86,6 +86,16 @@ else
 	ok "connections: through xray, direct past it, into a tunnel"
 fi
 
+# One device: only its connections, the list of devices stays whole.
+out="$(call '{ "device": "192.168.1.20" }')"
+if printf '%s' "$out" | grep -q '"ip": "192.168.1.187", "network"'; then
+	bad "device filter: another device's connections are listed: $out"
+elif ! printf '%s' "$out" | grep -q '"host": "77.88.55.88"' || ! printf '%s' "$out" | grep -q '"devices": \[.*192.168.1.187.*\]'; then
+	bad "device filter: $out"
+else
+	ok "connections of one device, every device in the list"
+fi
+
 # The window closes: back to /dev/null.
 call '{ "stop": true }' > /dev/null
 if [ -L "$T/run/conn.log" ] && [ ! -f "$T/run/conn.watch" ]; then

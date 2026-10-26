@@ -2145,3 +2145,31 @@ msgstr "Показаны %d самых загруженных из %d."
 #: htdocs/luci-static/resources/mayhem/page/sections.js
 msgid "On: the remote servers get the query together and the first good answer counts, so a server that does not answer slows nothing down. By lists or with FakeDNS the provider's DNS gets the names of proxied sites too. Off (fallback): the servers are asked one after another, the next one after 2 s without an answer."
 msgstr "Вкл.: запрос уходит на все удалённые серверы сразу и засчитывается первый хороший ответ, поэтому неотвечающий сервер ничего не замедляет. В режиме «по спискам» или с FakeDNS имена проксируемых сайтов получает и DNS провайдера. Выкл. (фоллбек): серверы опрашиваются по очереди, следующий — через 2 с без ответа."
+
+#: htdocs/luci-static/resources/view/mayhem/dashboard.js
+msgid "All devices"
+msgstr "Все устройства"
+
+#: htdocs/luci-static/resources/view/mayhem/dashboard.js
+msgid "Pause"
+msgstr "Пауза"
+
+#: htdocs/luci-static/resources/view/mayhem/dashboard.js
+msgid "Shows only connections opened from now on, and the traffic from now on"
+msgstr "Показывать только соединения, открытые с этого момента, и трафик с этого момента"
+
+#: htdocs/luci-static/resources/view/mayhem/dashboard.js
+msgid "Clear"
+msgstr "Очистить"
+
+#: htdocs/luci-static/resources/view/mayhem/dashboard.js
+msgid "Resume"
+msgstr "Продолжить"
+
+#: htdocs/luci-static/resources/view/mayhem/dashboard.js
+msgid "Paused"
+msgstr "На паузе"
+
+#: htdocs/luci-static/resources/view/mayhem/dashboard.js
+msgid "Since %s"
+msgstr "С %s"

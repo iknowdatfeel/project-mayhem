@@ -1645,7 +1645,7 @@ function tunnel_devices(state) {
 	return out;
 }
 
-function connections(stop) {
+function connections(stop, device) {
 	if (stop) {
 		system(`sh -c '. ${LIB}/lib.sh; mayhem_conn_log off' >/dev/null 2>&1`);
 		return { ok: true };
@@ -1743,12 +1743,24 @@ function connections(stop) {
 	if (!ok)
 		return { error: 'the kernel does not list its connections (/proc/net/nf_conntrack)' };
 
-	const out = map(order, (k) => rows[k]);
+	// Every device with connections, for the filter; then only the one asked
+	// for, before the busiest are cut off.
+	const devs = {};
+
+	for (let k in order) {
+		const r = rows[k];
+
+		devs[r.ip] ??= { ip: r.ip, name: r.device, count: 0 };
+		devs[r.ip].count += r.count;
+	}
+
+	const out = filter(map(order, (k) => rows[k]), (r) => !device || r.ip == device);
 
 	// The busiest first.
 	sort(out, (a, b) => b.bytes - a.bytes);
 
-	return { rows: slice(out, 0, CONN_ROWS), total: length(out), log: xray_pid() != null };
+	return { rows: slice(out, 0, CONN_ROWS), total: length(out), log: xray_pid() != null,
+		devices: sort(values(devs), (a, b) => b.count - a.count) };
 }
 
 const MARK = '@@mayhem@@';
@@ -1929,9 +1941,9 @@ const methods = {
 	// The connections xray took since the dashboard started asking, the
 	// active ones first; stop: the window closed, the log goes off.
 	connections: {
-		args: { stop: false },
+		args: { stop: false, device: '' },
 		call: function(req) {
-			return connections(req.args?.stop == true);
+			return connections(req.args?.stop == true, req.args?.device ?? '');
 		}
 	},
 
