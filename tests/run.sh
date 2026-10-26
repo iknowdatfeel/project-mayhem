@@ -19,6 +19,8 @@ fail=0
 # Generated and downloaded files of the tests stay in OUT. OUT/etc does not
 # exist yet, like /etc/mayhem on a fresh router.
 export MAYHEM_RUN_DIR="$OUT/run" MAYHEM_GEO_DIR="$OUT/etc/geo" MAYHEM_LISTS_DIR="$OUT/etc/lists" MAYHEM_TMP_DIR="$OUT"
+# xray opens its connection log (in the run directory) even with run -test.
+mkdir -p "$MAYHEM_RUN_DIR"
 
 uc() { "$UCODE" -L "$FILES/usr/share/ucode/*.uc" ${UCODE_LIB:+-L "$UCODE_LIB"} "$@"; }
 ok() { printf 'ok   %s\n' "$1"; }
