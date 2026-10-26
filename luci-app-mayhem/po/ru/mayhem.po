@@ -2173,3 +2173,7 @@ msgstr "На паузе"
 #: htdocs/luci-static/resources/view/mayhem/dashboard.js
 msgid "Since %s"
 msgstr "С %s"
+
+#: htdocs/luci-static/resources/view/mayhem/dashboard.js
+msgid "%s with the code of xray"
+msgstr "%s вместе с кодом xray"

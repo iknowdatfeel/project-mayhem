@@ -464,7 +464,7 @@ fi
 # xray, everything else gets the tunnel's mark before xray.
 nft_rest() {
 	# $1 model dir: line numbers of the rules, "-" when missing
-	for re in '@blk_d4 counter drop' '@direct4 counter return' '@dir_d4 counter return' '@px_d4 meta l4proto' \
+	for re in '@blk_d4 meta mark set' '@direct4 counter return' '@dir_d4 counter return' '@px_d4 meta l4proto' \
 		'meta nfproto ipv4 meta l4proto tcp th dport { 80, 443 } meta mark set meta mark & 0x[0-9a-f]* | 0x4000001 \(ct mark set ct mark & 0x[0-9a-f]* | 0x[0-9a-f]* \)\?counter return' \
 		'meta nfproto ipv4 meta l4proto { tcp, udp } meta mark set meta mark | 0x2000000 .*tproxy'; do
 		n="$(grep -n -- "$re" "$1/nft.conf" | head -n 1 | cut -d: -f1)"
@@ -484,8 +484,8 @@ elif grep -q 'meta nfproto ipv6 .*| 0x4000001' "$OUT/tunrest/nft.conf"; then
 elif grep -q 'meta nfproto ipv4 meta mark set meta mark & 0x[0-9a-f]* | 0x4000001' "$OUT/tunrest/nft.conf" || \
      ! grep -q 'meta nfproto ipv4 meta l4proto udp th dport 443 meta mark set' "$OUT/tunrest/nft.conf"; then
 	bad "model tunrest: with torrents direct only web traffic may go into the tunnel in the kernel"
-elif ! grep -q 'meta l4proto udp th dport 443 counter drop' "$OUT/tunrest/nft.conf" || \
-     grep -q 'udp th dport 443 counter drop' "$OUT/tunrest-fake/nft.conf"; then
+elif ! grep -q 'meta l4proto udp th dport 443 meta mark set meta mark | 0x8000000 counter return' "$OUT/tunrest/nft.conf" || \
+     grep -q 'udp th dport 443 meta mark set meta mark | 0x8000000' "$OUT/tunrest-fake/nft.conf"; then
 	bad "model tunrest: QUIC off must drop UDP 443 before the tunnel, and only then"
 elif ! grep -q 'meta nfproto ipv4 meta mark set meta mark & 0x[0-9a-f]* | 0x4000001 \(ct mark set ct mark & 0x[0-9a-f]* | 0x[0-9a-f]* \)\?counter return' "$OUT/tunrest-fake/nft.conf"; then
 	bad "model tunrest-fake: without torrents direct all the rest goes into the tunnel in the kernel"

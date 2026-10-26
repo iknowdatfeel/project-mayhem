@@ -53,6 +53,10 @@ msgstr ""
 msgid "%s only works over DoH"
 msgstr ""
 
+#: htdocs/luci-static/resources/view/mayhem/dashboard.js
+msgid "%s with the code of xray"
+msgstr ""
+
 #: htdocs/luci-static/resources/mayhem/page/components.js
 msgid "%s, up to date"
 msgstr ""

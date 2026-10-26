@@ -14,11 +14,12 @@ const SS = 'ss://2022-blake3-aes-128-gcm:AAECAwQFBgcICQoLDA0ODw%3D%3D@nl.example
 
 function model(mode, on) {
 	return {
-		settings: { mode: mode, interface: [ 'br-lan' ], router_traffic: on ? '1' : '0' },
+		settings: { mode: mode, interface: [ 'br-lan' ], router_traffic: on ? '1' : '0', block_quic: '1' },
 		dns: { domestic: [ '77.88.8.8' ], remote: [ 'https://1.1.1.1/dns-query' ] },
 		sections: [
 			{ '.name': 'main', type: 'proxy', link: [ SS ], domain: [ 'youtube.com' ], ip: [ '91.108.4.0/22' ] },
-			{ '.name': 'ru', type: 'exclusion', ip: [ '45.0.0.0/24' ] }
+			{ '.name': 'ru', type: 'exclusion', ip: [ '45.0.0.0/24' ] },
+			{ '.name': 'ads', type: 'block', ip: [ '46.0.0.0/24' ] }
 		],
 		runtime: { now: 1 }
 	};
@@ -54,7 +55,19 @@ expect('global: the marked traffic is taken from lo', match(r.nft, /iifname "lo"
 expect('global: every xray outbound that dials is marked', length(marked(r)) == length(dialing(r)) && length(marked(r)) > 0,
 	sprintf('%J', map(r.xray.outbounds, (o) => [ o.tag, o.streamSettings?.sockopt?.mark ])));
 
+// Blocked addresses and QUIC are refused in the kernel at once (TCP reset,
+// "port unreachable"), never held in xray; QUIC after the direct ones.
+const pre = (nft) => split(substr(nft, index(nft, 'chain prerouting {')), '\n\t}')[0];
+const REF = 'meta mark set meta mark | 0x8000000 counter return';
+const p = pre(r.nft);
+
+expect('blocked addresses refused', index(p, `ip daddr @block4 ${REF}`) >= 0, p);
+expect('QUIC refused before xray, after the direct ones', index(p, `meta l4proto udp th dport 443 ${REF}`) > index(p, 'ip daddr @direct4 counter return') &&
+	index(p, `meta l4proto udp th dport 443 ${REF}`) < index(p, 'meta nfproto ipv4 meta l4proto { tcp, udp } meta mark set meta mark | 0x2000000'), p);
+expect('UDP refused with port unreachable', index(r.nft, 'meta l4proto udp counter reject with icmpx type port-unreachable') >= 0, r.nft);
+
 r = build(model('lists', true));
+expect('lists: QUIC refused only for what would reach xray', index(pre(r.nft), `ip daddr @px4 meta l4proto udp th dport 443 ${REF}`) >= 0, pre(r.nft));
 out = output(r.nft);
 expect('lists: only what the rules send to a proxy', index(out, 'ip daddr @px4 meta mark set') >= 0 && match(out, /meta nfproto ipv4 meta mark set/) == null, out);
 
