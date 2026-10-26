@@ -2252,3 +2252,51 @@ msgstr "самый быстрый из всех серверов; нажмите
 
 msgid "Server choice"
 msgstr "Выбор сервера"
+
+msgid "incoming ports"
+msgstr "входящие порты"
+
+msgid "routing"
+msgstr "маршрутизация"
+
+msgid "services"
+msgstr "служебные выходы"
+
+msgid "log"
+msgstr "журнал"
+
+msgid "timeouts"
+msgstr "таймауты"
+
+msgid "server checks"
+msgstr "проверка серверов"
+
+msgid "the settings changed (%s)"
+msgstr "изменились настройки (%s)"
+
+msgid "the settings changed"
+msgstr "изменились настройки"
+
+msgid "the servers could not be changed without a restart"
+msgstr "серверы не удалось сменить без перезапуска"
+
+msgid "geo data updated"
+msgstr "обновились геоданные"
+
+msgid "the watchdog: too much memory"
+msgstr "сторож: слишком много памяти"
+
+msgid "the watchdog: xray did not answer"
+msgstr "сторож: xray не отвечал"
+
+msgid "restarted by hand"
+msgstr "перезапущен вручную"
+
+msgid "xray quit (code %s)"
+msgstr "xray завершился (код %s)"
+
+msgid "Xray restarted"
+msgstr "Xray перезапущен"
+
+msgid "Xray does not start: %s"
+msgstr "Xray не запускается: %s"

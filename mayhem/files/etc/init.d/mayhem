@@ -60,6 +60,9 @@ mayhem_start() {
 	mayhem_live_update
 	mayhem_net_refresh
 
+	# What procd is about to restart xray for, for the dashboard.
+	mayhem_restart_reason
+
 	# dnsmasq gets Mayhem's file once (restarted only when it changed).
 	mayhem_dns_up
 

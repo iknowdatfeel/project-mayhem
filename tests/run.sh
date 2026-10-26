@@ -768,6 +768,33 @@ else
 	bad "freed memory of xray: $(cat "$OUT/trim/calls")"
 fi
 
+# Why xray restarted: the parts of the config that changed, servers live.uc
+# could not change, how the previous xray ended; noted when the new one is up.
+W="$OUT/why"
+mkdir -p "$W"
+why() { MAYHEM_RUN_DIR="$W" uc "$FILES/usr/share/mayhem/why.uc"; }
+printf '%s\n' '{"dns":{"servers":["1.1.1.1"]},"log":{"loglevel":"warning"}}' > "$W/running.xray.key"
+cp "$W/running.xray.key" "$W/xray.key"
+w1="$(why)"
+printf '%s\n' '{"dns":{"servers":["8.8.8.8"]},"log":{"loglevel":"warning"}}' > "$W/xray.key"
+w2="$(why)"
+echo "restart 1" >> "$W/xray.key"
+w3="$(why)"
+started() {
+	MAYHEM_LIB_DIR="$FILES/usr/share/mayhem" MAYHEM_RUN_DIR="$W" sh -c '. "$1"; mayhem_xray_started' _ "$FILES/usr/share/mayhem/lib.sh"
+	cut -d' ' -f2 "$W/xray.started"
+}
+echo "$(date +%s) config:dns" > "$W/restart.why"
+w4="$(started)"
+echo "$(date +%s) 2" > "$W/xray.exit"
+w5="$(started)"
+w6="$(started)"
+if [ "$w1|$w2|$w3|$w4|$w5|$w6" = "|config:dns|servers|config:dns|exit:2|" ]; then
+	ok "why xray restarted: config parts, servers, the end of the previous xray"
+else
+	bad "why xray restarted: got $w1|$w2|$w3|$w4|$w5|$w6"
+fi
+
 # One server list: subscriptions in it, their rules in its chain, fallback.uc.
 if out="$(UCODE="$UCODE" sh "$ROOT/tests/serverlist.sh" 2>&1)"; then
 	ok "server list: subscriptions, chains of subscriptions, migration"

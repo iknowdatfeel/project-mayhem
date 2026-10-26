@@ -40,7 +40,7 @@ fi
 # What this xray runs with: reloads compare the new config with it. Hard
 # links, not copies: the generator replaces its files (rename), so the links
 # keep the old content, and /var/run is RAM.
-for f in xray.json xray.key overrides nft.conf tunnels; do
+for f in xray.json xray.key overrides nft.conf tunnels geo.stamp; do
 	ln -f "$MAYHEM_RUN_DIR/$f" "$MAYHEM_RUN_DIR/running.$f" 2>/dev/null ||
 		cp "$MAYHEM_RUN_DIR/$f" "$MAYHEM_RUN_DIR/running.$f" 2>/dev/null || : > "$MAYHEM_RUN_DIR/running.$f"
 done
@@ -102,6 +102,7 @@ if [ "$ready" = 1 ]; then
 	if mayhem_net_up && mayhem_tunnels_up && mayhem_dns_servers xray; then
 		touch "$MAYHEM_RUN_DIR/active"
 		mayhem_log "started, traffic is redirected to xray (pid $xray_pid)"
+		mayhem_xray_started
 	else
 		mayhem_log "could not set up traffic redirection, stopping" err
 		kill -TERM "$xray_pid" 2>/dev/null
@@ -109,6 +110,9 @@ if [ "$ready" = 1 ]; then
 elif [ "$stopping" = 0 ]; then
 	mayhem_log "xray did not start listening, see the log above" err
 	kill -TERM "$xray_pid" 2>/dev/null
+	# Its own words for the dashboard (a config xray does not take: a regexp
+	# Go cannot read, an outbound of a subscription it refuses).
+	mayhem_xray_error
 fi
 
 # `wait` returns early when a trapped signal arrives, so loop until xray is
@@ -138,6 +142,9 @@ while :; do
 	mayhem_apply_overrides
 	mayhem_log "xray restarted, connections reopen through the chosen servers (pid $xray_pid)"
 done
+
+# How it ended, for the reason of the next start.
+[ "$stopping" = 0 ] && [ "$ready" = 1 ] && echo "$(date +%s) $rc" > "$MAYHEM_RUN_DIR/xray.exit"
 
 rm -f "$MAYHEM_RUN_DIR/active" "$MAYHEM_RUN_DIR/xray.pid" "$MAYHEM_RUN_DIR/xray-run.pid" "$MAYHEM_RUN_DIR/watchdog.mem" "$MAYHEM_RUN_DIR/watchdog.hang"
 
