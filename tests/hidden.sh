@@ -90,24 +90,6 @@ else
 	bad "generator: servers are $(names "$OUT/r4"), expected A,C"
 fi
 
-# A subscription with a choice of its own is a group: a section sub_<name>
-# with its servers and its balancer, out of the server list, and it can be
-# the main section.
-config "$OUT/u5" "	option select 'auto'" ""
-sed -i "s/	option mode 'lists'/	option mode 'global'\n	option default_section 'sub_mysub'/" "$OUT/u5/mayhem"
-if ! out="$(gen "$OUT/u5" "$OUT/r5")"; then
-	bad "generator with a subscription group: $out"
-elif ! uc -e "
-	const n = json(require('fs').readfile('$OUT/r5/nodes.json'));
-	const g = n.sections.sub_mysub;
-	exit(g && g.group == 'mysub' && g.mode == 'auto' && length(g.nodes) == 3 && g.balancer &&
-		!length(n.sections.pool?.nodes ?? []) && n.default_section == 'sub_mysub' ? 0 : 1);
-"; then
-	bad "generator: the subscription group is not a section of its own: $(cat "$OUT/r5/nodes.json")"
-else
-	ok "generator: a subscription with its own choice is a group, and the main section"
-fi
-
 # 2. server_delete and server_restore.
 config "$OUT/u3" "" ""
 if out="$(MAYHEM_UCI_DIR="$OUT/u3" MAYHEM_RUN_DIR="$OUT/run3" uc "$ROOT/tests/hidden.uc" \

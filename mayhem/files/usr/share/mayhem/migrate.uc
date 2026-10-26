@@ -25,6 +25,44 @@ if (c.get('mayhem', 'settings', 'probe_url') == 'https://www.gstatic.com/generat
 	print('the server check URL is now plain HTTP\n');
 }
 
+// 0.22: one server list. A subscription is no longer a section of its own
+// (its "select" is now the rule it picks a server by when the list's chain
+// names it), and the main section is always the server list: a former main
+// subscription or tunnel becomes the list's chain. "default_section" is left
+// in place, unread, so going back to an older version keeps it.
+if (c.get('mayhem', 'pool') && c.get('mayhem', 'pool', 'v') != '2') {
+	const main = c.get('mayhem', 'settings', 'default_section') ?? '';
+	const sub = match(main, /^sub_(.+)$/);
+
+	c.foreach('mayhem', 'subscription', (s) => c.delete('mayhem', s['.name'], 'override'));
+
+	if (c.get('mayhem', 'pool', 'select') == 'manual') {
+		const pick = c.get('mayhem', 'pool', 'selected');
+
+		c.set('mayhem', 'pool', 'select', 'auto');
+		c.delete('mayhem', 'pool', 'selected');
+
+		if (pick)
+			c.set('mayhem', 'pool', 'override', pick);
+	}
+
+	if (sub && c.get('mayhem', sub[1]) == 'subscription') {
+		c.set('mayhem', 'pool', 'select', 'fallback');
+		c.set('mayhem', 'pool', 'chain', [ `@${sub[1]}` ]);
+		c.delete('mayhem', 'pool', 'override');
+		print(`the main subscription "${sub[1]}" is now the chain of the server list\n`);
+	}
+	else if (c.get('mayhem', main) == 'section' && c.get('mayhem', main, 'type') == 'interface' && c.get('mayhem', main, 'interface')) {
+		c.set('mayhem', 'pool', 'select', 'fallback');
+		c.set('mayhem', 'pool', 'chain', [ c.get('mayhem', main, 'interface') ]);
+		c.delete('mayhem', 'pool', 'override');
+		print(`the main tunnel "${main}" is now the chain of the server list\n`);
+	}
+
+	c.set('mayhem', 'pool', 'v', '2');
+	c.commit('mayhem');
+}
+
 // 0.18.1: a server deleted from a subscription is kept with the subscription
 // ("list hidden"), where its window can restore it. Before, it was a
 // ^name$ entry in the name exclusions of the section.

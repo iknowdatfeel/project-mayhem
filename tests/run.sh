@@ -385,6 +385,41 @@ else
 	ok "geo source type from the file"
 fi
 
+# The same category in a geoip and a geosite file (Re:filter: "refilter" in
+# both), the geoip one added as geosite and listed first: once its type is
+# fixed, the geosite file keeps the category in the same update.
+mkdir -p "$OUT/geo-both/uci" "$OUT/geo-both/geo" "$OUT/geo-both/run" "$OUT/geo-both/dat"
+python3 -c "
+import sys; sys.path.insert(0, '$ROOT/tests/geo'); import mkdat
+open('$OUT/geo-both/dat/geoip.dat', 'wb').write(mkdat.geoip([('BOTH', ['45.0.0.9/32']), ('PRIVATE', ['10.0.0.0/8'])]))
+open('$OUT/geo-both/dat/geosite.dat', 'wb').write(mkdat.geosite([('BOTH', ['domain:both.test'])]))
+"
+cat > "$OUT/geo-both/uci/mayhem" <<EOF
+config geo_source 'rf_ip'
+	option kind 'geosite'
+	option url '$OUT/geo-both/dat/geoip.dat'
+
+config geo_source 'rf_site'
+	option kind 'geosite'
+	option url '$OUT/geo-both/dat/geosite.dat'
+
+config section 'main'
+	option type 'proxy'
+	list link 'trojan://pw@de.example:443?sni=de.example#DE'
+	list ip 'geoip:both'
+	list domain 'geosite:both'
+EOF
+out="$(MAYHEM_UCI_DIR="$OUT/geo-both/uci" MAYHEM_GEO_DIR="$OUT/geo-both/geo" MAYHEM_RUN_DIR="$OUT/geo-both/run" \
+	uc "$FILES/usr/share/mayhem/update.uc" geo --force 2>&1)"
+if uc -e "
+	const c = (f) => json(require('fs').readfile('$OUT/geo-both/geo/' + f + '.json')).copied;
+	exit(index(c('rf_ip'), 'both') >= 0 && index(c('rf_site'), 'both') >= 0 ? 0 : 1);
+" 2>/dev/null; then
+	ok "a category in both kinds of file: kept in each after the type is fixed"
+else
+	bad "a category in both kinds of file: $out"
+fi
+
 for m in "$ROOT"/tests/models/*.json; do
 	name="$(basename "$m" .json)"
 	expect="$(sed -n 's/.*"_expect": *"\([a-z]*\)".*/\1/p' "$m")"
@@ -628,7 +663,7 @@ fi
 if command -v shellcheck >/dev/null 2>&1; then
 	if out="$(shellcheck -s sh -f gcc -e SC1091,SC2034,SC3043,SC2086,SC2046,SC2317,SC2329 \
 		"$FILES/usr/bin/mayhem" "$FILES/usr/libexec/mayhem/xray-run" "$FILES/usr/libexec/mayhem/scheduler" \
-		"$FILES/etc/uci-defaults/90-mayhem" "$ROOT/tests/netns.sh" "$ROOT/tests/build-ucode.sh" "$ROOT/tests/health.sh" "$ROOT/tests/conns.sh" "$ROOT/tests/bbr.sh" \
+		"$FILES/etc/uci-defaults/90-mayhem" "$ROOT/tests/netns.sh" "$ROOT/tests/build-ucode.sh" "$ROOT/tests/health.sh" "$ROOT/tests/serverlist.sh" "$ROOT/tests/conns.sh" "$ROOT/tests/bbr.sh" \
 		"$FILES/usr/share/mayhem/lib.sh" "$FILES/usr/share/mayhem/const.sh" "$ROOT/install.sh" 2>&1)"; then
 		ok "shellcheck"
 	else
@@ -706,6 +741,38 @@ if out="$(UCODE="$UCODE" sh "$ROOT/tests/hidden.sh" 2>&1)"; then
 	ok "deleted subscription servers: generator, delete and restore, migration"
 else
 	bad "deleted subscription servers: $out"
+fi
+
+# Freed memory of xray: a garbage collection is asked for when more than 8 MiB
+# are freed but kept, not otherwise.
+mkdir -p "$OUT/trim/bin" "$OUT/trim/run"
+: > "$OUT/trim/run/active"
+cat > "$OUT/trim/bin/curl" <<'EOF'
+#!/bin/sh
+for a; do url="$a"; done
+echo "$url" >> "$TRIM/calls"
+case "$url" in
+	*/debug/vars) printf '{"memstats": {"HeapIdle": %s, "HeapReleased": 1048576}}' "$(cat "$TRIM/idle")" ;;
+esac
+EOF
+chmod +x "$OUT/trim/bin/curl"
+trim() {
+	echo "$1" > "$OUT/trim/idle"
+	: > "$OUT/trim/calls"
+	TRIM="$OUT/trim" PATH="$OUT/trim/bin:$PATH" MAYHEM_LIB_DIR="$FILES/usr/share/mayhem" MAYHEM_RUN_DIR="$OUT/trim/run" sh -c '. "$1"; mayhem_mem_trim' _ "$FILES/usr/share/mayhem/lib.sh"
+	grep -c 'gc=1' "$OUT/trim/calls"
+}
+if [ "$(trim 20971520)" = 1 ] && [ "$(trim 5242880)" = 0 ]; then
+	ok "freed memory of xray: a collection with 19 MiB kept, none with 4"
+else
+	bad "freed memory of xray: $(cat "$OUT/trim/calls")"
+fi
+
+# One server list: subscriptions in it, their rules in its chain, fallback.uc.
+if out="$(UCODE="$UCODE" sh "$ROOT/tests/serverlist.sh" 2>&1)"; then
+	ok "server list: subscriptions, chains of subscriptions, migration"
+else
+	bad "server list: $(printf '%s' "$out" | grep -v '^ok')"
 fi
 
 # Active connections: the log switched on and off, read into rows.

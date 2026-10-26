@@ -323,6 +323,28 @@ mayhem_conn_log_idle() {
 	return 0
 }
 
+# Memory xray's heap freed (closed connections, a burst of blocked ones) goes
+# back to the system after a garbage collection, which Go starts when the heap
+# grows or every two minutes. Once a minute: with more than 8 MiB freed but
+# kept (HeapIdle - HeapReleased), a collection is started at once through
+# xray's metrics port (pprof's "gc=1"), and Go hands the pages back.
+mayhem_mem_trim() {
+	local vars idle rel
+
+	[ -f "$MAYHEM_RUN_DIR/active" ] || return 0
+
+	vars="$(curl -s -m 5 "http://127.0.0.1:$MAYHEM_METRICS_PORT/debug/vars" 2>/dev/null)" || return 0
+	idle="$(printf '%s' "$vars" | grep -o '"HeapIdle": *[0-9]*' | head -n 1 | grep -o '[0-9]*$')"
+	rel="$(printf '%s' "$vars" | grep -o '"HeapReleased": *[0-9]*' | head -n 1 | grep -o '[0-9]*$')"
+
+	[ -n "$idle" ] && [ -n "$rel" ] || return 0
+
+	if [ $(( idle - rel )) -gt $(( 8 * 1048576 )) ]; then
+		curl -s -o /dev/null -m 20 "http://127.0.0.1:$MAYHEM_METRICS_PORT/debug/pprof/heap?gc=1" 2>/dev/null
+		echo "$(date +%s) $(( (idle - rel) / 1024 ))" > "$MAYHEM_RUN_DIR/mem.trim"
+	fi
+}
+
 mayhem_watchdog() {
 	local pid rss total pct limit n gml
 

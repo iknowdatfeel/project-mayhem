@@ -9,7 +9,7 @@
 . "${MAYHEM_LIB_DIR:-/usr/share/mayhem}/lib.sh"
 
 [ -f "$MAYHEM_RUN_DIR/env" ] && . "$MAYHEM_RUN_DIR/env"
-export GOMEMLIMIT XRAY_LOCATION_ASSET
+export GOMEMLIMIT GOGC XRAY_LOCATION_ASSET
 
 xray_pid=""
 stopping=0

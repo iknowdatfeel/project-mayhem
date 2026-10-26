@@ -95,7 +95,7 @@ put('dnsmasq.conf', res.dnsmasq);
 put('dns.xray', res.dns_xray);
 // ...and while the remote DNS does not answer (health.uc); empty: no switch.
 put('dns.fallback', res.dns_fallback ?? '');
-put('env', `GOMEMLIMIT=${res.memlimit_mib}MiB\nMAYHEM_IPV6=${res.ipv6 ? 1 : 0}\nXRAY_LOCATION_ASSET=${GEO_DIR}\nMAYHEM_KILLSWITCH=${res.killswitch ? 1 : 0}\n`);
+put('env', `GOMEMLIMIT=${res.memlimit_mib}MiB\nGOGC=${res.gogc ?? 100}\nMAYHEM_IPV6=${res.ipv6 ? 1 : 0}\nXRAY_LOCATION_ASSET=${GEO_DIR}\nMAYHEM_KILLSWITCH=${res.killswitch ? 1 : 0}\n`);
 
 // xray reads geo files only at start: procd watches this stamp to restart it
 // when a file it uses was updated.

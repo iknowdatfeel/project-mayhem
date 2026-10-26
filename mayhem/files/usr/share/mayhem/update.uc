@@ -288,6 +288,11 @@ function fetch_geo(src, cats, proxy, tmp) {
 	return res;
 }
 
+// A source whose type was wrong took categories of the other kind: with the
+// type fixed, other sources may have to keep them instead (a Re:filter
+// geoip.dat added as geosite held "refilter" from its geosite.dat).
+let kind_fixed = false;
+
 function update_source(cfg, src, cats, state, now) {
 	const st = state.geo[src.name] ??= {};
 	const tmp = `${TMP}/mayhem-geo-${src.name}.dat`;
@@ -307,6 +312,7 @@ function update_source(cfg, src, cats, state, now) {
 				log(`geo source ${src.name} holds ${res.kind} data: the type is set to ${res.kind}`, 'warn');
 				set_kind(src.name, res.kind);
 				src.kind = res.kind;
+				kind_fixed = true;
 				cats = wanted(cfg.sections, cfg.sources)[src.name] ?? [];
 				res = fetch_geo(src, cats, proxy, tmp);
 			}
@@ -398,7 +404,7 @@ function geo_due(cfg, src, cats, st, now) {
 	return null;
 }
 
-function run_geo(cfg, state, name, force) {
+function run_geo(cfg, state, name, force, again) {
 	const now = time();
 	const want = wanted(cfg.sections, cfg.sources);
 	const results = [];
@@ -429,6 +435,14 @@ function run_geo(cfg, state, name, force) {
 		r.name = src.name;
 		push(results, r);
 		write_json(STATE_FILE, state);
+	}
+
+	// Once more for what the fixed type moved to other sources (only what is
+	// due: a category missing from a trimmed file).
+	if (kind_fixed && !again && !name) {
+		kind_fixed = false;
+
+		return [ ...results, ...run_geo(cfg, state, null, false, true) ];
 	}
 
 	return results;

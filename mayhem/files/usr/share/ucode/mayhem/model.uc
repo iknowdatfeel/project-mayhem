@@ -7,7 +7,7 @@
 import { cursor } from 'uci';
 import { readfile, writefile, access, stat, mkdir, lsdir, unlink, popen } from 'fs';
 import { SUBS_DIR, UCI_DIR, GEO_DIR, LISTS_DIR, RUN_DIR, DNS_SPLIT_MAX } from 'mayhem.const';
-import { is_true, entries, list_key, norm_ip, norm_domain, is_ip, dnsmasq_nftset } from 'mayhem.rules';
+import { is_true, as_list, entries, list_key, norm_ip, norm_domain, is_ip, dnsmasq_nftset } from 'mayhem.rules';
 import { resolve, geoip_cidrs, geosite_domains, KERNEL_DOMAINS_MAX } from 'mayhem.geo';
 
 const RESOLV_FILES = [ '/tmp/resolv.conf.d/resolv.conf.auto', '/tmp/resolv.conf.auto' ];
@@ -457,29 +457,11 @@ function pool_tunnels(c, p) {
 	return out;
 }
 
-// A subscription with a way of choosing of its own ("select": auto, manual,
-// fallback) is a group: a proxy section of its own, sub_<name>, which can be
-// the main section. Without it, its servers are in the server list.
-const GROUP_MODES = [ 'auto', 'manual', 'fallback' ];
-
-function sub_grouped(s) {
-	return index(GROUP_MODES, s?.select) >= 0;
-}
-
-function sub_groups(c) {
-	const out = [];
-
-	c.foreach('mayhem', 'subscription', (s) => {
-		if (is_true(s.enabled ?? '1') && sub_grouped(s))
-			push(out, {
-				'.name': `sub_${s['.name']}`, '.type': 'subgroup', type: 'proxy', enabled: '1', servers: 'own',
-				group: s['.name'], subscription: [ s['.name'] ],
-				select: s.select, selected: s.selected, override: s.override, chain: s.chain
-			});
-	});
-
-	return out;
-}
+// Every enabled subscription is in the server list. Its "select" (auto,
+// manual, fallback; with "selected" and "chain") is its rule: how it picks
+// one of its servers when the list's fallback chain names the subscription
+// as a whole ("@<name>" in the list's chain).
+const SUB_RULES = [ 'auto', 'manual', 'fallback' ];
 
 function pool_section(c) {
 	const p = c.get_all('mayhem', 'pool');
@@ -488,16 +470,33 @@ function pool_section(c) {
 		return null;
 
 	const subs = [];
+	const rules = {};
 
 	c.foreach('mayhem', 'subscription', (s) => {
-		if (is_true(s.enabled ?? '1') && !sub_grouped(s))
-			push(subs, s['.name']);
+		if (!is_true(s.enabled ?? '1'))
+			return;
+
+		push(subs, s['.name']);
+		rules[s['.name']] = {
+			select: index(SUB_RULES, s.select) >= 0 ? s.select : 'auto',
+			selected: s.selected,
+			chain: s.chain
+		};
 	});
+
+	// The list itself: the fastest server (one may be pinned by hand) or a
+	// fallback chain. An older "chosen by hand" is a pinned server now.
+	let select = p.select, override = p.override;
+
+	if (select == 'manual') {
+		select = 'auto';
+		override = p.selected;
+	}
 
 	return {
 		'.name': 'pool', '.type': 'pool', type: 'proxy', enabled: '1', pool: true,
-		link: p.link, subscription: subs, iface_node: pool_tunnels(c, p),
-		select: p.select, selected: p.selected, override: p.override, chain: p.chain
+		link: p.link, subscription: subs, iface_node: pool_tunnels(c, p), sub_rules: rules,
+		select: select == 'fallback' ? 'fallback' : 'auto', override: override, chain: p.chain
 	};
 }
 
@@ -511,9 +510,6 @@ function load_model() {
 
 	if (pool)
 		push(sections, pool);
-
-	for (let g in sub_groups(c))
-		push(sections, g);
 
 	c.foreach('mayhem', 'section', (s) => {
 		if (s['.name'] == 'pool')
@@ -587,9 +583,15 @@ function load_model() {
 	// is a tunnel section in kernel mode.
 	// Spelled-out categories of every section are also needed by lists:
 	// dnsmasq then sends only their names to xray (see dns_names in build).
-	const kernel_rest = settings.mode == 'global' && length(filter(sections, (s) =>
-		is_true(s.enabled ?? '1') && s.type == 'interface' && (s.route_mode ?? 'kernel') != 'xray' &&
-		(settings.default_section == null || settings.default_section == s['.name']))) > 0;
+	// The main section is the server list: a tunnel of it, chosen or first
+	// in its chain, takes the rest of the traffic in the kernel.
+	const tun_names = pool ? pool.iface_node : [];
+	const named_tunnel = (v) => index(tun_names, v) >= 0 || length(filter(keys(tunnel_labels), (k) => tunnel_labels[k] == v && index(tun_names, k) >= 0)) > 0;
+	// Without the list (an older configuration), the main tunnel section.
+	const kernel_rest = settings.mode == 'global' && (pool != null
+		? length(tun_names) > 0 && (named_tunnel(pool.override) || length(filter(as_list(pool.chain), named_tunnel)) > 0)
+		: length(filter(sections, (s) => is_true(s.enabled ?? '1') && s.type == 'interface' && (s.route_mode ?? 'kernel') != 'xray' &&
+			(settings.default_section == null || settings.default_section == s['.name']))) > 0);
 
 	return {
 		subscriptions: subscriptions,
