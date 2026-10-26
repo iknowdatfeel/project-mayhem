@@ -33,7 +33,7 @@ const callSetSelect = rpc.declare({ object: 'luci.mayhem', method: 'set_select',
 const callParseOne = rpc.declare({ object: 'luci.mayhem', method: 'parse_link', params: [ 'link' ], expect: { '': {} } });
 const callServerDelete = rpc.declare({ object: 'luci.mayhem', method: 'server_delete', params: [ 'section', 'tag' ], expect: { '': {} } });
 const callServerEdit = rpc.declare({ object: 'luci.mayhem', method: 'server_edit', params: [ 'section', 'old', 'link' ], expect: { '': {} } });
-const callConns = rpc.declare({ object: 'luci.mayhem', method: 'connections', params: [ 'stop' ], expect: { '': {} } });
+const callConns = rpc.declare({ object: 'luci.mayhem', method: 'connections', params: [ 'stop', 'device' ], expect: { '': {} } });
 
 const PROBE_PARALLEL = 4;
 // ICMP: servers per call; the router pings all of them at once.
@@ -1285,34 +1285,99 @@ return view.extend({
 	openConns() {
 		this.conns = null;
 		this.connsOpen = true;
+		this.connPaused = false;
+		this.connDev = '';
+		this.connBase = null;
 
 		const body = E('div', { 'id': 'mh-conns' }, E('p', { 'class': 'mh-muted' }, [ mh.icon('loader', true), ' ', _('Loading…') ]));
+
+		// The device list keeps its place: it is filled again, not redrawn,
+		// so an open list does not close under the hand.
+		const devs = E('select', {
+			'id': 'mh-conns-dev', 'class': 'cbi-input-select',
+			'change': (ev) => {
+				this.connDev = ev.target.value;
+				this.connBase = null;
+				this.fetchConns();
+			}
+		}, E('option', { 'value': '' }, _('All devices')));
+
+		const pause = E('button', { 'id': 'mh-conns-pause', 'class': 'btn', 'click': () => this.pauseConns() }, _('Pause'));
+		const clear = E('button', { 'class': 'btn', 'click': () => this.clearConns(),
+			'title': _('Shows only connections opened from now on, and the traffic from now on') }, _('Clear'));
 
 		ui.showModal(_('Active connections'), [
 			E('p', { 'class': 'mh-muted mh-small' },
 				_('Every connection of the network that is open now. Servers and site names of connections through Xray show up for those opened while this window is open.')),
+			E('div', { 'class': 'mh-conns-bar' }, [ devs, pause, clear, E('span', { 'id': 'mh-conns-note', 'class': 'mh-muted mh-small' }) ]),
 			body,
 			E('div', { 'class': 'right' }, E('button', { 'class': 'btn', 'click': () => this.closeConns() }, _('Close')))
 		], 'mh-conns-modal');
 
-		const loop = () => {
-			if (!this.connsOpen)
+		this.fetchConns();
+	},
+
+	// One request now; the next one in 3 s unless paused or closed.
+	fetchConns() {
+		window.clearTimeout(this.connsTimer);
+
+		if (!this.connsOpen)
+			return;
+
+		const seq = this.connSeq = (this.connSeq || 0) + 1;
+
+		callConns(false, this.connDev).then((r) => {
+			// An answer to a request made before the filter changed.
+			if (seq !== this.connSeq)
 				return;
 
-			callConns(false).then((r) => {
-				this.conns = r;
-				this.drawConns();
-			}).catch(() => {}).finally(() => {
-				if (this.connsOpen)
-					this.connsTimer = window.setTimeout(loop, 3000);
-			});
-		};
+			this.conns = r;
+			this.drawConns();
+		}).catch(() => {}).finally(() => {
+			if (seq === this.connSeq && this.connsOpen && !this.connPaused)
+				this.connsTimer = window.setTimeout(() => this.fetchConns(), 3000);
+		});
+	},
 
-		loop();
+	pauseConns() {
+		this.connPaused = !this.connPaused;
+
+		const btn = document.getElementById('mh-conns-pause');
+
+		if (btn)
+			btn.textContent = this.connPaused ? _('Resume') : _('Pause');
+
+		if (this.connPaused)
+			window.clearTimeout(this.connsTimer);
+		else
+			this.fetchConns();
+
+		this.drawConns();
+	},
+
+	// From now on: what is there now is set aside, and what comes after is
+	// counted from here (a connection that carries more shows up again with
+	// the traffic since).
+	clearConns() {
+		const base = {};
+
+		for (const c of (this.conns && this.conns.rows) || [])
+			base[this.connKey(c)] = c.bytes;
+
+		this.connBase = base;
+		this.connBaseTime = new Date();
+		this.drawConns();
+	},
+
+	connKey(c) {
+		const x = c.route || {};
+
+		return [ c.network, c.ip, c.host, c.port, x.kind, x.server || '' ].join('|');
 	},
 
 	closeConns() {
 		this.connsOpen = false;
+		this.connSeq = (this.connSeq || 0) + 1;
 		window.clearTimeout(this.connsTimer);
 		ui.hideModal();
 		callConns(true).catch(() => {});
@@ -1346,7 +1411,26 @@ return view.extend({
 			return;
 		}
 
-		const rows = r.rows || [];
+		this.fillConnDevices(r.devices || []);
+
+		const note = document.getElementById('mh-conns-note');
+
+		if (note)
+			note.textContent = [
+				this.connPaused ? _('Paused') : '',
+				this.connBase ? _('Since %s').format(this.connBaseTime.toLocaleTimeString()) : ''
+			].filter((x) => x).join(' · ');
+
+		// After "Clear": new connections, and old ones only with the traffic
+		// they carried since.
+		const rows = (r.rows || []).map((c) => {
+			const was = this.connBase ? this.connBase[this.connKey(c)] : null;
+
+			if (was == null)
+				return c;
+
+			return c.bytes > was ? Object.assign({}, c, { bytes: c.bytes - was }) : null;
+		}).filter((c) => c);
 
 		if (!rows.length) {
 			box.replaceChildren(E('p', { 'class': 'mh-muted' }, _('No connections yet.')));
@@ -1372,6 +1456,33 @@ return view.extend({
 				]);
 			})
 		]), r.total > rows.length ? E('p', { 'class': 'mh-muted mh-small' }, _('The %d busiest of %d.').format(rows.length, r.total)) : '');
+	},
+
+	// The devices with connections; the chosen one stays chosen even when it
+	// has none at the moment.
+	fillConnDevices(list) {
+		const sel = document.getElementById('mh-conns-dev');
+
+		if (!sel || document.activeElement === sel)
+			return;
+
+		const name = (d) => d.name === 'router' ? _('This router') : (d.name ? '%s (%s)'.format(d.name, mh.ipText(d.ip)) : mh.ipText(d.ip));
+		const items = list.slice();
+
+		if (this.connDev && !items.some((d) => d.ip === this.connDev))
+			items.push({ ip: this.connDev, name: null, count: 0 });
+
+		const key = items.map((d) => d.ip + ' ' + d.name).join(',');
+
+		if (sel.dataset.key === key)
+			return;
+
+		sel.dataset.key = key;
+		sel.replaceChildren(
+			E('option', { 'value': '' }, _('All devices')),
+			...items.map((d) => E('option', { 'value': d.ip, 'selected': d.ip === this.connDev ? '' : null }, name(d)))
+		);
+		sel.value = this.connDev;
 	},
 
 	renderTunnel(s, now) {

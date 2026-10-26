@@ -190,6 +190,10 @@ msgid "All current settings of Mayhem are replaced."
 msgstr ""
 
 #: htdocs/luci-static/resources/view/mayhem/dashboard.js
+msgid "All devices"
+msgstr ""
+
+#: htdocs/luci-static/resources/view/mayhem/dashboard.js
 msgid "All traffic goes direct."
 msgstr ""
 
@@ -347,6 +351,10 @@ msgstr ""
 
 #: htdocs/luci-static/resources/view/mayhem/dashboard.js
 msgid "Chosen by hand"
+msgstr ""
+
+#: htdocs/luci-static/resources/view/mayhem/dashboard.js
+msgid "Clear"
 msgstr ""
 
 #: htdocs/luci-static/resources/mayhem/page/servers.js
@@ -1285,6 +1293,14 @@ msgstr ""
 msgid "Paste a server key: vless://, vmess://, trojan://, ss://, hysteria2://, socks://, http(s)://, wireguard://, or an AmneziaVPN key (vpn://) or a WireGuard/AmneziaWG config. Several keys go one per line."
 msgstr ""
 
+#: htdocs/luci-static/resources/view/mayhem/dashboard.js
+msgid "Pause"
+msgstr ""
+
+#: htdocs/luci-static/resources/view/mayhem/dashboard.js
+msgid "Paused"
+msgstr ""
+
 #: htdocs/luci-static/resources/mayhem/tunnels.js
 msgid "Phantun (wg-phantun)"
 msgstr ""
@@ -1450,6 +1466,10 @@ msgid "Restores a backup file. A backup without connections keeps the subscripti
 msgstr ""
 
 #: htdocs/luci-static/resources/view/mayhem/dashboard.js
+msgid "Resume"
+msgstr ""
+
+#: htdocs/luci-static/resources/view/mayhem/dashboard.js
 msgid "Route"
 msgstr ""
 
@@ -1587,6 +1607,14 @@ msgstr ""
 
 #: htdocs/luci-static/resources/mayhem/common.js
 msgid "Show IP addresses"
+msgstr ""
+
+#: htdocs/luci-static/resources/view/mayhem/dashboard.js
+msgid "Shows only connections opened from now on, and the traffic from now on"
+msgstr ""
+
+#: htdocs/luci-static/resources/view/mayhem/dashboard.js
+msgid "Since %s"
 msgstr ""
 
 #: htdocs/luci-static/resources/mayhem/page/servers.js

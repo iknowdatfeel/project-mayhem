@@ -43,6 +43,8 @@ const CSS = `
 /* Active connections: wide enough for the table, the table scrolls inside. */
 .modal.mh-conns-modal { max-width:min(1100px, 96vw); width:96vw; }
 #mh-conns { max-height:65vh; overflow:auto; }
+.mh-conns-bar { display:flex; flex-wrap:wrap; align-items:center; gap:8px; margin:8px 0; }
+.mh-conns-bar select { width:auto; min-width:200px; }
 .mh-conns .td { white-space:nowrap; }
 .mh-conns .td:nth-child(2) { white-space:normal; word-break:break-all; }
 /* Tables of keys and tunnels: on a narrow screen every row is a card, each cell
