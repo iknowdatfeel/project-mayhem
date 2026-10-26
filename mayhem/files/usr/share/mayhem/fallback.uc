@@ -4,6 +4,9 @@
 //   fallback.uc
 //
 // A chain is "server 1, while it works; then server 2; then server 3...".
+// In the server list an item of the chain may be a whole subscription: the
+// fastest of its servers (a unit of several servers, see fallback_chain()
+// in build.uc), its own chain, or the server chosen in it by hand.
 // Run by the scheduler every 20 s. The server a chain uses now is checked
 // through the helper proxy (a GET of the check URL, like a URL test); after
 // two failed checks in a row the chain moves on to its next server that
@@ -94,28 +97,55 @@ const moved = {};
 for (let sn in chains) {
 	const s = state.sections[sn];
 	const tags = map(s.nodes ?? [], (n) => n.tag);
-	const chain = filter(s.chain, (t) => index(tags, t) >= 0);
 	const name = (t) => filter(s.nodes, (n) => n.tag == t)[0]?.name ?? t;
+	// Units, tried in order: one server, or "the fastest of these" (a
+	// subscription in the server list's chain), fastest first.
+	const delay = (t) => obs[t]?.delay ?? 1e9;
+	const units = filter(map(s.units ?? map(s.chain, (t) => [ t ]), (u) =>
+		sort(filter(u, (t) => index(tags, t) >= 0), (a, b) => (alive(b) === true) - (alive(a) === true) || delay(a) - delay(b))),
+		(u) => length(u));
+	const chain = [];
+
+	for (let u in units)
+		for (let t in u)
+			push(chain, t);
 
 	if (!length(chain))
 		continue;
 
+	const unit_of = (t) => {
+		for (let i = 0; i < length(units); i++)
+			if (index(units[i], t) >= 0)
+				return i;
+
+		return -1;
+	};
+
 	let cur = now[sn] ?? s.selected;
 
-	if (index(tags, cur) < 0)
+	if (index(chain, cur) < 0)
 		cur = chain[0];
 
 	let want = null;
 
-	// A server earlier in the chain works again.
-	for (let t in chain) {
-		if (t == cur)
-			break;
+	// A unit earlier in the chain works again: its fastest working server.
+	for (let i = 0; i < unit_of(cur); i++) {
+		want = filter(units[i], (t) => alive(t) === true)[0];
 
-		if (alive(t) === true) {
-			want = t;
+		if (want)
 			break;
-		}
+	}
+
+	// Within "the fastest of these": a working server clearly faster than
+	// the current one (by 30 ms and a fifth) takes over, like xray's own
+	// automatic choice; small differences do not move it back and forth.
+	const k = unit_of(cur);
+
+	if (!want && length(units[k]) > 1) {
+		const best = filter(units[k], (t) => alive(t) === true)[0];
+
+		if (best && best != cur && (alive(cur) !== true || delay(best) + max(30, delay(cur) / 5) < delay(cur)))
+			want = best;
 	}
 
 	if (!want) {
@@ -127,8 +157,15 @@ for (let sn in chains) {
 			want = cur;
 		}
 		else {
-			const i = index(chain, cur);
-			const rest = i >= 0 ? [ ...slice(chain, i + 1), ...slice(chain, 0, i) ] : chain;
+			// The rest of the current unit first (fastest first), then the
+			// units after it, then those before it.
+			const rest = [ ...filter(units[k], (t) => t != cur) ];
+
+			for (let i = k + 1; i < length(units); i++)
+				push(rest, ...units[i]);
+
+			for (let i = 0; i < k; i++)
+				push(rest, ...units[i]);
 
 			want = filter(rest, (t) => alive(t) !== false)[0];
 
@@ -156,7 +193,7 @@ for (let sn in chains) {
 		continue;
 	}
 
-	log(index(chain, want) >= 0 && index(chain, want) < index(chain, s.selected)
+	log(unit_of(want) >= 0 && unit_of(want) < unit_of(s.selected)
 		? `fallback chain of ${sn}: ${name(want)} works again, back to it`
 		: `fallback chain of ${sn}: ${name(s.selected)} does not work, now ${name(want)}`);
 	s.selected = want;

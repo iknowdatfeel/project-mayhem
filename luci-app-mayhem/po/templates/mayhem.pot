@@ -61,6 +61,10 @@ msgstr ""
 msgid "%s, up to date"
 msgstr ""
 
+#: htdocs/luci-static/resources/view/mayhem/dashboard.js
+msgid "%s: the whole subscription"
+msgstr ""
+
 #: htdocs/luci-static/resources/mayhem/diag.js
 msgid "100 lines"
 msgstr ""
@@ -127,6 +131,10 @@ msgstr ""
 
 #: htdocs/luci-static/resources/view/mayhem/dashboard.js
 msgid "Add a server or a subscription with the \"Add connection\" button."
+msgstr ""
+
+#: htdocs/luci-static/resources/view/mayhem/dashboard.js
+msgid "Add a server or a subscription…"
 msgstr ""
 
 #: htdocs/luci-static/resources/view/mayhem/dashboard.js
@@ -323,6 +331,10 @@ msgstr ""
 
 #: htdocs/luci-static/resources/view/mayhem/dashboard.js
 msgid "Change"
+msgstr ""
+
+#: htdocs/luci-static/resources/view/mayhem/dashboard.js
+msgid "Change in the chain"
 msgstr ""
 
 #: htdocs/luci-static/resources/view/mayhem/dashboard.js
@@ -850,10 +862,6 @@ msgid "In sections a category is written as geosite:category or geosite:source:c
 msgstr ""
 
 #: htdocs/luci-static/resources/view/mayhem/dashboard.js
-msgid "In the server list"
-msgstr ""
-
-#: htdocs/luci-static/resources/view/mayhem/dashboard.js
 msgid "Incoming"
 msgstr ""
 
@@ -1011,14 +1019,6 @@ msgstr ""
 
 #: htdocs/luci-static/resources/mayhem/diag.js
 msgid "Made %s, Mayhem %s."
-msgstr ""
-
-#: htdocs/luci-static/resources/view/mayhem/dashboard.js
-msgid "Main section"
-msgstr ""
-
-#: htdocs/luci-static/resources/view/mayhem/dashboard.js
-msgid "Main section: %s"
 msgstr ""
 
 #: htdocs/luci-static/resources/mayhem/tunnels.js
@@ -1397,10 +1397,6 @@ msgstr ""
 msgid "Remote DNS via proxy"
 msgstr ""
 
-#: htdocs/luci-static/resources/view/mayhem/dashboard.js
-msgid "Remote DNS, downloads and the rest of the traffic go through the active server of %s. New connections go there at once, open ones finish where they are."
-msgstr ""
-
 #: htdocs/luci-static/resources/mayhem/page/sections.js
 msgid "Remote lists"
 msgstr ""
@@ -1547,6 +1543,10 @@ msgstr ""
 
 #: htdocs/luci-static/resources/view/mayhem/dashboard.js
 msgid "Server"
+msgstr ""
+
+#: htdocs/luci-static/resources/view/mayhem/dashboard.js
+msgid "Server choice"
 msgstr ""
 
 #: htdocs/luci-static/resources/mayhem/diag.js
@@ -1709,6 +1709,14 @@ msgstr ""
 msgid "The automatic server choice and the URL test request it through each server."
 msgstr ""
 
+#: htdocs/luci-static/resources/view/mayhem/dashboard.js
+msgid "The chain is empty"
+msgstr ""
+
+#: htdocs/luci-static/resources/view/mayhem/dashboard.js
+msgid "The chain of %s is empty"
+msgstr ""
+
 #: htdocs/luci-static/resources/mayhem/page/sections.js
 msgid "The domestic DNS is plain UDP: enter an IP address, or choose a provider that has one"
 msgstr ""
@@ -1719,6 +1727,10 @@ msgstr ""
 
 #: htdocs/luci-static/resources/mayhem/page/sections.js
 msgid "The file is kept on the router as it is, so it must be small (up to 8 MB). Big files are better added by URL."
+msgstr ""
+
+#: htdocs/luci-static/resources/view/mayhem/dashboard.js
+msgid "The first item carries the traffic while it works; when it stops answering, the next one takes over, and an item higher in the chain takes over again as soon as it works. A subscription stands for the server its rule picks: the fastest of its servers, its own chain, or the one chosen by hand. Checks run every 20 seconds, nothing restarts."
 msgstr ""
 
 #: htdocs/luci-static/resources/view/mayhem/dashboard.js
@@ -1929,6 +1941,10 @@ msgstr ""
 msgid "Tunnels"
 msgstr ""
 
+#: htdocs/luci-static/resources/view/mayhem/dashboard.js
+msgid "Tunnels for rules"
+msgstr ""
+
 #: htdocs/luci-static/resources/mayhem/diag.js
 msgid "Turn autostart off"
 msgstr ""
@@ -2129,12 +2145,36 @@ msgstr ""
 msgid "automatic"
 msgstr ""
 
+#: htdocs/luci-static/resources/view/mayhem/dashboard.js
+msgid "chosen by hand"
+msgstr ""
+
+#: htdocs/luci-static/resources/view/mayhem/dashboard.js
+msgid "chosen: %s"
+msgstr ""
+
+#: htdocs/luci-static/resources/view/mayhem/dashboard.js
+msgid "click another server to switch to it"
+msgstr ""
+
 #: htdocs/luci-static/resources/mayhem/page/sections.js
 msgid "example.com matches the domain and its subdomains; full: is the exact name, keyword: a substring, regexp: a regular expression."
 msgstr ""
 
 #: htdocs/luci-static/resources/view/mayhem/dashboard.js
 msgid "fallback chain"
+msgstr ""
+
+#: htdocs/luci-static/resources/view/mayhem/dashboard.js
+msgid "fastest"
+msgstr ""
+
+#: htdocs/luci-static/resources/view/mayhem/dashboard.js
+msgid "its chain: %s"
+msgstr ""
+
+#: htdocs/luci-static/resources/view/mayhem/dashboard.js
+msgid "its own chain"
 msgstr ""
 
 #: htdocs/luci-static/resources/mayhem/common.js
@@ -2150,6 +2190,10 @@ msgid "never"
 msgstr ""
 
 #: htdocs/luci-static/resources/view/mayhem/dashboard.js
+msgid "not servers of the list: they carry the traffic of their sections under Routing"
+msgstr ""
+
+#: htdocs/luci-static/resources/view/mayhem/dashboard.js
 msgid "opened before the window"
 msgstr ""
 
@@ -2161,10 +2205,18 @@ msgstr ""
 msgid "pinned by hand"
 msgstr ""
 
+#: htdocs/luci-static/resources/view/mayhem/dashboard.js
+msgid "the fastest of all servers; click one to choose it by hand"
+msgstr ""
+
 #: htdocs/luci-static/resources/mayhem/diag.js
 msgid "updated %s"
 msgstr ""
 
 #: htdocs/luci-static/resources/mayhem/tunnels.js
 msgid "wg-obfuscator with the same key in front of WireGuard"
+msgstr ""
+
+#: htdocs/luci-static/resources/view/mayhem/dashboard.js
+msgid "whole subscription"
 msgstr ""

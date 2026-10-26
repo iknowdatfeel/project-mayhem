@@ -158,6 +158,132 @@ function apply_mux(ob, S) {
 	};
 }
 
+// --- the server list's choice -------------------------------------------------
+
+// A fallback chain of the server list: its items, in order, are servers
+// (by name; "<subscription>\t<name>" for a server of a subscription) or a
+// subscription as a whole ("@<subscription>"), which stands for the server
+// its rule picks: the fastest of its servers, its own chain, or the one
+// chosen by hand. The chain is a list of units, tried in order; a unit of
+// several servers is "the fastest of them" (fallback.uc sorts it by the
+// observatory's delays). chain: every server in order (health.uc, the
+// dashboard); units: only when a unit has more than one server.
+function sub_units(sub, rule, sinfo, warn, where) {
+	const mine = filter(sinfo.nodes, (n) => n.source == sub);
+	const tags = map(mine, (n) => n.tag);
+	const find = (v) => filter(mine, (n) => n.name == v || (n.iface != null && n.iface == v) || (n.orig != null && n.orig == v))[0];
+
+	if (!length(mine))
+		return [];
+
+	if (rule.select == 'manual') {
+		const n = find(rule.selected);
+
+		if (rule.selected && !n)
+			warn(`subscription "${sub}": selected server "${rule.selected}" is gone, using its first one${where}`);
+
+		return [ [ (n ?? mine[0]).tag ] ];
+	}
+
+	if (rule.select == 'fallback') {
+		const out = [];
+
+		for (let v in as_list(rule.chain)) {
+			const n = find(v);
+
+			if (n && !length(filter(out, (u) => u[0] == n.tag)))
+				push(out, [ n.tag ]);
+		}
+
+		return length(out) ? out : map(tags, (t) => [ t ]);
+	}
+
+	return [ tags ];
+}
+
+function fallback_chain(name, sec, sinfo, byname, warn) {
+	const rules = sec.sub_rules ?? {};
+	const units = [];
+	const items = [];
+	const seen = {};
+
+	const add = (u) => {
+		u = filter(u, (t) => !seen[t]);
+
+		for (let t in u)
+			seen[t] = true;
+
+		if (length(u))
+			push(units, u);
+	};
+
+	for (let c in as_list(sec.chain)) {
+		const sub = match(c, /^@(.+)$/);
+		const tab = index(c, '\t');
+
+		if (sub && rules[sub[1]]) {
+			const u = sub_units(sub[1], rules[sub[1]], sinfo, warn, ' in the chain');
+
+			if (!length(u))
+				warn(`section "${name}": subscription "${sub[1]}" of the fallback chain has no servers`);
+
+			push(items, { sub: sub[1], rule: rules[sub[1]].select });
+
+			for (let x in u)
+				add(x);
+
+			continue;
+		}
+
+		const n = tab > 0
+			? filter(sinfo.nodes, (x) => x.source == substr(c, 0, tab) && (x.name == substr(c, tab + 1) || x.orig == substr(c, tab + 1)))[0]
+			: byname(c);
+
+		if (!n) {
+			warn(`section "${name}": server "${tab > 0 ? substr(c, tab + 1) : c}" of the fallback chain is gone`);
+			continue;
+		}
+
+		push(items, { tag: n.tag });
+		add([ n.tag ]);
+	}
+
+	if (!length(units))
+		for (let n in sinfo.nodes)
+			add([ n.tag ]);
+
+	const chain = [];
+
+	for (let u in units)
+		for (let t in u)
+			push(chain, t);
+
+	return {
+		chain: chain,
+		units: length(filter(units, (u) => length(u) > 1)) ? units : null,
+		items: sec.pool ? items : null
+	};
+}
+
+// The rule of every subscription of the server list, for the dashboard:
+// mode, the server chosen by hand, its chain (tags).
+function sub_rule_state(sec, sinfo) {
+	const out = {};
+
+	for (let sub, rule in sec.sub_rules ?? {}) {
+		const u = sub_units(sub, rule, sinfo, () => {}, '');
+
+		out[sub] = { mode: rule.select };
+
+		if (rule.select == 'manual' && length(u))
+			out[sub].selected = u[0][0];
+		else if (rule.select == 'fallback')
+			out[sub].chain = map(u, (x) => x[0]);
+	}
+
+	return out;
+}
+
 // Sets that keep single addresses apart (name -> true), see nft_set().
 let HOSTSETS = {};
 
@@ -1258,6 +1384,15 @@ function memlimit_mib(S, R) {
 	return auto < 32 ? 32 : auto;
 }
 
+// How much garbage xray's heap may hold before it is collected, in percent
+// of what is in use (Go's GOGC; its default is 100). Memory of closed
+// connections goes back to the system only after a collection, and the heap
+// is let grow to (100 + GOGC)% of what is in use: 50 keeps xray closer to what
+// it really needs, for a little more CPU. settings.gogc: 10-400.
+function gogc(S) {
+	return int_opt(S.gogc, 50, 10, 400);
+}
+
 export function build(model) {
 	const S = model.settings ?? {};
 	const D = model.dns ?? {};
@@ -1499,9 +1634,6 @@ export function build(model) {
 			const smode = index([ 'manual', 'fallback' ], sec.select) >= 0 ? sec.select : 'auto';
 			const sinfo = { type: 'proxy', mode: length(nodes) > 1 ? smode : 'single', nodes: [] };
 
-			// A subscription with a choice of its own (its group).
-			if (sec.group)
-				sinfo.group = sec.group;
 			const used = {};
 
 			for (let i = 0; i < length(nodes); i++) {
@@ -1566,25 +1698,18 @@ export function build(model) {
 				// chain; here it starts with the server it chose last, if that
 				// is still in the chain, or with the first.
 				else if (smode == 'fallback') {
-					let chain = [];
-
-					// Whole names: a server name may have spaces and commas.
-					for (let c in as_list(sec.chain)) {
-						const n = byname(c);
-
-						if (!n)
-							warn(`section "${name}": server "${c}" of the fallback chain is gone`);
-						else if (index(chain, n.tag) < 0)
-							push(chain, n.tag);
-					}
-
-					if (!length(chain))
-						chain = map(sinfo.nodes, (n) => n.tag);
-
+					const ch = fallback_chain(name, sec, sinfo, byname, warn);
 					const now = R.fallback?.[name];
 
-					pick = filter(sinfo.nodes, (n) => n.tag == (index(chain, now) >= 0 ? now : chain[0]))[0];
-					sinfo.chain = chain;
+					pick = filter(sinfo.nodes, (n) => n.tag == (index(ch.chain, now) >= 0 ? now : ch.chain[0]))[0];
+					sinfo.chain = ch.chain;
+
+					if (ch.units)
+						sinfo.units = ch.units;
+
+					if (ch.items)
+						sinfo.items = ch.items;
+
 					sinfo.selected = pick.tag;
 				}
 				else if (sec.override) {
@@ -1630,6 +1755,9 @@ export function build(model) {
 				target = { balancerTag: bal };
 				info.node = `${length(nodes)} servers`;
 			}
+
+			if (sec.pool)
+				sinfo.subs = sub_rule_state(sec, sinfo);
 
 			state.sections[name] = sinfo;
 			proxy_targets[name] = target;
@@ -1816,23 +1944,12 @@ export function build(model) {
 
 	// The default section: the rest of the traffic in "everything through
 	// proxy" mode, remote DNS and downloads go through its active server.
-	const want = S.default_section;
+	// It is the server list. Only without one (a configuration that never
+	// had it) settings.default_section, or the first section that works.
 	const first_iface = keys(iface_targets)[0];
-	let default_name = null;
-
-	// A main section without servers of its own means the server list itself.
-	const pooled = filter(model.sections ?? [], (x) => x['.name'] == want && x.use_pool)[0];
-
-	if (pooled && proxy_targets.pool)
-		default_name = 'pool';
-	else if (want && (proxy_targets[want] || iface_targets[want]))
-		default_name = want;
-	else {
-		default_name = first_proxy ?? first_iface;
-
-		if (want && default_name && want != 'pool')
-			warn(`the main section "${want}" does not work, using ${default_name == 'pool' ? 'the server list' : `"${default_name}"`}`);
-	}
+	const want = S.default_section;
+	const default_name = proxy_targets.pool ? 'pool'
+		: (want && (proxy_targets[want] || iface_targets[want])) ? want : (first_proxy ?? first_iface);
 
 	const default_target = default_name ? (proxy_targets[default_name] ?? iface_targets[default_name]) : null;
 	let final_target = { outboundTag: 'direct' };
@@ -2469,6 +2586,7 @@ export function build(model) {
 		tunnels: join('', map(tun_all, (t) => `${t.name} ${t.device} ${t.mark} ${t.table} ${t.v6 ? 1 : 0}${t.keep_bal ? ' 0' : ''}\n`)),
 		key: key,
 		memlimit_mib: memlimit_mib(S, R),
+		gogc: gogc(S),
 		killswitch: is_true(S.killswitch ?? '0'),
 		ipv6: v6,
 		state: state,

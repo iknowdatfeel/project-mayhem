@@ -47,7 +47,7 @@ STATIC = [
 
 # Methods the pages may call that would change the system: never run them.
 SIDE_EFFECTS = {'action', 'system_install', 'data_update', 'awg_import', 'geo_import', 'set_log_level', 'sub_update', 'select_node',
-                'set_ping_method', 'backup_import', 'reset_config', 'rename_section', 'refresh_servers', 'set_main_section'}
+                'set_ping_method', 'backup_import', 'reset_config', 'rename_section', 'refresh_servers'}
 
 calls = []
 installs = []
@@ -664,15 +664,9 @@ def main():
             titles = pg.eval_on_selector_all('#mayhem-body .mh-section .mh-ghead > .mh-title', 'es => es.map(e => e.textContent)')
             if not any(x in ('Server list', 'Список серверов') for x in titles) or len(titles) < 2:
                 raise RuntimeError('server boxes: %s' % titles)
-            # several proxy or tunnel sections: the main one is chosen here
-            n = len(calls)
-            pg.select_option('#mayhem-body .mh-whead select', 'awg')
-            pg.wait_for_selector('.modal .cbi-button-action', timeout=5000)
-            shot(pg, 'dashboard_main')
-            pg.click('.modal .cbi-button-action')
-            pg.wait_for_timeout(1000)
-            if 'luci.mayhem.set_main_section' not in calls[n:]:
-                raise RuntimeError('choosing the main section did not reach the router: %s' % calls[n:])
+            # the main section is always the server list: no choice of it
+            if pg.query_selector('#mayhem-body .mh-whead select'):
+                raise RuntimeError('the main section can still be chosen on the dashboard')
             if not pg.query_selector('#mayhem-body .mh-ghead .mh-bar'):
                 raise RuntimeError('no subscription traffic on the dashboard')
             if not DEMO:  # a screenshot shows the demo delays, not failed checks
@@ -775,7 +769,7 @@ def main():
             # The way a section picks its server changes at once on the page,
             # and a poll with the router's old data does not put it back
             # (the router takes a few seconds to reload).
-            sel = '#mayhem-body .mh-chain select >> nth=0'
+            sel = '#mayhem-body .mh-section:has-text("video") .mh-chain select'
             n = len(calls)
             conf = os.path.join(FIX, 'uci', 'mayhem')
             pg.select_option(sel, 'manual')
@@ -790,6 +784,32 @@ def main():
                 raise RuntimeError('the old way of choosing came back after a poll')
             if "option select 'manual'" not in open(conf).read():
                 raise RuntimeError('the choice is not in the config')
+
+        @restoring('mayhem')
+        def list_chain(pg):
+            # The server list as a chain: a tunnel, then a subscription as a
+            # whole by its rule, saved in one call with the rule. (The key
+            # DE was deleted by an earlier step and is hidden on the page.)
+            conf = os.path.join(FIX, 'uci', 'mayhem')
+            pg.select_option('#mayhem-body .mh-list > .mh-ghead select', 'fallback')
+            pg.wait_for_selector('.modal .mh-chain-list', timeout=5000)
+            add = '.modal .mh-add >> nth=-1'
+            pg.select_option(add, 'awg0')
+            pg.select_option(add, '@mysub')
+            pg.select_option('.modal .mh-rule > select', 'manual')
+            pg.click('.modal .mh-pick-list label >> nth=1')
+            shot(pg, 'dashboard_list_chain')
+            n = len(calls)
+            pg.click('.modal .cbi-button-action')
+            for _ in range(40):
+                pg.wait_for_timeout(250)
+                if "list chain '@mysub'" in open(conf).read():
+                    break
+            text = open(conf).read()
+            if 'luci.mayhem.set_select' not in calls[n:]:
+                raise RuntimeError('the chain did not reach the router: %s' % calls[n:])
+            if "list chain 'awg0'" not in text or "list chain '@mysub'" not in text or "option selected 'DE 2'" not in text:
+                raise RuntimeError('the chain or the rule of the subscription is not in the config')
 
         @restoring('mayhem', 'network', 'firewall')
         def delete_tunnel(pg):
@@ -846,7 +866,7 @@ def main():
 
         pages = [
             ('mayhem/dashboard', [('buttons', dashboard_buttons), ('logs dialog', logs_modal), ('run diagnostics', run_diag),
-                                  ('edit a server', edit_server), ('delete a server', delete_server), ('choose how', choose_mode),
+                                  ('edit a server', edit_server), ('delete a server', delete_server), ('choose how', choose_mode), ('chain of the list', list_chain),
                                   ('delete a tunnel', delete_tunnel), ('services', services_badge), ('pages in a window', nav_pages)]),
             ('mayhem/dashboard#sections', [('sections tab', lambda pg: shot(pg, 'routing_sections')), ('main section', main_section),
                                  ('edit sections', lambda pg: open_modals(pg, '[data-tab="settings"]')), ('domains as text', section_text), ('who and DNS of a section', section_who_dns),

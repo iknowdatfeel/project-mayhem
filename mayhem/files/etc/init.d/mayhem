@@ -65,7 +65,7 @@ mayhem_start() {
 
 	procd_open_instance xray
 	procd_set_param command /usr/libexec/mayhem/xray-run
-	procd_set_param env GOMEMLIMIT="$GOMEMLIMIT" MAYHEM_IPV6="$MAYHEM_IPV6" XRAY_LOCATION_ASSET="$XRAY_LOCATION_ASSET"
+	procd_set_param env GOMEMLIMIT="$GOMEMLIMIT" GOGC="${GOGC:-100}" MAYHEM_IPV6="$MAYHEM_IPV6" XRAY_LOCATION_ASSET="$XRAY_LOCATION_ASSET"
 	# procd restarts xray on reload only when these files changed: the config
 	# without the servers and the routing, the geo files.
 	procd_set_param file "$MAYHEM_RUN_DIR/xray.key" "$MAYHEM_RUN_DIR/geo.stamp"

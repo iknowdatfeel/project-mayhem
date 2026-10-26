@@ -109,6 +109,15 @@ function apply_bg(cmd) {
 	system(`(f=${RUN}/applying.$$; : > "$f"; ${cmd}; rm -f "$f") >/dev/null 2>&1 </dev/null &`);
 }
 
+// A new way of choosing: the generator rebuilds the chains (xray keeps
+// running, live.uc moves the balancers), and the chain is moved along at
+// once instead of on the scheduler's next run, up to 20 s later.
+function reload_choice() {
+	const lib = getenv('MAYHEM_LIB_DIR') ?? '/usr/share/mayhem';
+
+	apply_bg(`/etc/init.d/mayhem reload; ucode ${q(lib + '/fallback.uc')}`);
+}
+
 function applying() {
 	const now = time();
 
@@ -263,13 +272,36 @@ function active_tag(s, obs) {
 	return best?.tag ?? s.nodes[0].tag;
 }
 
+// The downloaded subscriptions as the dashboard needs them (number of
+// servers, info), kept while their file stays the same: the dashboard asks
+// every few seconds, and a subscription of 200 servers is a JSON file of
+// hundreds of kilobytes to read and parse each time.
+const sub_files = {};
+
+function sub_file(name) {
+	const path = `${C.SUBS_DIR}/${name}.json`;
+	const st = fs.stat(path);
+	const key = st ? `${st.mtime} ${st.size}` : null;
+
+	if (!key)
+		return null;
+
+	if (sub_files[name]?.key != key) {
+		const cache = read_json(path);
+
+		sub_files[name] = { key: key, data: cache ? { nodes: cache.nodes ?? [], skipped: cache.skipped, updated: cache.updated, info: cache.info } : null };
+	}
+
+	return sub_files[name].data;
+}
+
 function subscriptions() {
 	const out = [];
 	const state = read_json(`${RUN}/subs-state.json`) ?? {};
 	const c = uci_cursor();
 
 	c.foreach('mayhem', 'subscription', (s) => {
-		const cache = read_json(`${C.SUBS_DIR}/${s['.name']}.json`);
+		const cache = sub_file(s['.name']);
 		const st = state[s['.name']] ?? {};
 
 		// Fresh counters and check time are kept in RAM, the cache on flash
@@ -1830,10 +1862,10 @@ function dashboard(pid, state, out) {
 			}
 
 			const sec = {
-				name: sn, type: s.type, mode: s.mode, balancer: s.balancer, pool: s.pool == true, group: s.group,
+				name: sn, type: s.type, mode: s.mode, balancer: s.balancer, pool: s.pool == true,
 				active: s.type == 'proxy' ? active_tag(s, m.observatory) : null,
 				pinned: s.override ?? null, nodes: nodes, traffic: traffic,
-				chain: s.chain ?? null,
+				chain: s.chain ?? null, units: s.units ?? null, items: s.items ?? null, subs: s.subs ?? null,
 				down: health.sections?.[sn]?.down == true,
 				down_since: health.sections?.[sn]?.since ?? null
 			};
@@ -1960,6 +1992,36 @@ const methods = {
 			const state = read_json(`${RUN}/nodes.json`);
 			const s = state?.sections?.[sn];
 
+			// A server of a subscription whose rule is "chosen by hand":
+			// the rule's choice. It counts where the list's chain names the
+			// subscription; elsewhere it is only kept.
+			if (!s && sn) {
+				const c = uci_cursor();
+				const pool = state?.sections?.pool;
+				const node = filter(pool?.nodes ?? [], (n) => n.tag == tag && n.source == sn)[0];
+
+				if (c.get('mayhem', sn) != 'subscription')
+					return { error: 'unknown section' };
+
+				if (!node)
+					return { error: 'unknown server' };
+
+				c.set('mayhem', sn, 'select', 'manual');
+				c.set('mayhem', sn, 'selected', node.name);
+
+				if (!c.commit('mayhem'))
+					return { error: 'the configuration could not be saved' };
+
+				pool.subs ??= {};
+				pool.subs[sn] = { mode: 'manual', selected: tag };
+				write_json(`${RUN}/nodes.json`, state);
+
+				if (pool.mode == 'fallback' && length(filter(pool.items ?? [], (i) => i.sub == sn)))
+					reload_choice();
+
+				return { ok: true };
+			}
+
 			if (!s?.balancer)
 				return { error: 'this section has a single server' };
 
@@ -1971,61 +2033,80 @@ const methods = {
 			if (tag == '' && s.mode == 'manual')
 				return { error: 'a manual section needs a server' };
 
-			if (s.mode == 'fallback')
+			// The server list: a server chosen by hand, from a chain as well,
+			// makes the list "chosen by hand" (a pinned server of its
+			// automatic choice: the same balancer and checks, no restart).
+			const to_manual = sn == 'pool' && s.mode == 'fallback' && tag != '';
+
+			if (s.mode == 'fallback' && !to_manual)
 				return { error: 'the fallback chain chooses the server' };
 
-			if (xray_pid()) {
-				const cmd = `${XRAY} api bo --server=127.0.0.1:${C.API_PORT} -b ${q(s.balancer)} ${tag != '' ? q(tag) : '-r'} >/dev/null 2>&1; echo $?`;
+			// The rest once xray took the choice.
+			const finish = () => {
+				// Remember the choice by name: tags change when the server list does.
+				// A tunnel by its interface, which its name can change without.
+				const c = uci_cursor();
+				const key = node?.iface ?? node?.name;
+				const ut = choice_target(c, sn);
 
-				if (trim(run(cmd) ?? '1') != '0')
-					return { error: 'xray did not accept the choice' };
-			}
+				if (to_manual) {
+					c.set('mayhem', ut, 'select', 'auto');
+					c.set('mayhem', ut, 'override', key);
+					s.mode = 'auto';
+					s.override = tag;
+					delete s.selected;
+				}
+				else if (s.mode == 'manual') {
+					c.set('mayhem', ut, 'selected', key);
+					s.selected = tag;
+				}
+				else if (tag != '') {
+					c.set('mayhem', ut, 'override', key);
+					s.override = tag;
+				}
+				else {
+					c.delete('mayhem', ut, 'override');
+					delete s.override;
+				}
 
-			// Remember the choice by name: tags change when the server list does.
-			// A tunnel by its interface, which its name can change without.
-			const c = uci_cursor();
-			const key = node?.iface ?? node?.name;
-			const ut = choice_target(c, sn);
+				c.commit('mayhem');
+				write_json(`${RUN}/nodes.json`, state);
 
-			if (s.mode == 'manual') {
-				c.set('mayhem', ut, 'selected', key);
-				s.selected = tag;
-			}
-			else if (tag != '') {
-				c.set('mayhem', ut, 'override', key);
-				s.override = tag;
-			}
-			else {
-				c.delete('mayhem', ut, 'override');
-				delete s.override;
-			}
+				// The choice for the next start of xray as well.
+				for (let f in [ 'overrides', 'running.overrides' ]) {
+					const lines = filter(split(fs.readfile(`${RUN}/${f}`) ?? '', '\n'),
+						(l) => l != '' && split(l, ' ')[0] != s.balancer);
 
-			c.commit('mayhem');
-			write_json(`${RUN}/nodes.json`, state);
+					if (tag != '')
+						push(lines, `${s.balancer} ${tag}`);
 
-			// The choice for the next start of xray as well.
-			for (let f in [ 'overrides', 'running.overrides' ]) {
-				const lines = filter(split(fs.readfile(`${RUN}/${f}`) ?? '', '\n'),
-					(l) => l != '' && split(l, ' ')[0] != s.balancer);
+					fs.writefile(`${RUN}/${f}.tmp`, length(lines) ? join('\n', lines) + '\n' : '');
+					fs.rename(`${RUN}/${f}.tmp`, `${RUN}/${f}`);
+				}
 
-				if (tag != '')
-					push(lines, `${s.balancer} ${tag}`);
+				health_now(sn);
 
-				fs.writefile(`${RUN}/${f}.tmp`, length(lines) ? join('\n', lines) + '\n' : '');
-				fs.rename(`${RUN}/${f}.tmp`, `${RUN}/${f}`);
-			}
+				// A tunnel of the main section takes the rest of the traffic in
+				// the kernel: choosing it, or leaving it, changes the kernel rules.
+				// The reload puts them in place; xray keeps running.
+				// Otherwise nothing restarts: new connections go through the new
+				// server at once, open ones finish on the old one.
+				if (to_manual)
+					reload_choice();
+				else if (sn == state.default_section && state.mode == 'global' && (node?.iface || s.kernel))
+					apply_bg('/etc/init.d/mayhem reload');
 
-			health_now(sn);
+				return { ok: true };
+			};
 
-			// A tunnel of the main section takes the rest of the traffic in
-			// the kernel: choosing it, or leaving it, changes the kernel rules.
-			// The reload puts them in place; xray keeps running.
-			// Otherwise nothing restarts: new connections go through the new
-			// server at once, open ones finish on the old one.
-			if (sn == state.default_section && state.mode == 'global' && (node?.iface || s.kernel))
-				apply_bg('/etc/init.d/mayhem reload');
+			if (!xray_pid())
+				return finish();
 
-			return { ok: true };
+			// `xray api` is a process of its own (a second or so on a router):
+			// rpcd answers when it is done, without a ucode child process.
+			const cmd = `${XRAY} api bo --server=127.0.0.1:${C.API_PORT} -b ${q(s.balancer)} ${tag != '' ? q(tag) : '-r'} >/dev/null 2>&1; echo $?`;
+
+			return deferred_sh(req, cmd, (out) => trim(out ?? '1') != '0' ? { error: 'xray did not accept the choice' } : finish());
 		}
 	},
 
@@ -3367,15 +3448,30 @@ const methods = {
 				if (c.get('mayhem', usec, k) == gone)
 					c.delete('mayhem', usec, k);
 
-			const chain = c.get('mayhem', usec, 'chain');
+			// In the list's chain a server of a subscription is also named
+			// "<subscription>\t<name>", and the subscription's own rule may
+			// name it.
+			const sub = (n.source != 'link' && n.source != 'json' && c.get('mayhem', n.source) == 'subscription') ? n.source : null;
+			const forget = (sid, names) => {
+				const chain = c.get('mayhem', sid, 'chain');
 
-			if (chain != null) {
-				const rest = filter(type(chain) == 'array' ? chain : [ chain ], (x) => x != gone);
+				if (chain != null) {
+					const rest = filter(type(chain) == 'array' ? chain : [ chain ], (x) => index(names, x) < 0);
 
-				if (length(rest))
-					c.set('mayhem', usec, 'chain', rest);
-				else
-					c.delete('mayhem', usec, 'chain');
+					if (length(rest))
+						c.set('mayhem', sid, 'chain', rest);
+					else
+						c.delete('mayhem', sid, 'chain');
+				}
+			};
+
+			forget(usec, sub ? [ gone, `${sub}\t${gone}` ] : [ gone ]);
+
+			if (sub) {
+				if (c.get('mayhem', sub, 'selected') == gone)
+					c.delete('mayhem', sub, 'selected');
+
+				forget(sub, [ gone ]);
 			}
 
 			if (!c.commit('mayhem'))
@@ -3560,40 +3656,31 @@ const methods = {
 
 	// How a section with several servers picks one: auto (the fastest), manual
 	// (chosen on the dashboard) or fallback (a chain of servers by name, the
-	// first that works). Saving needs no restart of xray unless the way of
-	// checking servers changes (manual has no checks).
+	// first that works). The server list has auto (one server may be pinned)
+	// and fallback, whose items may also be "@<subscription>" (the server the
+	// subscription's rule picks) and "<subscription>\t<name>". A subscription
+	// gets its rule: auto, manual (selected: a server name) or fallback.
+	// Nothing restarts: the same balancer and observatory serve every mode.
 	set_select: {
-		args: { section: '', mode: '', chain: [] },
+		args: { section: '', mode: '', chain: [], selected: '', rules: {} },
 		call: function(req) {
 			const c = uci_cursor();
 			const sn = choice_target(c, req.args?.section ?? '');
 			const mode = req.args?.mode ?? '';
 			const kind = c.get('mayhem', sn);
+			const modes = kind == 'pool' ? [ 'auto', 'fallback' ] : [ 'auto', 'manual', 'fallback' ];
 
-			// "pool": a subscription's servers go back into the server list.
-			if (index([ 'auto', 'manual', 'fallback' ], mode) < 0 && !(mode == 'pool' && kind == 'subscription'))
+			if (index(modes, mode) < 0)
 				return { error: 'unknown mode' };
 
 			if (kind != 'pool' && kind != 'subscription' && (kind != 'section' || (c.get('mayhem', sn, 'type') ?? 'proxy') != 'proxy'))
 				return { error: 'not a proxy section' };
 
-			if (mode == 'pool') {
-				for (let o in [ 'select', 'chain', 'selected', 'override' ])
-					c.delete('mayhem', sn, o);
+			const chain = filter(type(req.args?.chain) == 'array' ? req.args.chain : [], (n) => type(n) == 'string' && n != '' && length(n) <= 256);
 
-				if (c.get('mayhem', 'settings', 'default_section') == `sub_${sn}`)
-					c.delete('mayhem', 'settings', 'default_section');
-
-				c.commit('mayhem');
-				apply_bg('/etc/init.d/mayhem reload');
-
-				return { ok: true };
-			}
-
-			const chain = filter(type(req.args?.chain) == 'array' ? req.args.chain : [], (n) => type(n) == 'string' && n != '' && length(n) <= 128);
-
-			if (mode == 'fallback' && length(chain) < 2)
-				return { error: 'a chain needs two servers or more' };
+			// A list's chain may be one subscription; a chain of servers needs two.
+			if (mode == 'fallback' && length(chain) < (kind == 'pool' ? 1 : 2))
+				return { error: kind == 'pool' ? 'the chain is empty' : 'a chain needs two servers or more' };
 
 			c.set('mayhem', sn, 'select', mode);
 
@@ -3602,39 +3689,46 @@ const methods = {
 			else
 				c.delete('mayhem', sn, 'chain');
 
+			if (mode == 'manual' && type(req.args?.selected) == 'string' && req.args.selected != '')
+				c.set('mayhem', sn, 'selected', req.args.selected);
+
+			// The list's chain dialog also sets the rules of the subscriptions
+			// it names, saved together: one reload.
+			if (kind == 'pool' && type(req.args?.rules) == 'object')
+				for (let sub, r in req.args.rules) {
+					if (c.get('mayhem', sub) != 'subscription' || type(r) != 'object' || index([ 'auto', 'manual', 'fallback' ], r.mode) < 0)
+						return { error: `unknown subscription or rule: ${sub}` };
+
+					const names = filter(type(r.chain) == 'array' ? r.chain : [], (n) => type(n) == 'string' && n != '' && length(n) <= 256);
+
+					if (r.mode == 'fallback' && !length(names))
+						return { error: `the chain of ${sub} is empty` };
+
+					c.set('mayhem', sub, 'select', r.mode);
+					c.delete('mayhem', sub, 'override');
+
+					if (r.mode == 'fallback')
+						c.set('mayhem', sub, 'chain', names);
+					else
+						c.delete('mayhem', sub, 'chain');
+
+					if (r.mode == 'manual' && type(r.selected) == 'string' && r.selected != '')
+						c.set('mayhem', sub, 'selected', r.selected);
+				}
+
 			// A chain decides by itself; a server pinned in automatic mode
 			// would only get in its way.
-			if (mode != 'auto')
+			if (mode != 'auto' || kind == 'subscription')
 				c.delete('mayhem', sn, 'override');
 
-			c.commit('mayhem');
+			if (!c.commit('mayhem'))
+				return { error: 'the configuration could not be saved' };
+
 			fs.unlink(`${RUN}/fallback.fails`);
-			apply_bg('/etc/init.d/mayhem reload');
-			health_now(req.args?.section ?? sn, 'sleep 3');
+			reload_choice();
 
-			return { ok: true };
-		}
-	},
-
-	// The main section, chosen on the dashboard: remote DNS, downloads and the
-	// rest of the traffic go through it.
-	set_main_section: {
-		args: { section: '' },
-		call: function(req) {
-			const c = uci_cursor();
-			const sn = req.args?.section ?? '';
-
-			const group = choice_target(c, sn) != sn;
-
-			if (sn == 'pool' || sn == '')
-				c.delete('mayhem', 'settings', 'default_section');
-			else if (!group && (c.get('mayhem', sn) != 'section' || index([ 'proxy', 'interface' ], c.get('mayhem', sn, 'type') ?? 'proxy') < 0))
-				return { error: 'not a proxy or tunnel section' };
-			else
-				c.set('mayhem', 'settings', 'default_section', sn);
-
-			c.commit('mayhem');
-			apply_bg('/etc/init.d/mayhem reload');
+			if (kind != 'subscription')
+				health_now(req.args?.section ?? sn, 'sleep 3');
 
 			return { ok: true };
 		}
@@ -3647,7 +3741,7 @@ const methods = {
 // (see deferred_sh() above). They run in a child process (call.uc) instead,
 // and rpcd answers when it exits; outside rpcd they run in place.
 const APART = [ 'probe', 'probe_icmp', 'probe_tcp', 'exit_info', 'sub_update', 'refresh_servers', 'components', 'diagnose', 'connections',
-	'status', 'check', 'sysinfo', 'logs', 'tunnel_info', 'action', 'select_node', 'backup_import', 'reset_config' ];
+	'status', 'check', 'sysinfo', 'logs', 'tunnel_info', 'action', 'backup_import', 'reset_config' ];
 const CALL = getenv('MAYHEM_RPC_CALL') ?? '/usr/share/mayhem-luci/call.uc';
 
 function run_apart(name, inplace, req) {

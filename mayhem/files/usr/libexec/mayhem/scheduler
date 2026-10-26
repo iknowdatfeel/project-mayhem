@@ -3,7 +3,8 @@
 # geo data (missing categories at once, the rest nightly) and rule lists;
 # reloads the service when something changed. A reload only restarts xray
 # when its generated config or the geo files it uses really changed.
-# Then checks the tunnels, runs the watchdog (xray memory, dnsmasq) and, when
+# Then checks the tunnels, runs the watchdog (xray memory, dnsmasq), gives
+# xray's freed memory back to the system and, when
 # turned on, the nightly update of Mayhem itself. Fallback chains of servers
 # are checked every 20 seconds, and so are the servers and the remote DNS
 # (health.uc: direct while they do not answer, unless the kill switch is on).
@@ -34,6 +35,7 @@ while :; do
 
 		mayhem_tunnels_check
 		mayhem_watchdog
+		mayhem_mem_trim
 		mayhem_conn_log_idle
 		mayhem_auto_update
 	fi

@@ -2177,3 +2177,78 @@ msgstr "С %s"
 #: htdocs/luci-static/resources/view/mayhem/dashboard.js
 msgid "%s with the code of xray"
 msgstr "%s вместе с кодом xray"
+
+msgid "How the subscription picks its server in the chain"
+msgstr "Как подписка выбирает сервер в цепочке"
+
+msgid "click a server to choose it"
+msgstr "нажмите на сервер, чтобы выбрать его"
+
+msgid "item %d of the list's chain"
+msgstr "№%d в цепочке списка"
+
+msgid "not in the list's chain"
+msgstr "нет в цепочке списка"
+
+msgid "Keys and tunnels"
+msgstr "Ключи и туннели"
+
+msgid "among all servers: keys, tunnels and every subscription; click one to pin it"
+msgstr "среди всех серверов: ключи, туннели и все подписки; нажмите на сервер, чтобы закрепить его"
+
+msgid "chosen: %s"
+msgstr "выбран: %s"
+
+msgid "its chain: %s"
+msgstr "её цепочка: %s"
+
+msgid "fastest"
+msgstr "самый быстрый"
+
+msgid "whole subscription"
+msgstr "подписка целиком"
+
+msgid "%s: the whole subscription"
+msgstr "%s: подписка целиком"
+
+msgid "Add a server or a subscription…"
+msgstr "Добавить сервер или подписку…"
+
+msgid "The first item carries the traffic while it works; when it stops answering, the next one takes over, and an item higher in the chain takes over again as soon as it works. A subscription stands for the server its rule picks: the fastest of its servers, its own chain, or the one chosen by hand. Checks run every 20 seconds, nothing restarts."
+msgstr "Трафик идёт через первый элемент, пока он работает; когда он перестаёт отвечать, его место занимает следующий, а элемент выше в цепочке возвращается, как только снова заработает. Подписка — это сервер, который выбирает её правило: самый быстрый из её серверов, её собственная цепочка или выбранный вручную. Проверки — каждые 20 секунд, ничего не перезапускается."
+
+msgid "The chain is empty"
+msgstr "Цепочка пуста"
+
+msgid "The chain of %s is empty"
+msgstr "Цепочка %s пуста"
+
+msgid "Tunnels for rules"
+msgstr "Туннели для правил"
+
+msgid "not servers of the list: they carry the traffic of their sections under Routing"
+msgstr "не серверы списка: через них идёт трафик их секций из «Маршрутизации»"
+
+msgid "chosen by hand"
+msgstr "выбран вручную"
+
+msgid "its own chain"
+msgstr "своя цепочка"
+
+msgid "click a server to pin it"
+msgstr "нажмите на сервер, чтобы закрепить его"
+
+msgid "Click a server of the subscription to choose it; the rule is changed in the chain"
+msgstr "Нажмите на сервер подписки, чтобы выбрать его; правило меняется в цепочке"
+
+msgid "Change in the chain"
+msgstr "Изменить в цепочке"
+
+msgid "click another server to switch to it"
+msgstr "нажмите на другой сервер, чтобы переключиться на него"
+
+msgid "the fastest of all servers; click one to choose it by hand"
+msgstr "самый быстрый из всех серверов; нажмите на сервер, чтобы выбрать его вручную"
+
+msgid "Server choice"
+msgstr "Выбор сервера"
