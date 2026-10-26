@@ -227,6 +227,12 @@ main() {
 	/usr/bin/mayhem dnsmasq-full ||
 		warn "dnsmasq-full is not installed, the old dnsmasq stays: tunnels in kernel mode go through xray. Install it later from Server list → Tunnels."
 
+	# TCP BBR for xray's connections to its servers, at every install and
+	# update; a firmware without the module keeps what it has.
+	msg "Switching TCP to BBR..."
+	/usr/bin/mayhem bbr >/dev/null 2>&1 ||
+		warn "TCP BBR is not available on this firmware, TCP stays as it was."
+
 	[ "$autostart" = 1 ] && /etc/init.d/mayhem enable
 	/etc/init.d/rpcd restart >/dev/null 2>&1
 	rm -rf /tmp/luci-indexcache* /tmp/luci-modulecache

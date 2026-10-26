@@ -628,7 +628,7 @@ fi
 if command -v shellcheck >/dev/null 2>&1; then
 	if out="$(shellcheck -s sh -f gcc -e SC1091,SC2034,SC3043,SC2086,SC2046,SC2317,SC2329 \
 		"$FILES/usr/bin/mayhem" "$FILES/usr/libexec/mayhem/xray-run" "$FILES/usr/libexec/mayhem/scheduler" \
-		"$FILES/etc/uci-defaults/90-mayhem" "$ROOT/tests/netns.sh" "$ROOT/tests/build-ucode.sh" "$ROOT/tests/health.sh" "$ROOT/tests/conns.sh" \
+		"$FILES/etc/uci-defaults/90-mayhem" "$ROOT/tests/netns.sh" "$ROOT/tests/build-ucode.sh" "$ROOT/tests/health.sh" "$ROOT/tests/conns.sh" "$ROOT/tests/bbr.sh" \
 		"$FILES/usr/share/mayhem/lib.sh" "$FILES/usr/share/mayhem/const.sh" "$ROOT/install.sh" 2>&1)"; then
 		ok "shellcheck"
 	else
@@ -713,6 +713,13 @@ if out="$(UCODE="$UCODE" sh "$ROOT/tests/conns.sh" 2>&1)"; then
 	ok "active connections"
 else
 	bad "active connections: $(printf '%s' "$out" | grep -v '^ok')"
+fi
+
+# TCP BBR at install and update: the module installed, the setting kept.
+if out="$(sh "$ROOT/tests/bbr.sh" 2>&1)"; then
+	ok "TCP BBR"
+else
+	bad "TCP BBR: $(printf '%s' "$out" | grep -v '^ok')"
 fi
 
 # Backup and restore of the config, with and without subscriptions and keys.

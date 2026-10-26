@@ -64,6 +64,11 @@ define Package/mayhem/postrm
 [ -n "$${IPKG_INSTROOT}" ] && exit 0
 rm -f /usr/libexec/mayhem/xray /usr/libexec/mayhem/wg-obfuscator /usr/libexec/mayhem/phantun_client
 rm -rf /var/run/mayhem
+# TCP back to the firmware's default (BBR was Mayhem's)
+if [ -f /etc/sysctl.d/12-mayhem-bbr.conf ]; then
+	rm -f /etc/sysctl.d/12-mayhem-bbr.conf
+	sysctl -w net.ipv4.tcp_congestion_control=cubic >/dev/null 2>&1
+fi
 exit 0
 endef
 
