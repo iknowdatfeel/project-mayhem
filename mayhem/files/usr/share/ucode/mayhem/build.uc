@@ -252,6 +252,12 @@ function build_nft_text(S, v6, sets, tunnels, dns_redirect, fake_pool, kdef, cap
 	const gmask = sprintf('0x%x', C.CT_GEN_MASK);
 	const stale = sprintf('0x%x', C.STALE_MARK);
 	const tag = `ct mark set ct mark & ${sprintf('0x%x', 0xffffffff & ~C.CT_GEN_MASK)} | ${gen}`;
+	// Refused at once in the chain stale (forward): TCP gets a reset, the
+	// rest "port unreachable". A device gives up right away instead of
+	// waiting for a timeout, and xray never holds a session for it (its
+	// blackhole keeps a UDP flow 30-90 s to drain it).
+	const refuse = `meta mark set meta mark | ${stale} counter return`;
+	const no_quic = is_true(S.block_quic ?? '0');
 	let s = `table inet ${C.NFT_TABLE}\ndelete table inet ${C.NFT_TABLE}\n\n`;
 
 	s += `table inet ${C.NFT_TABLE} {\n`;
@@ -353,16 +359,16 @@ function build_nft_text(S, v6, sets, tunnels, dns_redirect, fake_pool, kdef, cap
 	s += '\t\tfib daddr type { local, broadcast, multicast } return\n';
 	s += '\t\tip daddr @local4 return\n';
 	s += '\t\tip6 daddr @local6 return\n';
-	s += '\t\tip daddr @block4 counter drop\n';
-	s += '\t\tip6 daddr @block6 counter drop\n';
+	s += `\t\tip daddr @block4 ${refuse}\n`;
+	s += `\t\tip6 daddr @block6 ${refuse}\n`;
 
 	// Ports of direct sections: past everything, tunnels and xray alike.
 	if (length(sets.direct_ports ?? []))
 		s += `\t\tmeta l4proto { tcp, udp } th dport { ${join(', ', sets.direct_ports)} } counter return\n`;
 
 	if (kdef) {
-		s += '\t\tip daddr @blk_d4 counter drop\n';
-		s += '\t\tip6 daddr @blk_d6 counter drop\n';
+		s += `\t\tip daddr @blk_d4 ${refuse}\n`;
+		s += `\t\tip6 daddr @blk_d6 ${refuse}\n`;
 	}
 
 	// Kernel tunnels go before everything else: the mark selects their
@@ -414,7 +420,7 @@ function build_nft_text(S, v6, sets, tunnels, dns_redirect, fake_pool, kdef, cap
 		// QUIC off, as xray does it for the traffic it gets: browsers fall
 		// back to TCP. (Reject is not allowed in prerouting.)
 		if (kdef.no_quic)
-			s += '\t\tmeta l4proto udp th dport 443 counter drop\n';
+			s += `\t\tmeta l4proto udp th dport 443 ${refuse}\n`;
 
 		// Torrents direct: only xray tells BitTorrent apart, so the kernel
 		// takes web traffic (TCP 80/443, QUIC) and the rest goes through
@@ -452,6 +458,24 @@ function build_nft_text(S, v6, sets, tunnels, dns_redirect, fake_pool, kdef, cap
 	// cannot be set up (mayhem_net_up).
 	const tp6 = `meta nfproto ipv6 meta l4proto { tcp, udp } meta mark set meta mark | ${mark} ${tag} tproxy ip6 to [::1]:${C.TPROXY_PORT} counter accept`;
 
+	// QUIC off: refused here, before xray, for what would reach it (with
+	// the rest into a kernel tunnel it was refused above).
+	if (no_quic && !kdef) {
+		const q = `meta l4proto udp th dport 443 ${refuse}`;
+
+		if (cap) {
+			if (fake_pool)
+				s += `\t\tip daddr ${fake_pool} ${q}\n`;
+
+			s += `\t\tip daddr @px4 ${q}\n`;
+
+			if (v6)
+				s += `\t\tip6 daddr @px6 ${q}\n`;
+		}
+		else
+			s += `\t\t${q}\n`;
+	}
+
 	if (cap) {
 		if (fake_pool)
 			s += `\t\tip daddr ${fake_pool} ${tp4}\n`;
@@ -473,6 +497,7 @@ function build_nft_text(S, v6, sets, tunnels, dns_redirect, fake_pool, kdef, cap
 	s += '\n\tchain stale {\n';
 	s += '\t\ttype filter hook forward priority filter - 1; policy accept;\n';
 	s += `\t\tmeta mark & ${stale} == ${stale} meta l4proto tcp counter reject with tcp reset\n`;
+	s += `\t\tmeta mark & ${stale} == ${stale} meta l4proto udp counter reject with icmpx type port-unreachable\n`;
 	s += `\t\tmeta mark & ${stale} == ${stale} counter drop\n`;
 	s += '\t}\n';
 

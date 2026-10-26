@@ -199,8 +199,12 @@ function xray_pid() {
 	return (pid != '' && fs.access(`/proc/${pid}`)) ? pid : null;
 }
 
-function rss_kb(pid) {
-	const m = match(fs.readfile(`/proc/${pid}/status`) ?? '', /VmRSS:[[:space:]]+([0-9]+)/);
+// The memory xray took (its data: RssAnon), what the watchdog and GOMEMLIMIT
+// are about. VmRSS adds ~20 MB of its own code read from flash, which the
+// kernel drops and reads again as it needs: rss_kb(pid, true).
+function rss_kb(pid, total) {
+	const st = fs.readfile(`/proc/${pid}/status`) ?? '';
+	const m = (!total && match(st, /RssAnon:[[:space:]]+([0-9]+)/)) || match(st, /VmRSS:[[:space:]]+([0-9]+)/);
 
 	return m ? int(m[1]) : null;
 }
@@ -1899,6 +1903,7 @@ function dashboard(pid, state, out) {
 			active: pid != null && fs.access(`${RUN}/active`) == true,
 			xray: trim(fs.readfile(`${RUN}/xray.version`) ?? '') || null,
 			rss_kb: pid ? rss_kb(pid) : null,
+			rss_total_kb: pid ? rss_kb(pid, true) : null,
 			dnsmasq: out.dnsmasq,
 			status: read_json(`${RUN}/status.json`),
 			mode: state.mode,

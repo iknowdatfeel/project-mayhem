@@ -812,7 +812,9 @@ return view.extend({
 				[ _('OS'), d.system || '—' ],
 				[ 'Mayhem', d.version || '—' ],
 				[ 'Xray', d.xray || '—' ],
-				[ _('Memory use'), d.rss_kb ? mh.bytes(d.rss_kb * 1024) : '—' ]
+				// xray's data, as the watchdog counts it; with its code, in the hint.
+				[ _('Memory use'), d.rss_kb ? mh.bytes(d.rss_kb * 1024) : '—', '',
+					d.rss_total_kb ? _('%s with the code of xray').format(mh.bytes(d.rss_total_kb * 1024)) : null ]
 			])
 		];
 	},
