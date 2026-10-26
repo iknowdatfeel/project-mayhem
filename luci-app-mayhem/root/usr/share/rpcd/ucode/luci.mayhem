@@ -700,7 +700,8 @@ const ACTIONS = {
 	// starting turns routing on as well: there is no separate switch for it
 	start: 'uci set mayhem.settings.enabled=1 && uci commit mayhem && /etc/init.d/mayhem start',
 	stop: '/etc/init.d/mayhem stop',
-	restart: '/etc/init.d/mayhem restart',
+	// noted for the dashboard: the next xray says it was restarted by hand
+	restart: `echo "$(date +%s) manual" > ${RUN}/restart.why; /etc/init.d/mayhem restart`,
 	reload: '/etc/init.d/mayhem reload',
 	enable: '/usr/bin/mayhem enable',
 	disable: '/usr/bin/mayhem disable',
@@ -1832,6 +1833,15 @@ function dashboard_parts(text) {
 	return res;
 }
 
+function xray_started() {
+	const m = match(trim(fs.readfile(`${RUN}/xray.started`) ?? ''), /^([0-9]+) ?(.*)$/);
+
+	if (!m || m[2] == '' || time() - int(m[1]) > 600)
+		return null;
+
+	return { time: int(m[1]), why: m[2] };
+}
+
 function dashboard(pid, state, out) {
 		const m = pid ? metrics(out.metrics) : { stats: {}, observatory: {} };
 		const c = uci_cursor();
@@ -1936,6 +1946,11 @@ function dashboard(pid, state, out) {
 			xray: trim(fs.readfile(`${RUN}/xray.version`) ?? '') || null,
 			rss_kb: pid ? rss_kb(pid) : null,
 			rss_total_kb: pid ? rss_kb(pid, true) : null,
+			// The last start of xray in the last 10 minutes with its reason
+			// (a restart Mayhem caused, or how the previous one ended), and
+			// what xray said when it would not start.
+			restarted: pid ? xray_started() : null,
+			xray_error: pid ? null : (trim(fs.readfile(`${RUN}/xray.error`) ?? '') || null),
 			dnsmasq: out.dnsmasq,
 			status: read_json(`${RUN}/status.json`),
 			mode: state.mode,

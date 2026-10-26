@@ -64,9 +64,10 @@ const CSS = `
 .mh-head { display:flex; align-items:center; justify-content:space-between; gap:10px; flex-wrap:wrap; }
 .mh-head .mh-grow { flex:1 1 auto; }
 .mh-layout { display:grid; grid-template-columns:1fr 1fr 240px; grid-template-rows:auto 1fr; grid-template-areas:"conn sys side" "servers servers side"; grid-gap:10px; align-items:start; }
-.mh-a-conn { grid-area:conn; align-self:stretch; } .mh-a-sys { grid-area:sys; align-self:stretch; } .mh-a-side { grid-area:side; } .mh-a-servers { grid-area:servers; }
+.mh-a-conn { grid-area:conn; align-self:stretch; min-width:0; } .mh-a-sys { grid-area:sys; align-self:stretch; min-width:0; } .mh-a-side { grid-area:side; } .mh-a-servers { grid-area:servers; }
 @media (max-width: 900px) { .mh-layout { grid-template-columns:1fr; grid-template-rows:none; grid-template-areas:"conn" "sys" "side" "servers"; } }
 .mh-widget-row { white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+.mh-widget-row.mh-wrap { white-space:normal; }
 .mh-whead { display:flex; justify-content:space-between; align-items:baseline; gap:8px; }
 .mh-split { display:grid; grid-template-columns:1fr 240px; grid-column-gap:12px; align-items:start; }
 @media (max-width: 700px) { .mh-split { grid-template-columns:1fr; grid-row-gap:10px; } }
@@ -177,6 +178,33 @@ function geoLang() {
 	const known = [ 'en', 'de', 'es', 'fr', 'ja', 'pt-BR', 'ru', 'zh-CN' ];
 
 	return known.indexOf(l) >= 0 ? l : (known.indexOf(l.split('-')[0]) >= 0 ? l.split('-')[0] : 'en');
+}
+
+// Why xray was restarted, in words: the reason codes of mayhem_restart_why
+// and xray-run (lib.sh).
+const CONFIG_PARTS = {
+	dns: _('DNS'), inbounds: _('incoming ports'), routing: _('routing'), outbounds: _('services'), log: _('log'),
+	policy: _('timeouts'), burstObservatory: _('server checks'), observatory: _('server checks'), fakedns: 'FakeDNS'
+};
+
+function restartWhy(why) {
+	const m = /^([a-z]+)(?::(.*))?$/.exec(why || '') || [];
+
+	switch (m[1]) {
+	case 'config': {
+		const parts = (m[2] || '').split(',').filter((p) => p).map((p) => CONFIG_PARTS[p] || p)
+			.filter((p, i, a) => a.indexOf(p) === i);
+
+		return parts.length ? _('the settings changed (%s)').format(parts.join(', ')) : _('the settings changed');
+	}
+	case 'servers': return _('the servers could not be changed without a restart');
+	case 'geo': return _('geo data updated');
+	case 'memory': return _('the watchdog: too much memory');
+	case 'hang': return _('the watchdog: xray did not answer');
+	case 'manual': return _('restarted by hand');
+	case 'exit': return _('xray quit (code %s)').format(m[2] || '?');
+	default: return why || '?';
+	}
 }
 
 return view.extend({
@@ -678,7 +706,7 @@ return view.extend({
 		return E('div', { 'class': 'mh-box' }, [
 			E('div', { 'class': 'mh-whead' }, [ E('span', { 'class': 'mh-title' }, title),
 				(note && typeof note === 'object') ? note : note ? E('span', { 'class': 'mh-muted mh-small' }, note) : '' ])
-		].concat(rows.map((r) => E('div', { 'class': 'mh-widget-row', 'title': (typeof (r[3] || r[1]) === 'string') ? r[0] + ': ' + (r[3] || r[1]) : null }, [
+		].concat(rows.map((r) => E('div', { 'class': 'mh-widget-row' + (r[4] ? ' mh-wrap' : ''), 'title': (typeof (r[3] || r[1]) === 'string') ? r[0] + ': ' + (r[3] || r[1]) : null }, [
 			E('span', { 'class': 'mh-muted' }, r[0] + ': '),
 			E('span', { 'class': r[2] || '' }, r[1])
 		]))));
@@ -722,6 +750,10 @@ return view.extend({
 
 		if (d.dns_down)
 			rows.push([ _('DNS'), _('Provider\'s: the remote DNS does not answer'), 'mh-warn' ]);
+
+		// xray started again in the last minutes: when and why.
+		if (d.restarted)
+			rows.push([ _('Xray restarted'), '%s: %s'.format(mh.ago(d.restarted.time, d.time), restartWhy(d.restarted.why)), 'mh-warn', null, true ]);
 
 		rows.push(
 			[ _('Incoming'), sp ? rate(sp.down) : '—' ],
@@ -782,6 +814,9 @@ return view.extend({
 
 		if (!d.xray)
 			errors.push(_('Xray is not installed: run "mayhem xray-install"'));
+
+		if (d.xray_error && d.enabled)
+			errors.push(_('Xray does not start: %s').format(d.xray_error));
 
 		if (!d.enabled)
 			return E('div', { 'class': 'mh-box mh-alert' }, [

@@ -2118,6 +2118,10 @@ msgid "Xray and Mayhem are updated from their releases on GitHub. Updating resta
 msgstr ""
 
 #: htdocs/luci-static/resources/view/mayhem/dashboard.js
+msgid "Xray does not start: %s"
+msgstr ""
+
+#: htdocs/luci-static/resources/view/mayhem/dashboard.js
 msgid "Xray is not installed: run \"mayhem xray-install\""
 msgstr ""
 
@@ -2131,6 +2135,10 @@ msgstr ""
 
 #: htdocs/luci-static/resources/mayhem/page/sections.js
 msgid "Xray recognizes BitTorrent by its first packets and sends it direct, past the proxy."
+msgstr ""
+
+#: htdocs/luci-static/resources/view/mayhem/dashboard.js
+msgid "Xray restarted"
 msgstr ""
 
 #: htdocs/luci-static/resources/mayhem/page/components.js
@@ -2170,6 +2178,14 @@ msgid "fastest"
 msgstr ""
 
 #: htdocs/luci-static/resources/view/mayhem/dashboard.js
+msgid "geo data updated"
+msgstr ""
+
+#: htdocs/luci-static/resources/view/mayhem/dashboard.js
+msgid "incoming ports"
+msgstr ""
+
+#: htdocs/luci-static/resources/view/mayhem/dashboard.js
 msgid "its chain: %s"
 msgstr ""
 
@@ -2183,6 +2199,10 @@ msgstr ""
 
 #: htdocs/luci-static/resources/mayhem/page/sections.js
 msgid "lists: %d"
+msgstr ""
+
+#: htdocs/luci-static/resources/view/mayhem/dashboard.js
+msgid "log"
 msgstr ""
 
 #: htdocs/luci-static/resources/mayhem/common.js
@@ -2206,7 +2226,47 @@ msgid "pinned by hand"
 msgstr ""
 
 #: htdocs/luci-static/resources/view/mayhem/dashboard.js
+msgid "restarted by hand"
+msgstr ""
+
+#: htdocs/luci-static/resources/view/mayhem/dashboard.js
+msgid "routing"
+msgstr ""
+
+#: htdocs/luci-static/resources/view/mayhem/dashboard.js
+msgid "server checks"
+msgstr ""
+
+#: htdocs/luci-static/resources/view/mayhem/dashboard.js
+msgid "services"
+msgstr ""
+
+#: htdocs/luci-static/resources/view/mayhem/dashboard.js
 msgid "the fastest of all servers; click one to choose it by hand"
+msgstr ""
+
+#: htdocs/luci-static/resources/view/mayhem/dashboard.js
+msgid "the servers could not be changed without a restart"
+msgstr ""
+
+#: htdocs/luci-static/resources/view/mayhem/dashboard.js
+msgid "the settings changed"
+msgstr ""
+
+#: htdocs/luci-static/resources/view/mayhem/dashboard.js
+msgid "the settings changed (%s)"
+msgstr ""
+
+#: htdocs/luci-static/resources/view/mayhem/dashboard.js
+msgid "the watchdog: too much memory"
+msgstr ""
+
+#: htdocs/luci-static/resources/view/mayhem/dashboard.js
+msgid "the watchdog: xray did not answer"
+msgstr ""
+
+#: htdocs/luci-static/resources/view/mayhem/dashboard.js
+msgid "timeouts"
 msgstr ""
 
 #: htdocs/luci-static/resources/mayhem/diag.js
@@ -2219,4 +2279,8 @@ msgstr ""
 
 #: htdocs/luci-static/resources/view/mayhem/dashboard.js
 msgid "whole subscription"
+msgstr ""
+
+#: htdocs/luci-static/resources/view/mayhem/dashboard.js
+msgid "xray quit (code %s)"
 msgstr ""

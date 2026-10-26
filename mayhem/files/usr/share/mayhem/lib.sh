@@ -323,6 +323,63 @@ mayhem_conn_log_idle() {
 	return 0
 }
 
+# --- why xray restarted ------------------------------------------------------------
+# A restart Mayhem causes leaves its reason for the dashboard: xray-run takes it
+# when the new xray is up (xray.started). Reasons: config:<parts>, servers,
+# geo, memory, hang, manual.
+mayhem_restart_why() {
+	mkdir -p "$MAYHEM_RUN_DIR"
+	echo "$(date +%s) $1" > "$MAYHEM_RUN_DIR/restart.why"
+}
+
+# On reload, before procd compares its files: a running xray that is about to
+# be restarted, and why.
+mayhem_restart_reason() {
+	local pid why
+
+	pid="$(cat "$MAYHEM_RUN_DIR/xray.pid" 2>/dev/null)"
+	[ -n "$pid" ] && kill -0 "$pid" 2>/dev/null || return 0
+
+	why="$(ucode "$MAYHEM_LIB_DIR/why.uc" 2>/dev/null)"
+
+	if [ -z "$why" ] && [ -f "$MAYHEM_RUN_DIR/running.geo.stamp" ] &&
+	   ! cmp -s "$MAYHEM_RUN_DIR/geo.stamp" "$MAYHEM_RUN_DIR/running.geo.stamp"; then
+		why=geo
+	fi
+
+	[ -n "$why" ] && mayhem_restart_why "$why"
+
+	return 0
+}
+
+# xray is up: when it started and why (a reason noted in the last 5 minutes,
+# or how the previous xray ended), for the dashboard.
+mayhem_xray_started() {
+	local now why t r
+
+	now="$(date +%s)"
+	why=""
+
+	# shellcheck disable=SC2046
+	set -- $(cat "$MAYHEM_RUN_DIR/restart.why" 2>/dev/null)
+	if [ -n "${1:-}" ] && [ $(( now - $1 )) -lt 300 ]; then
+		why="${2:-}"
+	else
+		# shellcheck disable=SC2046
+		set -- $(cat "$MAYHEM_RUN_DIR/xray.exit" 2>/dev/null)
+		[ -n "${1:-}" ] && [ $(( now - $1 )) -lt 300 ] && why="exit:${2:-?}"
+	fi
+
+	rm -f "$MAYHEM_RUN_DIR/restart.why" "$MAYHEM_RUN_DIR/xray.exit" "$MAYHEM_RUN_DIR/xray.error"
+	echo "$now $why" > "$MAYHEM_RUN_DIR/xray.started"
+}
+
+# xray quit before it listened: its error message (xray run -test, only now).
+mayhem_xray_error() {
+	"$MAYHEM_XRAY_BIN" run -test -c "$MAYHEM_RUN_DIR/running.xray.json" 2>&1 |
+		grep -v -e '^Xray ' -e '^A unified platform' -e 'Reading config' -e 'deprecated' | tail -n 3 | cut -c 1-400 > "$MAYHEM_RUN_DIR/xray.error"
+}
+
 # Memory xray's heap freed (closed connections, a burst of blocked ones) goes
 # back to the system after a garbage collection, which Go starts when the heap
 # grows or every two minutes. Once a minute: with more than 8 MiB freed but
@@ -374,6 +431,7 @@ mayhem_watchdog() {
 			if [ "$n" -ge 3 ]; then
 				mayhem_log "xray has used ${rss} KiB for 3 minutes (limit ${limit} KiB), restarting it" warn
 				mayhem_watchdog_note "xray restarted: ${rss} KiB of memory"
+				mayhem_restart_why memory
 				n=0
 				kill -TERM "$pid"
 			fi
@@ -406,6 +464,7 @@ mayhem_watchdog() {
 				if [ "$n" -ge 3 ]; then
 					mayhem_log "xray has not answered for 3 minutes, restarting it" warn
 					mayhem_watchdog_note "xray restarted: it did not answer"
+					mayhem_restart_why hang
 					rm -f "$MAYHEM_RUN_DIR/watchdog.hang"
 					kill -TERM "$pid"
 					sleep 5
