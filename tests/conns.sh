@@ -54,6 +54,9 @@ ipv4     2 udp      17 20 src=192.168.1.20 dst=192.168.1.1 sport=5353 dport=53 p
 ipv6     10 tcp      6 7431 ESTABLISHED src=0000:0000:0000:0000:0000:0000:0000:0001 dst=2a00:1450:4010:0c0e:0000:0000:0000:0065 sport=50000 dport=443 packets=5 bytes=900 src=2a00:1450:4010:0c0e:0000:0000:0000:0065 dst=0000:0000:0000:0000:0000:0000:0000:0001 sport=443 dport=50000 packets=5 bytes=900 [ASSURED] mark=0 zone=0 use=2
 ipv6     10 tcp      6 7431 ESTABLISHED src=fd00:0000:0000:0000:0a1b:2c3d:4e5f:0001 dst=2a00:1450:4010:0c0e:0000:0000:0000:0065 sport=50001 dport=443 packets=5 bytes=700 src=2a00:1450:4010:0c0e:0000:0000:0000:0065 dst=fd00:0000:0000:0000:0a1b:2c3d:4e5f:0001 sport=443 dport=50001 packets=5 bytes=700 [ASSURED] mark=268435456 zone=0 use=2
 ipv4     2 udp      17 20 src=192.168.1.20 dst=8.8.4.4 sport=5354 dport=53 packets=1 bytes=60 src=192.168.1.1 dst=192.168.1.20 sport=53 dport=5354 packets=1 bytes=120 mark=0 zone=0 use=2
+ipv4     2 tcp      6 7431 ESTABLISHED src=198.51.100.7 dst=203.0.113.5 sport=40001 dport=51413 packets=5 bytes=400 src=192.168.1.187 dst=198.51.100.7 sport=51413 dport=40001 packets=5 bytes=600 [ASSURED] mark=0 zone=0 use=2
+ipv6     10 udp      17 170 src=2001:0db8:0000:0000:0000:0000:0000:0099 dst=fd00:0000:0000:0000:0a1b:2c3d:4e5f:0001 sport=40002 dport=51413 packets=5 bytes=300 src=fd00:0000:0000:0000:0a1b:2c3d:4e5f:0001 dst=2001:0db8:0000:0000:0000:0000:0000:0099 sport=51413 dport=40002 packets=5 bytes=300 [ASSURED] mark=0 zone=0 use=2
+ipv4     2 icmp     1 29 src=192.168.1.20 dst=1.1.1.1 type=8 code=0 id=7 packets=1 bytes=84 src=1.1.1.1 dst=192.168.1.20 type=0 code=0 id=7 packets=1 bytes=84 mark=0 zone=0 use=2
 ipv4     2 tcp      6 100 TIME_WAIT src=192.168.1.20 dst=8.8.8.8 sport=6001 dport=443 packets=5 bytes=900 src=8.8.8.8 dst=203.0.113.5 sport=443 dport=6001 packets=5 bytes=900 mark=0 zone=0 use=2
 CT
 
@@ -135,10 +138,17 @@ elif ! row '"ip": "fd00::a1b:2c3d:4e5f:1"' | grep -q '"device": "iPhone"' ||
      ! row '"ip": "fd00::a1b:2c3d:4e5f:1"' | grep -q '"domain": "www.google.com"' ||
      ! row '"ip": "fd00::a1b:2c3d:4e5f:1"' | grep -q '"server": "Amsterdam"'; then
 	bad "IPv6: short address, device by MAC, name and server: $out"
-elif ! printf '%s' "$out" | grep -q '"counts": { "tcp": 4, "udp": 2 }'; then
+elif ! printf '%s' "$out" | grep -q '"counts": { "tcp": 5, "udp": 3 }'; then
 	bad "TCP and UDP counts: $out"
+elif ! printf '%s' "$out" | grep -q '"hidden": { "total": 4, "router": 2, "to_router": 1, "closing": 1, "local": 0, "other": 0 }' ||
+     [ $(( 5 + 3 + 4 )) != "$(grep -cE ' (tcp|udp) ' "$T/conntrack")" ]; then
+	bad "hidden: the rows and the hidden add up to the kernel's TCP and UDP: $(grep -cE ' (tcp|udp) ' "$T/conntrack") / $out"
+elif ! printf '%s' "$out" | grep -q '"device": "iPhone", "ip": "192.168.1.187", "network": "tcp", "host": "198.51.100.7", "port": null, [^}]*"route": { "kind": "inbound", "port": 51413 }' ||
+     ! printf '%s' "$out" | grep -q '"ip": "fd00::a1b:2c3d:4e5f:1", "network": "udp", "host": "2001:db8::99", "port": null, [^}]*"route": { "kind": "inbound", "port": 51413 }' ||
+     printf '%s' "$out" | grep -q '"ip": "198.51.100.7"\|"ip": "2001:db8::99"'; then
+	bad "inbound through a forwarded port and to an IPv6 device: $out"
 else
-	ok "connections: through xray, direct, tunnel, DNS, IPv6, counts"
+	ok "connections: through xray, direct, tunnel, DNS, IPv6, inbound, counts, hidden"
 fi
 
 # One device: only its connections, the list of devices stays whole.
@@ -150,6 +160,19 @@ elif ! printf '%s' "$out" | grep -q '"host": "77.88.55.88"' || ! printf '%s' "$o
 	bad "device filter: $out"
 else
 	ok "connections of one device, every device in the list"
+fi
+
+# An address of the FakeDNS range is Mayhem's fake one only while xray has
+# FakeDNS: otherwise it came from elsewhere (a VPN app on the device).
+echo 'ipv4     2 udp      17 170 src=192.168.1.187 dst=198.18.95.170 sport=19001 dport=19000 packets=2 bytes=262 src=198.18.95.170 dst=192.168.1.187 sport=19000 dport=19001 packets=0 bytes=0 mark=268435456 zone=0 use=2' >> "$T/conntrack"
+with_fake="$(call '{}')"
+sed -i 's/^{ "sections"/{ "fakedns": false, "sections"/' "$T/run/nodes.json"
+without_fake="$(call '{}')"
+if ! printf '%s' "$with_fake" | grep -q '"host": "198.18.95.170", "port": 19000, "fake": true' ||
+   ! printf '%s' "$without_fake" | grep -q '"host": "198.18.95.170", "port": 19000, "fake": false'; then
+	bad "FakeDNS addresses: $with_fake / $without_fake"
+else
+	ok "the FakeDNS range is marked only while xray has FakeDNS"
 fi
 
 # The window closes: the log stays a file (it is folded by the scheduler).

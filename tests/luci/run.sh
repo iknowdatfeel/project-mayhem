@@ -43,6 +43,8 @@ ipv4     2 udp      17 170 src=192.168.1.187 dst=142.250.74.110 sport=48400 dpor
 ipv4     2 tcp      6 7431 ESTABLISHED src=192.168.1.20 dst=77.88.55.88 sport=6000 dport=443 packets=5 bytes=900 src=77.88.55.88 dst=203.0.113.5 sport=443 dport=6000 packets=5 bytes=90000 [ASSURED] mark=0 zone=0 use=2
 ipv4     2 tcp      6 7431 ESTABLISHED src=192.168.1.20 dst=77.88.55.88 sport=6001 dport=443 packets=5 bytes=900 src=77.88.55.88 dst=203.0.113.5 sport=443 dport=6001 packets=5 bytes=9000 [ASSURED] mark=0 zone=0 use=2
 ipv6     10 tcp      6 7431 ESTABLISHED src=fd00:0000:0000:0000:0a1b:2c3d:4e5f:0001 dst=2a00:1450:4010:0c0e:0000:0000:0000:0065 sport=50001 dport=443 packets=5 bytes=700 src=2a00:1450:4010:0c0e:0000:0000:0000:0065 dst=fd00:0000:0000:0000:0a1b:2c3d:4e5f:0001 sport=443 dport=50001 packets=5 bytes=70000 [ASSURED] mark=268435456 zone=0 use=2
+ipv4     2 tcp      6 7431 ESTABLISHED src=198.51.100.7 dst=203.0.113.5 sport=40001 dport=51413 packets=5 bytes=400 src=192.168.1.187 dst=198.51.100.7 sport=51413 dport=40001 packets=5 bytes=600000 [ASSURED] mark=0 zone=0 use=2
+ipv4     2 tcp      6 100 TIME_WAIT src=192.168.1.20 dst=8.8.8.8 sport=6002 dport=443 packets=5 bytes=900 src=8.8.8.8 dst=203.0.113.5 sport=443 dport=6002 packets=5 bytes=900 mark=0 zone=0 use=2
 ipv4     2 udp      17 20 src=192.168.1.20 dst=8.8.4.4 sport=5354 dport=53 packets=1 bytes=60 src=192.168.1.1 dst=192.168.1.20 sport=53 dport=5354 packets=1 bytes=120 mark=0 zone=0 use=2
 CT
 echo '1793030000 aa:bb:cc:dd:ee:ff 192.168.1.187 iPhone *' > "$FIX/leases"

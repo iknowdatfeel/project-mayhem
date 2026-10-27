@@ -2309,3 +2309,12 @@ msgstr "Соединений"
 
 msgid "server unknown"
 msgstr "сервер неизвестен"
+
+msgid "Inbound to port %d"
+msgstr "Входящее на порт %d"
+
+msgid "hidden: %d"
+msgstr "скрыто: %d"
+
+msgid "Not in the table: the router's own %d, to the router %d, being closed %d, local and multicast %d, not understood %d"
+msgstr "Не в таблице: свои соединения роутера — %d, к роутеру — %d, закрываются — %d, локальные и multicast — %d, не разобраны — %d"

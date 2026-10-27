@@ -2545,6 +2545,8 @@ export function build(model) {
 	state.generated = R.now ?? time();
 	state.mode = mode;
 	state.capture = capture_all ? 'all' : 'lists';
+	// Addresses of the FakeDNS pool are xray's own only when it has one.
+	state.fakedns = fake;
 	state.dns = split != null ? { split: true, names: length(split) } : { split: false, why: split_why };
 	state.killswitch = is_true(S.killswitch ?? '0');
 	state.dns_check = dns_fallback != null ? {

@@ -866,6 +866,10 @@ msgid "In sections a category is written as geosite:category or geosite:source:c
 msgstr ""
 
 #: htdocs/luci-static/resources/view/mayhem/dashboard.js
+msgid "Inbound to port %d"
+msgstr ""
+
+#: htdocs/luci-static/resources/view/mayhem/dashboard.js
 msgid "Incoming"
 msgstr ""
 
@@ -1163,6 +1167,10 @@ msgstr ""
 
 #: htdocs/luci-static/resources/mayhem/tunnels.js
 msgid "Not in the server list"
+msgstr ""
+
+#: htdocs/luci-static/resources/view/mayhem/dashboard.js
+msgid "Not in the table: the router's own %d, to the router %d, being closed %d, local and multicast %d, not understood %d"
 msgstr ""
 
 #: htdocs/luci-static/resources/mayhem/page/components.js
@@ -2183,6 +2191,10 @@ msgstr ""
 
 #: htdocs/luci-static/resources/view/mayhem/dashboard.js
 msgid "geo data updated"
+msgstr ""
+
+#: htdocs/luci-static/resources/view/mayhem/dashboard.js
+msgid "hidden: %d"
 msgstr ""
 
 #: htdocs/luci-static/resources/view/mayhem/dashboard.js

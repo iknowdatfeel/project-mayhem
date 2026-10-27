@@ -626,7 +626,12 @@ mayhem_dns_servers() {
 		mayhem_isp_dns > "$new"
 	fi
 
+	# dnsmasq reads it again on SIGHUP as its own user, not root.
+	chmod 644 "$new"
+
 	if cmp -s "$new" "$f"; then
+		# One written by an older Mayhem may be root's only.
+		chmod 644 "$f"
 		rm -f "$new"
 		return 0
 	fi
@@ -644,7 +649,8 @@ mayhem_dns_up() {
 	mkdir -p "$(dirname "$MAYHEM_DNS_SERVERS")"
 
 	if [ ! -f "$MAYHEM_DNS_SERVERS" ] || [ ! -f "$MAYHEM_RUN_DIR/active" ]; then
-		mayhem_isp_dns > "$MAYHEM_DNS_SERVERS.tmp" && mv -f "$MAYHEM_DNS_SERVERS.tmp" "$MAYHEM_DNS_SERVERS"
+		mayhem_isp_dns > "$MAYHEM_DNS_SERVERS.tmp" && chmod 644 "$MAYHEM_DNS_SERVERS.tmp" &&
+			mv -f "$MAYHEM_DNS_SERVERS.tmp" "$MAYHEM_DNS_SERVERS"
 	fi
 
 	for d in $(mayhem_dnsmasq_dirs); do

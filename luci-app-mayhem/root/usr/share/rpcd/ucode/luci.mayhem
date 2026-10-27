@@ -1607,30 +1607,38 @@ function loopback(a) {
 }
 
 // Device names by address: the DHCP leases, and for the other addresses of
-// the same device (IPv6) its MAC address in the neighbour table.
+// the same device (IPv6) its MAC address in the neighbour table. local: every
+// address of a device next to the router (leases, neighbours) - a connection
+// from elsewhere to one of them came in from outside.
 function device_names() {
-	const out = {}, by_mac = {};
+	const out = {}, by_mac = {}, local = {};
 
 	for (let l in split(fs.readfile(getenv('MAYHEM_LEASES') ?? '/tmp/dhcp.leases') ?? '', '\n')) {
 		const f = split(l, ' ');
 
-		if (length(f) >= 4 && f[3] != '*') {
-			out[f[2]] = f[3];
-			by_mac[lc(f[1])] = f[3];
+		if (length(f) >= 4) {
+			local[f[2]] = true;
+
+			if (f[3] != '*') {
+				out[f[2]] = f[3];
+				by_mac[lc(f[1])] = f[3];
+			}
 		}
 	}
-
-	if (!length(by_mac))
-		return out;
 
 	for (let l in split(run(getenv('MAYHEM_NEIGH_CMD') ?? 'ip neigh show 2>/dev/null') ?? '', '\n')) {
 		const m = match(l, /^([^ ]+) .*lladdr ([0-9a-fA-F:]+)/);
 
-		if (m && by_mac[lc(m[2])])
+		if (!m)
+			continue;
+
+		local[m[1]] = true;
+
+		if (by_mac[lc(m[2])])
 			out[m[1]] ??= by_mac[lc(m[2])];
 	}
 
-	return out;
+	return { names: out, local: local };
 }
 
 // What the folded log says: { hosts: address -> name, tags: "tcp ip:port" ->
@@ -1694,9 +1702,12 @@ function route_of(tag, state) {
 	return { kind: 'other', tag: tag };
 }
 
-// Every connection the kernel tracks: { network, src, sport, dst, dport,
-// rdst (where the answers go: a router address when NAT took it), rsrc (who
-// answers: the router when it took the connection to itself), bytes, mark }. Read line by line: a busy router tracks thousands.
+// Every TCP and UDP connection the kernel tracks: { network, src, sport, dst,
+// dport, rdst (where the answers go: a router address when NAT took it), rsrc
+// and rsport (who answers: the router when it took the connection to itself,
+// a device when a forwarded port took it there), bytes, mark, closing (TCP
+// that is being closed), bad (a line not understood) }. Read line by line: a
+// busy router tracks thousands.
 function conntrack_each(fn) {
 	const fh = fs.open(getenv('MAYHEM_CONNTRACK') ?? '/proc/net/nf_conntrack', 'r');
 
@@ -1712,8 +1723,10 @@ function conntrack_each(fn) {
 		if (proto != 'tcp' && proto != 'udp')
 			continue;
 
-		if (proto == 'tcp' && index([ 'TIME_WAIT', 'CLOSE', 'CLOSE_WAIT', 'LAST_ACK', 'FIN_WAIT' ], t[5]) >= 0)
+		if (proto == 'tcp' && index([ 'TIME_WAIT', 'CLOSE', 'CLOSE_WAIT', 'LAST_ACK', 'FIN_WAIT' ], t[5]) >= 0) {
+			fn({ network: proto, closing: true });
 			continue;
+		}
 
 		const f = { src: [], dst: [], sport: [], dport: [], bytes: [] };
 		let mark = 0;
@@ -1732,10 +1745,13 @@ function conntrack_each(fn) {
 				mark = int(v);
 		}
 
-		if (!length(f.src) || !length(f.dport))
+		if (!length(f.src) || !length(f.dport)) {
+			fn({ network: proto, bad: true });
 			continue;
+		}
 
-		fn({ network: proto, src: short_ip(f.src[0]), sport: f.sport[0], dst: short_ip(f.dst[0]), dport: int(f.dport[0]), rdst: short_ip(f.dst[1]), rsrc: short_ip(f.src[1]),
+		fn({ network: proto, src: short_ip(f.src[0]), sport: f.sport[0], dst: short_ip(f.dst[0]), dport: int(f.dport[0]),
+			rdst: short_ip(f.dst[1]), rsrc: short_ip(f.src[1]), rsport: int(f.sport[1] ?? 0),
 			bytes: int(f.bytes[0] ?? 0) + int(f.bytes[1] ?? 0), mark: mark });
 	}
 
@@ -1795,7 +1811,9 @@ function connections(stop, device) {
 		system(`sh -c '. ${LIB}/lib.sh; mayhem_conn_fold' >/dev/null 2>&1`);
 
 	const state = read_json(`${RUN}/nodes.json`) ?? { sections: {} };
-	const names = device_names();
+	const devnames = device_names();
+	const names = devnames.names;
+	const local = devnames.local;
 	const mine = router_addrs();
 	const tuns = tunnel_devices(state);
 	const folded = conn_names();
@@ -1831,19 +1849,59 @@ function connections(stop, device) {
 	const rows = {};
 	let order = [];
 	const gen_mask = C.CT_GEN_MASK;
+	// What is not in the table, and why: with these the rows add up to every
+	// TCP and UDP connection of the kernel.
+	const hidden = { total: 0, router: 0, to_router: 0, closing: 0, local: 0, other: 0 };
+	const hide = (why) => {
+		hidden[why]++;
+		hidden.total++;
+	};
 
 	const ok = conntrack_each((c) => {
+		if (c.closing || c.bad)
+			return hide(c.closing ? 'closing' : 'other');
+
 		const marked = (c.mark & gen_mask) != 0;
 		const router = mine[c.src] || loopback(c.src);
+
+		// From outside to a device: through a forwarded port (UPnP too), or
+		// routed to its own address (IPv6). The row is the device's; where
+		// it came from is the destination.
+		let into = null;
+
+		if (!router && mine[c.dst] && c.rsrc && !mine[c.rsrc] && !loopback(c.rsrc))
+			into = { ip: c.rsrc, port: c.rsport };
+		else if (!router && !local[c.src] && local[c.dst] && !mine[c.dst])
+			into = { ip: c.dst, port: c.dport };
+
+		if (into) {
+			const key = `${c.network} ${into.ip} in ${c.src} ${into.port}`;
+
+			if (!rows[key]) {
+				rows[key] = {
+					device: names[into.ip] ?? null, ip: into.ip, network: c.network,
+					host: c.src, port: null, fake: false, domain: recent_hosts[c.src] ?? host_of[c.src],
+					route: { kind: 'inbound', port: into.port }, count: 0, bytes: 0
+				};
+				push(order, key);
+			}
+
+			rows[key].count++;
+			rows[key].bytes += c.bytes;
+			return;
+		}
 
 		// The router's own connections only when they went through Mayhem
 		// (to xray): the rest is xray reaching its servers, DNS and the like.
 		if (router && !marked)
-			return;
+			return hide('router');
 
 		// To the router itself (DNS, the web interface), local and multicast.
-		if (mine[c.dst] || loopback(c.dst) || match(c.dst, /^(22[4-9]\.|23[0-9]\.|255\.|ff|fe80:)/))
-			return;
+		if (mine[c.dst] || loopback(c.dst))
+			return hide('to_router');
+
+		if (match(c.dst, /^(22[4-9]\.|23[0-9]\.|255\.|ff|fe80:)/))
+			return hide('local');
 
 		const k = `${c.network} ${c.src}:${c.sport}`;
 		const tag = recent_tags[k] ?? (marked ? tag_of[k] : null);
@@ -1865,7 +1923,10 @@ function connections(stop, device) {
 				route = { kind: 'direct' };
 		}
 
-		const fake = match(c.dst, /^198\.1[89]\./) != null;
+		// The FakeDNS pool is 198.18.0.0/15, a range of its own: an address
+		// there is Mayhem's fake one only while xray has FakeDNS (otherwise
+		// it came from elsewhere - a VPN app on the device, an old answer).
+		const fake = state.fakedns != false && match(c.dst, /^198\.1[89]\./) != null;
 		const key = `${c.network} ${c.src} ${c.dst} ${c.dport} ${route.kind} ${route.server ?? ''}`;
 
 		if (!rows[key]) {
@@ -1933,7 +1994,7 @@ function connections(stop, device) {
 	// The busiest first.
 	sort(out, (a, b) => b.bytes - a.bytes);
 
-	return { rows: slice(out, 0, CONN_ROWS), total: length(out), counts: counts, log: xray_pid() != null,
+	return { rows: slice(out, 0, CONN_ROWS), total: length(out), counts: counts, hidden: hidden, log: xray_pid() != null,
 		devices: sort(values(devs), (a, b) => b.count - a.count) };
 }
 

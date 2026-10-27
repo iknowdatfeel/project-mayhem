@@ -1707,6 +1707,7 @@ return view.extend({
 		case 'proxy':
 		case 'tunnel': return [ x.server || '?', 'mh-ok' ];
 		case 'xray': return [ 'Xray', 'mh-ok' ];
+		case 'inbound': return [ _('Inbound to port %d').format(x.port), 'mh-ok' ];
 		case 'block': return [ _('Blocked'), 'mh-fail' ];
 		case 'dns': return [ 'DNS', '' ];
 		case 'direct': return [ _('Direct'), 'mh-muted' ];
@@ -1730,8 +1731,14 @@ return view.extend({
 
 		const cnt = document.getElementById('mh-conns-count');
 
-		if (cnt && r.counts)
-			cnt.textContent = 'TCP: %d · UDP: %d'.format(r.counts.tcp || 0, r.counts.udp || 0);
+		if (cnt && r.counts) {
+			const h = r.hidden || {};
+
+			cnt.textContent = 'TCP: %d · UDP: %d'.format(r.counts.tcp || 0, r.counts.udp || 0) +
+				(h.total ? ' · ' + _('hidden: %d').format(h.total) : '');
+			cnt.title = h.total ? _('Not in the table: the router\'s own %d, to the router %d, being closed %d, local and multicast %d, not understood %d')
+				.format(h.router || 0, h.to_router || 0, h.closing || 0, h.local || 0, h.other || 0) : '';
+		}
 
 		const note = document.getElementById('mh-conns-note');
 
@@ -1764,7 +1771,7 @@ return view.extend({
 			tr([ _('Device'), _('Destination'), _('Protocol'), _('Connected via'), _('Open connections'), _('Traffic') ].map((h) => E('th', { 'class': 'th' }, h)), 'table-titles'),
 			...rows.map((c) => {
 				const rt = this.connRoute(c);
-				const dest = (c.domain || mh.ipText(c.host)) + ':' + c.port;
+				const dest = (c.domain || mh.ipText(c.host)) + (c.port != null ? ':' + c.port : '');
 				const tip = c.domain ? mh.ipText(c.host) : null;
 
 				return tr([
