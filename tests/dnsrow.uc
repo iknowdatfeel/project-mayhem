@@ -36,12 +36,17 @@ function expect(what, cond, res) {
 const remote_servers = (res) => filter(res.xray.dns.servers, (x) => index([ R1, R2 ], x.address) >= 0);
 const idle = (res) => res.xray.policy.levels['1'].connIdle;
 
-// Default: fallback, 2 s per server, the session lives for the whole row.
+// Default: fallback, 1 s per server, the session lives for the whole row.
 let r = build(model('global', [ R1, R2 ]));
 expect('fallback by default', !r.xray.dns.enableParallelQuery, r);
 expect('short timeout per server in a row', length(remote_servers(r)) == 2 &&
-	length(filter(remote_servers(r), (x) => x.timeoutMs == 2000)) == 2, r);
-expect('the DNS session outlives the row', idle(r) * 1000 > 2 * 2000, r);
+	length(filter(remote_servers(r), (x) => x.timeoutMs == 1000)) == 2, r);
+expect('the DNS session outlives the row', idle(r) * 1000 > 2 * 1000, r);
+
+// Three servers: a row of 3 s, the session still the short one.
+r = build(model('global', [ R1, R2, 'https://9.9.9.9/dns-query' ]));
+expect('three servers: 1 s each', length(filter(r.xray.dns.servers, (x) => match(x.address, /^https:/) && x.timeoutMs == 1000)) == 3, r);
+expect('three servers: the session outlives the row', idle(r) * 1000 > 3 * 1000 && idle(r) <= 5, r);
 
 // One remote server: nothing to fall back to, xray's own timeout.
 r = build(model('global', [ R1 ]));

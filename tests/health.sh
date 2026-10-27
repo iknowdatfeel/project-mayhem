@@ -239,6 +239,26 @@ for ks in 0 1; do
 	fi
 done
 
+# A server pinned by hand stops answering while another one works: that one
+# stands in for it (the pin alone kept the traffic on the dead server), and
+# the pinned one is back as soon as it answers.
+nodes false
+sed -i 's/"mode": "auto", "balancer": "bal-auto",/"mode": "auto", "balancer": "bal-auto", "override": "n-auto-1",/' "$T/run/nodes.json"
+rm -f "$T/run/health.json"
+echo '{ "n-auto-1": { "alive": true, "delay": 50 }, "n-auto-2": { "alive": true, "delay": 100 } }' > "$T/obs.json"
+printf 'n-auto-1\n' > "$T/dead"
+tick; tick
+if [ "$(bo bal-auto n-auto-2)" = 1 ] && [ "$(bo bal-auto direct)" = 0 ] && ! down auto; then
+	ok "a dead pinned server gets a working stand-in"
+else
+	bad "pinned stand-in: $(cat "$T/xray.log")"
+fi
+tick
+if [ "$(bo bal-auto n-auto)" = 0 ] && [ "$(bo bal-auto direct)" = 0 ]; then ok "the stand-in stays while the pinned server is silent"; else bad "stand-in kept: $(cat "$T/xray.log")"; fi
+: > "$T/dead"
+tick
+if [ "$(bo bal-auto n-auto-1)" = 1 ]; then ok "the pinned server is back when it answers"; else bad "pinned back: $(cat "$T/xray.log")"; fi
+
 # dnsmasq reads the servers file as its own user: readable by all, even
 # with a strict umask and when an older Mayhem wrote it root-only.
 (

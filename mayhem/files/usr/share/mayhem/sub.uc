@@ -1,7 +1,11 @@
 #!/usr/bin/ucode
 // Mayhem: subscription downloader.
 //
-//   sub.uc update [NAME] [--force]     download due (or all with --force) subscriptions
+//   sub.uc update [NAME] [--force] [--new] [--no-wait]
+//                                      download due (or all with --force) subscriptions;
+//                                      --new: only those not downloaded yet or
+//                                      with a new address; --no-wait: nothing
+//                                      when another download runs
 //   sub.uc parse BODY [HEADERS]        parse a saved response, print the result (tests)
 //
 // Requests look like the Happ client: User-Agent plus x-hwid, x-device-os,
@@ -21,6 +25,8 @@ const SERVICE_PROTOCOLS = [ 'freedom', 'direct', 'blackhole', 'block', 'dns', 'l
 const DEFAULT_INTERVAL_H = 12;
 const RETRY_S = 15 * 60;
 const STATE_FILE = `${C.RUN_DIR}/subs-state.json`;
+const LOCK = `${C.RUN_DIR}/sub.lock`;
+const MAX_BYTES = 10 * 1024 * 1024;
 
 function q(s) {
 	return "'" + replace(`${s}`, /'/g, "'\\''") + "'";
@@ -246,7 +252,9 @@ function request_headers(sub, dev) {
 
 function curl(url, req, proxy) {
 	const tmp = `/tmp/mayhem-sub.${clock()[1]}`;
-	let cmd = `curl -sS -L --max-redirs 5 --connect-timeout 10 -m 40 -A ${q(req.ua)}`;
+	// The body goes to /tmp, which is RAM: a wrong address (an image, a stream)
+	// must not fill it.
+	let cmd = `curl -sS -L --max-redirs 5 --connect-timeout 10 -m 40 --max-filesize ${MAX_BYTES} -A ${q(req.ua)}`;
 
 	for (let h in req.headers)
 		cmd += ` -H ${q(h)}`;
@@ -351,7 +359,40 @@ function route_section(sub, sections) {
 	return filter(sections, (s) => (s.type ?? 'proxy') == 'proxy' && is_true(s.enabled ?? '1'))[0]?.['.name'];
 }
 
-function update(name, force) {
+// One download at a time (the scheduler, a new subscription, the button on
+// the dashboard): a second one waits, and then finds fresh what the first
+// one downloaded. A lock left by a process that is gone is taken over.
+function lock(wait) {
+	const me = split(fs.readfile('/proc/self/stat') ?? '', ' ')[0];
+
+	for (let i = 0; ; i++) {
+		if (fs.mkdir(LOCK)) {
+			fs.writefile(`${LOCK}/pid`, `${me}\n`);
+			return true;
+		}
+
+		const pid = trim(fs.readfile(`${LOCK}/pid`) ?? '');
+		const st = fs.stat(LOCK);
+
+		if ((pid != '' && !fs.access(`/proc/${pid}`)) || (pid == '' && st && time() - st.mtime > 10) || i >= 300) {
+			fs.unlink(`${LOCK}/pid`);
+			fs.rmdir(LOCK);
+			continue;
+		}
+
+		if (!wait)
+			return false;
+
+		sleep(1000);
+	}
+}
+
+function unlock() {
+	fs.unlink(`${LOCK}/pid`);
+	fs.rmdir(LOCK);
+}
+
+function update(name, force, only_new) {
 	const cfg = load_uci();
 	const state = read_json(STATE_FILE) ?? {};
 	const now = time();
@@ -377,22 +418,31 @@ function update(name, force) {
 		}
 
 		const path = `${C.SUBS_DIR}/${sn}.json`;
-		const cache = read_json(path);
 		const st = state[sn] ?? {};
+		const hours = int(sub.update_interval ?? 0) || DEFAULT_INTERVAL_H;
+
+		// Fresh by the state in RAM: the cache on flash is not read every
+		// minute for nothing.
+		if (!force && !only_new && st.url == sub.url && st.updated && now - st.updated < hours * 3600)
+			continue;
+
+		const cache = read_json(path);
 
 		if (!force) {
-			const hours = int(sub.update_interval ?? 0) || DEFAULT_INTERVAL_H;
 			const last = max(cache?.updated ?? 0, st.updated ?? 0);
+			const is_fresh = cache?.url == sub.url && (only_new || now - last < hours * 3600);
 
-			if (cache?.url == sub.url && now - last < hours * 3600)
+			if (is_fresh)
 				continue;
 
-			if (st.error && now - (st.last_try ?? 0) < RETRY_S)
+			// A failed address is tried again a while later; a new one at once.
+			if (st.error && (st.url == null || st.url == sub.url) && now - (st.last_try ?? 0) < RETRY_S)
 				continue;
 		}
 
 		tried++;
 		st.last_try = now;
+		st.url = sub.url;
 
 		try {
 			const r = fetch(sub, cfg.device, route_section(sub, cfg.sections));
@@ -426,6 +476,7 @@ function update(name, force) {
 				die(`cannot save ${path}: ${fs.error()}`);
 
 			st.updated = now;
+			st.url = sub.url;
 			st.info = fresh.info;
 			delete st.error;
 			st.via = r.via;
@@ -457,9 +508,15 @@ function update(name, force) {
 switch (ARGV[0]) {
 case 'update':
 	const force = index(ARGV, '--force') >= 0;
-	const name = filter(slice(ARGV, 1), (a) => a != '--force')[0];
+	const name = filter(slice(ARGV, 1), (a) => substr(a, 0, 2) != '--')[0];
 
-	exit(update(name, force));
+	if (!lock(index(ARGV, '--no-wait') < 0))
+		exit(0);
+
+	const rc = update(name, force, index(ARGV, '--new') >= 0);
+
+	unlock();
+	exit(rc);
 
 case 'parse':
 	try {

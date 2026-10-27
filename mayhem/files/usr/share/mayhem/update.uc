@@ -477,6 +477,19 @@ function fetch_list(cfg, url) {
 			if (!fs.stat(tmp))
 				fs.writefile(tmp, '');
 
+			// An error page, a rate limit or a captive portal with code 200
+			// is not a list: the one downloaded before stays.
+			const f = fs.open(tmp, 'r');
+			const head = f ? (f.read(512) ?? '') : '';
+
+			if (f)
+				f.close();
+
+			if (match(ltrim(head), /^(<!doctype|<html|<\?xml|<head|<body)/i)) {
+				fs.unlink(tmp);
+				die('the address returns a web page, not a list');
+			}
+
 			return { file: tmp, via: proxy ? 'xray' : 'direct' };
 		}
 

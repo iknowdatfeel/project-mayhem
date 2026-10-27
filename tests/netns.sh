@@ -1126,13 +1126,22 @@ if start_mayhem uci; then
 
 	if [ -n "$(proc_in router xray)" ]; then ok "two checks over the memory limit are tolerated"; else bad "xray restarted too early"; fi
 
+	old="$(proc_in router xray)"
 	ip netns exec router sh -c ". '$FILES/usr/share/mayhem/lib.sh'; MAYHEM_WATCHDOG=1 MAYHEM_WATCHDOG_MEM=0 mayhem_watchdog"
-	sleep 2
 
-	if [ -z "$(proc_in router xray)" ] && ! ip netns exec router nft list table inet mayhem >/dev/null 2>&1; then
-		ok "third check restarts xray, traffic goes direct meanwhile"
+	# xray-run starts a new xray in place: the interception stays.
+	i=0 new=""
+	while [ "$i" -lt 40 ]; do
+		new="$(proc_in router xray)"
+		[ -n "$new" ] && [ "$new" != "$old" ] && break
+		sleep 0.5
+		i=$((i + 1))
+	done
+
+	if [ -n "$new" ] && [ "$new" != "$old" ] && ip netns exec router nft list table inet mayhem >/dev/null 2>&1; then
+		ok "third check restarts xray in place, the interception stays"
 	else
-		bad "watchdog did not restart xray"
+		bad "watchdog did not restart xray in place (old $old, new $new)"
 	fi
 
 	if grep -q 'xray restarted' "$MAYHEM_RUN_DIR/watchdog.log"; then ok "watchdog notes the restart"; else bad "no watchdog note"; fi

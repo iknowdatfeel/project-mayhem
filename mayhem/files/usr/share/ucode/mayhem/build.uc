@@ -35,7 +35,11 @@ const DNS_IDLE = 4;
 // the query may already be gone by then: the answer of the second server was
 // lost. With several servers in a row each gets DNS_TRY_MS, and the session
 // lives long enough for the whole row.
-const DNS_TRY_MS = 2000;
+// A remote DoH server answers through the proxy in 0.1-0.5 s. Under a heavy
+// download through the same server one of its kept connections may stall:
+// its queries wait for the whole timeout while the next server of the row
+// answers at once. A second keeps that cost small.
+const DNS_TRY_MS = 1000;
 
 // How long xray may answer with an expired DNS record while it asks again.
 const DNS_STALE = 3600;
@@ -287,14 +291,17 @@ function sub_rule_state(sec, sinfo) {
 // Sets that keep single addresses apart (name -> true), see nft_set().
 let HOSTSETS = {};
 
+// Big texts (nft.conf, dnsmasq.conf) are built from parts joined once: in
+// ucode every `s += x` copies the whole string, and with a big geoip or block
+// category those files reach megabytes (a reload took half a minute).
 function nft_elems(elems) {
-	let s = '\t\telements = {';
+	const rows = [];
 
 	// geoip sets have thousands of subnets: a few per line keeps lines short.
 	for (let i = 0; i < length(elems); i += 8)
-		s += `${i ? ',' : ''}\n\t\t\t${join(', ', slice(elems, i, i + 8))}`;
+		push(rows, `\t\t\t${join(', ', slice(elems, i, i + 8))}`);
 
-	return s + '\n\t\t}\n';
+	return length(rows) ? `\t\telements = {\n${join(',\n', rows)}\n\t\t}\n` : '\t\telements = {\n\t\t}\n';
 }
 
 // An address set. In an interval set every element is a node of a tree:
@@ -345,18 +352,18 @@ function with_hostsets(text) {
 	if (!length(keys(HOSTSETS)))
 		return text;
 
-	let out = '';
+	const out = [];
 
 	for (let line in split(text, '\n')) {
 		const m = match(line, /^\t\t.*[ ]@([A-Za-z0-9_]+)( |$)/);
 
 		if (m && HOSTSETS[m[1]])
-			out += replace(line, `@${m[1]}`, `@${m[1]}_h`) + '\n';
+			push(out, replace(line, `@${m[1]}`, `@${m[1]}_h`));
 
-		out += line + '\n';
+		push(out, line);
 	}
 
-	return substr(out, 0, length(out) - 1);
+	return join('\n', out);
 }
 
 // Marks for tunnel sections in kernel mode: TUN_MARK | index, matched with
@@ -384,69 +391,69 @@ function build_nft_text(S, v6, sets, tunnels, dns_redirect, fake_pool, kdef, cap
 	// blackhole keeps a UDP flow 30-90 s to drain it).
 	const refuse = `meta mark set meta mark | ${stale} counter return`;
 	const no_quic = is_true(S.block_quic ?? '0');
-	let s = `table inet ${C.NFT_TABLE}\ndelete table inet ${C.NFT_TABLE}\n\n`;
+	const s = [ `table inet ${C.NFT_TABLE}\ndelete table inet ${C.NFT_TABLE}\n\n` ];
 
-	s += `table inet ${C.NFT_TABLE} {\n`;
-	s += `\tset ifaces {\n\t\ttype ifname\n\t\telements = { ${join(', ', ifaces)} }\n\t}\n`;
+	push(s, `table inet ${C.NFT_TABLE} {\n`);
+	push(s, `\tset ifaces {\n\t\ttype ifname\n\t\telements = { ${join(', ', ifaces)} }\n\t}\n`);
 	// Local addresses stay on the router; without the option only what can
 	// never be routed (loopback, link-local, multicast) is left out.
 	const local = is_true(S.exclude_local ?? '1');
 
-	s += nft_set('local4', 'ipv4_addr', local ? C.LOCAL4 : C.LOCAL4_ALWAYS);
-	s += nft_set('local6', 'ipv6_addr', local ? C.LOCAL6 : C.LOCAL6_ALWAYS);
-	s += nft_set('block4', 'ipv4_addr', sets.block4);
-	s += nft_set('block6', 'ipv6_addr', sets.block6);
-	s += nft_set('direct4', 'ipv4_addr', sets.direct4);
-	s += nft_set('direct6', 'ipv6_addr', sets.direct6);
-	s += nft_set('bypass4', 'ipv4_addr', sets.bypass4 ?? []);
-	s += nft_set('bypass6', 'ipv6_addr', sets.bypass6 ?? []);
-	s += `\tset bypass_mac {\n\t\ttype ether_addr\n${length(sets.bypass_mac ?? []) ? `\t\telements = { ${join(', ', sets.bypass_mac)} }\n` : ''}\t}\n`;
+	push(s, nft_set('local4', 'ipv4_addr', local ? C.LOCAL4 : C.LOCAL4_ALWAYS));
+	push(s, nft_set('local6', 'ipv6_addr', local ? C.LOCAL6 : C.LOCAL6_ALWAYS));
+	push(s, nft_set('block4', 'ipv4_addr', sets.block4));
+	push(s, nft_set('block6', 'ipv6_addr', sets.block6));
+	push(s, nft_set('direct4', 'ipv4_addr', sets.direct4));
+	push(s, nft_set('direct6', 'ipv6_addr', sets.direct6));
+	push(s, nft_set('bypass4', 'ipv4_addr', sets.bypass4 ?? []));
+	push(s, nft_set('bypass6', 'ipv6_addr', sets.bypass6 ?? []));
+	push(s, `\tset bypass_mac {\n\t\ttype ether_addr\n${length(sets.bypass_mac ?? []) ? `\t\telements = { ${join(', ', sets.bypass_mac)} }\n` : ''}\t}\n`);
 
 	// Tunnel sections in kernel mode: subnets from the rules, plus addresses
 	// that dnsmasq adds while it resolves the section's domains.
 	for (let t in tunnels) {
-		s += nft_set(`tun_${t.name}_4`, 'ipv4_addr', t.ip4);
-		s += nft_set(`tun_${t.name}_6`, 'ipv6_addr', t.ip6);
-		s += `\tset tun_${t.name}_d4 {\n\t\ttype ipv4_addr\n\t}\n`;
-		s += `\tset tun_${t.name}_d6 {\n\t\ttype ipv6_addr\n\t}\n`;
+		push(s, nft_set(`tun_${t.name}_4`, 'ipv4_addr', t.ip4));
+		push(s, nft_set(`tun_${t.name}_6`, 'ipv6_addr', t.ip6));
+		push(s, `\tset tun_${t.name}_d4 {\n\t\ttype ipv4_addr\n\t}\n`);
+		push(s, `\tset tun_${t.name}_d6 {\n\t\ttype ipv6_addr\n\t}\n`);
 
 		// The devices of a section limited to some.
 		if (t.src) {
-			s += nft_set(`tun_${t.name}_s4`, 'ipv4_addr', t.src.ip4);
-			s += nft_set(`tun_${t.name}_s6`, 'ipv6_addr', t.src.ip6);
-			s += `\tset tun_${t.name}_sm {\n\t\ttype ether_addr\n${length(t.src.mac) ? `\t\telements = { ${join(', ', t.src.mac)} }\n` : ''}\t}\n`;
+			push(s, nft_set(`tun_${t.name}_s4`, 'ipv4_addr', t.src.ip4));
+			push(s, nft_set(`tun_${t.name}_s6`, 'ipv6_addr', t.src.ip6));
+			push(s, `\tset tun_${t.name}_sm {\n\t\ttype ether_addr\n${length(t.src.mac) ? `\t\telements = { ${join(', ', t.src.mac)} }\n` : ''}\t}\n`);
 		}
 	}
 
 	// Global mode: addresses of excluded domains and of all the others
 	// (dnsmasq fills them; the others expire, there are many).
 	if (sets.dir_domains && !kdef) {
-		s += '\tset dir_d4 {\n\t\ttype ipv4_addr\n\t}\n';
-		s += '\tset dir_d6 {\n\t\ttype ipv6_addr\n\t}\n';
-		s += `\tset oth_d4 {\n\t\ttype ipv4_addr\n\t\tflags timeout\n\t\ttimeout ${C.OTHER_ADDR_TTL}\n\t}\n`;
-		s += `\tset oth_d6 {\n\t\ttype ipv6_addr\n\t\tflags timeout\n\t\ttimeout ${C.OTHER_ADDR_TTL}\n\t}\n`;
+		push(s, '\tset dir_d4 {\n\t\ttype ipv4_addr\n\t}\n');
+		push(s, '\tset dir_d6 {\n\t\ttype ipv6_addr\n\t}\n');
+		push(s, `\tset oth_d4 {\n\t\ttype ipv4_addr\n\t\tflags timeout\n\t\ttimeout ${C.OTHER_ADDR_TTL}\n\t}\n`);
+		push(s, `\tset oth_d6 {\n\t\ttype ipv6_addr\n\t\tflags timeout\n\t\ttimeout ${C.OTHER_ADDR_TTL}\n\t}\n`);
 	}
 
 	if (cap) {
-		s += nft_set('px4', 'ipv4_addr', cap.px4);
-		s += nft_set('px6', 'ipv6_addr', cap.px6);
+		push(s, nft_set('px4', 'ipv4_addr', cap.px4));
+		push(s, nft_set('px6', 'ipv6_addr', cap.px6));
 	}
 
 	// The rest of the traffic into a kernel tunnel: what still has to reach
 	// xray (proxy sections) or stay out of the tunnel (exclusions, blocking)
 	// is told by subnets and by addresses dnsmasq adds for their domains.
 	if (kdef) {
-		s += nft_set('px_4', 'ipv4_addr', kdef.px4);
-		s += nft_set('px_6', 'ipv6_addr', kdef.px6);
+		push(s, nft_set('px_4', 'ipv4_addr', kdef.px4));
+		push(s, nft_set('px_6', 'ipv6_addr', kdef.px6));
 
 		for (let n in [ 'px_d', 'dir_d', 'blk_d' ]) {
-			s += `\tset ${n}4 {\n\t\ttype ipv4_addr\n\t}\n`;
-			s += `\tset ${n}6 {\n\t\ttype ipv6_addr\n\t}\n`;
+			push(s, `\tset ${n}4 {\n\t\ttype ipv4_addr\n\t}\n`);
+			push(s, `\tset ${n}6 {\n\t\ttype ipv6_addr\n\t}\n`);
 		}
 	}
 
-	s += '\n\tchain prerouting {\n';
-	s += '\t\ttype filter hook prerouting priority mangle; policy accept;\n';
+	push(s, '\n\tchain prerouting {\n');
+	push(s, '\t\ttype filter hook prerouting priority mangle; policy accept;\n');
 
 	// The router's own connections (chain output) come back through lo with
 	// the mark: those to FakeDNS addresses, and with "router through the
@@ -454,19 +461,19 @@ function build_nft_text(S, v6, sets, tunnels, dns_redirect, fake_pool, kdef, cap
 	const router = is_true(S.router_traffic ?? '0');
 
 	if (router) {
-		s += `\t\tiifname "lo" meta mark & ${mark} == ${mark} meta nfproto ipv4 meta l4proto { tcp, udp } tproxy ip to 127.0.0.1:${C.TPROXY_PORT} counter accept\n`;
+		push(s, `\t\tiifname "lo" meta mark & ${mark} == ${mark} meta nfproto ipv4 meta l4proto { tcp, udp } tproxy ip to 127.0.0.1:${C.TPROXY_PORT} counter accept\n`);
 
 		if (v6)
-			s += `\t\tiifname "lo" meta mark & ${mark} == ${mark} meta nfproto ipv6 meta l4proto tcp tproxy ip6 to [::1]:${C.TPROXY_PORT} counter accept\n`;
+			push(s, `\t\tiifname "lo" meta mark & ${mark} == ${mark} meta nfproto ipv6 meta l4proto tcp tproxy ip6 to [::1]:${C.TPROXY_PORT} counter accept\n`);
 	}
 	else if (fake_pool)
-		s += `\t\tiifname "lo" meta mark & ${mark} == ${mark} ip daddr ${fake_pool} meta l4proto { tcp, udp } tproxy ip to 127.0.0.1:${C.TPROXY_PORT} counter accept\n`;
+		push(s, `\t\tiifname "lo" meta mark & ${mark} == ${mark} ip daddr ${fake_pool} meta l4proto { tcp, udp } tproxy ip to 127.0.0.1:${C.TPROXY_PORT} counter accept\n`);
 
-	s += '\t\tiifname != @ifaces return\n';
+	push(s, '\t\tiifname != @ifaces return\n');
 
 	// A connection that took another path before the last change: no rule
 	// here may take it, the forward chain resets it.
-	s += `\t\tct state established,related ct mark & ${gmask} != 0 ct mark & ${gmask} != ${gen} meta mark set meta mark | ${stale} counter return\n`;
+	push(s, `\t\tct state established,related ct mark & ${gmask} != 0 ct mark & ${gmask} != ${gen} meta mark set meta mark | ${stale} counter return\n`);
 
 	// Devices left alone (settings.bypass): nothing of theirs is touched,
 	// only fake addresses still reach xray - the router's DNS gives them out
@@ -477,24 +484,24 @@ function build_nft_text(S, v6, sets, tunnels, dns_redirect, fake_pool, kdef, cap
 
 	for (let m in [ 'ether saddr @bypass_mac', 'ip saddr @bypass4', 'ip6 saddr @bypass6' ]) {
 		if (fake_only && m != 'ip6 saddr @bypass6')
-			s += `\t\t${m} ip daddr ${fake_pool} ${fake_only}\n`;
+			push(s, `\t\t${m} ip daddr ${fake_pool} ${fake_only}\n`);
 
-		s += `\t\t${m} return\n`;
+		push(s, `\t\t${m} return\n`);
 	}
 
-	s += '\t\tfib daddr type { local, broadcast, multicast } return\n';
-	s += '\t\tip daddr @local4 return\n';
-	s += '\t\tip6 daddr @local6 return\n';
-	s += `\t\tip daddr @block4 ${refuse}\n`;
-	s += `\t\tip6 daddr @block6 ${refuse}\n`;
+	push(s, '\t\tfib daddr type { local, broadcast, multicast } return\n');
+	push(s, '\t\tip daddr @local4 return\n');
+	push(s, '\t\tip6 daddr @local6 return\n');
+	push(s, `\t\tip daddr @block4 ${refuse}\n`);
+	push(s, `\t\tip6 daddr @block6 ${refuse}\n`);
 
 	// Ports of direct sections: past everything, tunnels and xray alike.
 	if (length(sets.direct_ports ?? []))
-		s += `\t\tmeta l4proto { tcp, udp } th dport { ${join(', ', sets.direct_ports)} } counter return\n`;
+		push(s, `\t\tmeta l4proto { tcp, udp } th dport { ${join(', ', sets.direct_ports)} } counter return\n`);
 
 	if (kdef) {
-		s += `\t\tip daddr @blk_d4 ${refuse}\n`;
-		s += `\t\tip6 daddr @blk_d6 ${refuse}\n`;
+		push(s, `\t\tip daddr @blk_d4 ${refuse}\n`);
+		push(s, `\t\tip6 daddr @blk_d6 ${refuse}\n`);
 	}
 
 	// Kernel tunnels go before everything else: the mark selects their
@@ -508,13 +515,13 @@ function build_nft_text(S, v6, sets, tunnels, dns_redirect, fake_pool, kdef, cap
 		const w6 = t.src ? [ `ether saddr @tun_${t.name}_sm `, `ip6 saddr @tun_${t.name}_s6 ` ] : [ '' ];
 
 		for (let w in w4) {
-			s += `\t\t${w}ip daddr @tun_${t.name}_4 ${m} counter return\n`;
-			s += `\t\t${w}ip daddr @tun_${t.name}_d4 ${m} counter return\n`;
+			push(s, `\t\t${w}ip daddr @tun_${t.name}_4 ${m} counter return\n`);
+			push(s, `\t\t${w}ip daddr @tun_${t.name}_d4 ${m} counter return\n`);
 		}
 
 		for (let w in w6) {
-			s += `\t\t${w}ip6 daddr @tun_${t.name}_6 ${m} counter return\n`;
-			s += `\t\t${w}ip6 daddr @tun_${t.name}_d6 ${m} counter return\n`;
+			push(s, `\t\t${w}ip6 daddr @tun_${t.name}_6 ${m} counter return\n`);
+			push(s, `\t\t${w}ip6 daddr @tun_${t.name}_d6 ${m} counter return\n`);
 		}
 	}
 
@@ -523,30 +530,30 @@ function build_nft_text(S, v6, sets, tunnels, dns_redirect, fake_pool, kdef, cap
 		const tp4 = `meta l4proto { tcp, udp } meta mark set meta mark | ${mark} ${tag} tproxy ip to 127.0.0.1:${C.TPROXY_PORT} counter accept`;
 		const tp6 = `meta nfproto ipv6 meta l4proto { tcp, udp } meta mark set meta mark | ${mark} ${tag} tproxy ip6 to [::1]:${C.TPROXY_PORT} counter accept`;
 
-		s += '\t\tip daddr @direct4 counter return\n';
-		s += '\t\tip6 daddr @direct6 counter return\n';
-		s += '\t\tip daddr @dir_d4 counter return\n';
-		s += '\t\tip6 daddr @dir_d6 counter return\n';
+		push(s, '\t\tip daddr @direct4 counter return\n');
+		push(s, '\t\tip6 daddr @direct6 counter return\n');
+		push(s, '\t\tip daddr @dir_d4 counter return\n');
+		push(s, '\t\tip6 daddr @dir_d6 counter return\n');
 
 		if (fake_pool)
-			s += `\t\tip daddr ${fake_pool} ${tp4}\n`;
+			push(s, `\t\tip daddr ${fake_pool} ${tp4}\n`);
 
-		s += `\t\tip daddr @px_4 ${tp4}\n`;
-		s += `\t\tip daddr @px_d4 ${tp4}\n`;
+		push(s, `\t\tip daddr @px_4 ${tp4}\n`);
+		push(s, `\t\tip daddr @px_d4 ${tp4}\n`);
 
 		if (v6) {
-			s += `\t\tip6 daddr @px_6 ${tp6}\n`;
-			s += `\t\tip6 daddr @px_d6 ${tp6}\n`;
+			push(s, `\t\tip6 daddr @px_6 ${tp6}\n`);
+			push(s, `\t\tip6 daddr @px_d6 ${tp6}\n`);
 		}
 
 		// DNS goes to dnsmasq (chain dstnat), which fills the sets.
 		if (dns_redirect)
-			s += '\t\tmeta l4proto { tcp, udp } th dport 53 return\n';
+			push(s, '\t\tmeta l4proto { tcp, udp } th dport 53 return\n');
 
 		// QUIC off, as xray does it for the traffic it gets: browsers fall
 		// back to TCP. (Reject is not allowed in prerouting.)
 		if (kdef.no_quic)
-			s += `\t\tmeta l4proto udp th dport 443 ${refuse}\n`;
+			push(s, `\t\tmeta l4proto udp th dport 443 ${refuse}\n`);
 
 		// Torrents direct: only xray tells BitTorrent apart, so the kernel
 		// takes web traffic (TCP 80/443, QUIC) and the rest goes through
@@ -556,27 +563,27 @@ function build_nft_text(S, v6, sets, tunnels, dns_redirect, fake_pool, kdef, cap
 			: [ '' ];
 
 		for (let x in sel) {
-			s += `\t\tmeta nfproto ipv4 ${x}${m} counter return\n`;
+			push(s, `\t\tmeta nfproto ipv4 ${x}${m} counter return\n`);
 
 			// A tunnel without IPv6: IPv6 goes on through xray as before.
 			if (kdef.v6)
-				s += `\t\tmeta nfproto ipv6 ${x}${m} counter return\n`;
+				push(s, `\t\tmeta nfproto ipv6 ${x}${m} counter return\n`);
 		}
 	}
 
-	s += '\t\tmeta l4proto != { tcp, udp } return\n';
+	push(s, '\t\tmeta l4proto != { tcp, udp } return\n');
 
 	// DNS goes to dnsmasq (chain dstnat): its answers carry the fake
 	// addresses and fill the tunnel sets.
 	if (dns_redirect)
-		s += '\t\tth dport 53 return\n';
+		push(s, '\t\tth dport 53 return\n');
 
-	s += '\t\tip daddr @direct4 counter return\n';
-	s += '\t\tip6 daddr @direct6 counter return\n';
+	push(s, '\t\tip daddr @direct4 counter return\n');
+	push(s, '\t\tip6 daddr @direct6 counter return\n');
 
 	if (sets.dir_domains && !kdef) {
-		s += '\t\tip daddr @dir_d4 ip daddr != @oth_d4 counter return\n';
-		s += '\t\tip6 daddr @dir_d6 ip6 daddr != @oth_d6 counter return\n';
+		push(s, '\t\tip daddr @dir_d4 ip daddr != @oth_d4 counter return\n');
+		push(s, '\t\tip6 daddr @dir_d6 ip6 daddr != @oth_d6 counter return\n');
 	}
 
 	const tp4 = `meta l4proto { tcp, udp } meta mark set meta mark | ${mark} ${tag} tproxy ip to 127.0.0.1:${C.TPROXY_PORT} counter accept`;
@@ -591,41 +598,41 @@ function build_nft_text(S, v6, sets, tunnels, dns_redirect, fake_pool, kdef, cap
 
 		if (cap) {
 			if (fake_pool)
-				s += `\t\tip daddr ${fake_pool} ${q}\n`;
+				push(s, `\t\tip daddr ${fake_pool} ${q}\n`);
 
-			s += `\t\tip daddr @px4 ${q}\n`;
+			push(s, `\t\tip daddr @px4 ${q}\n`);
 
 			if (v6)
-				s += `\t\tip6 daddr @px6 ${q}\n`;
+				push(s, `\t\tip6 daddr @px6 ${q}\n`);
 		}
 		else
-			s += `\t\t${q}\n`;
+			push(s, `\t\t${q}\n`);
 	}
 
 	if (cap) {
 		if (fake_pool)
-			s += `\t\tip daddr ${fake_pool} ${tp4}\n`;
+			push(s, `\t\tip daddr ${fake_pool} ${tp4}\n`);
 
-		s += `\t\tip daddr @px4 ${tp4}\n`;
+		push(s, `\t\tip daddr @px4 ${tp4}\n`);
 
 		if (v6)
-			s += `\t\tip6 daddr @px6 ${tp6}\n`;
+			push(s, `\t\tip6 daddr @px6 ${tp6}\n`);
 	}
 	else {
-		s += `\t\tmeta nfproto ipv4 ${tp4}\n`;
+		push(s, `\t\tmeta nfproto ipv4 ${tp4}\n`);
 
 		if (v6)
-			s += `\t\t${tp6}\n`;
+			push(s, `\t\t${tp6}\n`);
 	}
 
-	s += '\t}\n';
+	push(s, '\t}\n');
 
-	s += '\n\tchain stale {\n';
-	s += '\t\ttype filter hook forward priority filter - 1; policy accept;\n';
-	s += `\t\tmeta mark & ${stale} == ${stale} meta l4proto tcp counter reject with tcp reset\n`;
-	s += `\t\tmeta mark & ${stale} == ${stale} meta l4proto udp counter reject with icmpx type port-unreachable\n`;
-	s += `\t\tmeta mark & ${stale} == ${stale} counter drop\n`;
-	s += '\t}\n';
+	push(s, '\n\tchain stale {\n');
+	push(s, '\t\ttype filter hook forward priority filter - 1; policy accept;\n');
+	push(s, `\t\tmeta mark & ${stale} == ${stale} meta l4proto tcp counter reject with tcp reset\n`);
+	push(s, `\t\tmeta mark & ${stale} == ${stale} meta l4proto udp counter reject with icmpx type port-unreachable\n`);
+	push(s, `\t\tmeta mark & ${stale} == ${stale} counter drop\n`);
+	push(s, '\t}\n');
 
 	// dnsmasq asks xray for the router's own lookups too, so with FakeDNS the
 	// router gets fake addresses as well (curl, package updates): send those
@@ -640,54 +647,54 @@ function build_nft_text(S, v6, sets, tunnels, dns_redirect, fake_pool, kdef, cap
 		const xm = sprintf('0x%x', C.XRAY_OUT_MARK);
 		const to_x = `meta mark set meta mark | ${mark} counter`;
 
-		s += '\n\tchain output {\n';
-		s += '\t\ttype route hook output priority mangle; policy accept;\n';
-		s += `\t\tmeta mark & ${xm} == ${xm} return\n`;
+		push(s, '\n\tchain output {\n');
+		push(s, '\t\ttype route hook output priority mangle; policy accept;\n');
+		push(s, `\t\tmeta mark & ${xm} == ${xm} return\n`);
 
 		if (fake_pool)
-			s += `\t\tip daddr ${fake_pool} meta l4proto { tcp, udp } ${to_x}\n`;
+			push(s, `\t\tip daddr ${fake_pool} meta l4proto { tcp, udp } ${to_x}\n`);
 
 		if (router) {
-			s += '\t\tmeta l4proto != tcp return\n';
-			s += '\t\tct direction reply return\n';
-			s += '\t\tfib daddr type { local, broadcast, multicast } return\n';
-			s += '\t\tip daddr @local4 return\n';
-			s += '\t\tip6 daddr @local6 return\n';
-			s += '\t\tth dport 53 return\n';
-			s += '\t\tip daddr @direct4 return\n';
-			s += '\t\tip6 daddr @direct6 return\n';
+			push(s, '\t\tmeta l4proto != tcp return\n');
+			push(s, '\t\tct direction reply return\n');
+			push(s, '\t\tfib daddr type { local, broadcast, multicast } return\n');
+			push(s, '\t\tip daddr @local4 return\n');
+			push(s, '\t\tip6 daddr @local6 return\n');
+			push(s, '\t\tth dport 53 return\n');
+			push(s, '\t\tip daddr @direct4 return\n');
+			push(s, '\t\tip6 daddr @direct6 return\n');
 
 			if (length(sets.direct_ports ?? []))
-				s += `\t\tth dport { ${join(', ', sets.direct_ports)} } return\n`;
+				push(s, `\t\tth dport { ${join(', ', sets.direct_ports)} } return\n`);
 
 			if (cap) {
-				s += `\t\tip daddr @px4 ${to_x}\n`;
+				push(s, `\t\tip daddr @px4 ${to_x}\n`);
 
 				if (v6)
-					s += `\t\tip6 daddr @px6 ${to_x}\n`;
+					push(s, `\t\tip6 daddr @px6 ${to_x}\n`);
 			}
 			else {
-				s += `\t\tmeta nfproto ipv4 ${to_x}\n`;
+				push(s, `\t\tmeta nfproto ipv4 ${to_x}\n`);
 
 				if (v6)
-					s += `\t\tmeta nfproto ipv6 ${to_x}\n`;
+					push(s, `\t\tmeta nfproto ipv6 ${to_x}\n`);
 			}
 		}
 
-		s += '\t}\n';
+		push(s, '\t}\n');
 	}
 
 	// Devices with a DNS server of their own (8.8.8.8 and the like) ask
 	// dnsmasq all the same.
 	if (dns_redirect) {
-		s += '\n\tchain dstnat {\n';
-		s += '\t\ttype nat hook prerouting priority dstnat; policy accept;\n';
-		s += '\t\tether saddr @bypass_mac return\n\t\tip saddr @bypass4 return\n\t\tip6 saddr @bypass6 return\n';
-		s += '\t\tiifname @ifaces meta l4proto { tcp, udp } th dport 53 fib daddr type != local counter redirect to :53\n';
-		s += '\t}\n';
+		push(s, '\n\tchain dstnat {\n');
+		push(s, '\t\ttype nat hook prerouting priority dstnat; policy accept;\n');
+		push(s, '\t\tether saddr @bypass_mac return\n\t\tip saddr @bypass4 return\n\t\tip6 saddr @bypass6 return\n');
+		push(s, '\t\tiifname @ifaces meta l4proto { tcp, udp } th dport 53 fib daddr type != local counter redirect to :53\n');
+		push(s, '\t}\n');
 	}
 
-	return s + '}\n';
+	return join('', s) + '}\n';
 }
 
 function build_nft(S, v6, sets, tunnels, dns_redirect, fake_pool, kdef, cap) {
@@ -814,44 +821,38 @@ function dns_names(RLs, model) {
 	return { names: out };
 }
 
-// dnsmasq server lines that send the queries for the names to one server.
-function server_lines(names, server) {
-	let out = '', line = '';
+// dnsmasq lines "<head>/name/name/.../<tail>" with up to ~900 bytes of names
+// each (dnsmasq matches a name together with its subdomains).
+function name_lines(names, head, tail) {
+	const out = [];
+	let part = [], len = 0;
 
 	for (let d in names) {
-		if (length(line) + length(d) > 900) {
-			out += `server=/${line}/${server}\n`;
-			line = '';
+		if (len + length(d) > 900 && length(part)) {
+			push(out, `${head}/${join('/', part)}/${tail}\n`);
+			part = [];
+			len = 0;
 		}
 
-		line += (line != '' ? '/' : '') + d;
+		len += (length(part) ? 1 : 0) + length(d);
+		push(part, d);
 	}
 
-	if (line != '')
-		out += `server=/${line}/${server}\n`;
+	if (length(part))
+		push(out, `${head}/${join('/', part)}/${tail}\n`);
 
-	return out;
+	return join('', out);
+}
+
+// dnsmasq server lines that send the queries for the names to one server.
+function server_lines(names, server) {
+	return name_lines(names, 'server=', server);
 }
 
 // dnsmasq lines that put the addresses of the domains into two nftables sets
 // (IPv4, IPv6). dnsmasq matches a domain together with its subdomains.
 function nftset_lines(domains, set4, set6) {
-	const sets = `4#inet#${C.NFT_TABLE}#${set4},6#inet#${C.NFT_TABLE}#${set6}`;
-	let out = '', line = '';
-
-	for (let d in domains) {
-		if (length(line) + length(d) > 900) {
-			out += `nftset=/${line}/${sets}\n`;
-			line = '';
-		}
-
-		line += (line != '' ? '/' : '') + d;
-	}
-
-	if (line != '')
-		out += `nftset=/${line}/${sets}\n`;
-
-	return out;
+	return name_lines(domains, 'nftset=', `4#inet#${C.NFT_TABLE}#${set4},6#inet#${C.NFT_TABLE}#${set6}`);
 }
 
 // Links are one per line; commas and spaces may appear inside a link.
@@ -1255,21 +1256,7 @@ function block_for_dnsmasq(RL, model) {
 
 // dnsmasq lines that answer the names with NXDOMAIN (subdomains included).
 function local_lines(names) {
-	let out = '', line = '';
-
-	for (let d in names) {
-		if (length(line) + length(d) > 900) {
-			out += `local=/${line}/\n`;
-			line = '';
-		}
-
-		line += (line != '' ? '/' : '') + d;
-	}
-
-	if (line != '')
-		out += `local=/${line}/\n`;
-
-	return out;
+	return name_lines(names, 'local=', '');
 }
 
 // Tag of a server: section and a hash of its outbound. It stays the same while

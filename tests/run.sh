@@ -91,6 +91,13 @@ else
 	bad "block: $out"
 fi
 
+# Rules and DNS servers as written: a regexp keeps its commas, a DNS port is a port.
+if out="$(uc "$ROOT/tests/entries.uc" 2>&1)"; then
+	ok "entries: regexp with commas, DNS ports"
+else
+	bad "entries: $out"
+fi
+
 # Several DNS servers: fallback with a short timeout each, parallel on request.
 if out="$(uc "$ROOT/tests/dnsrow.uc" 2>&1)"; then
 	ok "DNS servers in a row"
@@ -729,9 +736,9 @@ fi
 # Renaming servers: keys, subscription servers, tunnels.
 mkdir -p "$OUT/ren-uci"
 cp "$ROOT/tests/uci/mayhem" "$OUT/ren-uci/"
-if out="$(MAYHEM_UCI_DIR="$OUT/ren-uci" MAYHEM_RUN_DIR="$OUT/ren-run" \
+if out="$(MAYHEM_UCI_DIR="$OUT/ren-uci" MAYHEM_RUN_DIR="$OUT/ren-run" MAYHEM_SUBS_DIR="$OUT/ren-subs" \
 	uc "$ROOT/tests/rename.uc" "$ROOT/luci-app-mayhem/root/usr/share/rpcd/ucode/luci.mayhem" 2>&1)"; then
-	ok "renaming servers: keys, vmess, subscription servers, tunnels"
+	ok "renaming servers and subscriptions: keys, vmess, subscription servers, tunnels, chains"
 else
 	bad "renaming servers: $out"
 fi

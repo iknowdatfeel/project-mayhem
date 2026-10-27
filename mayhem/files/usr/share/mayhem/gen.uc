@@ -111,6 +111,8 @@ put('geo.stamp', stamp);
 put('nodes.json', sprintf('%J\n', res.state));
 put('overrides', length(res.overrides) ? join('\n', res.overrides) + '\n' : '');
 put('tunnels', res.tunnels ?? '');
+// Subscriptions the service downloads right after this reload.
+put('subs.new', length(model.subs_new ?? []) ? join('\n', model.subs_new) + '\n' : '');
 
 for (let w in res.status.warnings)
 	warn(`mayhem: warning: ${w}\n`);

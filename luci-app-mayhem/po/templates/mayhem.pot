@@ -989,6 +989,10 @@ msgstr ""
 msgid "Last handshake %s"
 msgstr ""
 
+#: htdocs/luci-static/resources/mayhem/page/servers.js
+msgid "Latin letters, digits and _. Its servers, the chain of the server list and the chosen server go along."
+msgstr ""
+
 #: htdocs/luci-static/resources/mayhem/page/sections.js
 msgid "Latin letters, digits and _. The settings that name the section change too. Xray restarts once, so connections break for a moment."
 msgstr ""
@@ -1226,7 +1230,7 @@ msgid "On: queries go through the active server. Off: they go direct, encrypted 
 msgstr ""
 
 #: htdocs/luci-static/resources/mayhem/page/sections.js
-msgid "On: the remote servers get the query together and the first good answer counts, so a server that does not answer slows nothing down. By lists or with FakeDNS the provider's DNS gets the names of proxied sites too. Off (fallback): the servers are asked one after another, the next one after 2 s without an answer."
+msgid "On: the remote servers get the query together and the first good answer counts, so a server that does not answer slows nothing down. By lists or with FakeDNS the provider's DNS gets the names of proxied sites too. Off (fallback): the servers are asked one after another, the next one after 1 s without an answer."
 msgstr ""
 
 #: htdocs/luci-static/resources/mayhem/page/sections.js
@@ -1431,6 +1435,10 @@ msgstr ""
 
 #: htdocs/luci-static/resources/mayhem/page/sections.js
 msgid "Rename section %s"
+msgstr ""
+
+#: htdocs/luci-static/resources/mayhem/page/servers.js
+msgid "Rename subscription %s"
 msgstr ""
 
 #: htdocs/luci-static/resources/mayhem/tunnels.js
@@ -1847,6 +1855,10 @@ msgstr ""
 
 #: htdocs/luci-static/resources/mayhem/page/settings.js
 msgid "The settings are reset. The page reloads in a few seconds."
+msgstr ""
+
+#: htdocs/luci-static/resources/mayhem/page/servers.js
+msgid "The subscription name may only contain letters, digits and _"
 msgstr ""
 
 #: htdocs/luci-static/resources/mayhem/tunnels.js

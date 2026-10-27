@@ -142,6 +142,8 @@ while :; do
 
 	mayhem_apply_overrides
 	mayhem_log "xray restarted, connections reopen through the chosen servers (pid $xray_pid)"
+	# The watchdog's restart (memory, hang) shows on the dashboard.
+	[ -f "$MAYHEM_RUN_DIR/restart.why" ] && mayhem_xray_started
 done
 
 # How it ended, for the reason of the next start.
@@ -150,9 +152,11 @@ done
 rm -f "$MAYHEM_RUN_DIR/active" "$MAYHEM_RUN_DIR/xray.pid" "$MAYHEM_RUN_DIR/xray-run.pid" "$MAYHEM_RUN_DIR/watchdog.mem" "$MAYHEM_RUN_DIR/watchdog.hang"
 
 # Kill switch: the interception stays and the traffic waits for the next
-# xray (procd starts it again). Stopping or turning Mayhem off removes the
+# xray (procd starts it again), also when this one never listened while the
+# rules of an earlier one are in place (the same crash again, a config it
+# does not take after a reload). Stopping or turning Mayhem off removes the
 # rules in the init script before xray gets the signal.
-if [ "$ready" = 1 ] && mayhem_killswitch; then
+if mayhem_killswitch && { [ "$ready" = 1 ] || nft -t list table inet "$MAYHEM_NFT_TABLE" >/dev/null 2>&1; }; then
 	if [ "$stopping" = 1 ]; then
 		mayhem_log "xray stopped; the kill switch keeps the traffic waiting for it"
 		exit 0

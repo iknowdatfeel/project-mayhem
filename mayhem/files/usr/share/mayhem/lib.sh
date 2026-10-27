@@ -458,6 +458,22 @@ mayhem_mem_trim() {
 	fi
 }
 
+# A new xray in place of the running one. xray-run starts it again with the
+# interception in place: connections wait a moment instead of going direct
+# (and past the kill switch). Without xray-run, xray itself is stopped and
+# procd starts it again.
+mayhem_xray_swap() {
+	local runner
+
+	runner="$(cat "$MAYHEM_RUN_DIR/xray-run.pid" 2>/dev/null)"
+
+	if [ -n "$runner" ] && kill -0 "$runner" 2>/dev/null; then
+		kill -HUP "$runner"
+	else
+		kill -TERM "$1"
+	fi
+}
+
 mayhem_watchdog() {
 	local pid rss total pct limit n gml
 
@@ -489,7 +505,7 @@ mayhem_watchdog() {
 				mayhem_watchdog_note "xray restarted: ${rss} KiB of memory"
 				mayhem_restart_why memory
 				n=0
-				kill -TERM "$pid"
+				mayhem_xray_swap "$pid"
 			fi
 
 			echo "$n" > "$MAYHEM_RUN_DIR/watchdog.mem"
@@ -499,8 +515,7 @@ mayhem_watchdog() {
 
 		# A hung xray (alive, but it does not answer): DNS and the listed
 		# sites stop while it is there. Three minutes without an answer on
-		# its own metrics port, and it is restarted; xray-run sends DNS and
-		# traffic direct meanwhile.
+		# its own metrics port, and it is restarted in place.
 		if [ -f "$MAYHEM_RUN_DIR/active" ]; then
 			# Counted per xray process ("pid count"): a count left from a
 			# process that is gone does not carry over.
@@ -522,7 +537,7 @@ mayhem_watchdog() {
 					mayhem_watchdog_note "xray restarted: it did not answer"
 					mayhem_restart_why hang
 					rm -f "$MAYHEM_RUN_DIR/watchdog.hang"
-					kill -TERM "$pid"
+					mayhem_xray_swap "$pid"
 					sleep 5
 					# A stopped or wedged process may ignore TERM.
 					kill -0 "$pid" 2>/dev/null && kill -KILL "$pid"
@@ -686,6 +701,63 @@ mayhem_dns_down() {
 	return 0
 }
 
+# --- locks and background jobs -------------------------------------------------
+
+# One holder of the lock $1 at a time ($MAYHEM_RUN_DIR/$1.lock with its pid).
+# A lock left by a process that is gone is taken over; after $2 seconds (300)
+# it is taken anyway.
+mayhem_lock() {
+	local d="$MAYHEM_RUN_DIR/$1.lock" i=0 pid
+
+	mkdir -p "$MAYHEM_RUN_DIR"
+
+	while ! mkdir "$d" 2>/dev/null; do
+		pid="$(cat "$d/pid" 2>/dev/null)"
+
+		if { [ -n "$pid" ] && ! kill -0 "$pid" 2>/dev/null; } || [ "$i" -ge "${2:-300}" ]; then
+			rm -rf "$d"
+			continue
+		fi
+
+		sleep 1
+		i=$((i + 1))
+	done
+
+	echo "$$" > "$d/pid"
+}
+
+mayhem_unlock() {
+	local d="$MAYHEM_RUN_DIR/$1.lock"
+
+	[ "$(cat "$d/pid" 2>/dev/null)" = "$$" ] && rm -rf "$d"
+	return 0
+}
+
+# Subscriptions not downloaded yet or given a new address (subs.new from the
+# generator) are downloaded in the background right after a reload, once
+# xray works (the download goes through it), and then the service reloads
+# with their servers. Meanwhile the dashboard shows the change on its way
+# (applying.sub). A failed address is tried again on the scheduler's terms.
+mayhem_subs_new() {
+	[ -s "$MAYHEM_RUN_DIR/subs.new" ] || return 0
+
+	(
+		f="$MAYHEM_RUN_DIR/applying.sub"
+		: > "$f"
+		# procd restarts xray after the reload, when it has to.
+		sleep 3
+		i=0
+		while [ ! -f "$MAYHEM_RUN_DIR/active" ] && [ "$i" -lt 60 ]; do
+			sleep 1
+			i=$((i + 1))
+		done
+		ucode "$MAYHEM_SUB" update --new >/dev/null 2>&1
+		rc=$?
+		rm -f "$f"
+		[ "$rc" = 3 ] && /etc/init.d/mayhem reload
+	) >/dev/null 2>&1 </dev/null &
+}
+
 # --- state -------------------------------------------------------------------
 
 # Is something listening on TCP port $1 (any address family)?
@@ -712,8 +784,10 @@ mayhem_conflicts() {
 		/etc/init.d/"$s" running >/dev/null 2>&1 && found="$found $s"
 	done
 
-	# Any other TPROXY ruleset (unknown clients) is a conflict as well.
-	if nft list ruleset 2>/dev/null | awk -v t="$MAYHEM_NFT_TABLE" '
+	# Any other TPROXY ruleset (unknown clients) is a conflict as well. -t
+	# leaves out the elements of the sets: with a big geoip category the full
+	# dump took a second on every reload.
+	if nft -t list ruleset 2>/dev/null | awk -v t="$MAYHEM_NFT_TABLE" '
 		/^table / { cur = $3 }
 		/tproxy/ && cur != t { f = 1 }
 		END { exit !f }'; then

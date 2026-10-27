@@ -275,7 +275,27 @@ return view.extend({
 				delete this.gone[tag];
 	},
 
+	// Redraws asked for in a burst (every answer of a latency test, a poll
+	// on top of a choice) are drawn once, in the next frame: each one builds
+	// every tile again.
 	redraw() {
+		if (this.redrawing)
+			return;
+
+		this.redrawing = true;
+
+		const draw = () => {
+			this.redrawing = false;
+			this.redrawNow();
+		};
+
+		if (window.requestAnimationFrame && !document.hidden)
+			window.requestAnimationFrame(draw);
+		else
+			window.setTimeout(draw, 0);
+	},
+
+	redrawNow() {
 		const body = document.getElementById('mayhem-body');
 		const focus = document.activeElement;
 
