@@ -218,8 +218,20 @@ return view.extend({
 	pendingSel: {},		// section -> { mode, chain, time }: a choice the reload has not applied yet
 	showServices: false,	// the state of the services under the badge
 
+	// With the URL test the page waits for its last numbers too, so the
+	// servers have real ones from the first look.
 	load() {
-		return callDashboard();
+		return callDashboard().then((d) => {
+			const m = PROBES.some((p) => p[0] === d.ping_method) ? d.ping_method : 'url';
+
+			if (m !== 'url' || !d.running)
+				return d;
+
+			return callWarm(false).then((w) => {
+				d.warm = w;
+				return d;
+			}, () => d);
+		});
 	},
 
 	update(d) {
@@ -461,20 +473,26 @@ return view.extend({
 	// once and stay current. now: every server is asked at once.
 	pollWarm(now) {
 		return callWarm(now ? true : false).then((r) => {
-			this.warm = (r && r.ok) ? r : null;
-
-			if (this.warm && this.method === 'url') {
-				for (const tag in r.results) {
-					const x = r.results[tag];
-
-					this.probes[tag] = { method: 'url', value: (x.ms != null) ? x.ms : (x.error || 'error'), at: x.at };
-				}
-
+			if (this.applyWarm(r))
 				this.redraw();
-			}
 
 			return this.warm;
 		}).catch(() => null);
+	},
+
+	applyWarm(r) {
+		this.warm = (r && r.ok) ? r : null;
+
+		if (!this.warm || this.method !== 'url')
+			return false;
+
+		for (const tag in r.results) {
+			const x = r.results[tag];
+
+			this.probes[tag] = { method: 'url', value: (x.ms != null) ? x.ms : (x.error || 'error'), at: x.at };
+		}
+
+		return true;
 	},
 
 	warmResult(tag) {
@@ -840,6 +858,10 @@ return view.extend({
 
 	// --- servers ------------------------------------------------------------------
 
+	// The number of the chosen check. xray's own check (n.delay) opens a new
+	// connection through the server every time, handshakes and all, and is
+	// several times the real one: it shows only when the chosen check has
+	// nothing for the server. While that check is still coming: "…".
 	latency(n) {
 		const p = this.probes[n.tag];
 
@@ -855,10 +877,24 @@ return view.extend({
 		if (n.alive === false)
 			return E('span', { 'class': 'mh-fail' }, _('No answer'));
 
+		if (this.latencyPending(n))
+			return E('span', { 'class': 'mh-muted', 'title': _('Checking…') }, '…');
+
 		if (n.delay == null)
 			return E('span', { 'class': 'mh-muted' }, 'N/A');
 
 		return E('span', { 'class': latencyClass(n.delay) }, _('%d ms').format(n.delay));
+	},
+
+	latencyPending(n) {
+		if (!this.data || !this.data.running)
+			return false;
+
+		if (this.firstCheck)
+			return true;
+
+		// Kept-alive URL test: the server is in it, its first answer is coming.
+		return this.method === 'url' && !!this.warm && (this.warm.tags || []).indexOf(n.tag) >= 0;
 	},
 
 	tile(s, n) {
@@ -1586,8 +1622,10 @@ return view.extend({
 
 		ui.showModal(_('Active connections'), [
 			E('p', { 'class': 'mh-muted mh-small' },
-				_('Every connection of the network that is open now. Servers and site names of connections through Xray show up for those opened while this window is open.')),
-			E('div', { 'class': 'mh-conns-bar' }, [ devs, pause, clear, E('span', { 'id': 'mh-conns-note', 'class': 'mh-muted mh-small' }) ]),
+				_('Every connection of the network that is open now, grouped by device, address and route. A site name is known when its address came in a DNS answer through Xray; otherwise the address is shown.')),
+			E('div', { 'class': 'mh-conns-bar' }, [ devs, pause, clear,
+				E('span', { 'id': 'mh-conns-count', 'class': 'mh-small' }),
+				E('span', { 'id': 'mh-conns-note', 'class': 'mh-muted mh-small' }) ]),
 			body,
 			E('div', { 'class': 'right' }, E('button', { 'class': 'btn', 'click': () => this.closeConns() }, _('Close')))
 		], 'mh-conns-modal');
@@ -1661,19 +1699,18 @@ return view.extend({
 		callConns(true).catch(() => {});
 	},
 
+	// Where a connection goes, in a word: the server (or tunnel) by its name.
 	connRoute(r) {
 		const x = r.route || {};
-		const proto = x.protocol ? ' · ' + protocolName({ protocol: x.protocol }) : '';
-		const where = x.section ? (x.pool ? _('Server list') : x.section) : '';
 
 		switch (x.kind) {
-		case 'proxy': return [ '%s%s'.format(x.server || '?', proto), where, 'mh-ok' ];
-		case 'tunnel': return [ _('Tunnel %s').format(x.server || '?') + proto, where, 'mh-ok' ];
-		case 'xray': return [ _('Through Xray'), _('opened before the window'), 'mh-ok' ];
-		case 'block': return [ _('Blocked'), '', 'mh-fail' ];
-		case 'dns': return [ 'DNS', '', '' ];
-		case 'direct': return [ _('Direct'), x.via || '', 'mh-muted' ];
-		default: return [ x.tag || '?', '', '' ];
+		case 'proxy':
+		case 'tunnel': return [ x.server || '?', 'mh-ok' ];
+		case 'xray': return [ 'Xray', 'mh-ok' ];
+		case 'block': return [ _('Blocked'), 'mh-fail' ];
+		case 'dns': return [ 'DNS', '' ];
+		case 'direct': return [ _('Direct'), 'mh-muted' ];
+		default: return [ x.tag || '?', '' ];
 		}
 	},
 
@@ -1690,6 +1727,11 @@ return view.extend({
 		}
 
 		this.fillConnDevices(r.devices || []);
+
+		const cnt = document.getElementById('mh-conns-count');
+
+		if (cnt && r.counts)
+			cnt.textContent = 'TCP: %d · UDP: %d'.format(r.counts.tcp || 0, r.counts.udp || 0);
 
 		const note = document.getElementById('mh-conns-note');
 
@@ -1719,18 +1761,20 @@ return view.extend({
 		const td = (title, content) => E('td', { 'class': 'td', 'data-title': title }, content);
 
 		box.replaceChildren(E('table', { 'class': 'table mh-rtable mh-conns' }, [
-			tr([ _('Device'), _('Destination'), _('Protocol'), _('Route'), _('Traffic') ].map((h) => E('th', { 'class': 'th' }, h)), 'table-titles'),
+			tr([ _('Device'), _('Destination'), _('Protocol'), _('Connected via'), _('Open connections'), _('Traffic') ].map((h) => E('th', { 'class': 'th' }, h)), 'table-titles'),
 			...rows.map((c) => {
 				const rt = this.connRoute(c);
 				const dest = (c.domain || mh.ipText(c.host)) + ':' + c.port;
+				const tip = c.domain ? mh.ipText(c.host) : null;
 
 				return tr([
 					td(_('Device'), c.device === 'router' ? _('This router') : (c.device || mh.ipText(c.ip))),
-					td(_('Destination'), [ E('span', { 'title': mh.ipText(c.host) }, dest),
+					td(_('Destination'), [ E('span', { 'title': tip }, dest),
 						c.fake ? E('span', { 'class': 'mh-muted mh-small' }, ' FakeDNS') : '' ]),
 					td(_('Protocol'), c.network.toUpperCase()),
-					td(_('Route'), [ E('span', { 'class': rt[2] }, rt[0]), rt[1] ? E('span', { 'class': 'mh-muted mh-small' }, ' ' + rt[1]) : '' ]),
-					td(_('Traffic'), mh.bytes(c.bytes) + (c.count > 1 ? ' ×' + c.count : ''))
+					td(_('Connected via'), E('span', { 'class': rt[1] }, rt[0])),
+					td(_('Open connections'), String(c.count)),
+					td(_('Traffic'), mh.bytes(c.bytes))
 				]);
 			})
 		]), r.total > rows.length ? E('p', { 'class': 'mh-muted mh-small' }, _('The %d busiest of %d.').format(rows.length, r.total)) : '');
@@ -1860,15 +1904,22 @@ return view.extend({
 		if (PROBES.some((p) => p[0] === d.ping_method))
 			this.method = d.ping_method;
 
-		// A ping method other than the URL test that xray runs by itself: the
-		// servers are checked with it once when the page opens.
+		// The URL test: its numbers came with the page. Another ping method:
+		// the servers are checked with it once when the page opens, and show
+		// no number until then (see latency()).
+		this.firstCheck = !(this.method === 'url' && this.applyWarm(d.warm));
+
 		window.setTimeout(() => {
 			const proxies = (d.sections || []).filter((s) => s.type === 'proxy' && (s.nodes || []).length);
+			const done = () => {
+				this.firstCheck = false;
+				this.redraw();
+			};
 
 			if (this.method === 'url')
-				return this.pollWarm(false).then(() => this.checkConnection());
+				return (this.warm ? Promise.resolve() : this.pollWarm(false)).then(done, done).then(() => this.checkConnection());
 
-			return proxies.length ? this.probeAll(proxies) : this.checkConnection();
+			return (proxies.length ? this.probeAll(proxies) : this.checkConnection()).then(done, done);
 		}, 0);
 
 		// Behind an open window or dialog, in a hidden tab or while the last answer has

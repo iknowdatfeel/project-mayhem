@@ -1,8 +1,9 @@
 #!/bin/sh
-# Active connections on the dashboard: the rpcd method switches xray's
-# connection log between /dev/null and a file and reads it - devices by their
-# DHCP names, domains from the DNS answers in the same log, outbound tags as
-# sections and servers. UCODE points to the ucode to use.
+# Active connections on the dashboard: xray's connection log is always a file,
+# the scheduler folds it into conn.names (mayhem_conn_fold, run here with
+# busybox awk when there is one, as on the router), the rpcd method reads both
+# - devices by their DHCP names (IPv6 by MAC), domains from the DNS answers,
+# outbound tags as sections and servers. UCODE points to the ucode to use.
 #   UCODE=/opt/ucode-24.10/ucode tests/conns.sh
 
 set -u
@@ -29,7 +30,14 @@ cat > "$T/run/nodes.json" <<'JSON'
   "games": { "type": "interface", "interface": "awg0", "device": "awg0", "tproto": "amneziawg" } } }
 JSON
 
-# The router: LAN 192.168.1.1, WAN 203.0.113.5, a tunnel 10.8.0.2.
+# The router: LAN 192.168.1.1, WAN 203.0.113.5, a tunnel 10.8.0.2. The
+# iPhone also has fd00::a1b:2c3d:4e5f:1.
+printf '#!/bin/sh\necho "fd00::a1b:2c3d:4e5f:1 dev br-lan lladdr AA:BB:CC:DD:EE:FF REACHABLE"\n' > "$T/bin/neigh"
+chmod +x "$T/bin/neigh"
+if command -v busybox >/dev/null 2>&1; then
+	printf '#!/bin/sh\nexec busybox awk "$@"\n' > "$T/bin/awk"
+	chmod +x "$T/bin/awk"
+fi
 printf '#!/bin/sh\nprintf "%%s\\n" "2: br-lan    inet 192.168.1.1/24 brd 192.168.1.255 scope global br-lan" "3: wan    inet 203.0.113.5/24 scope global wan" "9: awg0    inet 10.8.0.2/32 scope global awg0"\n' > "$T/bin/addrs"
 chmod +x "$T/bin/addrs"
 
@@ -43,76 +51,113 @@ ipv4     2 tcp      6 7431 ESTABLISHED src=192.168.1.20 dst=77.88.55.88 sport=60
 ipv4     2 udp      17 170 src=192.168.1.20 dst=34.1.2.3 sport=7000 dport=7777 packets=5 bytes=500 src=34.1.2.3 dst=10.8.0.2 sport=7777 dport=7000 packets=5 bytes=600 [ASSURED] mark=0 zone=0 use=2
 ipv4     2 tcp      6 7431 ESTABLISHED src=203.0.113.5 dst=185.132.132.100 sport=40000 dport=443 packets=5 bytes=900 src=185.132.132.100 dst=203.0.113.5 sport=443 dport=40000 packets=5 bytes=900 [ASSURED] mark=0 zone=0 use=2
 ipv4     2 udp      17 20 src=192.168.1.20 dst=192.168.1.1 sport=5353 dport=53 packets=1 bytes=60 src=192.168.1.1 dst=192.168.1.20 sport=53 dport=5353 packets=1 bytes=120 mark=0 zone=0 use=2
+ipv6     10 tcp      6 7431 ESTABLISHED src=0000:0000:0000:0000:0000:0000:0000:0001 dst=2a00:1450:4010:0c0e:0000:0000:0000:0065 sport=50000 dport=443 packets=5 bytes=900 src=2a00:1450:4010:0c0e:0000:0000:0000:0065 dst=0000:0000:0000:0000:0000:0000:0000:0001 sport=443 dport=50000 packets=5 bytes=900 [ASSURED] mark=0 zone=0 use=2
+ipv6     10 tcp      6 7431 ESTABLISHED src=fd00:0000:0000:0000:0a1b:2c3d:4e5f:0001 dst=2a00:1450:4010:0c0e:0000:0000:0000:0065 sport=50001 dport=443 packets=5 bytes=700 src=2a00:1450:4010:0c0e:0000:0000:0000:0065 dst=fd00:0000:0000:0000:0a1b:2c3d:4e5f:0001 sport=443 dport=50001 packets=5 bytes=700 [ASSURED] mark=268435456 zone=0 use=2
+ipv4     2 udp      17 20 src=192.168.1.20 dst=8.8.4.4 sport=5354 dport=53 packets=1 bytes=60 src=192.168.1.1 dst=192.168.1.20 sport=53 dport=5354 packets=1 bytes=120 mark=0 zone=0 use=2
 ipv4     2 tcp      6 100 TIME_WAIT src=192.168.1.20 dst=8.8.8.8 sport=6001 dport=443 packets=5 bytes=900 src=8.8.8.8 dst=203.0.113.5 sport=443 dport=6001 packets=5 bytes=900 mark=0 zone=0 use=2
 CT
 
 call() {
-	MAYHEM_RUN_DIR="$T/run" MAYHEM_LIB_DIR="$FILES/usr/share/mayhem" MAYHEM_XRAY_BIN="$T/bin/xray" MAYHEM_LEASES="$T/leases" MAYHEM_CONNTRACK="$T/conntrack" MAYHEM_ADDRS_CMD="$T/bin/addrs" \
+	MAYHEM_RUN_DIR="$T/run" MAYHEM_LIB_DIR="$FILES/usr/share/mayhem" MAYHEM_XRAY_BIN="$T/bin/xray" MAYHEM_LEASES="$T/leases" MAYHEM_CONNTRACK="$T/conntrack" MAYHEM_ADDRS_CMD="$T/bin/addrs" MAYHEM_NEIGH_CMD="$T/bin/neigh" PATH="$T/bin:$PATH" \
 		"$UCODE" -L "$FILES/usr/share/ucode/*.uc" -e "
 		const p = loadfile('$ROOT/luci-app-mayhem/root/usr/share/rpcd/ucode/luci.mayhem')()['luci.mayhem'];
 		print(sprintf('%J', p.connections.call({ args: $1 })));
 	"
 }
 
-# The window opens: the log becomes a file, xray reopens it.
+fold() {
+	MAYHEM_RUN_DIR="$T/run" MAYHEM_LIB_DIR="$FILES/usr/share/mayhem" PATH="$T/bin:$PATH" MAYHEM_CONN_NAMES="${1:-3000}" \
+		sh -c '. "$MAYHEM_LIB_DIR/lib.sh"; mayhem_conn_fold'
+}
+
+# An xray started by an older xray-run writes to /dev/null: the window makes
+# it a file and xray reopens it.
 ln -sfn /dev/null "$T/run/conn.log"
 call '{}' > "$T/out1"
-if [ -f "$T/run/conn.log" ] && [ ! -L "$T/run/conn.log" ] && grep -q restartlogger "$T/xray.calls" && [ -f "$T/run/conn.watch" ]; then
-	ok "opening the connections turns the log on"
+if [ -f "$T/run/conn.log" ] && [ ! -L "$T/run/conn.log" ] && grep -q restartlogger "$T/xray.calls"; then
+	ok "an old /dev/null log becomes a file"
 else
 	bad "log on: $(ls -l "$T/run") / $(cat "$T/xray.calls" 2>/dev/null) / $(cat "$T/out1")"
 fi
 
+# Before the window: the DNS answer and the connection are already folded
+# (the scheduler), the log has only what came after.
 cat >> "$T/run/conn.log" <<'LOG'
-2026/10/26 19:06:10.100000 DOH//1.1.1.1 got answer: www.youtube.com. -> [142.250.74.110, 142.250.74.111] 23ms
+2026/10/26 19:06:10.100000 DOH//1.1.1.1 got answer: www.youtube.com. -> [142.250.74.110, 142.250.74.111, 198.18.0.5] 23ms
+2026/10/26 19:06:10.200000 DOH//1.1.1.1 got answer: www.google.com. -> [2a00:1450:4010:c0e::65] 23ms
 2026/10/26 19:06:11.123456 from 192.168.1.187:48398 accepted tcp:142.250.74.110:443 [tproxy-in >> n-pool-aaaa]
+2026/10/26 19:06:11.223456 from [fd00::a1b:2c3d:4e5f:1]:50001 accepted tcp:[2a00:1450:4010:c0e::65]:443 [tproxy-in -> n-pool-aaaa] email: x
 LOG
+fold
+if [ -s "$T/run/conn.log" ] || ! grep -qx 'd 142.250.74.110 www.youtube.com' "$T/run/conn.names" ||
+   grep -q '198.18' "$T/run/conn.names" || ! grep -qx 'c tcp 192.168.1.187:48398 n-pool-aaaa' "$T/run/conn.names" ||
+   ! grep -qx 'c tcp fd00::a1b:2c3d:4e5f:1:50001 n-pool-aaaa' "$T/run/conn.names"; then
+	bad "fold: log $(wc -c < "$T/run/conn.log"), names: $(cat "$T/run/conn.names")"
+else
+	ok "the log folds into names and empties"
+fi
+
+# A second fold keeps the last answer for an address, and only the last N.
+cat >> "$T/run/conn.log" <<'LOG'
+2026/10/26 19:07:10.100000 [::1]:53 cache HIT: m.youtube.com. -> [142.250.74.111] 0s
+2026/10/26 19:07:10.100000 DOH//1.1.1.1 got answer: a.example. -> [203.0.113.10] 1ms
+2026/10/26 19:07:10.100000 DOH//1.1.1.1 got answer: b.example. -> [203.0.113.11] 1ms
+LOG
+cp "$T/run/conn.names" "$T/names.keep"
+fold 3
+if ! grep -qx 'd 142.250.74.111 m.youtube.com' "$T/run/conn.names" || [ "$(grep -c '^d ' "$T/run/conn.names")" != 3 ] ||
+   grep -q '142.250.74.110' "$T/run/conn.names" || [ "$(grep -c '^c ' "$T/run/conn.names")" != 2 ]; then
+	bad "fold cap: $(cat "$T/run/conn.names")"
+else
+	ok "the names keep the last answer and the last N of each kind"
+fi
+cp "$T/names.keep" "$T/run/conn.names"
+: > "$T/run/conn.log"
+
 echo '1793030000 aa:bb:cc:dd:ee:ff 192.168.1.187 iPhone *' > "$T/leases"
 
 out="$(call '{}')"
 row() { printf '%s' "$out" | tr '}' '\n' | grep -- "$1"; }
 if ! row '"host": "142.250.74.110"' | grep -q '"domain": "www.youtube.com"' || ! row '"host": "142.250.74.110"' | grep -q '"server": "Amsterdam"' ||
    ! printf '%s' "$out" | grep -q '"device": "iPhone"'; then
-	bad "through xray, server and name from its log: $out"
-elif ! row '"sport\|"host": "142.250.74.110"' | grep -q '"kind": "xray"'; then
-	bad "through xray before the log was on: $out"
+	bad "through xray, server and name opened before the window: $out"
+elif printf '%s' "$out" | grep -q '"kind": "xray"' || ! printf '%s' "$out" | grep -q '"host": "142.250.74.110", [^]]*"server": "Amsterdam"[^}]*}, "count": 2, "bytes": 6200'; then
+	bad "through xray, not in the log: one row with the known server, traffic summed: $out"
 elif ! row '"host": "77.88.55.88"' | grep -q '"kind": "direct"'; then
 	bad "direct past xray: $out"
 elif ! row '"host": "34.1.2.3"' | grep -q '"kind": "tunnel"'; then
 	bad "into a kernel tunnel: $out"
-elif printf '%s' "$out" | grep -q '185.132.132.100\|"port": 53\|8.8.8.8'; then
-	bad "the router's own, DNS to the router and closed connections are not listed: $out"
+elif printf '%s' "$out" | grep -q '185.132.132.100\|"port": 53, "fake": false, "domain": null, "route": {"kind": "direct"\|8.8.8.8\|0000:\|"ip": "::1"'; then
+	bad "the router's own (IPv4 and ::1), DNS to the router and closed connections are not listed: $out"
+elif ! row '"host": "8.8.4.4"' | grep -q '"kind": "dns"'; then
+	bad "DNS to another server taken by the router: $out"
+elif ! row '"ip": "fd00::a1b:2c3d:4e5f:1"' | grep -q '"device": "iPhone"' ||
+     ! row '"ip": "fd00::a1b:2c3d:4e5f:1"' | grep -q '"domain": "www.google.com"' ||
+     ! row '"ip": "fd00::a1b:2c3d:4e5f:1"' | grep -q '"server": "Amsterdam"'; then
+	bad "IPv6: short address, device by MAC, name and server: $out"
+elif ! printf '%s' "$out" | grep -q '"counts": { "tcp": 4, "udp": 2 }'; then
+	bad "TCP and UDP counts: $out"
 else
-	ok "connections: through xray, direct past it, into a tunnel"
+	ok "connections: through xray, direct, tunnel, DNS, IPv6, counts"
 fi
 
 # One device: only its connections, the list of devices stays whole.
 out="$(call '{ "device": "192.168.1.20" }')"
 if printf '%s' "$out" | grep -q '"ip": "192.168.1.187", "network"'; then
 	bad "device filter: another device's connections are listed: $out"
-elif ! printf '%s' "$out" | grep -q '"host": "77.88.55.88"' || ! printf '%s' "$out" | grep -q '"devices": \[.*192.168.1.187.*\]'; then
+elif ! printf '%s' "$out" | grep -q '"host": "77.88.55.88"' || ! printf '%s' "$out" | grep -q '"devices": \[.*192.168.1.187.*\]' ||
+     ! printf '%s' "$out" | grep -q '"counts": { "tcp": 1, "udp": 2 }'; then
 	bad "device filter: $out"
 else
 	ok "connections of one device, every device in the list"
 fi
 
-# The window closes: back to /dev/null.
+# The window closes: the log stays a file (it is folded by the scheduler).
 call '{ "stop": true }' > /dev/null
-if [ -L "$T/run/conn.log" ] && [ ! -f "$T/run/conn.watch" ]; then
-	ok "closing the connections turns the log off"
+if [ -f "$T/run/conn.log" ] && [ ! -L "$T/run/conn.log" ]; then
+	ok "closing the window keeps the log"
 else
-	bad "log off: $(ls -l "$T/run")"
-fi
-
-# Nobody asked for a minute: the scheduler turns it off by itself.
-call '{}' > /dev/null
-echo $(( $(date +%s) - 120 )) > "$T/run/conn.watch"
-MAYHEM_RUN_DIR="$T/run" MAYHEM_LIB_DIR="$FILES/usr/share/mayhem" MAYHEM_XRAY_BIN="$T/bin/xray" \
-	sh -c '. "$MAYHEM_LIB_DIR/lib.sh"; mayhem_conn_log_idle'
-if [ -L "$T/run/conn.log" ]; then
-	ok "the log goes off when nobody looks"
-else
-	bad "idle log: $(ls -l "$T/run")"
+	bad "log after closing: $(ls -l "$T/run")"
 fi
 
 kill "$live" 2>/dev/null

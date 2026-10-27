@@ -2103,8 +2103,8 @@ msgid "Active connections"
 msgstr "Активные подключения"
 
 #: htdocs/luci-static/resources/view/mayhem/dashboard.js
-msgid "Every connection of the network that is open now. Servers and site names of connections through Xray show up for those opened while this window is open."
-msgstr "Все соединения сети, открытые сейчас. Сервер и имя сайта у соединений через Xray видны для тех, что открылись, пока это окно открыто."
+msgid "Every connection of the network that is open now, grouped by device, address and route. A site name is known when its address came in a DNS answer through Xray; otherwise the address is shown."
+msgstr "Все соединения сети, открытые сейчас, сгруппированные по устройству, адресу и пути. Имя сайта известно, если его адрес пришёл в ответе DNS через Xray; иначе показан адрес."
 
 #: htdocs/luci-static/resources/view/mayhem/dashboard.js
 msgid "opened before the window"
@@ -2300,3 +2300,12 @@ msgstr "Xray перезапущен"
 
 msgid "Xray does not start: %s"
 msgstr "Xray не запускается: %s"
+
+msgid "Connected via"
+msgstr "Подключение"
+
+msgid "Open connections"
+msgstr "Соединений"
+
+msgid "server unknown"
+msgstr "сервер неизвестен"

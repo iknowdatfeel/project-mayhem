@@ -46,8 +46,9 @@ for f in xray.json xray.key overrides nft.conf tunnels geo.stamp; do
 done
 
 start_xray() {
-	# The connection log is written nowhere until the dashboard asks for it.
-	ln -sfn /dev/null "$MAYHEM_RUN_DIR/conn.log"
+	# The connection log (folded every minute by the scheduler).
+	[ -L "$MAYHEM_RUN_DIR/conn.log" ] && rm -f "$MAYHEM_RUN_DIR/conn.log"
+	: >> "$MAYHEM_RUN_DIR/conn.log"
 	rm -f "$MAYHEM_RUN_DIR/conn.watch"
 	"$MAYHEM_XRAY_BIN" run -c "$MAYHEM_RUN_DIR/running.xray.json" &
 	xray_pid=$!

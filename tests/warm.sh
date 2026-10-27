@@ -119,4 +119,25 @@ done
 [ "$i" -le 80 ] && ok "warm: ends when the dashboard stops asking" || bad "warm: still running"
 DAEMON=""
 
+# The dashboard opens again minutes later: the numbers of the last run are in
+# the first answer, and the new run keeps them until it has its own.
+python3 - "$T/run/warm.json" <<'PY'
+import json, sys, time
+d = json.load(open(sys.argv[1]))
+for r in d['results'].values():
+    r['at'] = int(time.time()) - 300
+d['started'] = int(time.time()) - 400
+json.dump(d, open(sys.argv[1], 'w'))
+PY
+old_fast="$(field n-fast ms)"
+out="$(warm_call false)"
+case "$out" in *'"n-fast": { "ms": '"$old_fast"*) ok "rpcd: the last numbers at once when the dashboard opens again" ;;
+	*) bad "rpcd: no last numbers on a new run ($old_fast): $out" ;; esac
+DAEMON="$(cat "$T/run/warm.pid" 2>/dev/null)"
+sleep 0.3
+case "$(field n-fast ms)" in "") bad "warm: a new run dropped the last numbers" ;; *) ok "warm: a new run keeps the last numbers" ;; esac
+case "$(field n-dead ms)$(field n-dead error)" in "") ok "warm: errors of the last run are not kept" ;; *) bad "warm: n-dead kept: $(field n-dead error)" ;; esac
+kill "$DAEMON" 2>/dev/null
+DAEMON=""
+
 exit $fail

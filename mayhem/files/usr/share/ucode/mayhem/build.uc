@@ -2423,8 +2423,8 @@ export function build(model) {
 			}
 
 	const xray = {
-		// Connections and DNS answers go to CONN_LOG, which is /dev/null
-		// unless the dashboard shows the active connections; debug: stdout.
+		// Connections and DNS answers go to CONN_LOG, which the scheduler
+		// folds into names for the active connections; debug: stdout.
 		log: {
 			loglevel: log_level,
 			access: log_level == 'debug' ? '' : C.CONN_LOG,

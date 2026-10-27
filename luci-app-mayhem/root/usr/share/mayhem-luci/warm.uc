@@ -84,7 +84,20 @@ const socks_connect = chr(5, 1, 0, 3, length(target.host)) + target.host + chr(t
 
 const started = time();
 const nodes = {};		// tag -> state of its connection
+// What the last run measured with the same URL: the dashboard shows it at
+// once and every number is replaced by a new one within a round. Servers no
+// longer there go in sync_nodes().
 const results = {};
+
+{
+	const last = read_json(OUT);
+
+	if (last?.url == (state0?.probe_url ?? C.DEFAULT_PROBE_URL))
+		for (let tag, r in last?.results ?? {})
+			if (r?.ms != null)
+				results[tag] = r;
+}
+
 let tags = [];
 let nodes_mtime = 0;
 let dirty = true, written = 0;
