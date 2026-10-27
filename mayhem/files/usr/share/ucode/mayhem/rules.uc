@@ -16,14 +16,27 @@ export function as_list(v) {
 };
 
 // Expands list values that may hold several entries separated by spaces,
-// commas or new lines (textarea input).
+// commas or new lines (textarea input). A regexp: keeps its commas
+// (^ex[0-9]{1,3}\.com$): from it on, the rest of the word is the regexp.
 export function entries(v) {
 	const out = [];
 
 	for (let item in as_list(v))
-		for (let e in split(`${item}`, /[[:space:],]+/))
-			if (e != '' && substr(e, 0, 1) != '#')
-				push(out, e);
+		for (let word in split(`${item}`, /[[:space:]]+/)) {
+			const parts = split(word, ',');
+
+			for (let i = 0; i < length(parts); i++) {
+				let e = parts[i];
+
+				if (substr(e, 0, 7) == 'regexp:') {
+					e = join(',', slice(parts, i));
+					i = length(parts);
+				}
+
+				if (e != '' && substr(e, 0, 1) != '#')
+					push(out, e);
+			}
+		}
 
 	return out;
 };
@@ -215,6 +228,9 @@ export function dns_server(s) {
 	if ((m = match(s, /^https:\/\/(\[[0-9A-Fa-f:.]+\]|[^/:]+)(:[0-9]+)?(\/.*)?$/))) {
 		const host = replace(m[1], /^\[|\]$/g, '');
 
+		if (m[2] != null && m[2] != '' && (int(substr(m[2], 1)) < 1 || int(substr(m[2], 1)) > 65535))
+			return { error: `invalid port in DNS server "${s}"` };
+
 		return { address: s, host: host };
 	}
 
@@ -234,8 +250,13 @@ export function dns_server(s) {
 
 		const r = { address: m[1], host: m[1] };
 
-		if (m[3] != null && m[3] != '')
+		if (m[3] != null && m[3] != '') {
 			r.port = int(m[3]);
+
+			// xray refuses to start with such a port
+			if (r.port < 1 || r.port > 65535)
+				return { error: `invalid port in DNS server "${s}"` };
+		}
 
 		return r;
 	}

@@ -552,8 +552,11 @@ function load_model() {
 		}
 	});
 
-	// Downloaded subscriptions, keyed by the subscription section name.
+	// Downloaded subscriptions, keyed by the subscription section name; the
+	// enabled ones without servers of their address yet are downloaded right
+	// after the reload (subs_new).
 	const subscriptions = {};
+	const subs_new = [];
 
 	c.foreach('mayhem', 'subscription', (s) => {
 		try {
@@ -565,6 +568,9 @@ function load_model() {
 		catch (e) {
 			// not downloaded yet
 		}
+
+		if (is_true(s.enabled ?? '1') && s.url != null && s.url != '' && subscriptions[s['.name']]?.url != s.url)
+			push(subs_new, s['.name']);
 	});
 
 	const sources = geo_sources(c);
@@ -595,6 +601,7 @@ function load_model() {
 
 	return {
 		subscriptions: subscriptions,
+		subs_new: subs_new,
 		geo: { sources: sources, cidrs: geo_cidrs(sections, sources), domains: geo_domains(sections, sources, kernel_rest, settings.mode != 'global') },
 		lists: lists(sections),
 		settings: settings,

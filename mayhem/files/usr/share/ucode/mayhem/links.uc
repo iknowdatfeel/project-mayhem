@@ -588,6 +588,11 @@ function parse_json_server(text) {
 	if (type(j) != 'object' || type(j.protocol) != 'string')
 		die('the server config has no "protocol"');
 
+	// Not a server: such a "proxy" would quietly send the traffic direct or
+	// nowhere.
+	if (index([ 'freedom', 'direct', 'blackhole', 'block', 'dns', 'loopback' ], j.protocol) >= 0)
+		die(`"${j.protocol}" is not a proxy server`);
+
 	const name = type(j.tag) == 'string' ? j.tag : '';
 
 	delete j.tag;

@@ -1049,7 +1049,7 @@ return baseclass.extend({
 			o.description += ' ' + _('With one server, a query it fails to answer fails on the device too: add a second one, Cloudflare or Google say, to take over.');
 
 		o = s.option(form.Flag, 'parallel', _('Parallel queries'),
-			_('On: the remote servers get the query together and the first good answer counts, so a server that does not answer slows nothing down. By lists or with FakeDNS the provider\'s DNS gets the names of proxied sites too. Off (fallback): the servers are asked one after another, the next one after 2 s without an answer.'));
+			_('On: the remote servers get the query together and the first good answer counts, so a server that does not answer slows nothing down. By lists or with FakeDNS the provider\'s DNS gets the names of proxied sites too. Off (fallback): the servers are asked one after another, the next one after 1 s without an answer.'));
 
 		o = s.option(form.Flag, 'via_proxy', _('Remote DNS via proxy'),
 			now ? _('On: queries go through the active server, now %s. Off: they go direct, encrypted when the server is DoH.').format(now)

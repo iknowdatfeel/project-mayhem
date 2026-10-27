@@ -19,6 +19,9 @@
 // When a section is "down":
 //   one server or manual choice - the server in use failed two checks in a row;
 //   automatic choice            - and xray's own checks know no working server;
+//                                 a server pinned by hand that stops answering
+//                                 is stood in for by one that works, until it
+//                                 answers again;
 //   fallback chain              - and none of the chain's servers works.
 // A server is checked through the helper proxy with its own tag as the user
 // (a GET of the check URL, like a URL test). While a section is down, up to
@@ -154,7 +157,7 @@ function in_use(sn, s) {
 		return s.selected;
 
 	if (s.override)
-		return s.override;
+		return h.sections?.[sn]?.stand_in?.tag ?? s.override;
 
 	let best = null;
 	const o = observatory();
@@ -196,6 +199,11 @@ function restore(sn, s, tag, pin) {
 	if (s.mode == 'manual')
 		return bo(bal, s.selected);
 
+	// The server pinned by hand still does not answer: the one that does
+	// stands in for it.
+	if (s.mode == 'auto' && s.override && tag && tag != s.override)
+		return bo(bal, tag) ? 'stand_in' : false;
+
 	if (pin && !s.override && s.mode == 'auto') {
 		const o = observatory();
 
@@ -225,13 +233,37 @@ for (let sn in keys(state.sections ?? {})) {
 	const hs = h.sections[sn];
 
 	if (ks) {
-		if (hs.down) {
-			restore(sn, s, in_use(sn, s));
-			log(`section ${sn}: the kill switch is on, its traffic waits for the servers instead of going direct`);
+		if (hs.down || hs.stand_in) {
+			delete hs.stand_in;
+			restore(sn, s, s.override ?? in_use(sn, s));
+
+			if (hs.down)
+				log(`section ${sn}: the kill switch is on, its traffic waits for the servers instead of going direct`);
 		}
 
 		h.sections[sn] = { down: false, fails: 0 };
 		continue;
+	}
+
+	// A server pinned by hand that stopped answering, and the one standing in
+	// for it: back to the pinned one as soon as it answers again. A new
+	// choice ends the stand-in; a reload (live.uc puts the choices in again)
+	// points the balancer at the stand-in once more.
+	if (!hs.down && hs.stand_in) {
+		const si = hs.stand_in;
+
+		if (si.pin != s.override || index(map(s.nodes, (n) => n.tag), si.tag) < 0)
+			delete hs.stand_in;
+		else if (works(s.override)) {
+			if (bo(bal, s.override)) {
+				log(`section ${sn}: ${names(s, [ s.override ])} answers again, its traffic goes through it again`);
+				delete hs.stand_in;
+				hs.fails = 0;
+				continue;
+			}
+		}
+		else if (si.mark != mark(s) && bo(bal, si.tag))
+			si.mark = mark(s);
 	}
 
 	if (!hs.down) {
@@ -264,12 +296,27 @@ for (let sn in keys(state.sections ?? {})) {
 
 			for (let t in slice(others, 0, TRIES + 1))
 				if (works(t)) {
-					other = true;
+					other = t;
 					break;
 				}
 
-			if (other)
+			if (other) {
+				// The balancer takes it by itself, but not past a server
+				// pinned by hand: that one gets a stand-in.
+				if (s.mode == 'auto' && s.override) {
+					if (other == s.override) {
+						if (bo(bal, s.override))
+							delete hs.stand_in;
+					}
+					else if (bo(bal, other)) {
+						hs.stand_in = { pin: s.override, tag: other, mark: mark(s) };
+						hs.fails = 0;
+						log(`section ${sn}: the pinned server ${names(s, [ s.override ])} does not answer, ${names(s, [ other ])} stands in for it until it does`, 'warn');
+					}
+				}
+
 				continue;
+			}
 		}
 
 		if (!bo(bal, 'direct')) {
@@ -280,6 +327,7 @@ for (let sn in keys(state.sections ?? {})) {
 		hs.down = true;
 		hs.fails = 0;
 		hs.since = time();
+		delete hs.stand_in;
 		hs.mark = mark(s);
 		hs.next = 0;
 		log(`section ${sn}: no server answers (${names(s, members(s))}), its traffic goes direct until one does`, 'warn');
@@ -319,6 +367,8 @@ for (let sn in keys(state.sections ?? {})) {
 
 			if (r == 'pinned')
 				h.sections[sn].pinned = good;
+			else if (r == 'stand_in')
+				h.sections[sn].stand_in = { pin: s.override, tag: good, mark: mark(s) };
 		}
 
 		continue;

@@ -2143,8 +2143,8 @@ msgid "The %d busiest of %d."
 msgstr "Показаны %d самых загруженных из %d."
 
 #: htdocs/luci-static/resources/mayhem/page/sections.js
-msgid "On: the remote servers get the query together and the first good answer counts, so a server that does not answer slows nothing down. By lists or with FakeDNS the provider's DNS gets the names of proxied sites too. Off (fallback): the servers are asked one after another, the next one after 2 s without an answer."
-msgstr "Вкл.: запрос уходит на все удалённые серверы сразу и засчитывается первый хороший ответ, поэтому неотвечающий сервер ничего не замедляет. В режиме «по спискам» или с FakeDNS имена проксируемых сайтов получает и DNS провайдера. Выкл. (фоллбек): серверы опрашиваются по очереди, следующий — через 2 с без ответа."
+msgid "On: the remote servers get the query together and the first good answer counts, so a server that does not answer slows nothing down. By lists or with FakeDNS the provider's DNS gets the names of proxied sites too. Off (fallback): the servers are asked one after another, the next one after 1 s without an answer."
+msgstr "Вкл.: запрос уходит на все удалённые серверы сразу и засчитывается первый хороший ответ, поэтому неотвечающий сервер ничего не замедляет. В режиме «по спискам» или с FakeDNS имена проксируемых сайтов получает и DNS провайдера. Выкл. (фоллбек): серверы опрашиваются по очереди, следующий — через 1 с без ответа."
 
 #: htdocs/luci-static/resources/view/mayhem/dashboard.js
 msgid "All devices"
@@ -2318,3 +2318,15 @@ msgstr "скрыто: %d"
 
 msgid "Not in the table: the router's own %d, to the router %d, being closed %d, local and multicast %d, not understood %d"
 msgstr "Не в таблице: свои соединения роутера — %d, к роутеру — %d, закрываются — %d, локальные и multicast — %d, не разобраны — %d"
+
+#: htdocs/luci-static/resources/mayhem/page/servers.js
+msgid "The subscription name may only contain letters, digits and _"
+msgstr "Имя подписки — только латинские буквы, цифры и _"
+
+#: htdocs/luci-static/resources/mayhem/page/servers.js
+msgid "Rename subscription %s"
+msgstr "Переименовать подписку %s"
+
+#: htdocs/luci-static/resources/mayhem/page/servers.js
+msgid "Latin letters, digits and _. Its servers, the chain of the server list and the chosen server go along."
+msgstr "Латинские буквы, цифры и _. Серверы подписки, цепочка списка серверов и выбранный сервер сохраняются."

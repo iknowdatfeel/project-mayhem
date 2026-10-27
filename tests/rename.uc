@@ -67,6 +67,36 @@ r = call('rename_server', { section: 'pool', tag: 'n-pool-3', name: 'Amnezia DE'
 c = cursor();
 expect(`tunnel: ${r.error}`, r.ok === true && c.get('mayhem', 'awg_de', 'label') == 'Amnezia DE');
 
+// A renamed key keeps its place in the chain of the server list.
+c = cursor();
+c.set('mayhem', 'pool', 'chain', [ 'Германия', 'mysub\tProvider NL', '@mysub' ]);
+c.commit('mayhem');
+r = call('rename_server', { link: c.get('mayhem', 'pool', 'link')[0], name: 'DE' });
+c = cursor();
+expect(`key in the chain: ${r.error}`, r.ok === true && c.get('mayhem', 'pool', 'chain')[0] == 'DE');
+
+// A subscription renamed: the chain, a section that names it, its servers
+// downloaded before and the state of its downloads go along.
+const subs = getenv('MAYHEM_SUBS_DIR');
+
+mkdir(subs);
+writefile(`${subs}/mysub.json`, sprintf('%J', { name: 'mysub', url: 'http://example.invalid/sub', nodes: [ { name: 'Provider NL', link: vless } ] }));
+writefile(`${run}/subs-state.json`, sprintf('%J', { mysub: { updated: 1 } }));
+r = call('rename_subscription', { name: 'mysub', new_name: 'newsub' });
+c = cursor();
+
+const chain = c.get('mayhem', 'pool', 'chain');
+const cache = json(require('fs').readfile(`${subs}/newsub.json`) ?? 'null');
+const state = json(require('fs').readfile(`${run}/subs-state.json`) ?? 'null');
+
+expect(`subscription: ${r.error}`, r.ok === true && c.get('mayhem', 'newsub') == 'subscription' && c.get('mayhem', 'mysub') == null);
+expect(`subscription: the chain follows (${chain})`, chain[1] == 'newsub\tProvider NL' && chain[2] == '@newsub');
+expect('subscription: the section naming it follows', index(c.get('mayhem', 'main', 'subscription') ?? [], 'newsub') >= 0);
+expect('subscription: its servers go along', cache?.name == 'newsub' && length(cache?.nodes) == 1 && !require('fs').access(`${subs}/mysub.json`));
+expect('subscription: its state goes along', state?.newsub?.updated == 1 && state?.mysub == null);
+expect('a taken name is refused', call('rename_subscription', { name: 'newsub', new_name: 'main' }).error != null);
+expect('a bad name is refused', call('rename_subscription', { name: 'newsub', new_name: 'a b' }).error != null);
+
 expect('an empty name is refused', call('rename_server', { section: 'pool', tag: 'n-pool-1', name: ' ' }).error != null);
 expect('an unknown server is refused', call('rename_server', { section: 'pool', tag: 'n-pool-9', name: 'x' }).error != null);
 

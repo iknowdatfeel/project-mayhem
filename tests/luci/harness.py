@@ -47,7 +47,7 @@ STATIC = [
 
 # Methods the pages may call that would change the system: never run them.
 SIDE_EFFECTS = {'action', 'system_install', 'data_update', 'awg_import', 'geo_import', 'set_log_level', 'sub_update', 'select_node',
-                'set_ping_method', 'backup_import', 'reset_config', 'rename_section', 'refresh_servers'}
+                'set_ping_method', 'backup_import', 'reset_config', 'rename_section', 'rename_subscription', 'refresh_servers'}
 
 calls = []
 installs = []

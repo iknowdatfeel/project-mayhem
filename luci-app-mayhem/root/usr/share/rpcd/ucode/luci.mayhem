@@ -1420,6 +1420,107 @@ function rename_section(from, to) {
 	return { ok: true };
 }
 
+function rename_subscription(from, to) {
+	if (!match(from ?? '', /^[A-Za-z0-9_]+$/) || !match(to ?? '', /^[A-Za-z0-9_]+$/))
+		return { error: 'a subscription name may only contain letters, digits and _' };
+
+	const c = uci_cursor();
+
+	if (c.get('mayhem', from) != 'subscription')
+		return { error: 'no such subscription (save it first)' };
+
+	if (from == to)
+		return { ok: true, name: to };
+
+	if (c.get('mayhem', to) != null || index([ 'pool', 'settings', 'dns', 'geo', 'device' ], to) >= 0)
+		return { error: 'this name is taken' };
+
+	c.rename('mayhem', from, to);
+
+	// The chain of the server list: "@<subscription>" (by its rule) and
+	// "<subscription><TAB><server>".
+	const swap = (v) => {
+		if (substr(v, 0, 1) == '@' && substr(v, 1) == from)
+			return `@${to}`;
+
+		if (substr(v, 0, length(from) + 1) == `${from}\t`)
+			return to + substr(v, length(from));
+
+		return v;
+	};
+
+	if (c.get('mayhem', 'pool') != null) {
+		const ch = c.get('mayhem', 'pool', 'chain');
+
+		if (ch != null)
+			c.set('mayhem', 'pool', 'chain', type(ch) == 'array' ? map(ch, swap) : swap(ch));
+	}
+
+	// Sections with servers of their own name their subscriptions.
+	c.foreach('mayhem', 'section', (x) => {
+		if (x.subscription != null)
+			c.set('mayhem', x['.name'], 'subscription', type(x.subscription) == 'array'
+				? map(x.subscription, (v) => v == from ? to : v) : (x.subscription == from ? to : x.subscription));
+	});
+
+	if (!c.commit('mayhem'))
+		return { error: 'the config could not be saved' };
+
+	// The downloaded servers and the state of the downloads go along; without
+	// them the subscription is downloaded again after the reload.
+	const dir = C.SUBS_DIR;
+	const cache = read_json(`${dir}/${from}.json`);
+
+	if (cache) {
+		cache.name = to;
+
+		if (write_json(`${dir}/${to}.json`, cache))
+			fs.unlink(`${dir}/${from}.json`);
+	}
+
+	const st = read_json(`${RUN}/subs-state.json`);
+
+	if (st?.[from]) {
+		st[to] = st[from];
+		delete st[from];
+		write_json(`${RUN}/subs-state.json`, st);
+	}
+
+	apply_bg('/etc/init.d/mayhem reload');
+
+	return { ok: true, name: to };
+}
+
+// Downloads the subscriptions (all, or the one named) now. The servers are
+// applied in the background, so the call does not wait for the reload; with
+// `always` also when nothing changed: servers that did not make it into xray
+// get there.
+function subs_download(name, always) {
+	const lib = getenv('MAYHEM_LIB_DIR') ?? '/usr/share/mayhem';
+	const out = run(`ucode ${q(lib + '/sub.uc')} update ${name != '' ? q(name) : ''} --force 2>/dev/null; echo "rc=$?"`) ?? '';
+	let results = null, rc = 0;
+
+	for (let line in split(out, '\n')) {
+		const m = match(line, /^rc=([0-9]+)$/);
+
+		if (m)
+			rc = int(m[1]);
+		else if (substr(line, 0, 1) == '[') {
+			try {
+				results = json(line);
+			}
+			catch (e) {
+				results = null;
+			}
+		}
+	}
+
+	if (rc == 3 || always)
+		apply_bg('/etc/init.d/mayhem reload');
+
+	return results;
+}
+
 // --- components ---------------------------------------------------------------------
 
 const REPO = getenv('MAYHEM_REPO') ?? 'iknowdatfeel/project-mayhem';
@@ -2071,7 +2172,9 @@ function dashboard(pid, state, out) {
 
 			const sec = {
 				name: sn, type: s.type, mode: s.mode, balancer: s.balancer, pool: s.pool == true,
-				active: s.type == 'proxy' ? active_tag(s, m.observatory) : null,
+				// A server standing in for a pinned one that does not answer
+				// (health.uc) carries the traffic.
+				active: s.type == 'proxy' ? (health.sections?.[sn]?.stand_in?.tag ?? active_tag(s, m.observatory)) : null,
 				pinned: s.override ?? null, nodes: nodes, traffic: traffic,
 				chain: s.chain ?? null, units: s.units ?? null, items: s.items ?? null, subs: s.subs ?? null,
 				down: health.sections?.[sn]?.down == true,
@@ -2673,19 +2776,9 @@ const methods = {
 			if (name != '' && !match(name, /^[A-Za-z0-9_]+$/))
 				return { error: 'invalid name' };
 
-			const out = run(`/usr/bin/mayhem sub-update ${name != '' ? q(name) : ''} 2>/dev/null`) ?? '';
+			const results = subs_download(name, false);
 
-			for (let line in split(out, '\n'))
-				if (substr(line, 0, 1) == '[') {
-					try {
-						return { results: json(line) };
-					}
-					catch (e) {
-						break;
-					}
-				}
-
-			return { error: 'update failed' };
+			return results != null ? { results: results } : { error: 'update failed' };
 		}
 	},
 
@@ -3045,10 +3138,35 @@ const methods = {
 				c.set('mayhem', usec, 'link', all);
 			}
 
-			// The chosen or pinned server keeps being chosen.
+			// The chosen or pinned server keeps being chosen, and it keeps its
+			// place in a fallback chain.
+			const in_list = (v) => v == null ? [] : (type(v) == 'array' ? v : [ v ]);
+			const swap_list = (sec, opt, from, to) => {
+				const v = c.get('mayhem', sec, opt);
+
+				if (v != null && index(in_list(v), from) >= 0)
+					c.set('mayhem', sec, opt, map(in_list(v), (x) => x == from ? to : x));
+			};
+
 			for (let k in [ 'selected', 'override' ])
 				if (old != null && c.get('mayhem', usec, k) == old)
 					c.set('mayhem', usec, k, name);
+
+			if (node && !node.iface && node.source != 'link' && node.source != 'json') {
+				// A server of a subscription is named by the provider's name
+				// there, which stays the same whatever it is called.
+				const orig = node.orig ?? node.name;
+
+				if (old != null && old != orig) {
+					swap_list('pool', 'chain', `${node.source}\t${old}`, `${node.source}\t${orig}`);
+					swap_list(node.source, 'chain', old, orig);
+
+					if (c.get('mayhem', node.source, 'selected') == old)
+						c.set('mayhem', node.source, 'selected', orig);
+				}
+			}
+			else if (old != null && !node?.iface)
+				swap_list(usec, 'chain', old, name);
 
 			c.commit('mayhem');
 			apply_bg('/etc/init.d/mayhem reload');
@@ -3132,6 +3250,10 @@ const methods = {
 
 				if (p.iface_node != null)
 					c.set('mayhem', 'pool', 'iface_node', swap(p.iface_node));
+
+				// The chain names a tunnel by its interface.
+				if (p.chain != null)
+					c.set('mayhem', 'pool', 'chain', swap(p.chain));
 
 				for (let k in [ 'selected', 'override' ])
 					if (p[k] == from)
@@ -3341,22 +3463,17 @@ const methods = {
 	// nothing changed: servers that did not make it into xray get there.
 	refresh_servers: {
 		call: function() {
-			const out = run('/usr/bin/mayhem sub-update 2>/dev/null') ?? '';
-			let results = [];
+			return { results: subs_download('', true) ?? [] };
+		}
+	},
 
-			for (let line in split(out, '\n'))
-				if (substr(line, 0, 1) == '[') {
-					try {
-						results = json(line);
-					}
-					catch (e) {
-						results = [];
-					}
-				}
-
-			run('/etc/init.d/mayhem reload >/dev/null 2>&1');
-
-			return { results: results };
+	// A new name for a subscription: its section, its downloaded servers and
+	// every place that names it (the chain of the server list, sections with
+	// servers of their own).
+	rename_subscription: {
+		args: { name: '', new_name: '' },
+		call: function(req) {
+			return rename_subscription(req.args?.name, req.args?.new_name);
 		}
 	},
 

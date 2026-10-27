@@ -19,7 +19,7 @@ while :; do
 	if [ $((tick % 3)) = 0 ]; then
 		reload=0
 
-		ucode "$MAYHEM_SUB" update >/dev/null 2>&1
+		ucode "$MAYHEM_SUB" update --no-wait >/dev/null 2>&1
 		if [ "$?" = 3 ]; then
 			mayhem_log "subscriptions changed, applying the new servers"
 			reload=1

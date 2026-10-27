@@ -22,6 +22,7 @@ const callImport = rpc.declare({ object: 'luci.mayhem', method: 'awg_import', pa
 const callParseOne = rpc.declare({ object: 'luci.mayhem', method: 'parse_link', params: [ 'link' ], expect: { '': {} } });
 const callServerEdit = rpc.declare({ object: 'luci.mayhem', method: 'server_edit', params: [ 'section', 'old', 'link' ], expect: { '': {} } });
 const callServerRestore = rpc.declare({ object: 'luci.mayhem', method: 'server_restore', params: [ 'subscription', 'name' ], expect: { '': {} } });
+const callRenameSub = rpc.declare({ object: 'luci.mayhem', method: 'rename_subscription', params: [ 'name', 'new_name' ], expect: { '': {} } });
 
 // A key, or a server kept as Xray JSON on one line.
 const LINK_RE = /^((vless|vmess|trojan|ss|socks5?|https?|hysteria2|hy2|wireguard|wg):\/\/\S+|\{.*\}$)/i;
@@ -146,6 +147,41 @@ return baseclass.extend({
 
 			ui.addNotification(null, E('p', _('Deleted servers restored: %d. Mayhem applies the list now.').format(n)), 'info');
 		});
+	},
+
+	// A new name for a subscription; its servers stay where they are chosen.
+	renameSub(name) {
+		const input = E('input', { 'class': 'cbi-input-text', 'value': name, 'style': 'width:100%' });
+		const submit = () => {
+			const to = input.value.trim();
+
+			if (to === name)
+				return ui.hideModal();
+
+			if (!/^[A-Za-z0-9_]+$/.test(to)) {
+				ui.addNotification(null, E('p', _('The subscription name may only contain letters, digits and _')), 'error');
+				return Promise.resolve();
+			}
+
+			return callRenameSub(name, to).then((r) => {
+				if (r.error) {
+					ui.addNotification(null, E('p', r.error), 'error');
+					return;
+				}
+
+				ui.hideModal();
+				sheet.reload();
+			});
+		};
+
+		ui.showModal(_('Rename subscription %s').format(name), [
+			E('p', _('Latin letters, digits and _. Its servers, the chain of the server list and the chosen server go along.')),
+			input,
+			E('div', { 'class': 'right', 'style': 'margin-top:1em' }, [
+				E('button', { 'class': 'btn', 'click': ui.hideModal }, _('Cancel')), ' ',
+				E('button', { 'class': 'btn cbi-button-action', 'click': ui.createHandlerFn(this, submit) }, _('Rename'))
+			])
+		]);
 	},
 
 	// Saves and applies the staged UCI changes like the button at the bottom.
@@ -402,6 +438,19 @@ return baseclass.extend({
 				name.placeholder = _('Enter a name');
 
 			return el;
+		};
+		// A rename button next to "Edit" (a subscription that is saved already).
+		s.renderRowActions = function(section_id) {
+			const td = form.GridSection.prototype.renderRowActions.apply(this, arguments);
+			const box = td.querySelector('div') || td;
+
+			box.insertBefore(E('button', {
+				'class': 'btn cbi-button cbi-button-neutral mh-rename',
+				'title': _('Rename'),
+				'click': ui.createHandlerFn(self, (ev) => { ev.preventDefault(); return self.renameSub(section_id); })
+			}, '✎'), box.firstChild);
+
+			return td;
 		};
 
 		s.tab('main', _('Subscription'));

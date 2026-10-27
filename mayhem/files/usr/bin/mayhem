@@ -47,7 +47,7 @@ cmd_status() {
 
 	enabled="$(uci -q get mayhem.settings.enabled)"
 	/etc/init.d/mayhem running >/dev/null 2>&1 && running=true
-	nft list table inet "$MAYHEM_NFT_TABLE" >/dev/null 2>&1 && nft=true
+	nft -t list table inet "$MAYHEM_NFT_TABLE" >/dev/null 2>&1 && nft=true
 	xver="$(cat "$MAYHEM_RUN_DIR/xray.version" 2>/dev/null)"
 	[ -n "$xver" ] || xver="$(mayhem_xray_version)"
 	gen="$(cat "$MAYHEM_RUN_DIR/status.json" 2>/dev/null)"
