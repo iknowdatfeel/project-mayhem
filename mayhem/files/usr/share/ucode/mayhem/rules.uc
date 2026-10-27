@@ -2,7 +2,19 @@
 
 'use strict';
 
-const DOMAIN_RE = /^[a-z0-9_*-]+(\.[a-z0-9_-]+)*\.?$/;
+// A domain as /^[a-z0-9_*-]+(\.[a-z0-9_-]+)*\.?$/ would match it, without
+// the regexp: lists hold tens of thousands of domains, and musl's regexp
+// takes ~0.1 ms for each on a router.
+const DOMAIN_CHARS = 'abcdefghijklmnopqrstuvwxyz0123456789_-.*';
+
+function domain_ok(d) {
+	if (d == '' || ltrim(d, DOMAIN_CHARS) != '' || substr(d, 0, 1) == '.' || index(d, '..') >= 0)
+		return false;
+
+	const dot = index(d, '.');
+
+	return dot < 0 || index(substr(d, dot), '*') < 0;
+}
 
 export function is_true(v) {
 	return v === true || v === 1 || v == '1' || v == 'true' || v == 'yes' || v == 'on';
@@ -111,7 +123,7 @@ export function norm_domain(s) {
 		case 'full':
 			const d = replace(lc(val), /^(\*\.|\.)/, '');
 
-			if (!match(d, DOMAIN_RE))
+			if (!domain_ok(d))
 				return { error: `invalid domain "${s}"` };
 
 			return { value: `${kind}:${d}` };
@@ -136,7 +148,7 @@ export function norm_domain(s) {
 	else if (substr(d, 0, 2) == '*.')
 		d = substr(d, 2);
 
-	if (!match(d, DOMAIN_RE) || index(d, '*') >= 0)
+	if (!domain_ok(d) || index(d, '*') >= 0)
 		return { error: `invalid domain "${s}"` };
 
 	return { value: `domain:${d}` };
