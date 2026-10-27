@@ -67,6 +67,32 @@ function int_opt(v, def, min, max) {
 	return (n < min || n > max) ? def : n;
 }
 
+// Rules from geo data and lists come by the tens of thousands, and a POSIX
+// regexp (musl) costs ~0.1 ms each on a router: the hot loops look at
+// prefixes instead.
+
+// "domain:x" or "full:x" -> x; null for any other rule.
+function plain_name(d) {
+	if (substr(d, 0, 7) == 'domain:')
+		return length(d) > 7 ? substr(d, 7) : null;
+
+	if (substr(d, 0, 5) == 'full:')
+		return length(d) > 5 ? substr(d, 5) : null;
+
+	return null;
+}
+
+// The address of a single-address set element (a.b.c.d, a.b.c.d/32, x::y/128),
+// null for a subnet. Elements come normalized (rules, geoip).
+function host_of(e, v6) {
+	const slash = index(e, '/');
+
+	if (slash < 0)
+		return index(e, '-') < 0 ? e : null;
+
+	return substr(e, slash) == (v6 ? '/128' : '/32') ? substr(e, 0, slash) : null;
+}
+
 function uniq_push(arr, v) {
 	if (index(arr, v) < 0)
 		push(arr, v);
@@ -86,8 +112,13 @@ function uset() {
 		},
 
 		add_all: function(arr) {
+			const seen = this.seen, items = this.items;
+
 			for (let v in arr)
-				this.add(v);
+				if (!seen[v]) {
+					seen[v] = true;
+					push(items, v);
+				}
 		}
 	};
 }
@@ -317,12 +348,12 @@ function nft_set(name, ftype, elems) {
 	let nets = [];
 
 	for (let e in elems) {
-		const m = match(e, v6 ? /^([0-9A-Fa-f:.]+)(\/128)?$/ : /^([0-9.]+)(\/32)?$/);
+		const h = host_of(e, v6);
 
-		if (m) {
-			if (!seen[m[1]]) {
-				seen[m[1]] = true;
-				push(hosts, m[1]);
+		if (h != null) {
+			if (!seen[h]) {
+				seen[h] = true;
+				push(hosts, h);
 			}
 		}
 		else
@@ -355,7 +386,8 @@ function with_hostsets(text) {
 	const out = [];
 
 	for (let line in split(text, '\n')) {
-		const m = match(line, /^\t\t.*[ ]@([A-Za-z0-9_]+)( |$)/);
+		// most lines are set elements: no "@" in them
+		const m = index(line, '@') >= 0 ? match(line, /^\t\t.*[ ]@([A-Za-z0-9_]+)( |$)/) : null;
 
 		if (m && HOSTSETS[m[1]])
 			push(out, replace(line, `@${m[1]}`, `@${m[1]}_h`));
@@ -750,24 +782,26 @@ function dns_names(RLs, model) {
 	let why = null;
 
 	const take = (rule, where) => {
-		const m = match(rule, /^(domain|full|regexp|keyword):(.*)$/);
+		const c = index(rule, ':');
+		const kind = c > 0 ? substr(rule, 0, c) : null;
 
-		if (!m) {
+		if (kind != 'domain' && kind != 'full' && kind != 'regexp' && kind != 'keyword') {
 			why ??= `"${rule}" in ${where}`;
 			return;
 		}
 
-		let n = m[2];
+		const val = substr(rule, c + 1);
+		let n = val;
 
-		if (m[1] == 'keyword')
+		if (kind == 'keyword')
 			n = null;
-		else if (m[1] == 'regexp')
+		else if (kind == 'regexp')
 			n = regexp_tail(n);
 		else
 			n = lc(n);
 
 		if (n == null) {
-			why ??= `${m[1]}:${m[2]} in ${where}`;
+			why ??= `${kind}:${val} in ${where}`;
 			return;
 		}
 
@@ -1159,10 +1193,10 @@ function kernel_domains(name, RL, model, warn, fallback) {
 	let skipped = 0;
 
 	const take = (d) => {
-		const m = match(d, /^(domain|full):(.+)$/);
+		const n = plain_name(d);
 
-		if (m)
-			out.add(m[2]);
+		if (n != null)
+			out.add(n);
 		else
 			skipped++;
 	};
@@ -1223,14 +1257,22 @@ function block_for_dnsmasq(RL, model) {
 		}
 
 		let all = true;
+		const seen = names.seen, items = names.items;
 
 		for (let d in list) {
-			const m = match(d, /^(domain|full):(.+)$/);
+			let n = plain_name(d);
 
-			if (m)
-				names.add(lc(m[2]));
-			else
+			if (n == null) {
 				all = false;
+				continue;
+			}
+
+			n = lc(n);
+
+			if (!seen[n]) {
+				seen[n] = true;
+				push(items, n);
+			}
 		}
 
 		if (all)
@@ -1240,10 +1282,10 @@ function block_for_dnsmasq(RL, model) {
 	}
 
 	for (let d in RL.domains) {
-		const m = match(d, /^(domain|full):(.+)$/);
+		const n = plain_name(d);
 
-		if (m)
-			names.add(lc(m[2]));
+		if (n != null)
+			names.add(lc(n));
 		else if (!spelled[d])
 			push(keep, d);
 	}

@@ -5,7 +5,7 @@
 //   ucode tests/entries.uc
 'use strict';
 
-import { entries, dns_server } from 'mayhem.rules';
+import { entries, dns_server, norm_domain } from 'mayhem.rules';
 
 let fails = 0;
 
@@ -31,5 +31,13 @@ expect('a DNS port zero', dns_server('1.1.1.1:0').error != null, dns_server('1.1
 expect('a DoH port too big', dns_server('https://dns.example:70000/dns-query').error != null, dns_server('https://dns.example:70000/dns-query'));
 expect('a good DNS port', dns_server('1.1.1.1:5353').port == 5353, dns_server('1.1.1.1:5353'));
 expect('a good DoH server', dns_server('https://1.1.1.1/dns-query').address == 'https://1.1.1.1/dns-query', dns_server('https://1.1.1.1/dns-query'));
+
+// Domains are checked without a regexp now: the same answers as
+// /^[a-z0-9_*-]+(\.[a-z0-9_-]+)*\.?$/ gave.
+for (let d in [ 'example.com', 'a.b.c', 'xn--d1acufc.xn--p1ai', 'a_b-c.d', 'example.com.', 'a', '*.example.com', 'domain:*.x.com', 'full:a.b' ])
+	expect(`good domain ${d}`, norm_domain(d).value != null, norm_domain(d));
+
+for (let d in [ '', '.', 'a..b', 'a.b..', 'ex ample.com', 'a/b', 'a.*.b', 'domain:a..b', 'full:', 'exa!mple.com', 'a.b*' ])
+	expect(`bad domain ${d}`, norm_domain(d).error != null, norm_domain(d));
 
 exit(fails ? 1 : 0);
