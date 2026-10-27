@@ -239,6 +239,19 @@ for ks in 0 1; do
 	fi
 done
 
+# dnsmasq reads the servers file as its own user: readable by all, even
+# with a strict umask and when an older Mayhem wrote it root-only.
+(
+	umask 077
+	sh -c '. "$MAYHEM_LIB_DIR/lib.sh"; mayhem_dns_servers isp' >/dev/null 2>&1
+)
+chmod 600 "$MAYHEM_DNS_SERVERS" 2>/dev/null
+( umask 077; sh -c '. "$MAYHEM_LIB_DIR/lib.sh"; mayhem_dns_servers isp' >/dev/null 2>&1 )
+case "$(ls -l "$MAYHEM_DNS_SERVERS" 2>/dev/null)" in
+	-rw-r--r--*) ok "the dnsmasq servers file is readable by dnsmasq" ;;
+	*) bad "servers file: $(ls -l "$MAYHEM_DNS_SERVERS" 2>&1)" ;;
+esac
+
 rm -rf "$T"
 [ "$fail" = 0 ] && echo "health tests passed"
 exit "$fail"

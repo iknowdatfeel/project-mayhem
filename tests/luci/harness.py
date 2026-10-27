@@ -696,8 +696,10 @@ def main():
             name = next((n['name'] for x in nodes.values() for n in x.get('nodes', []) if n.get('tag') == tag), None)
             if 'www.youtube.com:443' not in text or not name or name not in text:
                 raise RuntimeError('no name or server of a connection: %s' % text)
+            if '51413' not in text:
+                raise RuntimeError('no connection in through a forwarded port: %s' % text)
             count = pg.inner_text('#mh-conns-count')
-            if not count.startswith('TCP: ') or 'UDP: ' not in count:
+            if not count.startswith('TCP: ') or 'UDP: ' not in count or not count.rstrip().endswith('1'):
                 raise RuntimeError('no TCP and UDP counts: %r' % count)
             shot(pg, 'connections')
             pg.evaluate("document.querySelector('.mh-conns-modal .right button').click()")
