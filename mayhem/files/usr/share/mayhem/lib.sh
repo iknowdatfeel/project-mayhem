@@ -291,35 +291,91 @@ mayhem_auto_update() {
 	fi
 }
 
-# The connection log of xray (conn.log): a file while the dashboard shows the
-# active connections, /dev/null otherwise. xray opens the path again when
-# its logger restarts, so no restart of xray is needed.
-#   mayhem_conn_log on|off
+# The connection log of xray (conn.log): every connection xray takes and every
+# DNS answer it gives. It is always a file, so the dashboard knows the names
+# and servers of connections opened before its window; mayhem_conn_fold keeps
+# only what it needs. An older xray-run left /dev/null there: xray opens the
+# path again when its logger restarts, so no restart of xray is needed.
 mayhem_conn_log() {
 	local f="$MAYHEM_RUN_DIR/conn.log"
 
-	if [ "$1" = on ]; then
-		date +%s > "$MAYHEM_RUN_DIR/conn.watch"
-		[ -f "$f" ] && [ ! -L "$f" ] && return 0
-		: > "$f.new" && mv -f "$f.new" "$f"
-	else
-		rm -f "$MAYHEM_RUN_DIR/conn.watch"
-		[ -L "$f" ] && return 0
-		ln -sfn /dev/null "$f.new" && mv -f "$f.new" "$f"
-	fi
+	[ -f "$f" ] && [ ! -L "$f" ] && return 0
+	: > "$f.new" && mv -f "$f.new" "$f"
 
 	[ -n "$(cat "$MAYHEM_RUN_DIR/xray.pid" 2>/dev/null)" ] &&
 		"$MAYHEM_XRAY_BIN" api restartlogger --server="127.0.0.1:$MAYHEM_API_PORT" >/dev/null 2>&1
 	return 0
 }
 
-# Nobody looked at the connections for a minute (the window closed without
-# saying so): the log goes back to /dev/null.
-mayhem_conn_log_idle() {
-	local t
+# Folds conn.log into conn.names and empties it (the scheduler every minute,
+# the dashboard when the log grows). conn.names: "d <address> <name>" - which
+# name a DNS answer gave the address; "c <tcp|udp> <ip>:<port> <tag>" - which
+# outbound xray took for a connection from there. The last MAYHEM_CONN_NAMES
+# of each kind. Fake addresses of FakeDNS say nothing and are left out. A line
+# xray writes between the fold and the cut is lost - rarely, and it only
+# costs a name.
+mayhem_conn_fold() {
+	local f="$MAYHEM_RUN_DIR/conn.log" m="$MAYHEM_RUN_DIR/conn.names" size
 
-	t="$(cat "$MAYHEM_RUN_DIR/conn.watch" 2>/dev/null)" || return 0
-	[ $(( $(date +%s) - ${t:-0} )) -gt 60 ] && mayhem_conn_log off
+	[ -f "$f" ] && [ ! -L "$f" ] || return 0
+	size="$(wc -c < "$f" 2>/dev/null)"
+	[ "${size:-0}" -gt 0 ] || return 0
+
+	{ [ -f "$m" ] && cat "$m"; head -c "$size" "$f"; } | awk -v max="${MAYHEM_CONN_NAMES:-3000}" '
+		function put(kind, key, line) {
+			if (key in seq)
+				delete out[seq[key]]
+			seq[key] = ++n
+			out[n] = line
+			kd[n] = kind
+		}
+		$1 == "d" && NF == 3 { put("d", "d " $2, $0); next }
+		$1 == "c" && NF == 4 { put("c", "c " $2 " " $3, $0); next }
+		/ (got answer|cache HIT|cache OPTIMISTE): / {
+			i = index($0, ": ")
+			rest = substr($0, i + 2)
+			name = rest
+			sub(/ .*/, "", name)
+			sub(/\.$/, "", name)
+			lb = index(rest, "[")
+			rb = index(rest, "]")
+			if (name == "" || !lb || rb <= lb)
+				next
+			k = split(substr(rest, lb + 1, rb - lb - 1), ips, ", ")
+			for (j = 1; j <= k; j++)
+				if (ips[j] != "" && ips[j] !~ /^198\.1[89]\./)
+					put("d", "d " ips[j], "d " ips[j] " " name)
+			next
+		}
+		/ accepted (tcp|udp):.* \[/ {
+			for (j = 1; j <= NF; j++)
+				if ($j == "from")
+					break
+			src = $(j + 1)
+			net = $(j + 3)
+			sub(/^(tcp|udp):/, "", src)
+			gsub(/[][]/, "", src)
+			sub(/:.*/, "", net)
+			det = substr($0, index($0, " accepted ") + 10)
+			det = substr(det, index(det, " [") + 2)
+			sub(/\].*/, "", det)
+			tag = det
+			sub(/.* /, "", tag)
+			if (src != "" && tag != "" && (net == "tcp" || net == "udp"))
+				put("c", "c " net " " src, "c " net " " src " " tag)
+		}
+		END {
+			for (i = n; i >= 1; i--)
+				if (i in out && ++cnt[kd[i]] > max)
+					delete out[i]
+			for (i = 1; i <= n; i++)
+				if (i in out)
+					print out[i]
+		}' > "$m.new" && mv -f "$m.new" "$m"
+
+	# What xray wrote meanwhile stays.
+	tail -c +"$((size + 1))" "$f" > "$f.t" 2>/dev/null && cat "$f.t" > "$f"
+	rm -f "$f.t"
 	return 0
 }
 

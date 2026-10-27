@@ -683,6 +683,26 @@ def main():
             else:
                 pg.wait_for_timeout(4500)  # two polls: the speed widget has numbers
 
+        def conns_modal(pg):
+            # the connections of the fixture (run.sh): names, servers, counts
+            pg.click('#mayhem-body button:has-text("Active connections"), #mayhem-body button:has-text("Активные подключения")')
+            pg.wait_for_selector('#mh-conns table', timeout=8000)
+            heads = pg.eval_on_selector_all('#mh-conns th', 'es => es.map(e => e.textContent)')
+            if len(heads) != 6:
+                raise RuntimeError('connection columns: %s' % heads)
+            text = pg.inner_text('#mh-conns')
+            tag = open(os.path.join(FIX, 'run', 'conn.names')).read().split('\n')[3].split(' ')[-1]
+            nodes = json.load(open(os.path.join(FIX, 'run', 'nodes.json')))['sections']
+            name = next((n['name'] for x in nodes.values() for n in x.get('nodes', []) if n.get('tag') == tag), None)
+            if 'www.youtube.com:443' not in text or not name or name not in text:
+                raise RuntimeError('no name or server of a connection: %s' % text)
+            count = pg.inner_text('#mh-conns-count')
+            if not count.startswith('TCP: ') or 'UDP: ' not in count:
+                raise RuntimeError('no TCP and UDP counts: %r' % count)
+            shot(pg, 'connections')
+            pg.evaluate("document.querySelector('.mh-conns-modal .right button').click()")
+            pg.wait_for_timeout(300)
+
         def add_section(pg, no_subs=False):
             # the dialog of a new section opens, also on a router without
             # subscriptions (an empty dropdown used to throw in LuCI)
@@ -865,7 +885,7 @@ def main():
                 raise RuntimeError('the address keeps a page after closing: %s' % pg.url)
 
         pages = [
-            ('mayhem/dashboard', [('buttons', dashboard_buttons), ('logs dialog', logs_modal), ('run diagnostics', run_diag),
+            ('mayhem/dashboard', [('buttons', dashboard_buttons), ('active connections', conns_modal), ('logs dialog', logs_modal), ('run diagnostics', run_diag),
                                   ('edit a server', edit_server), ('delete a server', delete_server), ('choose how', choose_mode), ('chain of the list', list_chain),
                                   ('delete a tunnel', delete_tunnel), ('services', services_badge), ('pages in a window', nav_pages)]),
             ('mayhem/dashboard#sections', [('sections tab', lambda pg: shot(pg, 'routing_sections')), ('main section', main_section),

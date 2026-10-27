@@ -405,6 +405,10 @@ msgstr ""
 msgid "Configuration type"
 msgstr ""
 
+#: htdocs/luci-static/resources/view/mayhem/dashboard.js
+msgid "Connected via"
+msgstr ""
+
 #: htdocs/luci-static/resources/mayhem/page/sections.js
 msgid "Connection"
 msgstr ""
@@ -654,7 +658,7 @@ msgid "Every 6 hours"
 msgstr ""
 
 #: htdocs/luci-static/resources/view/mayhem/dashboard.js
-msgid "Every connection of the network that is open now. Servers and site names of connections through Xray show up for those opened while this window is open."
+msgid "Every connection of the network that is open now, grouped by device, address and route. A site name is known when its address came in a DNS answer through Xray; otherwise the address is shown."
 msgstr ""
 
 #: htdocs/luci-static/resources/mayhem/page/settings.js
@@ -1257,6 +1261,10 @@ msgstr ""
 msgid "Open a .conf file…"
 msgstr ""
 
+#: htdocs/luci-static/resources/view/mayhem/dashboard.js
+msgid "Open connections"
+msgstr ""
+
 #: htdocs/luci-static/resources/mayhem/diag.js
 msgid "Other proxy clients"
 msgstr ""
@@ -1467,10 +1475,6 @@ msgstr ""
 
 #: htdocs/luci-static/resources/view/mayhem/dashboard.js
 msgid "Resume"
-msgstr ""
-
-#: htdocs/luci-static/resources/view/mayhem/dashboard.js
-msgid "Route"
 msgstr ""
 
 #: htdocs/luci-static/resources/mayhem/page/sections.js
@@ -2211,10 +2215,6 @@ msgstr ""
 
 #: htdocs/luci-static/resources/view/mayhem/dashboard.js
 msgid "not servers of the list: they carry the traffic of their sections under Routing"
-msgstr ""
-
-#: htdocs/luci-static/resources/view/mayhem/dashboard.js
-msgid "opened before the window"
 msgstr ""
 
 #: htdocs/luci-static/resources/mayhem/tunnels.js

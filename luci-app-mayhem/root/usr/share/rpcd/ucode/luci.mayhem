@@ -667,6 +667,8 @@ const ICMP_MAX = 256;
 
 // URL test over kept-alive connections: the process, the servers it keeps.
 const WARM = getenv('MAYHEM_RPC_WARM') ?? '/usr/share/mayhem-luci/warm.uc';
+// How old the numbers of the last URL test may be when the dashboard opens.
+const WARM_LAST = 1800;
 const WARM_MAX = 64;
 
 // The server of a tunnel: the endpoint of its first peer.
@@ -1526,12 +1528,14 @@ function last_tcp_time(out) {
 // counters, whether dnsmasq runs and the latest handshake of every tunnel.
 // --- active connections ---------------------------------------------------------
 // xray writes every connection it takes ("from A accepted tcp:B [in >> out]")
-// and every DNS answer it gives to CONN_LOG, which is a file only while the
-// dashboard asks (mayhem_conn_log in lib.sh). The connections still in the
-// kernel's table are the active ones.
+// and every DNS answer it gives to CONN_LOG; the scheduler folds it every
+// minute into CONN_NAMES (mayhem_conn_fold in lib.sh), so names and servers
+// are known for connections opened before the window. The connections still
+// in the kernel's table are the active ones.
 const CONN_READ_MAX = 262144;
 const CONN_KEEP = 131072;
 const CONN_ROWS = 300;
+const CONN_NAMES = `${RUN}/conn.names`;
 
 // The last bytes of a file (whole lines).
 function file_tail(path, n) {
@@ -1561,18 +1565,105 @@ function file_tail(path, n) {
 	return text;
 }
 
-// Device names by address, from the DHCP leases.
-function lease_names() {
-	const out = {};
+// An address as people write it: the kernel lists IPv6 in full
+// (0000:...:0001), DNS answers and "ip addr" in short (::1).
+function short_ip(a) {
+	if (a == null || index(a, ':') < 0 || index(a, '::') >= 0)
+		return a;
+
+	const g = map(split(a, ':'), (x) => ltrim(lc(x), '0') || '0');
+
+	if (length(g) != 8)
+		return a;
+
+	// The longest run of zero groups (two or more) becomes "::".
+	let best = -1, blen = 0;
+
+	for (let i = 0; i < 8; i++) {
+		if (g[i] != '0')
+			continue;
+
+		let j = i;
+
+		while (j < 8 && g[j] == '0')
+			j++;
+
+		if (j - i > blen && j - i > 1) {
+			best = i;
+			blen = j - i;
+		}
+
+		i = j;
+	}
+
+	if (best < 0)
+		return join(':', g);
+
+	return join(':', slice(g, 0, best)) + '::' + join(':', slice(g, best + blen));
+}
+
+function loopback(a) {
+	return match(a, /^127\./) != null || a == '::1';
+}
+
+// Device names by address: the DHCP leases, and for the other addresses of
+// the same device (IPv6) its MAC address in the neighbour table.
+function device_names() {
+	const out = {}, by_mac = {};
 
 	for (let l in split(fs.readfile(getenv('MAYHEM_LEASES') ?? '/tmp/dhcp.leases') ?? '', '\n')) {
 		const f = split(l, ' ');
 
-		if (length(f) >= 4 && f[3] != '*')
+		if (length(f) >= 4 && f[3] != '*') {
 			out[f[2]] = f[3];
+			by_mac[lc(f[1])] = f[3];
+		}
+	}
+
+	if (!length(by_mac))
+		return out;
+
+	for (let l in split(run(getenv('MAYHEM_NEIGH_CMD') ?? 'ip neigh show 2>/dev/null') ?? '', '\n')) {
+		const m = match(l, /^([^ ]+) .*lladdr ([0-9a-fA-F:]+)/);
+
+		if (m && by_mac[lc(m[2])])
+			out[m[1]] ??= by_mac[lc(m[2])];
 	}
 
 	return out;
+}
+
+// What the folded log says: { hosts: address -> name, tags: "tcp ip:port" ->
+// outbound tag }. Read again only when it changed (the dashboard asks every
+// 3 s, the scheduler folds once a minute).
+let conn_names_cache = null;
+
+function conn_names() {
+	const st = fs.stat(CONN_NAMES);
+	const stamp = st ? `${st.mtime} ${st.size}` : '';
+
+	if (conn_names_cache?.stamp == stamp)
+		return conn_names_cache;
+
+	const hosts = {}, tags = {};
+	const fh = st ? fs.open(CONN_NAMES, 'r') : null;
+
+	if (fh) {
+		let l;
+
+		while ((l = fh.read('line')) != null && l != '') {
+			const f = split(rtrim(l, '\n'), ' ');
+
+			if (f[0] == 'd' && length(f) == 3)
+				hosts[f[1]] = f[2];
+			else if (f[0] == 'c' && length(f) == 4)
+				tags[`${f[1]} ${f[2]}`] = f[3];
+		}
+
+		fh.close();
+	}
+
+	return conn_names_cache = { stamp: stamp, hosts: hosts, tags: tags };
 }
 
 // What an outbound tag stands for: a server of a section, direct, blocked.
@@ -1588,21 +1679,24 @@ function route_of(tag, state) {
 
 	for (let sn in keys(state?.sections ?? {})) {
 		const s = state.sections[sn];
+		// The server list itself (its section is "pool"), or a section that
+		// takes its active server.
+		const pool = sn == 'pool' || s.pool == true;
 
 		if (tag == `f-${sn}`)
-			return { kind: 'proxy', section: sn, server: s.nodes?.[0]?.name, protocol: s.nodes?.[0]?.protocol, pool: s.pool == true };
+			return { kind: 'proxy', section: sn, server: s.nodes?.[0]?.name, protocol: s.nodes?.[0]?.protocol, pool: pool };
 
 		for (let n in s.nodes ?? [])
 			if (n.tag == tag)
-				return { kind: n.iface ? 'tunnel' : 'proxy', section: sn, server: n.name, protocol: n.tproto ?? n.protocol, pool: s.pool == true };
+				return { kind: n.iface ? 'tunnel' : 'proxy', section: sn, server: n.name, protocol: n.tproto ?? n.protocol, pool: pool };
 	}
 
 	return { kind: 'other', tag: tag };
 }
 
 // Every connection the kernel tracks: { network, src, sport, dst, dport,
-// rdst (where the answers go: a router address when NAT took it), bytes,
-// mark }. Read line by line: a busy router tracks thousands.
+// rdst (where the answers go: a router address when NAT took it), rsrc (who
+// answers: the router when it took the connection to itself), bytes, mark }. Read line by line: a busy router tracks thousands.
 function conntrack_each(fn) {
 	const fh = fs.open(getenv('MAYHEM_CONNTRACK') ?? '/proc/net/nf_conntrack', 'r');
 
@@ -1641,7 +1735,7 @@ function conntrack_each(fn) {
 		if (!length(f.src) || !length(f.dport))
 			continue;
 
-		fn({ network: proto, src: f.src[0], sport: f.sport[0], dst: f.dst[0], dport: int(f.dport[0]), rdst: f.dst[1],
+		fn({ network: proto, src: short_ip(f.src[0]), sport: f.sport[0], dst: short_ip(f.dst[0]), dport: int(f.dport[0]), rdst: short_ip(f.dst[1]), rsrc: short_ip(f.src[1]),
 			bytes: int(f.bytes[0] ?? 0) + int(f.bytes[1] ?? 0), mark: mark });
 	}
 
@@ -1683,23 +1777,33 @@ function tunnel_devices(state) {
 }
 
 function connections(stop, device) {
-	if (stop) {
-		system(`sh -c '. ${LIB}/lib.sh; mayhem_conn_log off' >/dev/null 2>&1`);
+	// Nothing to switch off: the log is always kept (folded by the scheduler).
+	if (stop)
 		return { ok: true };
-	}
-
-	// xray's log says which server and which name, for what went through it.
-	if (xray_pid())
-		system(`sh -c '. ${LIB}/lib.sh; mayhem_conn_log on' >/dev/null 2>&1`);
 
 	const log = C.CONN_LOG;
+	let st = fs.lstat(log);
+
+	// An xray started by an older xray-run writes to /dev/null.
+	if (xray_pid() && st?.type != 'file') {
+		system(`sh -c '. ${LIB}/lib.sh; mayhem_conn_log' >/dev/null 2>&1`);
+		st = fs.lstat(log);
+	}
+
+	// A busy minute: folded now rather than read at length.
+	if (st?.type == 'file' && st.size > 2 * CONN_KEEP)
+		system(`sh -c '. ${LIB}/lib.sh; mayhem_conn_fold' >/dev/null 2>&1`);
+
 	const state = read_json(`${RUN}/nodes.json`) ?? { sections: {} };
-	const names = lease_names();
+	const names = device_names();
 	const mine = router_addrs();
 	const tuns = tunnel_devices(state);
-	const host_of = {};
-	const via_xray = {};
+	const folded = conn_names();
+	const host_of = folded.hosts;
+	const tag_of = folded.tags;
+	const recent_hosts = {}, recent_tags = {};
 
+	// What xray wrote since the last fold.
 	for (let l in split(file_tail(log, CONN_READ_MAX), '\n')) {
 		// DNS answers: which name an address came for.
 		let m = match(l, /(got answer:|cache HIT:|cache OPTIMISTE:) ([^ ]+) -> \[([^]]*)\]/);
@@ -1709,7 +1813,7 @@ function connections(stop, device) {
 
 			for (let ip in split(m[3], ', '))
 				if (ip != '' && !match(ip, /^198\.1[89]\./))
-					host_of[ip] = name;
+					recent_hosts[ip] = name;
 
 			continue;
 		}
@@ -1721,37 +1825,37 @@ function connections(stop, device) {
 
 		const det = split(m[7], ' ');
 
-		via_xray[`${m[4]} ${trim(m[2], '[]')}:${m[3]}`] = route_of(det[length(det) - 1], state);
+		recent_tags[`${m[4]} ${trim(m[2], '[]')}:${m[3]}`] = det[length(det) - 1];
 	}
 
-	// The log only needs to cover a few minutes.
-	const st = fs.stat(log);
-
-	if (st?.type == 'file' && st.size > 2 * CONN_KEEP)
-		system(`f=${q(log)}; tail -c ${CONN_KEEP} "$f" > "$f.t" 2>/dev/null && cat "$f.t" > "$f"; rm -f "$f.t"`);
-
 	const rows = {};
-	const order = [];
+	let order = [];
 	const gen_mask = C.CT_GEN_MASK;
 
 	const ok = conntrack_each((c) => {
 		const marked = (c.mark & gen_mask) != 0;
+		const router = mine[c.src] || loopback(c.src);
 
 		// The router's own connections only when they went through Mayhem
 		// (to xray): the rest is xray reaching its servers, DNS and the like.
-		if (mine[c.src] && !marked)
+		if (router && !marked)
 			return;
 
 		// To the router itself (DNS, the web interface), local and multicast.
-		if (mine[c.dst] || match(c.dst, /^(127\.|22[4-9]\.|23[0-9]\.|255\.|ff|fe80:|::1$)/))
+		if (mine[c.dst] || loopback(c.dst) || match(c.dst, /^(22[4-9]\.|23[0-9]\.|255\.|ff|fe80:)/))
 			return;
 
-		let route = via_xray[`${c.network} ${c.src}:${c.sport}`];
+		const k = `${c.network} ${c.src}:${c.sport}`;
+		const tag = recent_tags[k] ?? (marked ? tag_of[k] : null);
+		let route = tag ? route_of(tag, state) : null;
 
 		if (!route) {
 			const nat = mine[c.rdst];
 
-			if (nat && tuns[nat])
+			// DNS to another server, taken by the router (dnsmasq).
+			if (mine[c.rsrc] && c.dport == 53)
+				route = { kind: 'dns' };
+			else if (nat && tuns[nat])
 				route = { kind: 'tunnel', section: tuns[nat].section, server: tuns[nat].server, protocol: tuns[nat].protocol };
 			else if (nat)
 				route = { kind: 'direct', via: nat };
@@ -1766,8 +1870,8 @@ function connections(stop, device) {
 
 		if (!rows[key]) {
 			rows[key] = {
-				device: mine[c.src] ? 'router' : (names[c.src] ?? null), ip: c.src, network: c.network,
-				host: c.dst, port: c.dport, fake: fake, domain: fake ? null : host_of[c.dst],
+				device: router ? 'router' : (names[c.src] ?? null), ip: c.src, network: c.network,
+				host: c.dst, port: c.dport, fake: fake, domain: fake ? null : (recent_hosts[c.dst] ?? host_of[c.dst]),
 				route: route, count: 0, bytes: 0
 			};
 			push(order, key);
@@ -1779,6 +1883,35 @@ function connections(stop, device) {
 
 	if (!ok)
 		return { error: 'the kernel does not list its connections (/proc/net/nf_conntrack)' };
+
+	// A connection through xray whose server the log does not know (opened
+	// before it was written, a lost line) goes where the others of the same
+	// device to the same address and port go: one row, the traffic summed.
+	for (let k in order) {
+		const r = rows[k];
+
+		if (r.route.kind != 'xray')
+			continue;
+
+		let to = null;
+
+		for (let k2 in order) {
+			const x = rows[k2];
+
+			if (x.count && (x.route.kind == 'proxy' || x.route.kind == 'tunnel') && x.network == r.network &&
+			    x.ip == r.ip && x.host == r.host && x.port == r.port && (!to || x.bytes > to.bytes))
+				to = x;
+		}
+
+		if (to) {
+			to.count += r.count;
+			to.bytes += r.bytes;
+			to.domain ??= r.domain;
+			r.count = 0;
+		}
+	}
+
+	order = filter(order, (k) => rows[k].count > 0);
 
 	// Every device with connections, for the filter; then only the one asked
 	// for, before the busiest are cut off.
@@ -1792,11 +1925,15 @@ function connections(stop, device) {
 	}
 
 	const out = filter(map(order, (k) => rows[k]), (r) => !device || r.ip == device);
+	const counts = { tcp: 0, udp: 0 };
+
+	for (let r in out)
+		counts[r.network] += r.count;
 
 	// The busiest first.
 	sort(out, (a, b) => b.bytes - a.bytes);
 
-	return { rows: slice(out, 0, CONN_ROWS), total: length(out), log: xray_pid() != null,
+	return { rows: slice(out, 0, CONN_ROWS), total: length(out), counts: counts, log: xray_pid() != null,
 		devices: sort(values(devs), (a, b) => b.count - a.count) };
 }
 
@@ -2434,7 +2571,9 @@ const methods = {
 
 			const pid = trim(fs.readfile(`${RUN}/warm.pid`) ?? '');
 
-			if (!match(pid, /^[0-9]+$/) || index(fs.readfile(`/proc/${pid}/cmdline`) ?? '', 'warm.uc') < 0)
+			const fresh = !match(pid, /^[0-9]+$/) || index(fs.readfile(`/proc/${pid}/cmdline`) ?? '', 'warm.uc') < 0;
+
+			if (fresh)
 				system(`(ucode ${q(WARM)} >/dev/null 2>&1 </dev/null & echo $! > ${q(RUN + '/warm.pid')}) >/dev/null 2>&1 </dev/null`);
 
 			const tags = [], seen = {};
@@ -2452,9 +2591,13 @@ const methods = {
 			const results = {};
 
 			// A result older than three rounds is from a connection that
-			// stalled, or from an earlier run.
+			// stalled, or from an earlier run. Except while the run is new: then
+			// the numbers of the last one (up to half an hour old) show until
+			// its own come, rather than nothing.
+			const young = fresh || j?.started >= now - 3 * period;
+
 			for (let tag, r in j?.results ?? {})
-				if (seen[tag] && r?.at >= now - 3 * period)
+				if (seen[tag] && (r?.at >= now - 3 * period || (young && r?.ms != null && r?.at >= now - WARM_LAST)))
 					results[tag] = r;
 
 			return { ok: true, now: now, period: period, tags: tags, results: results };

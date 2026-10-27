@@ -802,7 +802,7 @@ else
 	bad "server list: $(printf '%s' "$out" | grep -v '^ok')"
 fi
 
-# Active connections: the log switched on and off, read into rows.
+# Active connections: the log folded into names, read into rows.
 if out="$(UCODE="$UCODE" sh "$ROOT/tests/conns.sh" 2>&1)"; then
 	ok "active connections"
 else
