@@ -1842,54 +1842,68 @@ function route_of(tag, state) {
 // a device when a forwarded port took it there), bytes, mark, closing (TCP
 // that is being closed), bad (a line not understood) }. Read line by line: a
 // busy router tracks thousands.
-function conntrack_each(fn) {
-	const fh = fs.open(getenv('MAYHEM_CONNTRACK') ?? '/proc/net/nf_conntrack', 'r');
+// One line per connection, the fields cut out by awk (splitting thousands of
+// lines into words in ucode took most of a second on a fast machine):
+// "proto state src dst sport dport rsrc rdst rsport bytes mark lo rlo mc fk dlo",
+// state "-" for UDP, empty fields where the kernel gave none; 1 or 0: the
+// source is a loopback address (lo), the reply's source (rlo), the
+// destination (dlo); the
+// destination is multicast, broadcast or link-local (mc), in the FakeDNS
+// range (fk) - regexps in ucode cost as much again for every connection.
+const CONNTRACK_AWK = `
+function lo(a) { return a ~ /^127\\./ || a == "::1" || a == "0000:0000:0000:0000:0000:0000:0000:0001" }
+$3 == "tcp" || $3 == "udp" {
+	s = ""; d = ""; sp = ""; dp = ""; rs = ""; rd = ""; rsp = ""; b = 0; m = 0; st = "-"
+	if ($3 == "tcp") st = $6
+	for (i = 4; i <= NF; i++) {
+		e = index($i, "=")
+		if (!e) continue
+		k = substr($i, 1, e - 1); v = substr($i, e + 1)
+		if (k == "src") { if (s == "") s = v; else if (rs == "") rs = v }
+		else if (k == "dst") { if (d == "") d = v; else if (rd == "") rd = v }
+		else if (k == "sport") { if (sp == "") sp = v; else if (rsp == "") rsp = v }
+		else if (k == "dport") { if (dp == "") dp = v }
+		else if (k == "bytes") b += v
+		else if (k == "mark") m = v
+	}
+	print $3, st, s, d, sp, dp, rs, rd, rsp, b, m, lo(s) ? 1 : 0, lo(rs) ? 1 : 0,
+		(d ~ /^(22[4-9]\\.|23[0-9]\\.|255\\.|ff|fe80:)/) ? 1 : 0, (d ~ /^198\\.1[89]\\./) ? 1 : 0, lo(d) ? 1 : 0
+}`;
+const CLOSING = { TIME_WAIT: true, CLOSE: true, CLOSE_WAIT: true, LAST_ACK: true, FIN_WAIT: true };
 
-	if (!fh)
+function conntrack_each(fn) {
+	const path = getenv('MAYHEM_CONNTRACK') ?? '/proc/net/nf_conntrack';
+
+	if (!fs.access(path, 'r'))
+		return false;
+
+	const p = fs.popen(`awk ${q(CONNTRACK_AWK)} ${q(path)} 2>/dev/null`, 'r');
+
+	if (!p)
 		return false;
 
 	let l;
 
-	while ((l = fh.read('line')) != null && l != '') {
-		const t = filter(split(rtrim(l, '\n'), ' '), (x) => x != '');
-		const proto = t[2];
+	while ((l = p.read('line')) != null && l != '') {
+		const t = split(rtrim(l, '\n'), ' ');
+		const proto = t[0];
 
-		if (proto != 'tcp' && proto != 'udp')
-			continue;
-
-		if (proto == 'tcp' && index([ 'TIME_WAIT', 'CLOSE', 'CLOSE_WAIT', 'LAST_ACK', 'FIN_WAIT' ], t[5]) >= 0) {
+		if (proto == 'tcp' && CLOSING[t[1]]) {
 			fn({ network: proto, closing: true });
 			continue;
 		}
 
-		const f = { src: [], dst: [], sport: [], dport: [], bytes: [] };
-		let mark = 0;
-
-		for (let x in t) {
-			const e = index(x, '=');
-
-			if (e < 0)
-				continue;
-
-			const k = substr(x, 0, e), v = substr(x, e + 1);
-
-			if (f[k])
-				push(f[k], v);
-			else if (k == 'mark')
-				mark = int(v);
-		}
-
-		if (!length(f.src) || !length(f.dport)) {
+		if (t[2] == '' || t[5] == '' || t[2] == null) {
 			fn({ network: proto, bad: true });
 			continue;
 		}
 
-		fn({ network: proto, src: short_ip(f.src[0]), sport: f.sport[0], dst: short_ip(f.dst[0]), dport: int(f.dport[0]),
-			rdst: short_ip(f.dst[1]), rsrc: short_ip(f.src[1]), rsport: int(f.sport[1] ?? 0),
-			bytes: int(f.bytes[0] ?? 0) + int(f.bytes[1] ?? 0), mark: mark });
+		fn({ network: proto, src: short_ip(t[2]), sport: t[4], dst: short_ip(t[3]), dport: int(t[5]),
+			rdst: short_ip(t[7] || null), rsrc: short_ip(t[6] || null), rsport: int(t[8] || 0),
+			bytes: int(t[9]), mark: int(t[10]), lo: t[11] == '1', rlo: t[12] == '1', mc: t[13] == '1', fk: t[14] == '1', dlo: t[15] == '1' });
 	}
 
-	fh.close();
+	p.close();
 
 	return true;
 }
@@ -1996,14 +2010,14 @@ function connections(stop, device) {
 			return hide(c.closing ? 'closing' : 'other');
 
 		const marked = (c.mark & gen_mask) != 0;
-		const router = mine[c.src] || loopback(c.src);
+		const router = mine[c.src] || c.lo;
 
 		// From outside to a device: through a forwarded port (UPnP too), or
 		// routed to its own address (IPv6). The row is the device's; where
 		// it came from is the destination.
 		let into = null;
 
-		if (!router && mine[c.dst] && c.rsrc && !mine[c.rsrc] && !loopback(c.rsrc))
+		if (!router && mine[c.dst] && c.rsrc && !mine[c.rsrc] && !c.rlo)
 			into = { ip: c.rsrc, port: c.rsport };
 		else if (!router && !local[c.src] && local[c.dst] && !mine[c.dst])
 			into = { ip: c.dst, port: c.dport };
@@ -2031,10 +2045,10 @@ function connections(stop, device) {
 			return hide('router');
 
 		// To the router itself (DNS, the web interface), local and multicast.
-		if (mine[c.dst] || loopback(c.dst))
+		if (mine[c.dst] || c.dlo)
 			return hide('to_router');
 
-		if (match(c.dst, /^(22[4-9]\.|23[0-9]\.|255\.|ff|fe80:)/))
+		if (c.mc)
 			return hide('local');
 
 		const k = `${c.network} ${c.src}:${c.sport}`;
@@ -2060,7 +2074,7 @@ function connections(stop, device) {
 		// The FakeDNS pool is 198.18.0.0/15, a range of its own: an address
 		// there is Mayhem's fake one only while xray has FakeDNS (otherwise
 		// it came from elsewhere - a VPN app on the device, an old answer).
-		const fake = state.fakedns != false && match(c.dst, /^198\.1[89]\./) != null;
+		const fake = state.fakedns != false && c.fk;
 		const key = `${c.network} ${c.src} ${c.dst} ${c.dport} ${route.kind} ${route.server ?? ''}`;
 
 		if (!rows[key]) {
@@ -2082,21 +2096,27 @@ function connections(stop, device) {
 	// A connection through xray whose server the log does not know (opened
 	// before it was written, a lost line) goes where the others of the same
 	// device to the same address and port go: one row, the traffic summed.
+	// (The busiest such row by device, address and port: looked up, not
+	// searched for every row - with thousands of connections that took
+	// seconds on a router.)
+	const busiest = {};
+	const same_way = (r) => `${r.network} ${r.ip} ${r.host} ${r.port}`;
+
+	for (let k in order) {
+		const x = rows[k];
+		const w = same_way(x);
+
+		if ((x.route.kind == 'proxy' || x.route.kind == 'tunnel') && (!busiest[w] || x.bytes > busiest[w].bytes))
+			busiest[w] = x;
+	}
+
 	for (let k in order) {
 		const r = rows[k];
 
 		if (r.route.kind != 'xray')
 			continue;
 
-		let to = null;
-
-		for (let k2 in order) {
-			const x = rows[k2];
-
-			if (x.count && (x.route.kind == 'proxy' || x.route.kind == 'tunnel') && x.network == r.network &&
-			    x.ip == r.ip && x.host == r.host && x.port == r.port && (!to || x.bytes > to.bytes))
-				to = x;
-		}
+		const to = busiest[same_way(r)];
 
 		if (to) {
 			to.count += r.count;
