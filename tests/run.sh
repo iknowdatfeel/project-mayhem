@@ -114,6 +114,24 @@ else
 	ok "router traffic through xray"
 fi
 
+# A call of the rpcd plugin in a process of its own (call.uc): the plugin
+# compiled once, the same answers as from the source.
+mkdir -p "$OUT/rpccache"
+rpc_call() {
+	MAYHEM_RPC_PLUGIN="$ROOT/luci-app-mayhem/root/usr/share/rpcd/ucode/luci.mayhem" MAYHEM_RPC_CACHE="$OUT/rpccache/$1" \
+		MAYHEM_RPC_MODULES="$FILES/usr/share/ucode/mayhem" uc "$ROOT/luci-app-mayhem/root/usr/share/mayhem-luci/call.uc" probe_tcp '{"tags":["x"]}' 2>&1
+}
+a="$(rpc_call c)"; b="$(rpc_call c)"
+if [ -z "$(ls "$OUT/rpccache/c/"plugin.*.ucc 2>/dev/null)" ]; then
+	bad "rpcd calls: the plugin is not compiled ($a)"
+elif [ "$a" != "$b" ] || [ "$a" != "$(MAYHEM_RPC_PLUGIN="$ROOT/luci-app-mayhem/root/usr/share/rpcd/ucode/luci.mayhem" uc -e "
+	print(sprintf('%J\\n', loadfile(ARGV[0])()['luci.mayhem'].probe_tcp.call({ args: { tags: [ 'x' ] } })));" \
+	"$ROOT/luci-app-mayhem/root/usr/share/rpcd/ucode/luci.mayhem" 2>&1)" ]; then
+	bad "rpcd calls: compiled plugin answers otherwise: $a / $b"
+else
+	ok "rpcd calls: the plugin compiled once"
+fi
+
 # nodes.json and overrides changed by several processes at once.
 if out="$(uc "$ROOT/tests/runstate.uc" "$UCODE" "$FILES/usr/share/ucode/*.uc" 2>&1)"; then
 	ok "nodes.json: writers one at a time, no change lost"
