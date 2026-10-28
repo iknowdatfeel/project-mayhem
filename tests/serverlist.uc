@@ -5,7 +5,7 @@
 //   ucode tests/serverlist.uc PLUGIN
 'use strict';
 
-import { writefile, mkdir } from 'fs';
+import { writefile, readfile, mkdir } from 'fs';
 
 const plugin = loadfile(ARGV[0])()['luci.mayhem'];
 const call = (m, args) => plugin[m].call({ args: args });
@@ -63,5 +63,11 @@ c = cursor();
 expect(`select_node from the chain: ${r}`, r?.ok);
 expect('the list is not automatic with the server pinned',
 	c.get('mayhem', 'pool', 'select') == 'auto' && c.get('mayhem', 'pool', 'override') == 'K1');
+
+const st = json(readfile(`${run}/nodes.json`));
+
+expect('nodes.json: the list automatic with the server pinned',
+	st.sections.pool.mode == 'auto' && st.sections.pool.override == 'n-pool-3' && st.sections.pool.selected == null);
+expect('overrides: the choice for the next start', readfile(`${run}/overrides`) == 'bal-pool n-pool-3\n');
 
 exit(fails ? 1 : 0);

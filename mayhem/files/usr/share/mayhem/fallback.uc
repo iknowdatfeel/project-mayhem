@@ -28,6 +28,7 @@
 import * as fs from 'fs';
 import { RUN_DIR, API_PORT, METRICS_PORT, DEFAULT_PROBE_URL } from 'mayhem.const';
 import * as check from 'mayhem.check';
+import * as runstate from 'mayhem.runstate';
 
 const XRAY = getenv('MAYHEM_XRAY_BIN') ?? '/usr/libexec/mayhem/xray';
 const FAILS = 1;
@@ -100,6 +101,8 @@ const fails = read_json('fallback.fails') ?? {};
 const left = read_json('fallback.left') ?? {};
 const checks = (t) => obs[t]?.health_ping?.all ?? 0;
 const moved = {};
+// section -> the server it moved to
+const chosen = {};
 
 for (let sn in chains) {
 	const s = state.sections[sn];
@@ -223,6 +226,7 @@ for (let sn in chains) {
 		: `fallback chain of ${sn}: ${name(s.selected)} does not work, now ${name(want)}`);
 	s.selected = want;
 	moved[s.balancer] = want;
+	chosen[sn] = want;
 }
 
 write('fallback.json', sprintf('%J\n', now));
@@ -230,18 +234,18 @@ write('fallback.fails', sprintf('%J\n', fails));
 write('fallback.left', sprintf('%J\n', left));
 
 if (length(moved)) {
-	write('nodes.json', sprintf('%J\n', state));
+	// The file as it is now: a reload may have written it meanwhile.
+	runstate.update(RUN_DIR, (st) => {
+		for (let sn, tag in chosen) {
+			const s = st.sections?.[sn];
+
+			if (s && index(map(s.nodes ?? [], (n) => n.tag), tag) >= 0)
+				s.selected = tag;
+		}
+	});
 
 	// The choice for the next start of xray, like a choice made by hand.
-	for (let f in [ 'overrides', 'running.overrides' ]) {
-		const lines = filter(split(fs.readfile(`${RUN_DIR}/${f}`) ?? '', '\n'),
-			(l) => l != '' && !moved[split(l, ' ')[0]]);
-
-		for (let b in keys(moved))
-			push(lines, `${b} ${moved[b]}`);
-
-		write(f, join('\n', lines) + '\n');
-	}
+	runstate.set_overrides(RUN_DIR, moved);
 }
 
 exit(0);
