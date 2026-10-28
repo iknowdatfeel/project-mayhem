@@ -863,23 +863,35 @@ function dns_names(RLs, model) {
 
 // dnsmasq lines "<head>/name/name/.../<tail>" with up to ~900 bytes of names
 // each (dnsmasq matches a name together with its subdomains).
+// All names are joined once and the text is cut at the last "/" before 900
+// characters: a block list has tens of thousands of names, and an array and
+// a join per line took five times as long.
 function name_lines(names, head, tail) {
+	const all = join('/', names);
+	const n = length(all);
 	const out = [];
-	let part = [], len = 0;
+	let i = 0;
 
-	for (let d in names) {
-		if (len + length(d) > 900 && length(part)) {
-			push(out, `${head}/${join('/', part)}/${tail}\n`);
-			part = [];
-			len = 0;
+	while (i < n) {
+		let j = i + 900;
+
+		if (j >= n)
+			j = n;
+		else {
+			while (j > i && substr(all, j, 1) != '/')
+				j--;
+
+			// a name longer than a line: it goes whole
+			if (j == i) {
+				const k = index(substr(all, i), '/');
+
+				j = k < 0 ? n : i + k;
+			}
 		}
 
-		len += (length(part) ? 1 : 0) + length(d);
-		push(part, d);
+		push(out, `${head}/${substr(all, i, j - i)}/${tail}\n`);
+		i = j + 1;
 	}
-
-	if (length(part))
-		push(out, `${head}/${join('/', part)}/${tail}\n`);
 
 	return join('', out);
 }
@@ -1250,15 +1262,42 @@ function kernel_domains(name, RL, model, warn, fallback) {
 // needs ], sites: [ categories xray still needs ] }: keyword/regexp rules,
 // categories with an attribute or not spelled out, and categories that hold
 // such rules besides their domains.
+// The names of a geosite category for dnsmasq, all at once: the prefixes go
+// with two plain replacements over the whole list and the case with one lc().
+// A loop over a list of tens of thousands (ads) took seven times as long on
+// the router. null when the list has anything but domain: and full: names.
+function plain_names(list) {
+	if (!length(list))
+		return [];
+
+	const text = replace(replace(`\n${join('\n', list)}`, '\ndomain:', '\n'), '\nfull:', '\n');
+
+	if (index(text, ':') >= 0 || index(text, '\n\n') >= 0 || substr(text, -1) == '\n')
+		return null;
+
+	return split(lc(substr(text, 1)), '\n');
+}
+
 function block_for_dnsmasq(RL, model) {
 	const names = uset(), keep = [], sites = [];
 	const spelled = {};
+	// whole categories, as plain_names() gives them (a name in two of them
+	// is in dnsmasq twice: it does not mind)
+	const lists = [];
 
 	for (let g in RL.sites) {
 		const list = model.geo?.domains?.[g.key];
 
 		if (g.attr != '' || list == null || (g.count ?? 0) > KERNEL_DOMAINS_MAX) {
 			push(sites, g);
+			continue;
+		}
+
+		const fast = plain_names(list);
+
+		if (fast) {
+			push(lists, fast);
+			spelled[`ext:${split(g.key, ':')[0]}.dat:${split(g.key, ':')[1]}`] = true;
 			continue;
 		}
 
@@ -1296,10 +1335,17 @@ function block_for_dnsmasq(RL, model) {
 			push(keep, d);
 	}
 
-	if (length(names.items) > KERNEL_DOMAINS_MAX)
+	let total = length(names.items);
+
+	for (let l in lists)
+		total += length(l);
+
+	if (total > KERNEL_DOMAINS_MAX)
 		return null;
 
-	return { names: names.items, keep: keep, sites: sites };
+	push(lists, names.items);
+
+	return { lists: lists, count: total, keep: keep, sites: sites };
 }
 
 // dnsmasq lines that answer the names with NXDOMAIN (subdomains included).
@@ -1466,7 +1512,7 @@ export function build(model) {
 
 	const proxy_domains = uset();
 	const block_domains = uset();
-	const dns_block = uset();		// names dnsmasq refuses itself (block sections)
+	const dns_block = [];			// lists of names dnsmasq refuses itself (block sections)
 	const dns_redirect = is_true(D.hijack ?? '1');
 	const excl_domains = uset();
 	const px4 = uset(), px6 = uset();	// subnets that reach xray when only the lists are captured
@@ -1843,9 +1889,9 @@ export function build(model) {
 			const bd = dns_redirect ? block_for_dnsmasq(RL, model) : null;
 
 			if (bd) {
-				dns_block.add_all(bd.names);
+				push(dns_block, ...bd.lists);
 				rule_domains = bd.keep;
-				state.sections[name].dnsmasq = length(bd.names);
+				state.sections[name].dnsmasq = bd.count;
 				push(xray_dns, { name: name, RL: { ...RL, domains: bd.keep, sites: bd.sites }, type: info.type });
 			}
 			else
@@ -2558,8 +2604,13 @@ export function build(model) {
 
 	// What running xray cannot change: everything but the servers and the
 	// routing. procd restarts xray when this changes; otherwise live.uc swaps
-	// the servers and the routing in place. With "only matched lists" a new server host needs nothing from
-	// DNS: names outside the lists go to the domestic DNS anyway.
+	// the servers and the routing in place. The names of the servers are not
+	// part of it: a subscription that brings a server on a new domain (some
+	// do every hour) restarted xray and cut every connection of the network.
+	// Until xray starts again, such a name is resolved like any other (by
+	// lists: the domestic DNS anyway; everything through the proxy: the remote
+	// DNS through the server in use), and the nightly catch-up
+	// (mayhem_dns_catchup) restarts xray with it at the update hour.
 	const key = copy(xray);
 
 	key.outbounds = filter(key.outbounds, (o) => !match(o.tag, /^[nf]-/));
@@ -2572,7 +2623,7 @@ export function build(model) {
 		if (ib.tag == 'helper-in')
 			ib.settings.accounts = filter(ib.settings.accounts, (a) => !match(a.user, /^n-/));
 
-	if (mode == 'lists' && length(host_rules))
+	if (length(host_rules))
 		for (let i = 0; i < length(domestic); i++)
 			key.dns.servers[i].domains = server_hosts;
 
@@ -2620,7 +2671,7 @@ export function build(model) {
 				nftset_lines(kdef.pxd, 'px_d4', 'px_d6') : '') +
 			(gdir ? nftset_lines(gdir, 'dir_d4', 'dir_d6') +
 				`nftset=/#/4#inet#${C.NFT_TABLE}#oth_d4,6#inet#${C.NFT_TABLE}#oth_d6\n` : '') +
-			local_lines(dns_block.items),
+			join('', map(dns_block, local_lines)),
 		// "section device mark table v6" per tunnel section; mark and table are
 		// "-" in xray mode.
 		tunnels: join('', map(tun_all, (t) => `${t.name} ${t.device} ${t.mark} ${t.table} ${t.v6 ? 1 : 0}${t.keep_bal ? ' 0' : ''}\n`)),

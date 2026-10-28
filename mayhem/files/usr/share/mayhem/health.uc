@@ -316,11 +316,16 @@ for (let sn in keys(state.sections ?? {})) {
 				delete hs.pinned;
 				delete hs.avoid;
 			}
-			else if (hs.avoid ? (best != null && index(hs.avoid, best) < 0) : length(filter(s.nodes, (n) => o[n.tag]?.alive == true)))
+			else if (hs.avoid ? (best != null && index(hs.avoid, best) < 0) : length(filter(s.nodes, (n) => o[n.tag]?.alive == true))) {
 				if (bo(bal, s.override)) {
 					delete hs.pinned;
 					delete hs.avoid;
+					delete hs.pin_mark;
 				}
+			}
+			// A reload put new balancers in: the pin goes in again.
+			else if (hs.pin_mark != null && hs.pin_mark != mark(s) && bo(bal, hs.pinned))
+				hs.pin_mark = mark(s);
 		}
 
 		const cur = hs.pinned ?? in_use(sn, s);
@@ -355,6 +360,7 @@ for (let sn in keys(state.sections ?? {})) {
 					if (bo(bal, other)) {
 						hs.pinned = other;
 						hs.avoid = uniq([ ...(hs.avoid ?? []), cur ]);
+						hs.pin_mark = mark(s);
 						log(`section ${sn}: ${names(s, [ cur ])} does not answer, now ${names(s, [ other ])}`, 'warn');
 					}
 				}

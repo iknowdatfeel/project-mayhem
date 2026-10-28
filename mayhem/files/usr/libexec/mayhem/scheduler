@@ -38,6 +38,7 @@ while :; do
 		mayhem_mem_trim
 		mayhem_conn_fold
 		mayhem_auto_update
+		mayhem_dns_catchup
 	fi
 
 	# Only when a section has a chain: a ucode process costs a little.
