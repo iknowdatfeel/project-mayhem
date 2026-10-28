@@ -253,7 +253,8 @@ function ownServers(data, sid) {
 		data.get('mayhem', sid, 'proxy_type') === 'json' || L.toArray(data.get('mayhem', sid, 'iface_node')).length > 0;
 }
 
-const DOMAIN_RE = /^(domain:|full:)?(\*\.|\.)?[a-z0-9_-]+(\.[a-z0-9_-]+)*\.?$/i;
+// Names in other scripts (пример.рф) as well: the router makes them punycode.
+const DOMAIN_RE = /^(domain:|full:)?(\*\.|\.)?[a-z0-9_\u00c0-\uffff-]+(\.[a-z0-9_\u00c0-\uffff-]+)*\.?$/i;
 const GEOSITE_RE = /^geosite:([A-Za-z0-9_]+:)?[a-z0-9][a-z0-9_!.-]*(@[a-z0-9!_-]+)?$/i;
 const GEOIP_RE = /^geoip:!?([A-Za-z0-9_]+:)?[a-z0-9][a-z0-9_.-]*$/i;
 const IP4_RE = /^(\d{1,3}\.){3}\d{1,3}(\/\d{1,2})?$/;
@@ -284,17 +285,36 @@ function validateIP(section_id, value) {
 	return (!value || isIp(value)) ? true : _('Expected an IP address or a subnet in CIDR form');
 }
 
+// The router matches names with POSIX regular expressions, not JavaScript
+// ones: \d there is the letter d, and (?i), lazy quantifiers or lookaheads
+// make the whole expression invalid, so the filter would let every server
+// through. Those are refused here with what to write instead.
+const ERE_UNKNOWN = [
+	[ /\\[dD]/, '[0-9]' ], [ /\\[wW]/, '[A-Za-z0-9_]' ], [ /\\[sS]/, '[[:space:]]' ], [ /\\[bB]/, null ],
+	[ /\(\?/, null ], [ /[*+?}]\?/, null ]
+];
+
 function validateRegexp(section_id, value) {
 	if (!value)
 		return true;
 
 	try {
 		new RegExp(value);
-		return true;
 	}
 	catch (e) {
 		return _('Invalid regular expression');
 	}
+
+	for (const [ re, instead ] of ERE_UNKNOWN) {
+		const m = value.match(re);
+
+		if (m)
+			return instead
+				? _('The router does not know "%s" in regular expressions: write %s').format(m[0], instead)
+				: _('The router does not know "%s" in regular expressions (no (?…) groups, lazy quantifiers or \\b); case is ignored anyway').format(m[0]);
+	}
+
+	return true;
 }
 
 // Domains and addresses typed as text: one per line, commas and spaces

@@ -40,4 +40,9 @@ for (let d in [ 'example.com', 'a.b.c', 'xn--d1acufc.xn--p1ai', 'a_b-c.d', 'exam
 for (let d in [ '', '.', 'a..b', 'a.b..', 'ex ample.com', 'a/b', 'a.*.b', 'domain:a..b', 'full:', 'exa!mple.com', 'a.b*' ])
 	expect(`bad domain ${d}`, norm_domain(d).error != null, norm_domain(d));
 
+// Names in other scripts go to xray and dnsmasq as punycode (RFC 3492).
+for (let c in [ [ 'пример.рф', 'domain:xn--e1afmkfd.xn--p1ai' ], [ 'ПРЕЗИДЕНТ.РФ', 'domain:xn--d1abbgf6aiiy.xn--p1ai' ],
+		[ 'full:ёлка.рф', 'full:xn--80atc1g.xn--p1ai' ], [ '*.münchen.de', 'domain:xn--mnchen-3ya.de' ], [ 'bücher.example', 'domain:xn--bcher-kva.example' ] ])
+	expect(`IDN ${c[0]}`, norm_domain(c[0]).value == c[1], norm_domain(c[0]));
+
 exit(fails ? 1 : 0);
