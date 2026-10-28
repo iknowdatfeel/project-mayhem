@@ -316,7 +316,8 @@ function subscriptions() {
 			updated: max(st.updated ?? 0, cache?.updated ?? 0) || null,
 			info: st.info ?? cache?.info,
 			error: st.error,
-			last_try: st.last_try
+			last_try: st.last_try,
+			via_why: st.via == 'direct' ? st.via_why : null
 		});
 	});
 
