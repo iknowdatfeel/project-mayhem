@@ -30,11 +30,70 @@ mayhem_net_up() {
 	fi
 
 	# Without IPv6 policy routing the IPv6 TPROXY rule would blackhole traffic.
+	# The addresses dnsmasq put into the sets go into the new table in the
+	# same transaction.
+	{
+		cat "$run/nft.conf"
+		mayhem_nft_kept
+	} > "$run/nft.apply"
+
 	if [ "$v6" = 1 ]; then
-		nft -f "$run/nft.conf"
+		nft -f "$run/nft.apply"
 	else
-		sed '/meta nfproto ipv6/d' "$run/nft.conf" | nft -f -
+		sed '/meta nfproto ipv6/d' "$run/nft.apply" | nft -f -
 	fi
+}
+
+# The sets dnsmasq fills as it resolves (tun_<section>_d4, px_d6, oth_d4...):
+# a new table starts with them empty, and devices that still have the
+# addresses (their own DNS cache, a browser's) went the wrong way until they
+# asked again - direct instead of through a tunnel. Prints the "add element"
+# lines that put back what the running table has, for every such set whose
+# domains did not change (the nftset= lines of dnsmasq's file in use and of
+# the new one); a set whose domains changed starts empty, or a domain taken
+# out of a tunnel would still go into it. The names of the sets that start
+# empty go to nft.emptied.
+mayhem_nft_kept() {
+	local new="$MAYHEM_RUN_DIR/dnsmasq.conf" old="" d set
+
+	: > "$MAYHEM_RUN_DIR/nft.emptied"
+	nft list table inet "$MAYHEM_NFT_TABLE" >/dev/null 2>&1 || return 0
+
+	for d in $(mayhem_dnsmasq_dirs); do
+		[ -f "$d/$MAYHEM_DNSMASQ_FILE" ] && { old="$d/$MAYHEM_DNSMASQ_FILE"; break; }
+	done
+
+	sed -n 's/^\tset \([A-Za-z0-9_]*_d[46]\) {$/\1/p' "$MAYHEM_RUN_DIR/nft.conf" > "$MAYHEM_RUN_DIR/nft.dynsets"
+
+	while read -r set; do
+		if [ -z "$old" ] || [ "$(grep -F "#$MAYHEM_NFT_TABLE#$set" "$old" | md5sum)" != "$(grep -F "#$MAYHEM_NFT_TABLE#$set" "$new" 2>/dev/null | md5sum)" ]; then
+			echo "$set" >> "$MAYHEM_RUN_DIR/nft.emptied"
+			continue
+		fi
+
+		# "elements = { a, b expires 5m,\n c }": the addresses, 500 a line.
+		nft list set inet "$MAYHEM_NFT_TABLE" "$set" 2>/dev/null | awk -v t="$MAYHEM_NFT_TABLE" -v s="$set" '
+			/elements = \{/ { on = 1; sub(/.*elements = \{/, "") }
+			on {
+				end = sub(/\}.*/, "")
+				n = split($0, e, ",")
+				for (i = 1; i <= n; i++) {
+					split(e[i], w, " ")
+					if (w[1] != "")
+						a[++k] = w[1]
+				}
+				if (end)
+					on = 0
+			}
+			END {
+				for (i = 1; i <= k; i += 500) {
+					line = ""
+					for (j = i; j <= k && j < i + 500; j++)
+						line = line (j > i ? ", " : "") a[j]
+					printf "add element inet %s %s { %s }\n", t, s, line
+				}
+			}'
+	done < "$MAYHEM_RUN_DIR/nft.dynsets"
 }
 
 # Is the fwmark rule of IPv$1 in place?
@@ -51,10 +110,10 @@ mayhem_net_refresh() {
 		if mayhem_net_up; then
 			cp "$MAYHEM_RUN_DIR/nft.conf" "$MAYHEM_RUN_DIR/running.nft.conf"
 			mayhem_log "firewall rules changed without a restart"
-			# The new ruleset starts with empty sets that dnsmasq fills as it
-			# resolves; it does that for upstream answers only, not for what
-			# it has cached: drop its cache so the sets fill again.
-			grep -q 'nftset=' "$MAYHEM_RUN_DIR/dnsmasq.conf" 2>/dev/null && mayhem_dnsmasq_hup
+			# A set that starts empty (its domains changed) is filled by
+			# dnsmasq as it resolves; it does that for upstream answers only,
+			# not for what it has cached: drop its cache so the set fills.
+			[ -s "$MAYHEM_RUN_DIR/nft.emptied" ] && grep -q 'nftset=' "$MAYHEM_RUN_DIR/dnsmasq.conf" 2>/dev/null && mayhem_dnsmasq_hup
 		else
 			mayhem_log "could not change the firewall rules, restarting xray" warn
 			echo "restart $(date +%s)" >> "$MAYHEM_RUN_DIR/xray.key"
