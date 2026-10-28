@@ -409,7 +409,8 @@ mayhem_restart_reason() {
 }
 
 # xray is up: when it started and why (a reason noted in the last 5 minutes,
-# or how the previous xray ended), for the dashboard.
+# or how the previous xray ended), in xray.started and in the system log: a
+# restart cuts every connection, the log says which change caused it.
 mayhem_xray_started() {
 	local now why t r
 
@@ -428,6 +429,8 @@ mayhem_xray_started() {
 
 	rm -f "$MAYHEM_RUN_DIR/restart.why" "$MAYHEM_RUN_DIR/xray.exit" "$MAYHEM_RUN_DIR/xray.error"
 	echo "$now $why" > "$MAYHEM_RUN_DIR/xray.started"
+	[ -n "$why" ] && mayhem_log "xray started again: $why"
+	return 0
 }
 
 # xray quit before it listened: its error message (xray run -test, only now).

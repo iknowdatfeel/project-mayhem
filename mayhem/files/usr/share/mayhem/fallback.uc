@@ -8,12 +8,16 @@
 // fastest of its servers (a unit of several servers, see fallback_chain()
 // in build.uc), its own chain, or the server chosen in it by hand.
 // Run by the scheduler every 20 s. The server a chain uses now is checked
-// through the helper proxy (a GET of the check URL, like a URL test); after
-// two failed checks in a row the chain moves on to its next server that
-// xray's own checks (the observatory) do not know to be down. A server
+// through the helper proxy (a GET of the check URL, like a URL test; a
+// failed check is asked again at once). When it does not answer, the chain
+// moves on to its next server that answers: the next few that
+// xray's own checks (the observatory) do not know to be down are checked at
+// once, and the first of them in the chain's order that answers takes over. A server
 // earlier in the chain takes over again as soon as the observatory sees it
-// working. When no server of the chain works, the fastest working server of
-// the section is used.
+// working - in a check made after the chain left it: until then xray still
+// reports what it saw before, and the chain went back and forth between a
+// dead server and the next one. When no server of the chain works, the
+// fastest working server of the section is used.
 //
 // The choice goes into xray as a balancer override (no restart), and into
 // overrides, running.overrides and nodes.json like a choice made by hand;
@@ -22,10 +26,13 @@
 'use strict';
 
 import * as fs from 'fs';
-import { RUN_DIR, API_PORT, METRICS_PORT, HELPER_PORT, HELPER_PASS, DEFAULT_PROBE_URL } from 'mayhem.const';
+import { RUN_DIR, API_PORT, METRICS_PORT, DEFAULT_PROBE_URL } from 'mayhem.const';
+import * as check from 'mayhem.check';
 
 const XRAY = getenv('MAYHEM_XRAY_BIN') ?? '/usr/libexec/mayhem/xray';
-const FAILS = 2;
+const FAILS = 1;
+// servers of the chain checked at once when it moves on
+const TRIES = 4;
 
 function q(s) {
 	return "'" + replace(`${s}`, /'/g, "'\\''") + "'";
@@ -84,14 +91,14 @@ const alive = (t) => obs[t] ? obs[t].alive == true : null;
 const url = match(state.probe_url ?? '', /^https?:\/\//) ? state.probe_url : DEFAULT_PROBE_URL;
 
 function works(tag) {
-	const out = trim(command(`curl -s -o /dev/null -m 6 -x ${q(`socks5h://${tag}:${HELPER_PASS}@127.0.0.1:${HELPER_PORT}`)} -w '%{http_code}' ${q(url)}`));
-	const code = int(out);
-
-	return code >= 200 && code < 400;
+	return check.works(tag, url, 6);
 }
 
 const now = read_json('fallback.json') ?? {};
 const fails = read_json('fallback.fails') ?? {};
+// section -> { tag: xray's number of checks of it when the chain left it }
+const left = read_json('fallback.left') ?? {};
+const checks = (t) => obs[t]?.health_ping?.all ?? 0;
 const moved = {};
 
 for (let sn in chains) {
@@ -113,6 +120,16 @@ for (let sn in chains) {
 	if (!length(chain))
 		continue;
 
+	// xray has checked the server since the chain left it: its word counts
+	// again.
+	left[sn] ??= {};
+
+	for (let t in keys(left[sn]))
+		if (index(tags, t) < 0 || checks(t) > left[sn][t])
+			delete left[sn][t];
+
+	const back = (t) => alive(t) === true && left[sn][t] == null;
+
 	const unit_of = (t) => {
 		for (let i = 0; i < length(units); i++)
 			if (index(units[i], t) >= 0)
@@ -130,7 +147,7 @@ for (let sn in chains) {
 
 	// A unit earlier in the chain works again: its fastest working server.
 	for (let i = 0; i < unit_of(cur); i++) {
-		want = filter(units[i], (t) => alive(t) === true)[0];
+		want = filter(units[i], back)[0];
 
 		if (want)
 			break;
@@ -142,7 +159,7 @@ for (let sn in chains) {
 	const k = unit_of(cur);
 
 	if (!want && length(units[k]) > 1) {
-		const best = filter(units[k], (t) => alive(t) === true)[0];
+		const best = filter(units[k], back)[0];
 
 		if (best && best != cur && (alive(cur) !== true || delay(best) + max(30, delay(cur) / 5) < delay(cur)))
 			want = best;
@@ -167,7 +184,12 @@ for (let sn in chains) {
 			for (let i = 0; i < k; i++)
 				push(rest, ...units[i]);
 
-			want = filter(rest, (t) => alive(t) !== false)[0];
+			// The next few xray does not know to be down, all checked at
+			// once: the first of them in the chain that answers.
+			const next = slice(filter(rest, (t) => alive(t) !== false && left[sn][t] == null), 0, TRIES);
+			const ms = check.works_many(next, url, 6);
+
+			want = filter(next, (t) => ms[t] != null)[0] ?? next[0];
 
 			// Nothing of the chain works: the fastest server of the section.
 			if (!want) {
@@ -177,6 +199,9 @@ for (let sn in chains) {
 			}
 
 			fails[sn] = 0;
+
+			if (want != cur)
+				left[sn][cur] = checks(cur);
 		}
 	}
 
@@ -202,6 +227,7 @@ for (let sn in chains) {
 
 write('fallback.json', sprintf('%J\n', now));
 write('fallback.fails', sprintf('%J\n', fails));
+write('fallback.left', sprintf('%J\n', left));
 
 if (length(moved)) {
 	write('nodes.json', sprintf('%J\n', state));

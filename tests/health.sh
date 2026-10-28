@@ -105,9 +105,10 @@ fi
 # automatic choice: n-auto-2, seen alive by xray, is tried as well and fails.
 if down auto && [ "$(bo bal-auto direct)" = 1 ]; then ok "automatic section with no working server seen goes direct"; else bad "auto: $(cat "$T/xray.log")"; fi
 
-# The chain: one of its servers answers again -> back to that one.
+# The chain: one of its servers answers again -> back to that one (its
+# servers are tried at once, in the same run).
 printf 'n-pool-a\nn-ch-1\nn-ch-2\nn-auto-1\nn-auto-2\nn-auto-3\n' > "$T/dead"
-tick; tick
+tick
 if [ "$(bo bal-ch n-ch-3)" = 1 ] && ! down ch && grep -q '"ch": *"n-ch-3"' "$T/run/fallback.json"; then
 	ok "chain back on its working server"
 else
@@ -247,9 +248,9 @@ sed -i 's/"mode": "auto", "balancer": "bal-auto",/"mode": "auto", "balancer": "b
 rm -f "$T/run/health.json"
 echo '{ "n-auto-1": { "alive": true, "delay": 50 }, "n-auto-2": { "alive": true, "delay": 100 } }' > "$T/obs.json"
 printf 'n-auto-1\n' > "$T/dead"
-tick; tick
+tick
 if [ "$(bo bal-auto n-auto-2)" = 1 ] && [ "$(bo bal-auto direct)" = 0 ] && ! down auto; then
-	ok "a dead pinned server gets a working stand-in"
+	ok "a dead pinned server gets a working stand-in at once"
 else
 	bad "pinned stand-in: $(cat "$T/xray.log")"
 fi
@@ -258,6 +259,22 @@ if [ "$(bo bal-auto n-auto)" = 0 ] && [ "$(bo bal-auto direct)" = 0 ]; then ok "
 : > "$T/dead"
 tick
 if [ "$(bo bal-auto n-auto-1)" = 1 ]; then ok "the pinned server is back when it answers"; else bad "pinned back: $(cat "$T/xray.log")"; fi
+
+# Automatic choice: the fastest server stops answering, but xray's own checks
+# (minutes apart) still pick it. Another one that answers is pinned at once,
+# and let go when xray's checks no longer pick the dead one.
+nodes false
+rm -f "$T/run/health.json"
+echo '{ "n-auto-1": { "alive": true, "delay": 50 }, "n-auto-2": { "alive": true, "delay": 100 }, "n-auto-3": { "alive": true, "delay": 300 } }' > "$T/obs.json"
+printf 'n-auto-1\n' > "$T/dead"
+tick
+if [ "$(bo bal-auto n-auto-2)" = 1 ] && ! down auto; then ok "automatic: a dead fastest server is left at once for the next one"; else bad "auto failover: $(cat "$T/xray.log")"; fi
+tick
+if [ ! -s "$T/xray.log" ]; then ok "automatic: the pin holds while xray still picks the dead server"; else bad "auto pin held: $(cat "$T/xray.log")"; fi
+echo '{ "n-auto-1": { "alive": false, "delay": 0 }, "n-auto-2": { "alive": true, "delay": 100 }, "n-auto-3": { "alive": true, "delay": 300 } }' > "$T/obs.json"
+tick
+if grep -q -- '-b bal-auto -r' "$T/xray.log"; then ok "automatic: the pin goes once xray sees the server dead"; else bad "auto unpin: $(cat "$T/xray.log")"; fi
+: > "$T/dead"
 
 # dnsmasq reads the servers file as its own user: readable by all, even
 # with a strict umask and when an older Mayhem wrote it root-only.

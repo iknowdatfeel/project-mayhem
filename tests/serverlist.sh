@@ -193,9 +193,13 @@ name() {
 		print(filter(p.nodes, (n) => n.tag == p.selected)[0]?.name);
 	"
 }
+# Every call is a new round of xray's checks (health_ping.all counts them): a
+# server the chain left comes back only after xray checked it again.
+round=0
 obs() {
-	printf '{"%s":{"alive":%s,"delay":%s},"%s":{"alive":%s,"delay":%s},"%s":{"alive":%s,"delay":%s},"%s":{"alive":true,"delay":200}}' \
-		"$A" "$1" 300 "$B" "$2" 100 "$C" "$3" 150 "$K2" > "$T/obs.json"
+	round=$((round + 1))
+	printf '{"%s":{"alive":%s,"delay":%s,"health_ping":{"all":%d}},"%s":{"alive":%s,"delay":%s,"health_ping":{"all":%d}},"%s":{"alive":%s,"delay":%s,"health_ping":{"all":%d}},"%s":{"alive":true,"delay":200,"health_ping":{"all":%d}}}' \
+		"$A" "$1" 300 "$round" "$B" "$2" 100 "$round" "$C" "$3" 150 "$round" "$K2" "$round" > "$T/obs.json"
 }
 fb() { PATH="$T/bin:$PATH" STUB="$T" MAYHEM_RUN_DIR="$R" MAYHEM_XRAY_BIN="$T/bin/xray" uc "$FILES/usr/share/mayhem/fallback.uc"; }
 
@@ -211,15 +215,21 @@ obs false false false
 printf '%s\n%s\n%s\n' "$A" "$B" "$C" > "$T/dead"
 fb; fb
 step3="$(name)"
+# xray has not checked A again yet, and still has it as working: the chain
+# stays where it is.
+round=$((round - 1)); obs true false false
+: > "$T/dead"
+fb
+step3b="$(name)"
 obs true false false
 : > "$T/dead"
 fb
 step4="$(name)"
 
-if [ "$step1|$step2|$step3|$step4" = "B (x).y|A|K2|A" ]; then
-	ok "fallback.uc: fastest of the subscription, the next of it, the key, back"
+if [ "$step1|$step2|$step3|$step3b|$step4" = "B (x).y|A|K2|K2|A" ]; then
+	ok "fallback.uc: fastest of the subscription, the next of it, the key, not back before xray checks again, back"
 else
-	bad "fallback.uc: got $step1|$step2|$step3|$step4, expected B (x).y|A|K2|A"
+	bad "fallback.uc: got $step1|$step2|$step3|$step3b|$step4, expected B (x).y|A|K2|K2|A"
 fi
 
 # 8. The rpcd methods: a click from the chain, the chain's window.

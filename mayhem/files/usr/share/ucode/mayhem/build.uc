@@ -40,6 +40,12 @@ const DNS_IDLE = 4;
 // its queries wait for the whole timeout while the next server of the row
 // answers at once. A second keeps that cost small.
 const DNS_TRY_MS = 1000;
+// The last server of a row has nobody to hand over to: it gets the time a
+// DoH connection needs from scratch through a slow server (TCP and TLS
+// through the proxy, then the query: four round trips of 300-500 ms). With a
+// second for it too, every server of the row failed right after the main
+// server changed, when no DoH connection through the new one was open yet.
+const DNS_LAST_MS = 3000;
 
 // How long xray may answer with an expired DNS record while it asks again.
 const DNS_STALE = 3600;
@@ -2314,13 +2320,16 @@ export function build(model) {
 		const row = max(length(remote), length(domestic));
 
 		for (let x in servers) {
-			if ((length(remote) > 1 && index(remote_addrs2, x.address) >= 0) ||
-			    (length(domestic) > 1 && index(domestic_addrs, x.address) >= 0))
-				x.timeoutMs = DNS_TRY_MS;
+			const ri = index(remote_addrs2, x.address), di = index(domestic_addrs, x.address);
+
+			if (length(remote) > 1 && ri >= 0)
+				x.timeoutMs = ri == length(remote) - 1 ? DNS_LAST_MS : DNS_TRY_MS;
+			else if (length(domestic) > 1 && di >= 0)
+				x.timeoutMs = di == length(domestic) - 1 ? DNS_LAST_MS : DNS_TRY_MS;
 		}
 
 		if (row > 1)
-			dns_idle = max(DNS_IDLE, int((row * DNS_TRY_MS + 999) / 1000) + 1);
+			dns_idle = max(DNS_IDLE, int(((row - 1) * DNS_TRY_MS + DNS_LAST_MS + 999) / 1000) + 1);
 	}
 
 	// Address for non-A/AAAA queries that the DNS outbound passes through.

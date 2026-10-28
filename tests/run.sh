@@ -679,7 +679,7 @@ if command -v shellcheck >/dev/null 2>&1; then
 fi
 
 if command -v node >/dev/null 2>&1; then
-	for f in "$ROOT"/luci-app-mayhem/htdocs/luci-static/resources/view/mayhem/*.js "$ROOT"/luci-app-mayhem/htdocs/luci-static/resources/mayhem/*.js "$ROOT"/luci-app-mayhem/htdocs/luci-static/resources/mayhem/page/*.js; do
+	for f in "$ROOT"/luci-app-mayhem/htdocs/luci-static/resources/view/mayhem/*.js "$ROOT"/luci-app-mayhem/htdocs/luci-static/resources/mayhem/*.js "$ROOT"/luci-app-mayhem/htdocs/luci-static/resources/mayhem/page/*.js "$ROOT"/luci-app-mayhem/htdocs/luci-static/resources/mayhem/dash/*.js; do
 		{ echo '(function(){'; cat "$f"; echo '})'; } > "$OUT/check.js"
 		if out="$(node --check "$OUT/check.js" 2>&1)"; then
 			ok "syntax $(basename "$f")"
@@ -691,7 +691,7 @@ if command -v node >/dev/null 2>&1; then
 	# The package ships these files minified by LuCI's jsmin.
 	if [ -n "${JSMIN:-}" ]; then
 		if out="$(node "$ROOT/tests/jsmin.js" "$ROOT"/luci-app-mayhem/htdocs/luci-static/resources/view/mayhem/*.js \
-			"$ROOT"/luci-app-mayhem/htdocs/luci-static/resources/mayhem/*.js "$ROOT"/luci-app-mayhem/htdocs/luci-static/resources/mayhem/page/*.js 2>&1)"; then
+			"$ROOT"/luci-app-mayhem/htdocs/luci-static/resources/mayhem/*.js "$ROOT"/luci-app-mayhem/htdocs/luci-static/resources/mayhem/page/*.js "$ROOT"/luci-app-mayhem/htdocs/luci-static/resources/mayhem/dash/*.js 2>&1)"; then
 			ok "JS survives jsmin"
 		else
 			bad "JS survives jsmin: $out"
@@ -952,10 +952,30 @@ else
 	bad "AmneziaWG checksums: $got"
 fi
 
-# Latency checks with fake ping and curl: ICMP of many servers at once, TCP's
-# second connection.
+# Latency checks with a fake ping: ICMP of many servers at once (an
+# obfuscated tunnel pings its real server, not the obfuscator on 127.0.0.1),
+# TCP with the process's own sockets.
 mkdir -p "$OUT/probe-uci" "$OUT/probe-bin"
 cp "$ROOT/tests/luci/uci/network" "$OUT/probe-uci/"
+cat >> "$OUT/probe-uci/network" <<'EOF'
+
+config interface 'wg9'
+	option proto 'wireguard'
+	list addresses '10.8.9.2/32'
+
+config wireguard_wg9
+	option public_key 'Zm9vYmFyZm9vYmFyZm9vYmFyZm9vYmFyZm9vYmFyMTI='
+	option endpoint_host '127.0.0.1'
+	option endpoint_port '41820'
+EOF
+cat > "$OUT/probe-uci/mayhem" <<'EOF'
+config obfs 'ob_wg9'
+	option iface 'wg9'
+	option kind 'phobos'
+	option host '10.0.0.1'
+	option port '4567'
+	option lport '41820'
+EOF
 cat > "$OUT/probe-bin/ping" <<'EOF'
 #!/bin/sh
 echo "ping $*" >> "$FAKE_LOG"
