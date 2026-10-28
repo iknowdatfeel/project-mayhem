@@ -67,6 +67,21 @@ fi
 # a minute is 0.6 s here: more minutes passed than downloads started
 if [ "$starts" -le 2 ]; then ok "one download at a time"; else bad "downloads started: $starts"; fi
 
+# A stop: the scheduler goes at once on TERM, also while it sleeps (procd
+# killed it 5 s later, its downloads with it).
+cat > "$T/bin/sleep" <<'EOF2'
+#!/bin/sh
+/bin/sleep 5
+EOF2
+PATH="$T/bin:$PATH" MAYHEM_SUB=sub MAYHEM_UPDATE=upd sh "$FILES/usr/libexec/mayhem/scheduler" &
+pid=$!
+/bin/sleep 0.3
+t0="$(date +%s%N)"
+kill "$pid" 2>/dev/null
+wait "$pid" 2>/dev/null
+ms=$((($(date +%s%N) - t0) / 1000000))
+if [ "$ms" -lt 1000 ]; then ok "TERM stops the scheduler while it sleeps"; else bad "TERM took $ms ms"; fi
+
 rm -rf "$T"
 [ "$fail" = 0 ] && echo "scheduler tests passed"
 exit "$fail"

@@ -36,9 +36,20 @@ downloads() {
 }
 
 dl_pid=""
-trap '[ -n "$dl_pid" ] && kill "$dl_pid" 2>/dev/null; exit 0' TERM INT
+nap_pid=""
+trap '[ -n "$dl_pid" ] && kill "$dl_pid" 2>/dev/null; [ -n "$nap_pid" ] && kill "$nap_pid" 2>/dev/null; exit 0' TERM INT
 
-sleep 10
+# sh runs the trap only once a command in the foreground is done: a plain
+# sleep 20 held the TERM of a stop until procd killed the scheduler (and its
+# downloads) 5 s later. wait returns at once.
+nap() {
+	sleep "$1" &
+	nap_pid=$!
+	wait "$nap_pid"
+	nap_pid=""
+}
+
+nap 10
 
 tick=0
 
@@ -69,5 +80,5 @@ while :; do
 		MAYHEM_TICK="$$.$tick" ucode "$MAYHEM_LIB_DIR/health.uc" >/dev/null 2>&1
 
 	tick=$((tick + 1))
-	sleep 20
+	nap 20
 done
