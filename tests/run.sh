@@ -551,8 +551,12 @@ if [ "$#" != 6 ] || [ "$1" = - ] || [ "$2" = - ] || [ "$3" = - ] || [ "$4" = - ]
 	bad "model tunrest: rules out of order (block, direct, exclusions, proxy, tunnel, xray): $*"
 elif ! grep -q 'nftset=/ru.test/yandex.test/.*#dir_d4' "$OUT/tunrest/dnsmasq.conf" || \
      ! grep -q 'nftset=/instagram.com/.*#px_d4' "$OUT/tunrest/dnsmasq.conf" || \
-     ! grep -q 'nftset=/ads.test/.*#blk_d4' "$OUT/tunrest/dnsmasq.conf"; then
+     ! grep -q '^local=/ads.test/$' "$OUT/tunrest/dnsmasq.conf"; then
 	bad "model tunrest: dnsmasq does not fill the sets: $(cat "$OUT/tunrest/dnsmasq.conf")"
+# dnsmasq answers a blocked name itself (local=) and never gets its address:
+# an nftset= line for it filled nothing and cost seconds with an ad category.
+elif grep -q 'nftset=.*/ads.test/' "$OUT/tunrest/dnsmasq.conf"; then
+	bad "model tunrest: a name dnsmasq refuses is in an nftset= line: $(cat "$OUT/tunrest/dnsmasq.conf")"
 elif grep -q 'meta nfproto ipv6 .*| 0x4000001' "$OUT/tunrest/nft.conf"; then
 	bad "model tunrest: IPv6 goes into a tunnel without IPv6"
 elif grep -q 'meta nfproto ipv4 meta mark set meta mark & 0x[0-9a-f]* | 0x4000001' "$OUT/tunrest/nft.conf" || \
