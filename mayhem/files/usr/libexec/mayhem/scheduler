@@ -58,13 +58,15 @@ while :; do
 	fi
 
 	# Only when a section has a chain: a ucode process costs a little.
+	# MAYHEM_TICK: a server that answered fallback.uc is not asked again by
+	# health.uc in the same run (mayhem.check).
 	grep -q '"mode": *"fallback"' "$MAYHEM_RUN_DIR/nodes.json" 2>/dev/null &&
-		ucode "$MAYHEM_LIB_DIR/fallback.uc" >/dev/null 2>&1
+		MAYHEM_TICK="$$.$tick" ucode "$MAYHEM_LIB_DIR/fallback.uc" >/dev/null 2>&1
 
 	# Sections and remote DNS that stop answering go direct and come back
 	# (kill switch off), or get back from direct (kill switch on).
 	[ -f "$MAYHEM_RUN_DIR/active" ] &&
-		ucode "$MAYHEM_LIB_DIR/health.uc" >/dev/null 2>&1
+		MAYHEM_TICK="$$.$tick" ucode "$MAYHEM_LIB_DIR/health.uc" >/dev/null 2>&1
 
 	tick=$((tick + 1))
 	sleep 20
