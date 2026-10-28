@@ -3,10 +3,13 @@
 #
 #   sh <(wget -O - https://raw.githubusercontent.com/iknowdatfeel/project-mayhem/main/install.sh)
 #
-# Set MAYHEM_REPO=owner/repo to install from a fork.
+# Set MAYHEM_REPO=owner/repo to install from a fork, MAYHEM_TAG=v1.2.3 to
+# install that release instead of the latest (an update run by Mayhem passes
+# the release this installer was taken from).
 
 REPO="${MAYHEM_REPO:-iknowdatfeel/project-mayhem}"
 API="https://api.github.com/repos/$REPO/releases/latest"
+[ -n "${MAYHEM_TAG:-}" ] && API="https://api.github.com/repos/$REPO/releases/tags/$MAYHEM_TAG"
 TMP="/tmp/mayhem-install"
 TRIES=3
 
@@ -135,6 +138,20 @@ check_system() {
 	ntpd -q -n -p 194.190.168.1 -p 216.239.35.0 -p 162.159.200.1 >/dev/null 2>&1
 }
 
+# The file as GitHub lists it in the release ("digest" of the asset): $1 the
+# release description (JSON), $2 the URL, $3 the file. A release without
+# digests, or a system without the tools, is not checked.
+check_digest() {
+	local want sum
+
+	command -v jsonfilter >/dev/null 2>&1 && command -v sha256sum >/dev/null 2>&1 || return 0
+	want="$(printf '%s' "$1" | jsonfilter -e "@.assets[@.browser_download_url=\"$2\"].digest" 2>/dev/null)"
+	want="${want#sha256:}"
+	echo "$want" | grep -qx '[0-9a-f]\{64\}' || return 0
+	sum="$(sha256sum "$3" | awk '{ print $1 }')"
+	[ "$sum" = "$want" ]
+}
+
 download_release() {
 	local list ext url file n
 
@@ -158,9 +175,10 @@ download_release() {
 		done
 
 		[ -s "$file" ] || die "Could not download $url"
+		check_digest "$list" "$url" "$file" || die "$(basename "$url") does not match its SHA-256 in the release, try again."
 	done
 
-	ls "$TMP"/mayhem[-_]*."$ext" >/dev/null 2>&1 || die "No $ext packages found in the latest release of $REPO."
+	ls "$TMP"/mayhem[-_]*."$ext" >/dev/null 2>&1 || die "No $ext packages found in the release ${MAYHEM_TAG:-latest} of $REPO."
 }
 
 install_packages() {

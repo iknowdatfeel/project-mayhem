@@ -18,7 +18,7 @@ Usage: mayhem <command>
   geo-update [SOURCE]        download geo data now (all sources or one)
   lists-update               download rule lists now
   xray-install [VERSION]     download the official xray build (default $MAYHEM_XRAY_VERSION)
-  self-update                install the latest release of Mayhem (the installer)
+  self-update [TAG]          install the latest release of Mayhem (or TAG) with its own installer
   auto-update                self-update if a newer release is out and automatic
                              updates are on (the scheduler runs it nightly)
   awg-install                install AmneziaWG (kernel module, tools, LuCI protocol)
@@ -92,6 +92,18 @@ version_newer() {
 				exit !(x[i] + 0 > y[i] + 0)
 		exit 1
 	}'
+}
+
+# The tag of the latest Mayhem release (v1.2.3).
+latest_tag() {
+	local f=/tmp/mayhem-release.json tag
+
+	fetch "https://api.github.com/repos/${MAYHEM_REPO:-iknowdatfeel/project-mayhem}/releases/latest" "$f" ||
+		{ rm -f "$f"; echo "Cannot ask GitHub for the latest release" >&2; return 1; }
+	tag="$(sed -n 's/.*"tag_name": *"\([^"]*\)".*/\1/p' "$f" | head -n 1)"
+	rm -f "$f"
+	[ -n "$tag" ] || { echo "No release found" >&2; return 1; }
+	echo "$tag"
 }
 
 fetch() {
@@ -762,23 +774,24 @@ case "$1" in
 		# Run by the scheduler once a day: installs a newer release when
 		# automatic updates are on.
 		[ "$(uci -q get mayhem.settings.auto_update)" = 1 ] || exit 0
-		repo="${MAYHEM_REPO:-iknowdatfeel/project-mayhem}"
-		f=/tmp/mayhem-release.json
-		fetch "https://api.github.com/repos/$repo/releases/latest" "$f" ||
-			{ echo "Cannot ask GitHub for the latest release" >&2; exit 1; }
-		latest="$(sed -n 's/.*"tag_name": *"v\{0,1\}\([^"]*\)".*/\1/p' "$f" | head -n 1)"
-		rm -f "$f"
-		[ -n "$latest" ] || { echo "No release found" >&2; exit 1; }
+		tag="$(latest_tag)" || exit 1
+		latest="${tag#v}"
 		version_newer "$latest" "$MAYHEM_VERSION" || { echo "Mayhem $MAYHEM_VERSION is up to date"; exit 0; }
 		mayhem_log "updating Mayhem $MAYHEM_VERSION to $latest"
-		exec "$0" self-update
+		exec "$0" self-update "$tag"
 		;;
 	self-update)
-		# The installer of the latest release; it restarts Mayhem at the end.
+		# The installer of the latest release (or of the release $2), taken
+		# from that release, not from main: it installs the packages it was
+		# written for. It restarts Mayhem at the end.
+		tag="${2:-$(latest_tag)}" || exit 1
+		case "$tag" in
+			''|*[!A-Za-z0-9._-]*) echo "Not a release tag: $tag" >&2; exit 1 ;;
+		esac
 		f=/tmp/mayhem-install.sh
-		fetch "https://raw.githubusercontent.com/${MAYHEM_REPO:-iknowdatfeel/project-mayhem}/main/install.sh" "$f" ||
-			{ echo "Cannot download the installer" >&2; exit 1; }
-		MAYHEM_PROXY="$(mayhem_download_proxy)" sh "$f" </dev/null
+		fetch "https://raw.githubusercontent.com/${MAYHEM_REPO:-iknowdatfeel/project-mayhem}/$tag/install.sh" "$f" ||
+			{ echo "Cannot download the installer of $tag" >&2; exit 1; }
+		MAYHEM_TAG="$tag" MAYHEM_PROXY="$(mayhem_download_proxy)" sh "$f" </dev/null
 		rc=$?
 		rm -f "$f"
 		exit "$rc"
