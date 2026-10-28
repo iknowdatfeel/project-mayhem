@@ -157,8 +157,8 @@ else
 	bad "dns back: $(cat "$T/dnsmasq/mayhem.servers" 2>/dev/null)"
 fi
 
-# Kill switch on: the section that went direct is put back, nothing is
-# checked, nothing goes direct.
+# Kill switch on: the section that went direct is put back (not checked in
+# that run), nothing goes direct.
 : > "$T/dns_dead"
 tick; tick
 nodes true
@@ -166,13 +166,24 @@ nodes true
 tick
 if down auto || grep -q direct "$T/xray.log" || [ -f "$T/run/dns.degraded" ]; then
 	bad "kill switch: still direct: $(cat "$T/xray.log")"
-elif grep -q -- '-b bal-auto -r' "$T/xray.log" && ! grep -q socks "$T/curl.log" && ! grep -q 'n-' "$T/curl.log"; then
-	ok "kill switch: back from direct, no checks, nothing direct"
+elif grep -q -- '-b bal-auto -r' "$T/xray.log" && ! grep -q 'n-auto' "$T/curl.log"; then
+	ok "kill switch: back from direct, nothing direct"
 else
 	bad "kill switch: $(cat "$T/xray.log") / $(cat "$T/curl.log")"
 fi
 tick; tick
 if grep -q direct "$T/xray.log" || [ -f "$T/run/dns.degraded" ]; then bad "kill switch: went direct"; else ok "kill switch: dead servers stay as they are"; fi
+
+# Kill switch on: a server that answers still takes over from a dead one.
+rm -f "$T/run/health.json"
+echo '{ "n-auto-1": { "alive": true, "delay": 50 }, "n-auto-2": { "alive": true, "delay": 100 } }' > "$T/obs.json"
+printf 'n-auto-1\nn-auto-3\n' > "$T/dead"
+tick
+if [ "$(bo bal-auto n-auto-2)" = 1 ] && ! grep -q direct "$T/xray.log" && ! down auto; then
+	ok "kill switch: a dead server is left for one that answers"
+else
+	bad "kill switch failover: $(cat "$T/xray.log")"
+fi
 
 # Tunnels: with the kill switch the route stays and the balancer keeps the tunnel.
 rm -rf "$T/net"; mkdir -p "$T/net"
