@@ -12,7 +12,8 @@
 // generator). Mayhem keeps running, and as soon as a server or the DNS
 // answers again everything goes back by itself.
 //
-// Kill switch on: nothing goes direct, the traffic waits for the servers.
+// Kill switch on: nothing goes direct, the traffic waits for the servers;
+// a server that answers still takes over from one that does not (below).
 // A section or the DNS that went direct before the switch was turned on is
 // put back at once.
 //
@@ -270,15 +271,11 @@ for (let sn in keys(state.sections ?? {})) {
 
 	const hs = h.sections[sn];
 
-	if (ks) {
-		if (hs.down || hs.stand_in) {
-			delete hs.stand_in;
-			restore(sn, s, s.override ?? in_use(sn, s));
-
-			if (hs.down)
-				log(`section ${sn}: the kill switch is on, its traffic waits for the servers instead of going direct`);
-		}
-
+	// The kill switch keeps the traffic off "direct" only: a server that
+	// answers still takes over from one that does not.
+	if (ks && hs.down) {
+		restore(sn, s, s.override ?? in_use(sn, s));
+		log(`section ${sn}: the kill switch is on, its traffic waits for the servers instead of going direct`);
 		h.sections[sn] = { down: false, fails: 0 };
 		continue;
 	}
@@ -371,7 +368,7 @@ for (let sn in keys(state.sections ?? {})) {
 			}
 		}
 
-		if (hs.fails < FAILS)
+		if (hs.fails < FAILS || ks)
 			continue;
 
 		if (!bo(bal, 'direct')) {
