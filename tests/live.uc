@@ -3,8 +3,8 @@
 //   ucode tests/live.uc
 // Servers keep their tags whatever their order and names, and the restart key
 // (everything but the servers) stays the same unless something only a restart
-// can change did change: rules, or in "everything through proxy" mode a server
-// host under a domain the DNS config does not have yet.
+// can change did change. Server hosts are not in it: a host under a new
+// domain waits for the nightly catch-up.
 'use strict';
 
 import { build } from 'mayhem.build';
@@ -65,8 +65,14 @@ const g = build(model('global', [ `${A}#NL`, `${B}#DE` ]));
 
 expect('global: server domain goes to the domestic DNS',
 	index(g.xray.dns.servers[0].domains, 'domain:provider.example') >= 0 && g.xray.dns.servers[0].address == '77.88.8.8');
-expect('global: a server under a new domain needs a restart',
-	key(g) != key(build(model('global', [ `${A}#NL`, `${B}#DE`, `${D}#Other` ]))));
+// A new domain goes in at the nightly catch-up (mayhem_dns_catchup), not by
+// restarting xray at once: some subscriptions bring one every hour, and every
+// restart cut all connections of the network.
+const g2 = build(model('global', [ `${A}#NL`, `${B}#DE`, `${D}#Other` ]));
+
+expect('global: a server under a new domain needs no restart', key(g) == key(g2));
+expect('global: its domain is in the DNS config for the next start',
+	index(g2.xray.dns.servers[0].domains, 'domain:other.example') >= 0);
 expect('lists: a server under a new domain needs no restart',
 	key(build(model('lists', [ `${A}#NL`, `${B}#DE` ]))) == key(build(model('lists', [ `${A}#NL`, `${B}#DE`, `${D}#Other` ]))));
 

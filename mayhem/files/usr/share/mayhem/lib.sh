@@ -291,6 +291,32 @@ mayhem_auto_update() {
 	fi
 }
 
+# Once a day at the nightly update hour: the DNS of running xray lacks names
+# of servers that came with subscriptions since it started (they are not
+# worth a restart in the day, see the restart key in build.uc). Then xray is
+# restarted with them, while the network sleeps.
+mayhem_dns_catchup() {
+	local hour day stamp="$MAYHEM_RUN_DIR/dns-catchup.day"
+
+	[ -f "$MAYHEM_RUN_DIR/active" ] || return 0
+	hour="$(uci -q get mayhem.geo.update_hour)"
+	[ "$(date +%H)" -eq "${hour:-4}" ] 2>/dev/null || return 0
+
+	day="$(date +%Y%m%d)"
+	[ "$(cat "$stamp" 2>/dev/null)" = "$day" ] && return 0
+	echo "$day" > "$stamp"
+
+	cmp -s "$MAYHEM_RUN_DIR/xray.key" "$MAYHEM_RUN_DIR/running.xray.key" || return 0
+	# shellcheck disable=SC2016 # ucode code, not shell
+	ucode -e 'const fs = require("fs"); const d = (f) => sprintf("%J", json(fs.readfile(f) ?? "{}").dns);
+		exit(d(ARGV[0]) == d(ARGV[1]) ? 0 : 1);' "$MAYHEM_RUN_DIR/xray.json" "$MAYHEM_RUN_DIR/running.xray.json" 2>/dev/null && return 0
+
+	mayhem_log "the DNS of xray gets the names of new servers: restarting xray at the update hour"
+	mayhem_restart_why "config:dns"
+	: > "$MAYHEM_RUN_DIR/restart.pending"
+	/etc/init.d/mayhem reload
+}
+
 # The connection log of xray (conn.log): every connection xray takes and every
 # DNS answer it gives. It is always a file, so the dashboard knows the names
 # and servers of connections opened before its window; mayhem_conn_fold keeps
@@ -826,6 +852,13 @@ mayhem_apply_overrides() {
 # that fails, the restart key changes and procd restarts xray.
 mayhem_live_update() {
 	[ -f "$MAYHEM_RUN_DIR/active" ] || return 0
+
+	# A restart asked for (mayhem_dns_catchup): the new key makes procd do it.
+	if [ -f "$MAYHEM_RUN_DIR/restart.pending" ]; then
+		rm -f "$MAYHEM_RUN_DIR/restart.pending"
+		echo "restart $(date +%s)" >> "$MAYHEM_RUN_DIR/xray.key"
+		return 0
+	fi
 
 	ucode "$MAYHEM_LIB_DIR/live.uc" && return 0
 

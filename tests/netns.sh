@@ -1118,6 +1118,35 @@ for ks in 0 1; do
 	stop_mayhem
 done
 
+# The fastest server stops answering (its packets are dropped, nothing is
+# refused) while xray's own checks, minutes apart, still pick it: the next
+# check moves the traffic to the other server at once.
+echo "== the fastest server stops answering"
+write_uci "	option select 'auto'" direct
+printf '%s\n%s\n' "$SS_LINK_A" "$SS_LINK_B" | base64 | tr -d '\n' > "$WORK/sub.txt"
+sub_update >/dev/null
+if start_mayhem uci; then
+	sleep 3
+	first="$(ip netns exec client curl -s -m 4 $(site youtube.test) 2>/dev/null)"
+	case "$first" in
+		45.0.0.3) port=8443 other=45.0.0.8 ;;
+		45.0.0.8) port=8444 other=45.0.0.3 ;;
+		*) port="" ;;
+	esac
+
+	if [ -n "$port" ]; then
+		ip netns exec router nft add table inet mhtest
+		ip netns exec router nft add chain inet mhtest out '{ type filter hook output priority 0; }'
+		ip netns exec router nft add rule inet mhtest out ip daddr 45.0.0.3 tcp dport "$port" drop
+		health
+		expect "a dead fastest server is left in one check, before xray's own checks notice" "$other" $(site youtube.test)
+		server_up
+	else
+		bad "the fastest server stops answering: no server at first ($first)"
+	fi
+fi
+stop_mayhem
+
 echo "== watchdog"
 if start_mayhem uci; then
 	for i in 1 2; do
