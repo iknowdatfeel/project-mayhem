@@ -1126,7 +1126,15 @@ write_uci "	option select 'auto'" direct
 printf '%s\n%s\n' "$SS_LINK_A" "$SS_LINK_B" | base64 | tr -d '\n' > "$WORK/sub.txt"
 sub_update >/dev/null
 if start_mayhem uci; then
-	sleep 3
+	# xray's own checks have measured both servers, as on a router that has
+	# run a while: before that health.uc cannot tell which one xray uses.
+	i=0
+	while [ "$i" -lt 60 ]; do
+		[ "$(ip netns exec router curl -s -m 2 "http://127.0.0.1:$(sed -n 's/^MAYHEM_METRICS_PORT=//p' "$FILES/usr/share/mayhem/const.sh")/debug/vars" 2>/dev/null |
+			grep -o '"alive": *true' | wc -l)" -ge 2 ] && break
+		sleep 0.5
+		i=$((i + 1))
+	done
 	first="$(ip netns exec client curl -s -m 4 $(site youtube.test) 2>/dev/null)"
 	case "$first" in
 		45.0.0.3) port=8443 other=45.0.0.8 ;;
