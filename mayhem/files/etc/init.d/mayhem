@@ -68,6 +68,7 @@ mayhem_start() {
 
 	if [ ! -x "$MAYHEM_XRAY_BIN" ]; then
 		mayhem_log "xray is not installed, run: mayhem xray-install" err
+		mayhem_restart_failed
 		return 1
 	fi
 
@@ -77,6 +78,7 @@ mayhem_start() {
 		mkdir -p "$MAYHEM_RUN_DIR"
 		printf '{"ok":false,"errors":["another traffic interceptor is running: %s"]}\n' \
 			"$conflicts" > "$MAYHEM_RUN_DIR/status.json"
+		mayhem_restart_failed
 		return 1
 	fi
 
@@ -92,6 +94,7 @@ mayhem_start() {
 		fi
 
 		mayhem_log "not starting: configuration has errors (mayhem check)" err
+		mayhem_restart_failed
 		return 1
 	fi
 
@@ -118,8 +121,35 @@ mayhem_start() {
 
 stop_service() {
 	mayhem_net_down
-	mayhem_dns_down
-	rm -f "$MAYHEM_RUN_DIR/health.json" "$MAYHEM_RUN_DIR/dns.degraded"
+
+	# A restart keeps Mayhem's file in dnsmasq's conf-dir: dnsmasq restarted
+	# without it here and with it again on start, and with an ad list each
+	# restart reads tens of thousands of names (seconds on a router). The
+	# provider's servers until the new xray listens (a SIGHUP), like after a
+	# crash; the start puts in a new file only when it changed.
+	if [ "$MAYHEM_RESTART" = 1 ]; then
+		mayhem_dns_servers isp
+	else
+		mayhem_dns_down
+	fi
+
+	# Nothing is redirected from here on, also before xray-run sees it go.
+	rm -f "$MAYHEM_RUN_DIR/health.json" "$MAYHEM_RUN_DIR/dns.degraded" "$MAYHEM_RUN_DIR/active"
+}
+
+# A restart that does not start again takes Mayhem's file out of dnsmasq,
+# as a stop does.
+mayhem_restart_failed() {
+	[ "$MAYHEM_RESTART" = 1 ] && mayhem_dns_down
+	return 0
+}
+
+restart() {
+	MAYHEM_RESTART=1
+	trap '' TERM
+	stop "$@"
+	trap - TERM
+	start "$@"
 }
 
 service_triggers() {
