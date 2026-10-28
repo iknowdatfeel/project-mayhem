@@ -30,11 +30,21 @@ function locked(dir, fn) {
 		const owner = trim(fs.readfile(`${lock}/pid`) ?? '');
 		const st = fs.stat(lock);
 
+		// Gone meanwhile: try again.
+		if (!st)
+			continue;
+
 		// The same process holds it (rpcd answers calls in one process): a
 		// call that died while holding it.
-		if (owner == pid || (owner != '' && !fs.access(`/proc/${owner}`)) || !st || time() - st.mtime > STALE || waited >= WAIT) {
-			fs.unlink(`${lock}/pid`);
-			fs.rmdir(lock);
+		if (owner == pid || (owner != '' && !fs.access(`/proc/${owner}`)) || time() - st.mtime > STALE || waited >= WAIT) {
+			// Only from the owner seen above: its process is gone once it let
+			// the lock go, and another one that took it since keeps it (it
+			// was taken away from it, and a change was lost).
+			if (trim(fs.readfile(`${lock}/pid`) ?? '') == owner) {
+				fs.unlink(`${lock}/pid`);
+				fs.rmdir(lock);
+			}
+
 			continue;
 		}
 
