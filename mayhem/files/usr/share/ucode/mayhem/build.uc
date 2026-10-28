@@ -2089,13 +2089,37 @@ export function build(model) {
 	let kdef = null;
 	const kdef_tun = mode == 'global' ? filter(tunnels, (t) => t.name == default_name)[0] : null;
 
+	// nft.conf and dnsmasq.conf stay as they were made while what they are
+	// made from does not change (model.net_cache, from gen.uc: the rules of
+	// the sections, the settings, geo files, lists, the router; not the
+	// servers). Their domains are not spelled out again: with a big category
+	// that took most of a reload. One entry per kernel tunnel taking the rest
+	// of the traffic, and one without.
+	const NC = model.net_cache;
+	const net_slot = kdef_tun && nftset ? `k-${replace(kdef_tun.device ?? kdef_tun.name, /[^A-Za-z0-9_.@-]/g, '_')}` : 'x';
+	const net_key = NC ? NC.base + sprintf('%J', {
+		tunnels: map(tunnels, (t) => [ t.name, t.index, t.device, t.v6, t.mark ?? null ]),
+		kdef: kdef_tun?.name, nftset: nftset ? true : false, default: default_name
+	}) : null;
+	const net_entry = NC ? NC.get(net_slot) : null;
+	const net_hit = net_entry != null && net_entry.key == net_key ? net_entry : null;
+	// The warnings of what a hit skips come with the entry.
+	const net_warns = [];
+	const nwarn = (m) => {
+		push(net_warns, m);
+		warn(m);
+	};
+
+	for (let w in net_hit?.warnings ?? [])
+		warn(w);
+
 	if (kdef_tun && !nftset)
 		warn(`the rest of the traffic goes into "${default_name}" through xray until dnsmasq-full is installed`);
 	else if (kdef_tun) {
 		const px4 = uset(), px6 = uset(), pxd = uset(), dird = uset(), blkd = uset();
 		const into = `they go into "${default_name}"`;
 
-		for (let r in routed) {
+		for (let r in (net_hit ? [] : routed)) {
 			const toxray = r.type == 'proxy' || r.type == 'interface';
 
 			if (toxray) {
@@ -2110,7 +2134,7 @@ export function build(model) {
 			if (toxray && fake)
 				continue;
 
-			const doms = kernel_domains(r.name, r.RL, model, warn,
+			const doms = kernel_domains(r.name, r.RL, model, nwarn,
 				r.type == 'block' ? `they are not blocked, ${into}` : into);
 
 			(toxray ? pxd : r.type == 'block' ? blkd : dird).add_all(doms);
@@ -2130,12 +2154,12 @@ export function build(model) {
 	// another one (a CDN) still goes to xray, which tells them apart by name.
 	let gdir = null;
 
-	if (mode == 'global' && !kdef && R.dnsmasq_nftset !== false) {
+	if (mode == 'global' && !kdef && R.dnsmasq_nftset !== false && !net_hit) {
 		const d = uset();
 
 		for (let r in routed)
 			if (r.type == 'exclusion')
-				d.add_all(kernel_domains(r.name, r.RL, model, warn, 'they go direct through xray'));
+				d.add_all(kernel_domains(r.name, r.RL, model, nwarn, 'they go direct through xray'));
 
 		if (length(d.items))
 			gdir = d.items;
@@ -2662,18 +2686,30 @@ export function build(model) {
 	} : null;
 	state.probe_url = xray.burstObservatory?.pingConfig?.destination ?? (match(S.probe_url ?? '', /^https?:\/\//) ? S.probe_url : C.DEFAULT_PROBE_URL);
 
+	const nft = net_hit ? net_hit.nft : build_nft(S, v6, {
+		ifaces: entries(S.interface),
+		...bypass_sets(S, nwarn),
+		block4: sets.block4.items, block6: sets.block6.items,
+		direct4: sets.direct4.items, direct6: sets.direct6.items, direct_ports: sets.direct_ports.items,
+		dir_domains: gdir != null
+	}, tunnels, dns_redirect, fake ? C.FAKEDNS_POOL : null, kdef,
+		capture_all ? null : { px4: px4.items, px6: v6 ? px6.items : [] });
+	const dnsmasq = net_hit ? net_hit.dnsmasq : `no-resolv\nservers-file=${C.DNS_SERVERS}\n` +
+		(nftset ? join('', map(tunnels, (t) => nftset_lines(t.domains, `tun_${t.name}_d4`, `tun_${t.name}_d6`))) : '') +
+		(kdef ? nftset_lines(kdef.blkd, 'blk_d4', 'blk_d6') + nftset_lines(kdef.dird, 'dir_d4', 'dir_d6') +
+			nftset_lines(kdef.pxd, 'px_d4', 'px_d6') : '') +
+		(gdir ? nftset_lines(gdir, 'dir_d4', 'dir_d6') +
+			`nftset=/#/4#inet#${C.NFT_TABLE}#oth_d4,6#inet#${C.NFT_TABLE}#oth_d6\n` : '') +
+		join('', map(dns_block, local_lines));
+
 	return {
 		ok: !length(st.errors),
 		mode: mode,
 		xray: xray,
-		nft: build_nft(S, v6, {
-			ifaces: entries(S.interface),
-			...bypass_sets(S, warn),
-			block4: sets.block4.items, block6: sets.block6.items,
-			direct4: sets.direct4.items, direct6: sets.direct6.items, direct_ports: sets.direct_ports.items,
-			dir_domains: gdir != null
-		}, tunnels, dns_redirect, fake ? C.FAKEDNS_POOL : null, kdef,
-			capture_all ? null : { px4: px4.items, px6: v6 ? px6.items : [] }),
+		nft: nft,
+		// What gen.uc keeps for the next build (null: taken from it).
+		net: NC && !net_hit ? { slot: net_slot, key: net_key, nft: nft, dnsmasq: dnsmasq, warnings: net_warns } : null,
+		net_cached: net_hit != null,
 		// Which servers dnsmasq asks (xray, or the provider's while xray is
 		// down) is in servers-file: dnsmasq reads it again on SIGHUP.
 		// What dnsmasq asks while xray works: "@ISP@" stands for the
@@ -2682,13 +2718,7 @@ export function build(model) {
 			? (upstream ?? '@ISP@\n') + server_lines(split, `127.0.0.1#${C.DNS_PORT}`)
 			: `server=127.0.0.1#${C.DNS_PORT}\n`,
 		dns_fallback: dns_fallback,
-		dnsmasq: `no-resolv\nservers-file=${C.DNS_SERVERS}\n` +
-			(nftset ? join('', map(tunnels, (t) => nftset_lines(t.domains, `tun_${t.name}_d4`, `tun_${t.name}_d6`))) : '') +
-			(kdef ? nftset_lines(kdef.blkd, 'blk_d4', 'blk_d6') + nftset_lines(kdef.dird, 'dir_d4', 'dir_d6') +
-				nftset_lines(kdef.pxd, 'px_d4', 'px_d6') : '') +
-			(gdir ? nftset_lines(gdir, 'dir_d4', 'dir_d6') +
-				`nftset=/#/4#inet#${C.NFT_TABLE}#oth_d4,6#inet#${C.NFT_TABLE}#oth_d6\n` : '') +
-			join('', map(dns_block, local_lines)),
+		dnsmasq: dnsmasq,
 		// "section device mark table v6" per tunnel section; mark and table are
 		// "-" in xray mode.
 		tunnels: join('', map(tun_all, (t) => `${t.name} ${t.device} ${t.mark} ${t.table} ${t.v6 ? 1 : 0}${t.keep_bal ? ' 0' : ''}\n`)),

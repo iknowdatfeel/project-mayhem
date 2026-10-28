@@ -321,9 +321,13 @@ function geo_cidrs(sections, sources) {
 // sections use: dnsmasq needs them spelled out. Cached in RAM like the subnets. With the
 // rest of the traffic going into a kernel tunnel (all), the categories of
 // every section: their addresses must be told apart in the kernel.
-function geo_domains(sections, sources, all, split) {
+// Returns { domains } and, with both, also { wide, narrow }: the categories
+// with and without the rest in a kernel tunnel (gen.uc --warm builds for the
+// other choice of the server list).
+function geo_domains(sections, sources, all, split, both) {
 	const per_source = {};
-	const out = {};
+	const loaded = {};
+	const wide = {}, narrow = {};
 	const used = {};
 	const cache_dir = `${RUN_DIR}/geo-cache`;
 
@@ -336,10 +340,6 @@ function geo_domains(sections, sources, all, split) {
 		// sends to xray (DNS_SPLIT_MAX).
 		// Block sections too: dnsmasq refuses their names itself.
 		const kernel = (sec.type == 'interface' && (sec.route_mode ?? 'kernel') != 'xray') || sec.type == 'block';
-		const most = kernel ? KERNEL_DOMAINS_MAX : DNS_SPLIT_MAX;
-
-		if (!all && !kernel && !split)
-			continue;
 
 		for (let d in entries(sec.domain)) {
 			const r = norm_domain(d);
@@ -349,11 +349,26 @@ function geo_domains(sections, sources, all, split) {
 
 			const x = resolve(sources, r.geo);
 
+			if (x.state != 'ready')
+				continue;
+
 			// Not spelled out at all when too big for dnsmasq (the generator
 			// says so): a million domains would not fit in RAM here either.
-			if (x.state == 'ready' && (x.count ?? 0) <= (all ? KERNEL_DOMAINS_MAX : most)) {
+			const key = `${x.source}:${x.cat}`;
+			const w = (x.count ?? 0) <= KERNEL_DOMAINS_MAX;
+			const n = kernel ? w : split && (x.count ?? 0) <= DNS_SPLIT_MAX;
+
+			if (w)
+				wide[key] = true;
+
+			if (n)
+				narrow[key] = true;
+
+			if (((all || both) && w) || ((!all || both) && n)) {
 				per_source[x.source] ??= [];
-				push(per_source[x.source], x.cat);
+
+				if (index(per_source[x.source], x.cat) < 0)
+					push(per_source[x.source], x.cat);
 			}
 		}
 	}
@@ -375,7 +390,7 @@ function geo_domains(sections, sources, all, split) {
 			used[cf] = true;
 
 			if (type(c) == 'array')
-				out[`${src}:${cat}`] = c;
+				loaded[`${src}:${cat}`] = c;
 			else
 				push(todo, cat);
 		}
@@ -386,7 +401,7 @@ function geo_domains(sections, sources, all, split) {
 		const res = geosite_domains(path, todo);
 
 		for (let cat in keys(res)) {
-			out[`${src}:${cat}`] = res[cat];
+			loaded[`${src}:${cat}`] = res[cat];
 			writefile(`${cache_dir}/${src}.${cat}.${st.size}-${st.mtime}.domains.json`, sprintf('%J', res[cat]));
 		}
 	}
@@ -394,6 +409,23 @@ function geo_domains(sections, sources, all, split) {
 	for (let f in lsdir(cache_dir) ?? [])
 		if (!used[f] && match(f, /\.domains\.json$/))
 			unlink(`${cache_dir}/${f}`);
+
+	const pick = (want) => {
+		const out = {};
+
+		for (let k in keys(loaded))
+			if (want[k])
+				out[k] = loaded[k];
+
+		return out;
+	};
+
+	const out = { domains: pick(all ? wide : narrow) };
+
+	if (both) {
+		out.wide = pick(wide);
+		out.narrow = pick(narrow);
+	}
 
 	return out;
 }
@@ -500,7 +532,9 @@ function pool_section(c) {
 	};
 }
 
-function load_model() {
+// both: also the geo domains for the other choice of the server list, a
+// kernel tunnel or a proxy (geo.wide, geo.narrow).
+function load_model(both) {
 	const c = cursor(UCI_DIR);
 
 	c.load('mayhem');
@@ -599,10 +633,24 @@ function load_model() {
 		: length(filter(sections, (s) => is_true(s.enabled ?? '1') && s.type == 'interface' && (s.route_mode ?? 'kernel') != 'xray' &&
 			(settings.default_section == null || settings.default_section == s['.name']))) > 0);
 
+	// When a geo file is downloaded again, its categories may change (the
+	// cache of nft.conf and dnsmasq.conf, gen.uc).
+	const geo_files = {};
+
+	for (let f in sort(lsdir(GEO_DIR) ?? [])) {
+		const st = stat(`${GEO_DIR}/${f}`);
+
+		if (st)
+			geo_files[f] = `${st.size}-${st.mtime}`;
+	}
+
 	return {
 		subscriptions: subscriptions,
 		subs_new: subs_new,
-		geo: { sources: sources, cidrs: geo_cidrs(sections, sources), domains: geo_domains(sections, sources, kernel_rest, settings.mode != 'global') },
+		geo: {
+			sources: sources, files: geo_files, cidrs: geo_cidrs(sections, sources),
+			...geo_domains(sections, sources, kernel_rest, settings.mode != 'global', both)
+		},
 		lists: lists(sections),
 		settings: settings,
 		tunnel_labels: tunnel_labels,

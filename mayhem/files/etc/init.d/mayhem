@@ -116,6 +116,10 @@ mayhem_start() {
 	# the scheduler's next run.
 	mayhem_subs_new
 
+	# The firewall rules and dnsmasq's file for the other choices of a server
+	# list with tunnels, built while xray works.
+	mayhem_net_warm
+
 	mayhem_instances
 }
 
