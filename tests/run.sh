@@ -114,6 +114,13 @@ else
 	ok "router traffic through xray"
 fi
 
+# TCP ping on the dashboard: one timeout per silent host, a budget per call.
+if out="$(uc "$ROOT/tests/ping.uc" 2>&1)"; then
+	ok "TCP ping: shared checks, a silent host waited for once"
+else
+	bad "TCP ping: $out"
+fi
+
 # subscription responses
 sub_check() {
 	# $1 file, $2 jq-free expectation: substring that must appear in the output

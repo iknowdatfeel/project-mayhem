@@ -35,7 +35,7 @@ return baseclass.extend({
 	METHODS: [ [ 'url', _('URL test') ], [ 'tcp', _('TCP ping') ], [ 'icmp', _('ICMP ping') ] ],
 
 	method: 'url',
-	probes: {},		// tag -> { method, value: ms or an error, at }
+	probes: {},		// tag -> { method, value: ms or an error, at, pending }
 	conn: null,		// ping and exit of the default section, checked on demand
 	warm: null,		// the last answer of the kept-alive URL test
 	firstCheck: false,	// the first check after the page opened is running
@@ -47,6 +47,20 @@ return baseclass.extend({
 
 	load() {
 		return callWarm(false);
+	},
+
+	// A check of these servers is under way: "…" until it answers. since:
+	// the router's time of a kept-alive URL test asked for anew (older
+	// numbers of it do not count).
+	pending(nodes, method, since) {
+		for (const n of nodes)
+			this.probes[n.tag] = { method: method, value: null, pending: true, since: since };
+	},
+
+	// The answer of a check; none at all (the call failed or LuCI stopped
+	// waiting for it) is a timeout, not the number the server had before.
+	result(tag, method, r) {
+		this.probes[tag] = { method: method, value: (r && r.ms != null) ? r.ms : ((r && r.error) || 'timeout') };
 	},
 
 	known(m) {
@@ -80,10 +94,10 @@ return baseclass.extend({
 				conn.pingError = warm.error;
 			})
 			: main.node
-			? callProbe(main.node.tag, method).then((r) => {
+			? callProbe(main.node.tag, method).catch(() => ({ error: 'timeout' })).then((r) => {
 				conn.ms = r.ms;
 				conn.pingError = r.error;
-				this.probes[main.node.tag] = { method: method, value: (r.ms != null) ? r.ms : (r.error || 'error') };
+				this.result(main.node.tag, method, r);
 			})
 			: Promise.resolve();
 		const exit = callExitInfo(sec.name, geoLang()).then((r) => { conn.exit = r; });
@@ -125,6 +139,11 @@ return baseclass.extend({
 
 		for (const tag in r.results) {
 			const x = r.results[tag];
+			const p = this.probes[tag];
+
+			// asked anew: only a newer number counts
+			if (p && p.pending && p.since != null && !(x.at >= p.since))
+				continue;
 
 			this.probes[tag] = { method: 'url', value: (x.ms != null) ? x.ms : (x.error || 'error'), at: x.at };
 		}
@@ -150,11 +169,23 @@ return baseclass.extend({
 			const rest = nodes.filter((n) => w.tags.indexOf(n.tag) < 0);
 			let tries = 0;
 
+			this.pending(covered, 'url', since);
+			this.applyWarm(w);
+			this.view.redraw();
+
+			// The router gives up on a request after 10 s: a server with no
+			// newer answer by then did not answer.
 			const look = () => new Promise((r) => window.setTimeout(r, 700)).then(() => this.pollWarm(false)).then((w2) => {
 				const res = (w2 && w2.results) || {};
 
-				if (++tries < 15 && covered.some((n) => !(res[n.tag] && res[n.tag].at >= since)))
+				if (++tries < 17 && covered.some((n) => !(res[n.tag] && res[n.tag].at >= since)))
 					return look();
+
+				for (const n of covered)
+					if (this.probes[n.tag] && this.probes[n.tag].pending)
+						this.result(n.tag, 'url', null);
+
+				this.view.redraw();
 
 				return rest;
 			});
@@ -211,15 +242,14 @@ return baseclass.extend({
 			if (rest.length)
 				delete this.view.busy[key];
 
-			return Promise.all(chunks.map((c) => call(c.map((n) => n.tag)).then((r) => {
-				for (const n of c) {
-					const x = (r.results || {})[n.tag] || { error: r.error || 'error' };
+			this.pending(batch, method);
 
-					this.probes[n.tag] = { method: method, value: (x.ms != null) ? x.ms : (x.error || 'error') };
-				}
+			return Promise.all(chunks.map((c) => call(c.map((n) => n.tag)).catch(() => ({})).then((r) => {
+				for (const n of c)
+					this.result(n.tag, method, (r.results || {})[n.tag] || (r.error ? { error: r.error } : null));
 
 				this.view.redraw();
-			}).catch(() => {})).concat(rest.length ? [ this.probeSection(Object.assign({}, sec, { nodes: rest }), true) ] : [])).finally(() => {
+			})).concat(rest.length ? [ this.probeSection(Object.assign({}, sec, { nodes: rest }), true) ] : [])).finally(() => {
 				delete this.view.busy[key];
 				this.view.redraw();
 			});
@@ -240,16 +270,18 @@ return baseclass.extend({
 			if (n.address)
 				busyHost[n.address] = true;
 
-			return callProbe(n.tag, method).then((r) => {
-				this.probes[n.tag] = { method: method, value: (r.ms != null) ? r.ms : (r.error || 'error') };
+			return callProbe(n.tag, method).catch(() => null).then((r) => {
+				this.result(n.tag, method, r);
 				this.view.redraw();
-			}).catch(() => {}).finally(() => {
+			}).finally(() => {
 				if (n.address)
 					delete busyHost[n.address];
 			}).then(worker);
 		};
 
 		const workers = [];
+
+		this.pending(queue, method);
 
 		for (let i = 0; i < PROBE_PARALLEL; i++)
 			workers.push(worker());
