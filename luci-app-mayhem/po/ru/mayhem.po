@@ -2348,3 +2348,6 @@ msgstr "Endpoint этого конфига — 127.0.0.1: он сделан дл
 
 msgid "Enter the obfuscator server address: the endpoint of this config is the router itself"
 msgstr "Укажите адрес сервера обфускатора: Endpoint этого конфига — сам роутер"
+
+msgid "This config lets only %s through the tunnel (AllowedIPs): other addresses sent into it are dropped. For sites and all traffic the peer needs AllowedIPs = 0.0.0.0/0, ::/0."
+msgstr "Этот конфиг пропускает в туннель только %s (AllowedIPs): остальные адреса, отправленные в него, отбрасываются. Чтобы через туннель шли сайты и весь трафик, у пира должно быть AllowedIPs = 0.0.0.0/0, ::/0."

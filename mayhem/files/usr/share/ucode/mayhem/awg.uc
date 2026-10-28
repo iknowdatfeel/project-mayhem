@@ -140,7 +140,19 @@ export function uci_sections(conf, proto) {
 		push(peers, peer);
 	}
 
-	return { iface: iface, peers: peers, v6: length(filter(addrs, (a) => index(a, ':') >= 0)) > 0 };
+	// What the peers let through: Mayhem sends a section's traffic to any
+	// address into the tunnel, and WireGuard drops what its AllowedIPs do
+	// not name. A config made for a few subnets (an office, a home LAN)
+	// opens nothing else through it: the dialog says so.
+	const all = [];
+
+	for (let p in peers)
+		push(all, ...p.allowed_ips);
+
+	const v6 = length(filter(addrs, (a) => index(a, ':') >= 0)) > 0;
+	const whole = index(all, '0.0.0.0/0') >= 0 && (!v6 || index(all, '::/0') >= 0);
+
+	return { iface: iface, peers: peers, v6: v6, allowed: whole ? null : all };
 };
 
 // .conf key names as AmneziaVPN writes them, for the way back.
