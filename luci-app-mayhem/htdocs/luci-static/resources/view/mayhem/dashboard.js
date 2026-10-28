@@ -138,8 +138,13 @@ function protocolName(n) {
 	return p === 'interface' ? _('Tunnel') : (PROTOCOLS[p] || (p ? p.charAt(0).toUpperCase() + p.slice(1) : '?'));
 }
 
-function latencyClass(v) {
-	return v < 400 ? 'mh-ok' : (v < 1000 ? 'mh-warn' : 'mh-fail');
+// A ping (TCP, ICMP) is one round trip to the server; the URL test goes on
+// from the server to the site and back: the same server shows two or three
+// times the number.
+function latencyClass(v, method) {
+	const ping = method === 'tcp' || method === 'icmp';
+
+	return v < (ping ? 150 : 400) ? 'mh-ok' : (v < (ping ? 400 : 1000) ? 'mh-warn' : 'mh-fail');
 }
 
 function pageLang() {
@@ -539,7 +544,7 @@ return view.extend({
 		}
 
 		if (c.ms != null)
-			rows.push([ _('Ping time'), _('%d ms').format(c.ms), latencyClass(c.ms) ]);
+			rows.push([ _('Ping time'), _('%d ms').format(c.ms), latencyClass(c.ms, c.method) ]);
 		else
 			rows.push([ _('Ping time'), c.busy ? wait : _('No answer'), c.busy ? 'mh-muted' : 'mh-fail', c.pingError ]);
 
@@ -628,7 +633,7 @@ return view.extend({
 			if (typeof p.value === 'string')
 				return E('span', { 'class': 'mh-fail', 'title': p.value }, label + _('No answer'));
 
-			return E('span', { 'class': latencyClass(p.value) }, label + _('%d ms').format(p.value));
+			return E('span', { 'class': latencyClass(p.value, p.method) }, label + _('%d ms').format(p.value));
 		}
 
 		if (n.alive === false)
