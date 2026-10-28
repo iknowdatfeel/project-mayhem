@@ -28,11 +28,23 @@ obfs_instance() {
 
 	[ -n "$iface" ] && [ -n "$host" ] && [ -n "$port" ] && [ -n "$lport" ] || return 0
 
+	# The server, never the router itself: a .conf made for a local
+	# obfuscator has 127.0.0.1 as its endpoint, and the obfuscator would
+	# send to itself.
+	case "$host" in
+		127.*|localhost|::1) logger -t mayhem -p daemon.warn -- "obfuscator of $iface: no server address (it is $host)"; return 0 ;;
+	esac
+
 	case "$kind" in
 	phobos)
 		[ -x "$OBFS_DIR/wg-obfuscator" ] && [ -n "$key" ] || return 0
 
 		# The key goes into a file: the command line is seen by every process.
+		# resolve-interval: a server name that cannot be resolved yet (on
+		# boot) is tried again instead of the obfuscator quitting, and a
+		# changed address is followed. in-timeout: nothing from the server
+		# for 90 s while the tunnel sends (keepalives included) - a new
+		# session from a new source port, in case the old one was blocked.
 		mkdir -p "$RUN_DIR"
 		conf="$RUN_DIR/obfs-$iface.conf"
 		umask 077
@@ -43,7 +55,9 @@ source-lport = $lport
 target = $host:$port
 key = $key
 masking = $masking
-verbose = WARNINGS
+verbose = WARN
+resolve-interval = 300
+in-timeout = 90
 CONF
 		procd_open_instance "$iface"
 		procd_set_param command "$OBFS_DIR/wg-obfuscator" -c "$conf"

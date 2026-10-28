@@ -428,6 +428,10 @@ const OBFS_BIN = {
 };
 const OBFS_MASKING = [ 'AUTO', 'STUN', 'NONE' ];
 const FT_MTU = 1428;
+// wg-obfuscator adds up to 28 bytes (STUN masking and padding) to each packet:
+// with WireGuard's usual 1420 a full packet no longer fits in 1500 and is cut
+// in two on the way, which networks with DPI often drop.
+const PH_MTU = 1380;
 const OBFS_PORT0 = 41820;
 
 function obfs_record(cm, iface) {
@@ -469,9 +473,18 @@ function obfs_zone(cf) {
 	cf.set('firewall', fwd, 'dest', 'wan');
 }
 
+// A loopback address: the .conf of a tunnel made for a local obfuscator
+// (Phobos and others give "Endpoint = 127.0.0.1:13255") names it, not the
+// server.
+function loopback_host(h) {
+	return !!match(h ?? '', /^(127\.|::1$|\[::1\]$|localhost$)/);
+}
+
 // Sets the obfuscation of a tunnel: o = { kind: 'phobos'|'faketcp', port,
-// key, masking } or null for none. The peer's endpoint in cn is the real one
-// (from the .conf) or 127.0.0.1 with the record. Returns an error or null.
+// key, masking, host } or null for none. The obfuscator talks to o.host
+// (the server) when given, else to the peer's endpoint: the real one from the
+// .conf, or the record's while the endpoint is the local obfuscator. A
+// loopback address is never the server. Returns an error or null.
 function obfs_apply(cn, cm, cf, iface, proto, o) {
 	const rec = obfs_record(cm, iface);
 	const sid = `ob_${iface}`;
@@ -480,12 +493,15 @@ function obfs_apply(cn, cm, cf, iface, proto, o) {
 	if (!peer)
 		return 'the tunnel has no peer';
 
-	const local = peer.endpoint_host == '127.0.0.1' && rec;
-	const host = local ? rec.host : peer.endpoint_host;
-	const eport = local ? rec.eport : (peer.endpoint_port ?? '51820');
+	const local = loopback_host(peer.endpoint_host);
+	const given = o?.host ? trim(o.host) : null;
+	const host = given ?? ((local && rec && !loopback_host(rec.host)) ? rec.host : (local ? null : peer.endpoint_host));
+	// The WireGuard port of the server; a .conf for a local obfuscator has
+	// none, the obfuscator's port stands in.
+	const eport = !local ? (peer.endpoint_port ?? '51820') : (rec && !loopback_host(rec.host)) ? rec.eport : `${o?.port ?? rec?.eport ?? 51820}`;
 	const mtu_now = cn.get('network', iface, 'mtu');
 	// The tunnel's own MTU: from the record while fake TCP has set its own.
-	const mtu = (rec?.kind == 'faketcp' && rec.mtu != null) ? rec.mtu : (mtu_now ?? '-');
+	const mtu = (rec && rec.mtu != null) ? rec.mtu : (mtu_now ?? '-');
 
 	const restore = () => {
 		cn.set('network', peer['.name'], 'endpoint_host', host);
@@ -499,7 +515,9 @@ function obfs_apply(cn, cm, cf, iface, proto, o) {
 
 	if (!o) {
 		if (rec) {
-			restore();
+			if (host)
+				restore();
+
 			cm.delete('mayhem', sid);
 		}
 
@@ -509,8 +527,11 @@ function obfs_apply(cn, cm, cf, iface, proto, o) {
 	if (!OBFS_BIN[o.kind])
 		return 'unknown obfuscator';
 
-	if (!host || !match(host, /^[A-Za-z0-9.:_-]+$/))
-		return 'the peer has no endpoint';
+	if (!host || loopback_host(host))
+		return 'enter the address of the obfuscator server: the endpoint of this config is the obfuscator on the router (127.0.0.1)';
+
+	if (!match(host, /^[A-Za-z0-9.:_-]+$/))
+		return 'invalid obfuscator server address';
 
 	if (o.port < 1 || o.port > 65535)
 		return 'invalid obfuscator port';
@@ -543,11 +564,7 @@ function obfs_apply(cn, cm, cf, iface, proto, o) {
 	if (o.kind == 'phobos') {
 		cm.set('mayhem', sid, 'key', o.key);
 		cm.set('mayhem', sid, 'masking', index(OBFS_MASKING, o.masking) >= 0 ? o.masking : 'AUTO');
-
-		if (mtu == '-')
-			cn.delete('network', iface, 'mtu');
-		else
-			cn.set('network', iface, 'mtu', mtu);
+		cn.set('network', iface, 'mtu', `${(mtu != '-' && int(mtu) < PH_MTU) ? int(mtu) : PH_MTU}`);
 	}
 	else {
 		cm.delete('mayhem', sid, 'key');
@@ -698,7 +715,7 @@ function tunnel_endpoint(iface) {
 	if (ep == '127.0.0.1') {
 		const rec = obfs_record(uci_cursor(), iface);
 
-		ep = rec?.host;
+		ep = (rec?.host && !loopback_host(rec.host)) ? rec.host : null;
 	}
 
 	return (ep && match(ep, /^[A-Za-z0-9.:_-]+$/)) ? ep : null;
@@ -3094,7 +3111,10 @@ const methods = {
 
 			apply_bg('/etc/init.d/network reload; /etc/init.d/firewall reload; /etc/init.d/mayhem reload');
 
-			return { ok: true, interface: name, proto: proto, section: section, pool: req.args?.pool !== false, v6: cfg.v6 };
+			// A config made for a local obfuscator: the dialog asks for the
+			// obfuscation and its server next.
+			return { ok: true, interface: name, proto: proto, section: section, pool: req.args?.pool !== false, v6: cfg.v6,
+				loopback: loopback_host(cfg.peers[0]?.endpoint_host) };
 		}
 	},
 
@@ -3908,7 +3928,7 @@ const methods = {
 			// tunnel itself, not the local obfuscator.
 			const rec = obfs_record(uci_cursor(), iface);
 
-			if (rec && length(peers) && peers[0].endpoint_host == '127.0.0.1') {
+			if (rec && length(peers) && loopback_host(peers[0].endpoint_host) && !loopback_host(rec.host)) {
 				peers[0].endpoint_host = rec.host;
 				peers[0].endpoint_port = rec.eport;
 
@@ -3920,7 +3940,9 @@ const methods = {
 
 			return {
 				ok: true, proto: proto, conf: to_conf(opts, peers),
-				obfs: rec ? { kind: rec.kind, port: int(rec.port), key: rec.key, masking: rec.masking } : null,
+				obfs: rec ? { kind: rec.kind, port: int(rec.port), key: rec.key, masking: rec.masking, host: loopback_host(rec.host) ? null : rec.host } : null,
+				// the .conf points at a local obfuscator: the server's address is asked for
+				loopback: length(peers) > 0 && loopback_host(peers[0].endpoint_host),
 				installed: { phobos: fs.access(OBFS_BIN.phobos, 'x') == true, faketcp: fs.access(OBFS_BIN.faketcp, 'x') == true }
 			};
 		}
@@ -3930,7 +3952,7 @@ const methods = {
 	// protocol, firewall zone and Mayhem settings; its keys, addresses,
 	// obfuscation parameters and peers are replaced. The tunnel reconnects.
 	tunnel_set: {
-		args: { iface: '', conf: '', obfs: '', obfs_port: 0, obfs_key: '', obfs_masking: '' },
+		args: { iface: '', conf: '', obfs: '', obfs_port: 0, obfs_key: '', obfs_masking: '', obfs_host: '' },
 		call: function(req) {
 			const iface = req.args?.iface ?? '';
 			const c = uci_open();
@@ -3994,7 +4016,8 @@ const methods = {
 			if (kind == '' && rec)
 				o = { kind: rec.kind, port: int(rec.port), key: rec.key, masking: rec.masking };
 			else if (kind != '' && kind != 'none')
-				o = { kind: kind, port: int(req.args?.obfs_port ?? 0), key: req.args?.obfs_key, masking: req.args?.obfs_masking };
+				o = { kind: kind, port: int(req.args?.obfs_port ?? 0), key: req.args?.obfs_key, masking: req.args?.obfs_masking,
+					host: length(req.args?.obfs_host ?? '') ? req.args.obfs_host : null };
 
 			if (o && OBFS_BIN[o.kind] && !fs.access(OBFS_BIN[o.kind], 'x'))
 				return { error: `${o.kind == 'phobos' ? 'wg-obfuscator' : 'phantun'} is not installed` };
