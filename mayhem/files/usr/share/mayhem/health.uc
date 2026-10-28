@@ -161,7 +161,7 @@ function in_use(sn, s) {
 		return s.selected;
 
 	if (s.override)
-		return h.sections?.[sn]?.stand_in?.tag ?? s.override;
+		return s.override;
 
 	let best = null;
 	const o = observatory();
@@ -173,10 +173,15 @@ function in_use(sn, s) {
 	return best ?? tags[0];
 }
 
-// The servers that may take a section's traffic.
+// The servers that may take a section's traffic. A server pinned by hand
+// is the only one: another one never takes over from it (it did, the
+// fastest that answered, and a choice made by hand changed by itself).
 function members(s) {
 	if (s.mode == 'manual' || s.mode == 'single')
 		return [ s.selected ?? s.nodes[0].tag ];
+
+	if (s.mode == 'auto' && s.override)
+		return [ s.override ];
 
 	if (s.mode == 'fallback' && length(s.chain ?? []))
 		return s.chain;
@@ -238,11 +243,6 @@ function restore(sn, s, tag, pin) {
 	if (s.mode == 'manual')
 		return bo(bal, s.selected);
 
-	// The server pinned by hand still does not answer: the one that does
-	// stands in for it.
-	if (s.mode == 'auto' && s.override && tag && tag != s.override)
-		return bo(bal, tag) ? 'stand_in' : false;
-
 	if (pin && !s.override && s.mode == 'auto') {
 		const o = observatory();
 
@@ -280,25 +280,11 @@ for (let sn in keys(state.sections ?? {})) {
 		continue;
 	}
 
-	// A server pinned by hand that stopped answering, and the one standing in
-	// for it: back to the pinned one as soon as it answers again. A new
-	// choice ends the stand-in; a reload (live.uc puts the choices in again)
-	// points the balancer at the stand-in once more.
-	if (!hs.down && hs.stand_in) {
-		const si = hs.stand_in;
-
-		if (si.pin != s.override || index(map(s.nodes, (n) => n.tag), si.tag) < 0)
+	// Another server put in for a pinned one by an older Mayhem: the pinned
+	// one again.
+	if (hs.stand_in) {
+		if (!s.override || bo(bal, s.override))
 			delete hs.stand_in;
-		else if (works(s.override)) {
-			if (bo(bal, s.override)) {
-				log(`section ${sn}: ${names(s, [ s.override ])} answers again, its traffic goes through it again`);
-				delete hs.stand_in;
-				hs.fails = 0;
-				continue;
-			}
-		}
-		else if (si.mark != mark(s) && bo(bal, si.tag))
-			si.mark = mark(s);
 	}
 
 	if (!hs.down) {
@@ -341,19 +327,7 @@ for (let sn in keys(state.sections ?? {})) {
 			const other = fastest(candidates(s, [ cur ], TRIES));
 
 			if (other) {
-				if (s.mode == 'auto' && s.override) {
-					// Not past a server pinned by hand: that one gets a
-					// stand-in.
-					if (other == s.override) {
-						if (bo(bal, s.override))
-							delete hs.stand_in;
-					}
-					else if (bo(bal, other)) {
-						hs.stand_in = { pin: s.override, tag: other, mark: mark(s) };
-						log(`section ${sn}: the pinned server ${names(s, [ s.override ])} does not answer, ${names(s, [ other ])} stands in for it until it does`, 'warn');
-					}
-				}
-				else if (s.mode == 'auto') {
+				if (s.mode == 'auto') {
 					if (bo(bal, other)) {
 						hs.pinned = other;
 						hs.avoid = uniq([ ...(hs.avoid ?? []), cur ]);
@@ -379,7 +353,6 @@ for (let sn in keys(state.sections ?? {})) {
 		hs.down = true;
 		hs.fails = 0;
 		hs.since = time();
-		delete hs.stand_in;
 		delete hs.pinned;
 		delete hs.avoid;
 		hs.mark = mark(s);
@@ -417,8 +390,6 @@ for (let sn in keys(state.sections ?? {})) {
 
 			if (r == 'pinned')
 				h.sections[sn].pinned = good;
-			else if (r == 'stand_in')
-				h.sections[sn].stand_in = { pin: s.override, tag: good, mark: mark(s) };
 		}
 
 		continue;

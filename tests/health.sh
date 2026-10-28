@@ -251,25 +251,26 @@ for ks in 0 1; do
 	fi
 done
 
-# A server pinned by hand stops answering while another one works: that one
-# stands in for it (the pin alone kept the traffic on the dead server), and
-# the pinned one is back as soon as it answers.
+# A server pinned by hand stops answering while another one works: no other
+# server takes over (a choice made by hand stays), the section goes direct
+# like one whose servers do not answer, and back to the pinned one when it
+# answers. A stand-in left by an older Mayhem is dropped.
 nodes false
 sed -i 's/"mode": "auto", "balancer": "bal-auto",/"mode": "auto", "balancer": "bal-auto", "override": "n-auto-1",/' "$T/run/nodes.json"
-rm -f "$T/run/health.json"
+echo '{ "pid": "4242", "sections": { "auto": { "down": false, "fails": 0, "stand_in": { "pin": "n-auto-1", "tag": "n-auto-2" } } } }' > "$T/run/health.json"
 echo '{ "n-auto-1": { "alive": true, "delay": 50 }, "n-auto-2": { "alive": true, "delay": 100 } }' > "$T/obs.json"
 printf 'n-auto-1\n' > "$T/dead"
 tick
-if [ "$(bo bal-auto n-auto-2)" = 1 ] && [ "$(bo bal-auto direct)" = 0 ] && ! down auto; then
-	ok "a dead pinned server gets a working stand-in at once"
+if [ "$(bo bal-auto n-auto-2)" = 0 ] && [ "$(bo bal-auto n-auto-1)" = 1 ] && ! down auto; then
+	ok "a dead pinned server: no other server takes over, an old stand-in goes"
 else
-	bad "pinned stand-in: $(cat "$T/xray.log")"
+	bad "pinned: $(cat "$T/xray.log")"
 fi
 tick
-if [ "$(bo bal-auto n-auto)" = 0 ] && [ "$(bo bal-auto direct)" = 0 ]; then ok "the stand-in stays while the pinned server is silent"; else bad "stand-in kept: $(cat "$T/xray.log")"; fi
+if [ "$(bo bal-auto n-auto-2)" = 0 ] && [ "$(bo bal-auto direct)" = 1 ] && down auto; then ok "a dead pinned server: the section goes direct, not to another server"; else bad "pinned down: $(cat "$T/xray.log")"; fi
 : > "$T/dead"
 tick
-if [ "$(bo bal-auto n-auto-1)" = 1 ]; then ok "the pinned server is back when it answers"; else bad "pinned back: $(cat "$T/xray.log")"; fi
+if [ "$(bo bal-auto n-auto-1)" = 1 ] && [ "$(bo bal-auto n-auto-2)" = 0 ] && ! down auto; then ok "the pinned server is back when it answers"; else bad "pinned back: $(cat "$T/xray.log")"; fi
 
 # Automatic choice: the fastest server stops answering, but xray's own checks
 # (minutes apart) still pick it. Another one that answers is pinned at once,
