@@ -976,6 +976,23 @@ mayhem_live_update() {
 	echo "restart $(date +%s)" >> "$MAYHEM_RUN_DIR/xray.key"
 }
 
+# nft.conf and dnsmasq.conf for the other choices of a server list with
+# tunnels (one taking the rest of the traffic in the kernel, or a proxy),
+# into the generator's cache once xray works: a switch on the dashboard then
+# builds neither (gen.uc --warm).
+mayhem_net_warm() {
+	grep -q '"iface": "' "$MAYHEM_RUN_DIR/nodes.json" 2>/dev/null || return 0
+
+	(
+		i=0
+		while [ ! -f "$MAYHEM_RUN_DIR/active" ] && [ "$i" -lt 60 ]; do
+			sleep 1
+			i=$((i + 1))
+		done
+		ucode "$MAYHEM_GEN" --warm
+	) >/dev/null 2>&1 </dev/null &
+}
+
 # Pin a balancer to a server; an empty tag returns it to automatic choice.
 mayhem_select() {
 	if [ -n "$2" ]; then

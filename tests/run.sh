@@ -1088,6 +1088,58 @@ else
 	bad "tunnel sync: $(printf '%s' "$out" | grep -v '^ok')"
 fi
 
+# The cache of nft.conf and dnsmasq.conf: taken while the rules stay the same,
+# whatever the servers; built again when a rule changes; --warm fills the
+# other choice of the server list (a tunnel or a proxy). What comes from the
+# cache is what a build makes.
+netcache() {
+	# $1 model, $2 output directory (keeps its cache)
+	MAYHEM_NET_CACHE=1 uc "$FILES/usr/share/mayhem/gen.uc" --model "$1" --out "$2" 2>/dev/null &&
+		sed -n 's/.*"net_cached": \([a-z]*\).*/\1/p' "$2/status.json"
+}
+same_net() {
+	cmp -s "$1/nft.conf" "$2/nft.conf" && cmp -s "$1/dnsmasq.conf" "$2/dnsmasq.conf" && cmp -s "$1/tunnels" "$2/tunnels"
+}
+python3 - "$ROOT/tests/models/pooltun.json" "$OUT" <<'PY'
+import json, sys
+m = json.load(open(sys.argv[1]))
+out = sys.argv[2]
+m["sections"].append({".name": "ads", "type": "block", "enabled": "1", "domain": ["ads.test", "keyword:adv"]})
+json.dump(m, open(out + "/nc-awg.json", "w"))
+p = m["sections"][0]
+p["link"] = p["link"] + ["trojan://pw@nl.example:443?sni=nl.example#NL"]
+json.dump(m, open(out + "/nc-awg-servers.json", "w"))
+del p["override"]
+json.dump(m, open(out + "/nc-proxy.json", "w"))
+m["sections"][1]["ip"] = ["5.0.0.0/8", "6.0.0.0/8"]
+json.dump(m, open(out + "/nc-proxy-rule.json", "w"))
+PY
+for n in nc-awg nc-proxy nc-proxy-rule; do
+	uc "$FILES/usr/share/mayhem/gen.uc" --model "$OUT/$n.json" --out "$OUT/fresh-$n" 2>/dev/null
+done
+c="$OUT/nc"
+r1="$(netcache "$OUT/nc-awg.json" "$c")"
+r2="$(netcache "$OUT/nc-awg.json" "$c")"
+r3="$(netcache "$OUT/nc-awg-servers.json" "$c")"
+if [ "$r1 $r2 $r3" = "false true true" ] && same_net "$c" "$OUT/fresh-nc-awg"; then
+	ok "net cache: taken again and with other servers, the same as a build"
+else
+	bad "net cache: built/cached $r1 $r2 $r3, or not the same as a build"
+fi
+MAYHEM_NET_CACHE=1 uc "$FILES/usr/share/mayhem/gen.uc" --model "$OUT/nc-awg.json" --out "$c" --warm 2>/dev/null
+r4="$(netcache "$OUT/nc-proxy.json" "$c")"
+if [ "$r4" = true ] && same_net "$c" "$OUT/fresh-nc-proxy"; then
+	ok "net cache: --warm made the files for a proxy, the same as a build"
+else
+	bad "net cache: after --warm the proxy was built ($r4), or not the same as a build"
+fi
+r5="$(netcache "$OUT/nc-proxy-rule.json" "$c")"
+if [ "$r5" = false ] && same_net "$c" "$OUT/fresh-nc-proxy-rule"; then
+	ok "net cache: a changed rule builds again"
+else
+	bad "net cache: a changed rule was taken from the cache ($r5)"
+fi
+
 # The scheduler: downloads in the background, the checks keep their pace.
 if out="$(sh "$ROOT/tests/scheduler.sh" 2>&1)"; then
 	ok "scheduler: the checks go on while a download runs"
