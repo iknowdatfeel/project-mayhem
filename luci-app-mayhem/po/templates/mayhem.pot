@@ -581,6 +581,10 @@ msgstr ""
 msgid "Download via proxy"
 msgstr ""
 
+#: htdocs/luci-static/resources/view/mayhem/dashboard.js
+msgid "Downloaded directly: not through Xray"
+msgstr ""
+
 #: htdocs/luci-static/resources/mayhem/page/servers.js
 msgid "Drop: browsers fall back to TCP"
 msgstr ""

@@ -316,16 +316,21 @@ function fetch(sub, dev, route_section) {
 
 	push(tries, null);
 
-	let last = 'download failed';
+	let last = 'download failed', xray_failed = null;
 
 	for (let pr in tries) {
 		const r = curl(url, req, pr);
 		const status = r.headers[':status'];
 
+		// Direct after Xray did not get it: the provider of the internet
+		// saw the request. Said in the log and next to the subscription.
 		if (r.rc == 0 && status >= 200 && status < 300)
-			return { headers: r.headers, body: r.body, via: pr ? 'xray' : 'direct' };
+			return { headers: r.headers, body: r.body, via: pr ? 'xray' : 'direct', xray_failed: pr ? null : xray_failed };
 
 		last = r.rc != 0 ? (r.error != '' ? r.error : `curl exit code ${r.rc}`) : `HTTP ${status}`;
+
+		if (pr)
+			xray_failed = last;
 
 		if (status == 403 || status == 404 || status == 410)
 			break; // the server answered: retrying elsewhere will not help
@@ -480,6 +485,13 @@ function update(name, force, only_new) {
 			st.info = fresh.info;
 			delete st.error;
 			st.via = r.via;
+
+			if (r.xray_failed) {
+				st.via_why = r.xray_failed;
+				system(`logger -t mayhem -p daemon.warn -- ${q(`subscription ${sn}: not downloaded through Xray (${r.xray_failed}), downloaded directly`)}`);
+			}
+			else
+				delete st.via_why;
 			push(results, {
 				name: sn, ok: true, nodes: length(fresh.nodes), skipped: parsed.skipped, via: r.via,
 				hwid_limit: fresh.info.hwid.limit

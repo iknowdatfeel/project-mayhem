@@ -758,6 +758,8 @@ return view.extend({
 
 		if (sub.error)
 			parts.push(E('span', { 'class': 'mh-fail mh-small' }, sub.error));
+		else if (sub.via_why)
+			parts.push(E('span', { 'class': 'mh-warn mh-small', 'title': sub.via_why }, _('Downloaded directly: not through Xray')));
 
 		if (info.hwid && info.hwid.limit)
 			parts.push(E('span', { 'class': 'mh-fail mh-small' }, _('Device limit reached: the provider does not accept this HWID')));

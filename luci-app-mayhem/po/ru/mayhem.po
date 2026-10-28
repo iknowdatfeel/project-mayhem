@@ -2357,3 +2357,6 @@ msgstr "Роутер не знает «%s» в регулярных выраже
 
 msgid "The router does not know \"%s\" in regular expressions (no (?…) groups, lazy quantifiers or \\b); case is ignored anyway"
 msgstr "Роутер не знает «%s» в регулярных выражениях (нет групп (?…), ленивых квантификаторов и \\b); регистр и так не учитывается"
+
+msgid "Downloaded directly: not through Xray"
+msgstr "Скачана напрямую, не через Xray"
