@@ -287,6 +287,19 @@ tick
 if grep -q -- '-b bal-auto -r' "$T/xray.log"; then ok "automatic: the pin goes once xray sees the server dead"; else bad "auto unpin: $(cat "$T/xray.log")"; fi
 : > "$T/dead"
 
+# One run of the scheduler (MAYHEM_TICK): a server that answered is not asked
+# again; one that failed is; another run asks again.
+chk() { MAYHEM_TICK="$1" "$UCODE" -L "$FILES/usr/share/ucode/*.uc" -e "import * as c from 'mayhem.check'; c.works_many([ '$2' ], 'http://x/', 1);"; }
+printf 'n-dead\n' > "$T/dead"
+: > "$T/curl.log"
+chk 7 n-live; chk 7 n-live; chk 7 n-dead; chk 7 n-dead; chk 8 n-live
+if [ "$(grep -c ' n-live ' "$T/curl.log")" = 2 ] && [ "$(grep -c ' n-dead ' "$T/curl.log")" = 2 ]; then
+	ok "a server that answered is not asked twice in one run, a dead one is"
+else
+	bad "check cache: $(cat "$T/curl.log")"
+fi
+: > "$T/dead"
+
 # dnsmasq reads the servers file as its own user: readable by all, even
 # with a strict umask and when an older Mayhem wrote it root-only.
 (

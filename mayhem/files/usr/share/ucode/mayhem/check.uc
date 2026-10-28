@@ -10,7 +10,7 @@
 'use strict';
 
 import * as fs from 'fs';
-import { HELPER_PORT, HELPER_PASS } from 'mayhem.const';
+import { HELPER_PORT, HELPER_PASS, RUN_DIR } from 'mayhem.const';
 
 function q(s) {
 	return "'" + replace(`${s}`, /'/g, "'\\''") + "'";
@@ -29,16 +29,55 @@ function command(cmd) {
 	return out;
 }
 
+// fallback.uc and health.uc run one after the other every 20 s and both
+// check the server a section uses: within one run of the scheduler
+// (MAYHEM_TICK) a server that answered is not asked again. Only answers are
+// kept: a failure is always checked anew.
+const TICK = getenv('MAYHEM_TICK');
+const SEEN = `${RUN_DIR}/check.seen`;
+
+function seen_read(url) {
+	if (TICK == null)
+		return {};
+
+	try {
+		const j = json(fs.readfile(SEEN) ?? '');
+
+		return (j?.tick == TICK && j?.url == url) ? (j.ok ?? {}) : {};
+	}
+	catch (e) {
+		return {};
+	}
+}
+
+function seen_write(url, ok) {
+	if (TICK == null || !length(ok))
+		return;
+
+	const all = { ...seen_read(url), ...ok };
+	const tmp = `${SEEN}.${split(fs.readfile('/proc/self/stat') ?? '', ' ')[0]}`;
+
+	if (fs.writefile(tmp, sprintf('%J', { tick: TICK, url: url, ok: all })) != null)
+		fs.rename(tmp, SEEN);
+}
+
 // Checks all users at once (a curl each, in parallel): a dead server costs
 // its timeout once, not once per server. Returns { user: ms } for those that
 // answered; the others are missing.
 export function works_many(users, url, timeout) {
-	const res = {};
+	const res = {}, fresh = {};
+	const seen = seen_read(url);
 	let cmd = '';
 
-	for (let i, u in users)
+	for (let i, u in users) {
+		if (seen[u] != null) {
+			res[u] = seen[u];
+			continue;
+		}
+
 		cmd += `( echo "${i} $(curl -s -o /dev/null -m ${timeout ?? 6} -x ${q(`socks5h://${u}:${HELPER_PASS}@127.0.0.1:${HELPER_PORT}`)} ` +
 			`-w '%{http_code} %{time_total}' ${q(url)} 2>/dev/null)" ) & `;
+	}
 
 	if (cmd == '')
 		return res;
@@ -47,8 +86,10 @@ export function works_many(users, url, timeout) {
 		const m = match(l, /^([0-9]+) ([0-9]+)( ([0-9.]+))?/);
 
 		if (m && int(m[2]) >= 100 && users[int(m[1])] != null)
-			res[users[int(m[1])]] = int((m[4] ?? 0) * 1000) || 1;
+			res[users[int(m[1])]] = fresh[users[int(m[1])]] = int((m[4] ?? 0) * 1000) || 1;
 	}
+
+	seen_write(url, fresh);
 
 	return res;
 };
