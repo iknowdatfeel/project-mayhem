@@ -101,6 +101,10 @@ return baseclass.extend({
 	// done(result): after an import; without it the open window is drawn
 	// again.
 	importDialog(info, done) {
+		// From the button, the second argument is the click event.
+		if (typeof done !== 'function')
+			done = null;
+
 		const name = E('input', { 'class': 'cbi-input-text', 'value': 'awg0', 'maxlength': 15 });
 		const text = E('textarea', {
 			'class': 'cbi-input-textarea', 'rows': 10, 'style': 'width:100%;font-family:monospace',
