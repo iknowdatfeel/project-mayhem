@@ -13,6 +13,7 @@
 import * as fs from 'fs';
 import { build } from 'mayhem.build';
 import { RUN_DIR, GEO_DIR } from 'mayhem.const';
+import * as runstate from 'mayhem.runstate';
 
 const opts = { out: RUN_DIR, model: null, check: false, print: false };
 
@@ -108,8 +109,14 @@ for (let f in sort(res.geo_files ?? [])) {
 }
 
 put('geo.stamp', stamp);
-put('nodes.json', sprintf('%J\n', res.state));
-put('overrides', length(res.overrides) ? join('\n', res.overrides) + '\n' : '');
+// The dashboard and fallback.uc change these two as well (mayhem.runstate).
+if (!runstate.write(opts.out, {
+	'nodes.json': sprintf('%J\n', res.state),
+	'overrides': length(res.overrides) ? join('\n', res.overrides) + '\n' : ''
+})) {
+	warn(`cannot write ${opts.out}/nodes.json: ${fs.error()}\n`);
+	exit(1);
+}
 put('tunnels', res.tunnels ?? '');
 // Subscriptions the service downloads right after this reload.
 put('subs.new', length(model.subs_new ?? []) ? join('\n', model.subs_new) + '\n' : '');

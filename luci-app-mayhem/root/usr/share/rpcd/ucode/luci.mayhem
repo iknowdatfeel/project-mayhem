@@ -11,6 +11,7 @@ import { list_key, entries, dnsmasq_nftset } from 'mayhem.rules';
 import { parse_conf, is_amnezia, uci_sections, to_conf } from 'mayhem.awg';
 import * as C from 'mayhem.const';
 import { tcp_ping } from 'mayhem.ping';
+import * as runstate from 'mayhem.runstate';
 
 const XRAY = getenv('MAYHEM_XRAY_BIN') ?? '/usr/libexec/mayhem/xray';
 const RUN = C.RUN_DIR;
@@ -2348,9 +2349,16 @@ const methods = {
 				if (!c.commit('mayhem'))
 					return { error: 'the configuration could not be saved' };
 
-				pool.subs ??= {};
-				pool.subs[sn] = { mode: 'manual', selected: tag };
-				write_json(`${RUN}/nodes.json`, state);
+				// nodes.json as it is now (mayhem.runstate)
+				runstate.update(RUN, (st) => {
+					const p = st.sections?.pool;
+
+					if (!p)
+						return false;
+
+					p.subs ??= {};
+					p.subs[sn] = { mode: 'manual', selected: tag };
+				});
 
 				if (pool.mode == 'fallback' && length(filter(pool.items ?? [], (i) => i.sub == sn)))
 					reload_choice();
@@ -2384,41 +2392,48 @@ const methods = {
 				const c = uci_cursor();
 				const key = node?.iface ?? node?.name;
 				const ut = choice_target(c, sn);
+				const manual = s.mode == 'manual';
+
+				// The section as read, and as it is in nodes.json now (a
+				// reload may have written it while xray took the choice).
+				const apply = (x) => {
+					if (to_manual) {
+						x.mode = 'auto';
+						x.override = tag;
+						delete x.selected;
+					}
+					else if (manual)
+						x.selected = tag;
+					else if (tag != '')
+						x.override = tag;
+					else
+						delete x.override;
+				};
 
 				if (to_manual) {
 					c.set('mayhem', ut, 'select', 'auto');
 					c.set('mayhem', ut, 'override', key);
-					s.mode = 'auto';
-					s.override = tag;
-					delete s.selected;
 				}
-				else if (s.mode == 'manual') {
+				else if (manual)
 					c.set('mayhem', ut, 'selected', key);
-					s.selected = tag;
-				}
-				else if (tag != '') {
+				else if (tag != '')
 					c.set('mayhem', ut, 'override', key);
-					s.override = tag;
-				}
-				else {
+				else
 					c.delete('mayhem', ut, 'override');
-					delete s.override;
-				}
 
 				c.commit('mayhem');
-				write_json(`${RUN}/nodes.json`, state);
+				apply(s);
+				runstate.update(RUN, (st) => {
+					const x = st.sections?.[sn];
+
+					if (!x || (tag != '' && index(map(x.nodes ?? [], (n) => n.tag), tag) < 0))
+						return false;
+
+					apply(x);
+				});
 
 				// The choice for the next start of xray as well.
-				for (let f in [ 'overrides', 'running.overrides' ]) {
-					const lines = filter(split(fs.readfile(`${RUN}/${f}`) ?? '', '\n'),
-						(l) => l != '' && split(l, ' ')[0] != s.balancer);
-
-					if (tag != '')
-						push(lines, `${s.balancer} ${tag}`);
-
-					fs.writefile(`${RUN}/${f}.tmp`, length(lines) ? join('\n', lines) + '\n' : '');
-					fs.rename(`${RUN}/${f}.tmp`, `${RUN}/${f}`);
-				}
+				runstate.set_overrides(RUN, { [s.balancer]: tag });
 
 				health_now(sn);
 

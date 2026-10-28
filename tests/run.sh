@@ -114,6 +114,13 @@ else
 	ok "router traffic through xray"
 fi
 
+# nodes.json and overrides changed by several processes at once.
+if out="$(uc "$ROOT/tests/runstate.uc" "$UCODE" "$FILES/usr/share/ucode/*.uc" 2>&1)"; then
+	ok "nodes.json: writers one at a time, no change lost"
+else
+	bad "nodes.json writers: $out"
+fi
+
 # TCP ping on the dashboard: one timeout per silent host, a budget per call.
 if out="$(uc "$ROOT/tests/ping.uc" 2>&1)"; then
 	ok "TCP ping: shared checks, a silent host waited for once"
