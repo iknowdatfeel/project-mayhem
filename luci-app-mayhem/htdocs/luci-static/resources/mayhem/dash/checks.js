@@ -80,8 +80,8 @@ return baseclass.extend({
 			return Promise.resolve();
 		}
 
-		const conn = this.conn = { section: sec.name, busy: true };
 		const method = this.method;
+		const conn = this.conn = { section: sec.name, busy: true, method: method };
 
 		this.view.redraw();
 
