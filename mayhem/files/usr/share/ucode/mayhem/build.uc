@@ -1615,6 +1615,9 @@ export function build(model) {
 		const RL = collect_rules(sec, model, warn, { pending: geo_pending, files: geo_files, lists_missing: lists_missing });
 		const domains = RL.domains, ips4 = RL.ip4, ips6 = RL.ip6;
 		let rule_domains = domains;
+		// What the kernel tunnel for the rest of the traffic must keep out
+		// of it (routed).
+		let kernel_rl = RL;
 
 		// "Who": the whole network, or some devices (proxy and tunnel
 		// sections). scope goes into the section's xray rules; null when
@@ -1893,6 +1896,10 @@ export function build(model) {
 				rule_domains = bd.keep;
 				state.sections[name].dnsmasq = bd.count;
 				push(xray_dns, { name: name, RL: { ...RL, domains: bd.keep, sites: bd.sites }, type: info.type });
+				// dnsmasq answers these names itself and never gets an
+				// address for them: in nftset= lines they filled no set, and
+				// spelling out an ad category for them took most of a reload.
+				kernel_rl = { ...RL, domains: bd.keep, sites: bd.sites };
 			}
 			else
 				push(xray_dns, { name: name, RL: RL, type: info.type });
@@ -2017,7 +2024,7 @@ export function build(model) {
 		if (length(ips) && scope)
 			push(list, { ip: ips, ...scope, ...target });
 
-		push(routed, { type: info.type, name: name, RL: RL });
+		push(routed, { type: info.type, name: name, RL: kernel_rl });
 		info.ok = true;
 	}
 
