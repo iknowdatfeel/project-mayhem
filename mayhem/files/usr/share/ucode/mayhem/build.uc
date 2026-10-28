@@ -2460,6 +2460,13 @@ export function build(model) {
 		push(rules, intercepted(r));
 	};
 
+	// A fake address xray does not know (given out before a restart, or
+	// pushed out of the pool) leads nowhere: refused at once, so the app asks
+	// the DNS again. Only by lists, where IP rules never make xray resolve a
+	// domain (IPOnDemand would, for every connection, at this first rule).
+	if (fake && mode == 'lists')
+		push(rules, intercepted({ ip: [ C.FAKEDNS_POOL ], outboundTag: 'block' }));
+
 	// Without QUIC browsers fall back to TCP, which proxies carry better.
 	if (is_true(S.block_quic))
 		push(rules, intercepted({ network: 'udp', port: '443', outboundTag: 'block' }));
@@ -2496,9 +2503,12 @@ export function build(model) {
 	// listed domains get fake addresses, and their domain rules match first.
 	const ip_strategy = (fake && mode == 'global' && length(filter(rules, (r) => r.ip))) ? 'IPOnDemand' : 'AsIs';
 
-	// The router's traffic through xray: xray's own sockets get a mark of
-	// their own, so the chain output lets them out instead of back to xray.
-	if (is_true(S.router_traffic ?? '0'))
+	// The router's traffic through xray, and the router's connections to
+	// fake addresses: xray's own sockets get a mark of their own, so the
+	// chain output lets them out instead of back to xray. Without it a fake
+	// address xray does not know, dialled direct, came back to xray, which
+	// dialled it again, without end.
+	if (is_true(S.router_traffic ?? '0') || fake)
 		for (let ob in outbounds)
 			if (ob.protocol != 'blackhole' && ob.protocol != 'loopback') {
 				ob.streamSettings ??= {};

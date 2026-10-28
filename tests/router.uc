@@ -8,7 +8,7 @@
 
 import { writefile } from 'fs';
 import { build } from 'mayhem.build';
-import { XRAY_OUT_MARK } from 'mayhem.const';
+import { XRAY_OUT_MARK, FAKEDNS_POOL } from 'mayhem.const';
 
 const SS = 'ss://2022-blake3-aes-128-gcm:AAECAwQFBgcICQoLDA0ODw%3D%3D@nl.example:8443#NL';
 
@@ -74,5 +74,15 @@ expect('lists: only what the rules send to a proxy', index(out, 'ip daddr @px4 m
 r = build(model('global', false));
 expect('off: no xray marks', !length(marked(r)), null);
 expect('off: no router rules', index(output(r.nft), 'ct direction reply') < 0, output(r.nft));
+
+// By lists, fake addresses: xray dialling one it does not know must not come
+// back to xray through the chain output, and is refused before that.
+r = build(model('lists', false));
+expect('lists, off: every xray outbound that dials is marked', length(marked(r)) == length(dialing(r)) && length(marked(r)) > 0,
+	sprintf('%J', map(r.xray.outbounds, (o) => [ o.tag, o.streamSettings?.sockopt?.mark ])));
+expect('lists, off: xray sockets leave the chain output', index(output(r.nft), sprintf('meta mark & 0x%x == 0x%x return', XRAY_OUT_MARK, XRAY_OUT_MARK)) >= 0, output(r.nft));
+expect('lists: an unknown fake address is refused',
+	length(filter(r.xray.routing.rules, (x) => x.outboundTag == 'block' && x.ip?.[0] == FAKEDNS_POOL && x.inboundTag?.[0] == 'tproxy-in')) == 1,
+	sprintf('%J', r.xray.routing.rules));
 
 exit(fails ? 1 : 0);
