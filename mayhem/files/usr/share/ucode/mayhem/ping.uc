@@ -13,6 +13,11 @@
 // NAT or a cold route, which is not the server's delay. At most WAVE
 // handshakes at once, never two with one address at once: subscriptions
 // often have many servers on one host, whose firewall drops a burst.
+// Servers on one address and port share one result. A host that let a
+// handshake time out is not waited for again: its other ports get
+// "timeout" at once (one by one they took 4 s each, and a call for twenty
+// servers on a dead host ran past what LuCI waits for an answer). Nothing
+// is started after `budget` ms; what is left gets "timeout".
 //
 // null when the router has no socket module: the caller uses curl then.
 
@@ -32,8 +37,9 @@ function is_ip4(h) {
 }
 
 // targets: [ { key, host, port } ]; timeout: ms for one handshake; v6: IPv6
-// addresses may be used. Returns { key: { ms } | { error } }.
-export function tcp_ping(targets, timeout, v6) {
+// addresses may be used; budget: ms for the whole call (15 s by default).
+// Returns { key: { ms } | { error } }.
+export function tcp_ping(targets, timeout, v6, budget) {
 	let socket;
 
 	try {
@@ -67,6 +73,8 @@ export function tcp_ping(targets, timeout, v6) {
 	}
 
 	const queue = [];
+	// ip:port -> the keys sharing its result
+	const same = {};
 
 	for (let t in targets) {
 		const a = addr[t.host];
@@ -75,12 +83,28 @@ export function tcp_ping(targets, timeout, v6) {
 			res[t.key] = { error: 'no address' };
 		else if (!(t.port > 0 && t.port < 65536))
 			res[t.key] = { error: 'no port' };
-		else
-			push(queue, { key: t.key, ip: a.address, family: a.family, port: +t.port, tries: 0, best: null, err: null });
+		else {
+			const k = `${a.address} ${+t.port}`;
+
+			if (same[k])
+				push(same[k], t.key);
+			else {
+				same[k] = [ t.key ];
+				push(queue, { key: k, ip: a.address, family: a.family, port: +t.port, tries: 0, best: null, err: null });
+			}
+		}
 	}
 
 	const open = [];
 	const busy = {};
+	// hosts that let a handshake time out
+	const silent = {};
+	const until = ms_now() + (budget ?? 15000);
+
+	const put = (c, r) => {
+		for (let key in same[c.key])
+			res[key] = r;
+	};
 
 	const finish = (c) => {
 		if (c.sock)
@@ -89,16 +113,26 @@ export function tcp_ping(targets, timeout, v6) {
 		c.sock = null;
 		delete busy[c.ip];
 
+		if (c.err == 'timeout' && c.best == null)
+			silent[c.ip] = true;
+
 		if (++c.tries < TRIES && c.err == null)
 			push(queue, c);
 		else
-			res[c.key] = c.best != null ? { ms: int(c.best) || 1 } : { error: c.err ?? 'no connection' };
+			put(c, c.best != null ? { ms: int(c.best) || 1 } : { error: c.err ?? 'no connection' });
 	};
 
 	while (length(queue) || length(open)) {
 		// Start what fits: the first waiting target whose address is free.
 		for (let i = 0; i < length(queue) && length(open) < WAVE; ) {
 			const c = queue[i];
+
+			// A silent host, or no time left: not waited for.
+			if ((silent[c.ip] && c.best == null) || ms_now() >= until) {
+				splice(queue, i, 1);
+				put(c, c.best != null ? { ms: int(c.best) || 1 } : { error: 'timeout' });
+				continue;
+			}
 
 			if (busy[c.ip]) {
 				i++;
@@ -111,7 +145,7 @@ export function tcp_ping(targets, timeout, v6) {
 
 			if (!s) {
 				c.err = 'no connection';
-				res[c.key] = { error: c.err };
+				put(c, { error: c.err });
 				continue;
 			}
 
@@ -129,8 +163,16 @@ export function tcp_ping(targets, timeout, v6) {
 			push(open, c);
 		}
 
-		if (!length(open))
+		if (!length(open)) {
+			// Everything left waits for a busy address: nothing is, so this
+			// cannot happen; but never spin.
+			for (let c in queue)
+				put(c, { error: 'no connection' });
+
+			splice(queue, 0);
+
 			continue;
+		}
 
 		const now = ms_now();
 		let wait = timeout;

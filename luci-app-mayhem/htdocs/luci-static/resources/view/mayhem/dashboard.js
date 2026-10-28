@@ -622,6 +622,9 @@ return view.extend({
 		if (p) {
 			const label = p.method === 'url' ? '' : p.method.toUpperCase() + ' ';
 
+			if (p.pending)
+				return E('span', { 'class': 'mh-muted', 'title': _('Checking…') }, label + '…');
+
 			if (typeof p.value === 'string')
 				return E('span', { 'class': 'mh-fail', 'title': p.value }, label + _('No answer'));
 
