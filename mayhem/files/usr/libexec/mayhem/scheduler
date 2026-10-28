@@ -1,7 +1,8 @@
 #!/bin/sh
 # Mayhem: background jobs. Every minute downloads what is due: subscriptions,
 # geo data (missing categories at once, the rest nightly) and rule lists;
-# reloads the service when something changed. A reload only restarts xray
+# reloads the service when something changed (in the background, see
+# downloads()). A reload only restarts xray
 # when its generated config or the geo files it uses really changed.
 # Then checks the tunnels, runs the watchdog (xray memory, dnsmasq), gives
 # xray's freed memory back to the system and, when
@@ -11,27 +12,42 @@
 
 . "${MAYHEM_LIB_DIR:-/usr/share/mayhem}/lib.sh"
 
+# Downloads (subscriptions, geo data, rule lists) and the reload after them.
+# They take minutes on a slow link or a big geo file: in the background, one
+# run at a time, so the checks below keep their 20 s (a dead server waited
+# for the downloads before). No reload once the scheduler is gone: the
+# service was stopped meanwhile.
+downloads() {
+	local reload=0
+
+	ucode "$MAYHEM_SUB" update --no-wait >/dev/null 2>&1
+	if [ "$?" = 3 ]; then
+		mayhem_log "subscriptions changed, applying the new servers"
+		reload=1
+	fi
+
+	ucode "$MAYHEM_UPDATE" due >/dev/null 2>&1
+	if [ "$?" = 3 ]; then
+		mayhem_log "geo data or rule lists changed, applying them"
+		reload=1
+	fi
+
+	[ "$reload" = 1 ] && kill -0 "$1" 2>/dev/null && /etc/init.d/mayhem reload
+}
+
+dl_pid=""
+trap '[ -n "$dl_pid" ] && kill "$dl_pid" 2>/dev/null; exit 0' TERM INT
+
 sleep 10
 
 tick=0
 
 while :; do
 	if [ $((tick % 3)) = 0 ]; then
-		reload=0
-
-		ucode "$MAYHEM_SUB" update --no-wait >/dev/null 2>&1
-		if [ "$?" = 3 ]; then
-			mayhem_log "subscriptions changed, applying the new servers"
-			reload=1
+		if [ -z "$dl_pid" ] || ! kill -0 "$dl_pid" 2>/dev/null; then
+			downloads "$$" &
+			dl_pid=$!
 		fi
-
-		ucode "$MAYHEM_UPDATE" due >/dev/null 2>&1
-		if [ "$?" = 3 ]; then
-			mayhem_log "geo data or rule lists changed, applying them"
-			reload=1
-		fi
-
-		[ "$reload" = 1 ] && /etc/init.d/mayhem reload
 
 		mayhem_tunnels_check
 		mayhem_watchdog
