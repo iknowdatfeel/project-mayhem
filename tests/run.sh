@@ -677,7 +677,7 @@ fi
 if command -v shellcheck >/dev/null 2>&1; then
 	if out="$(shellcheck -s sh -f gcc -e SC1091,SC2034,SC3043,SC2086,SC2046,SC2317,SC2329 \
 		"$FILES/usr/bin/mayhem" "$FILES/usr/libexec/mayhem/xray-run" "$FILES/usr/libexec/mayhem/scheduler" \
-		"$FILES/etc/uci-defaults/90-mayhem" "$ROOT/tests/netns.sh" "$ROOT/tests/build-ucode.sh" "$ROOT/tests/health.sh" "$ROOT/tests/serverlist.sh" "$ROOT/tests/conns.sh" "$ROOT/tests/bbr.sh" \
+		"$FILES/etc/uci-defaults/90-mayhem" "$ROOT/tests/netns.sh" "$ROOT/tests/build-ucode.sh" "$ROOT/tests/health.sh" "$ROOT/tests/tunsync.sh" "$ROOT/tests/serverlist.sh" "$ROOT/tests/conns.sh" "$ROOT/tests/bbr.sh" \
 		"$FILES/usr/share/mayhem/lib.sh" "$FILES/usr/share/mayhem/const.sh" "$ROOT/install.sh" 2>&1)"; then
 		ok "shellcheck"
 	else
@@ -1050,6 +1050,13 @@ if out="$(UCODE="$UCODE" sh "$ROOT/tests/health.sh" 2>&1)"; then
 	ok "health: sections and remote DNS go direct and come back, kill switch"
 else
 	bad "health: $(printf '%s' "$out" | grep -v '^ok')"
+fi
+
+# Reload with tunnels: those that stay keep their rules and routes.
+if out="$(sh "$ROOT/tests/tunsync.sh" 2>&1)"; then
+	ok "reload: tunnels that stay keep their rules and routes"
+else
+	bad "tunnel sync: $(printf '%s' "$out" | grep -v '^ok')"
 fi
 
 # What dnsmasq asks while the remote DNS is down: names with fake addresses

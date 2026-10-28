@@ -63,8 +63,7 @@ mayhem_net_refresh() {
 	fi
 
 	if ! cmp -s "$MAYHEM_RUN_DIR/tunnels" "$MAYHEM_RUN_DIR/running.tunnels"; then
-		mayhem_tunnels_down
-		mayhem_tunnels_up
+		mayhem_tunnels_sync "$MAYHEM_RUN_DIR/running.tunnels" "$MAYHEM_RUN_DIR/tunnels"
 		cp "$MAYHEM_RUN_DIR/tunnels" "$MAYHEM_RUN_DIR/running.tunnels" 2>/dev/null
 	fi
 
@@ -121,6 +120,58 @@ mayhem_tunnels_up() {
 	done < "$MAYHEM_RUN_DIR/tunnels"
 
 	rm -f "$MAYHEM_RUN_DIR"/tunnel.*
+	mayhem_tunnels_check force
+	return 0
+}
+
+# Is the rule of a tunnel table in place? $1 4|6, $2 mark, $3 table.
+mayhem_tun_rule_has() {
+	ip -"$1" rule show priority "$MAYHEM_TUN_RULE_PRIO" 2>/dev/null | grep -q "fwmark $2/$MAYHEM_TUN_MASK lookup $3\( \|\$\)"
+}
+
+# Reload: from the tunnels of $1 (in use) to those of $2. A tunnel that
+# stays keeps its rule, its route and its state: taking all of them down
+# and up again sent the traffic of every tunnel direct for as long as the
+# checks took (seconds per idle tunnel). Only new tunnels are checked here.
+mayhem_tunnels_sync() {
+	local old="$1" new="$2" name dev mark table v6 bal flushed="" line
+
+	[ -s "$new" ] || { mayhem_tunnels_down; return 0; }
+
+	# New lines: their rules first, then their state.
+	while read -r name dev mark table v6 bal; do
+		line="$name $dev $mark $table $v6${bal:+ $bal}"
+		grep -qxF "$line" "$old" 2>/dev/null && continue
+		rm -f "$MAYHEM_RUN_DIR/tunnel.$name" "$MAYHEM_RUN_DIR/tunnel.$name.sel"
+		[ "$mark" = - ] && continue
+		mayhem_tun_rule_has 4 "$mark" "$table" ||
+			ip rule add fwmark "$mark/$MAYHEM_TUN_MASK" table "$table" priority "$MAYHEM_TUN_RULE_PRIO"
+		if [ "$v6" = 1 ]; then
+			mayhem_tun_rule_has 6 "$mark" "$table" ||
+				ip -6 rule add fwmark "$mark/$MAYHEM_TUN_MASK" table "$table" priority "$MAYHEM_TUN_RULE_PRIO"
+		fi
+	done < "$new"
+
+	# Lines that are gone: their rules, and their tables unless a new line
+	# uses the same one.
+	[ -s "$old" ] && while read -r name dev mark table v6 bal; do
+		line="$name $dev $mark $table $v6${bal:+ $bal}"
+		grep -qxF "$line" "$new" && continue
+		awk -v n="$name" '$1 == n { f = 1 } END { exit !f }' "$new" || rm -f "$MAYHEM_RUN_DIR/tunnel.$name" "$MAYHEM_RUN_DIR/tunnel.$name.sel"
+		[ "$mark" = - ] && continue
+		if ! awk -v m="$mark" -v t="$table" '$3 == m && $4 == t { f = 1 } END { exit !f }' "$new"; then
+			ip rule del fwmark "$mark/$MAYHEM_TUN_MASK" table "$table" priority "$MAYHEM_TUN_RULE_PRIO" 2>/dev/null
+			ip -6 rule del fwmark "$mark/$MAYHEM_TUN_MASK" table "$table" priority "$MAYHEM_TUN_RULE_PRIO" 2>/dev/null
+		fi
+		case " $flushed " in *" $table "*) continue ;; esac
+		if ! awk -v t="$table" '$4 == t { f = 1 } END { exit !f }' "$new"; then
+			ip route flush table "$table" 2>/dev/null
+			ip -6 route flush table "$table" 2>/dev/null
+			flushed="$flushed $table"
+		fi
+	done < "$old"
+
+	# The state of new tunnels (and routes of the tables they took over).
 	mayhem_tunnels_check force
 	return 0
 }
