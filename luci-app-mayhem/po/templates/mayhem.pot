@@ -1854,6 +1854,14 @@ msgid "The router did not return a backup."
 msgstr ""
 
 #: htdocs/luci-static/resources/mayhem/page/sections.js
+msgid "The router does not know \"%s\" in regular expressions (no (?…) groups, lazy quantifiers or \\b); case is ignored anyway"
+msgstr ""
+
+#: htdocs/luci-static/resources/mayhem/page/sections.js
+msgid "The router does not know \"%s\" in regular expressions: write %s"
+msgstr ""
+
+#: htdocs/luci-static/resources/mayhem/page/sections.js
 msgid "The router's own TCP connections (package updates, downloads, scripts) follow the same rules as the network's. Its UDP (time, DNS, WireGuard and AmneziaWG tunnels) goes direct as before."
 msgstr ""
 

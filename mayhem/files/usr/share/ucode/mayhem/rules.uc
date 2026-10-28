@@ -96,6 +96,143 @@ export function geo_ref(kind, val, orig) {
 	return { kind: kind, source: source, cat: cat, attr: attr, neg: neg };
 };
 
+// --- names in other scripts (IDN) -----------------------------------------------
+// пример.рф is xn--e1afmkfd.xn--p1ai on the wire (SNI, DNS): xray and dnsmasq
+// only know the second form. Punycode of RFC 3492; capital letters of the
+// Cyrillic and Latin-1 alphabets are made small first (lc() only knows
+// ASCII).
+
+function code_points(s) {
+	const out = [];
+
+	for (let i = 0; i < length(s); ) {
+		const c = ord(s, i);
+		let n = 0, cp = c;
+
+		if (c >= 0xf0) { n = 3; cp = c & 0x07; }
+		else if (c >= 0xe0) { n = 2; cp = c & 0x0f; }
+		else if (c >= 0xc0) { n = 1; cp = c & 0x1f; }
+		else if (c >= 0x80) return null;
+
+		for (let j = 1; j <= n; j++) {
+			const x = ord(s, i + j);
+
+			if (x == null || (x & 0xc0) != 0x80)
+				return null;
+
+			cp = (cp << 6) | (x & 0x3f);
+		}
+
+		if (cp >= 0x410 && cp <= 0x42f) cp += 0x20;
+		else if (cp >= 0x400 && cp <= 0x40f) cp += 0x50;
+		else if (cp >= 0xc0 && cp <= 0xde && cp != 0xd7) cp += 0x20;
+
+		push(out, cp);
+		i += n + 1;
+	}
+
+	return out;
+}
+
+function puny_adapt(delta, points, first) {
+	delta = first ? int(delta / 700) : int(delta / 2);
+	delta += int(delta / points);
+
+	let k = 0;
+
+	for (; delta > 455; k += 36)
+		delta = int(delta / 35);
+
+	return k + int(36 * delta / (delta + 38));
+}
+
+function puny_digit(d) {
+	return chr(d < 26 ? 97 + d : 22 + d);
+}
+
+function punycode(cps) {
+	let out = '';
+
+	for (let c in cps)
+		if (c < 128)
+			out += chr(c);
+
+	const b = length(out);
+	let h = b, n = 128, delta = 0, bias = 72;
+
+	if (b)
+		out += '-';
+
+	while (h < length(cps)) {
+		let m = 0x10ffff;
+
+		for (let c in cps)
+			if (c >= n && c < m)
+				m = c;
+
+		delta += (m - n) * (h + 1);
+		n = m;
+
+		for (let c in cps) {
+			if (c < n)
+				delta++;
+
+			if (c == n) {
+				let q = delta;
+
+				for (let k = 36; ; k += 36) {
+					const t = k <= bias ? 1 : (k >= bias + 26 ? 26 : k - bias);
+
+					if (q < t)
+						break;
+
+					out += puny_digit(t + (q - t) % (36 - t));
+					q = int((q - t) / (36 - t));
+				}
+
+				out += puny_digit(q);
+				bias = puny_adapt(delta, h + 1, h == b);
+				delta = 0;
+				h++;
+			}
+		}
+
+		delta++;
+		n++;
+	}
+
+	return out;
+}
+
+// The ASCII form of a name, label by label; null when it is not UTF-8.
+export function idn_ascii(d) {
+	const out = [];
+
+	for (let l in split(d, '.')) {
+		const cps = code_points(l);
+
+		if (cps == null)
+			return null;
+
+		push(out, length(filter(cps, (c) => c >= 128)) ? `xn--${punycode(cps)}` : l);
+	}
+
+	return join('.', out);
+};
+
+// Lists are long and all but a few names are ASCII: only a name that is
+// not a domain as it is gets the conversion.
+function ascii_domain(d) {
+	if (domain_ok(d))
+		return d;
+
+	for (let i = 0; i < length(d); i++)
+		if (ord(d, i) >= 0x80)
+			return idn_ascii(d) ?? d;
+
+	return d;
+}
+
 // Returns { value } | { geo: { kind, source, cat, attr } } | { error }.
 // Bare entries mean "domain and its subdomains" (xray "domain:").
 export function norm_domain(s) {
@@ -121,7 +258,7 @@ export function norm_domain(s) {
 
 		case 'domain':
 		case 'full':
-			const d = replace(lc(val), /^(\*\.|\.)/, '');
+			const d = ascii_domain(replace(lc(val), /^(\*\.|\.)/, ''));
 
 			if (!domain_ok(d))
 				return { error: `invalid domain "${s}"` };
@@ -147,6 +284,8 @@ export function norm_domain(s) {
 		d = substr(d, 1);
 	else if (substr(d, 0, 2) == '*.')
 		d = substr(d, 2);
+
+	d = ascii_domain(d);
 
 	if (!domain_ok(d) || index(d, '*') >= 0)
 		return { error: `invalid domain "${s}"` };
