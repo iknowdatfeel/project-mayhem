@@ -1901,6 +1901,10 @@ msgstr ""
 msgid "This browser cannot unpack vpn:// keys, paste the .conf text instead"
 msgstr ""
 
+#: htdocs/luci-static/resources/mayhem/tunnels.js
+msgid "This config lets only %s through the tunnel (AllowedIPs): other addresses sent into it are dropped. For sites and all traffic the peer needs AllowedIPs = 0.0.0.0/0, ::/0."
+msgstr ""
+
 #: htdocs/luci-static/resources/mayhem/diag.js
 msgid "This file is not a Mayhem backup."
 msgstr ""

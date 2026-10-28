@@ -3149,7 +3149,7 @@ const methods = {
 			// A config made for a local obfuscator: the dialog asks for the
 			// obfuscation and its server next.
 			return { ok: true, interface: name, proto: proto, section: section, pool: req.args?.pool !== false, v6: cfg.v6,
-				loopback: loopback_host(cfg.peers[0]?.endpoint_host) };
+				loopback: loopback_host(cfg.peers[0]?.endpoint_host), allowed: cfg.allowed };
 		}
 	},
 

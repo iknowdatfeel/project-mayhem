@@ -139,6 +139,11 @@ return baseclass.extend({
 					: r.pool ? _('Interface %s is created and added to the server list: choose it on the dashboard.').format(r.interface)
 					: _('Interface %s is created.').format(r.interface)), 'info');
 
+				// AllowedIPs of a few subnets: everything else of the section
+				// is dropped by the tunnel itself.
+				if (r.allowed)
+					ui.addNotification(null, E('p', _('This config lets only %s through the tunnel (AllowedIPs): other addresses sent into it are dropped. For sites and all traffic the peer needs AllowedIPs = 0.0.0.0/0, ::/0.').format(r.allowed.join(', ') || '—')), 'warning');
+
 				// Made for a local obfuscator (Endpoint = 127.0.0.1): the
 				// obfuscation and its server are set at once.
 				if (r.loopback) {

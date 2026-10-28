@@ -42,6 +42,14 @@ const wg = uci_sections(parse_conf('[Interface]\nPrivateKey = k\nAddress = 10.0.
 check('plain WireGuard', [ wg.iface.proto, wg.iface.awg_jc, wg.peers[0].endpoint_host, wg.peers[0].endpoint_port, wg.v6 ],
 	[ 'wireguard', null, '2001:db8::1', '51820', false ]);
 
+check('the whole tunnel: no warning', [ awg.allowed, wg.allowed ], [ null, null ]);
+
+const office = uci_sections(parse_conf('[Interface]\nPrivateKey = k\nAddress = 10.0.0.2/32, fd00::2/128\n[Peer]\nPublicKey = p\nAllowedIPs = 10.0.0.0/24, 192.168.50.0/24\n'), 'wireguard');
+const no_v6 = uci_sections(parse_conf('[Interface]\nPrivateKey = k\nAddress = 10.0.0.2/32, fd00::2/128\n[Peer]\nPublicKey = p\nAllowedIPs = 0.0.0.0/0\n'), 'wireguard');
+
+check('a few subnets: named', office.allowed, [ '10.0.0.0/24', '192.168.50.0/24' ]);
+check('IPv6 address without ::/0: named', no_v6.allowed, [ '0.0.0.0/0' ]);
+
 let err = null;
 
 try {
