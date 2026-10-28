@@ -147,6 +147,27 @@ function observatory() {
 	return obs;
 }
 
+// The server a balancer takes, as xray says (api bi): the pinned one, or the
+// first it selects; null when it does not say.
+function xray_choice(bal) {
+	let part = null, ov = null, sel = null;
+
+	for (let l in split(command(`${XRAY} api bi --server=127.0.0.1:${API_PORT} ${q(bal)} 2>/dev/null`) ?? '', '\n')) {
+		const m = match(l, /^[ \t]+[0-9]+[ \t]+([^ \t]+)/);
+
+		if (index(l, 'Override') >= 0)
+			part = 'o';
+		else if (index(l, 'Selects') >= 0)
+			part = 's';
+		else if (m && part == 'o')
+			ov ??= m[1];
+		else if (m && part == 's')
+			sel ??= m[1];
+	}
+
+	return ov ?? sel;
+}
+
 // The server a section uses when nothing goes direct.
 function in_use(sn, s) {
 	const tags = map(s.nodes, (n) => n.tag);
@@ -162,6 +183,14 @@ function in_use(sn, s) {
 
 	if (s.override)
 		return s.override;
+
+	// What xray's balancer takes now. Guessed from the observatory, it was
+	// at times another server than xray's (delays close to each other), and
+	// a dead server in use went unchecked.
+	const x = xray_choice(s.balancer ?? `bal-${sn}`);
+
+	if (x != null && index(tags, x) >= 0)
+		return x;
 
 	let best = null;
 	const o = observatory();

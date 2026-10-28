@@ -50,7 +50,9 @@ esac
 if grep -qx "$user" "$STUB/dead" 2>/dev/null; then printf 000; else printf 204; fi
 EOF
 # shellcheck disable=SC2016
-printf '#!/bin/sh\necho "$*" >> "$STUB/xray.log"\n' > "$T/bin/xray"
+# xray: "api bi" (which server a balancer takes) answers from $STUB/bi, the
+# rest is logged.
+printf '#!/bin/sh\n[ "$1 $2" = "api bi" ] && { cat "$STUB/bi" 2>/dev/null; exit 0; }\necho "$*" >> "$STUB/xray.log"\n' > "$T/bin/xray"
 # shellcheck disable=SC2016
 printf '#!/bin/sh\nshift 4; echo "$*" >> "$STUB/syslog"\n' > "$T/bin/logger"
 printf '#!/bin/sh\nexit 1\n' > "$T/bin/pidof"
@@ -286,6 +288,18 @@ if [ ! -s "$T/xray.log" ]; then ok "automatic: the pin holds while xray still pi
 echo '{ "n-auto-1": { "alive": false, "delay": 0 }, "n-auto-2": { "alive": true, "delay": 100 }, "n-auto-3": { "alive": true, "delay": 300 } }' > "$T/obs.json"
 tick
 if grep -q -- '-b bal-auto -r' "$T/xray.log"; then ok "automatic: the pin goes once xray sees the server dead"; else bad "auto unpin: $(cat "$T/xray.log")"; fi
+: > "$T/dead"
+
+# xray uses another server than the observatory's fastest (delays close to
+# each other): the one xray says it takes is checked, and left when dead.
+nodes false
+rm -f "$T/run/health.json"
+echo '{ "n-auto-1": { "alive": true, "delay": 50 }, "n-auto-2": { "alive": true, "delay": 55 } }' > "$T/obs.json"
+printf '  - Selecting Override:\n  - Selects:\n    1   n-auto-2\n    2   n-auto-1\n' > "$T/bi"
+printf 'n-auto-2\n' > "$T/dead"
+tick
+if [ "$(bo bal-auto n-auto-1)" = 1 ] && ! down auto; then ok "the server xray says it uses is the one checked"; else bad "xray's choice: $(cat "$T/xray.log")"; fi
+rm -f "$T/bi"
 : > "$T/dead"
 
 # One run of the scheduler (MAYHEM_TICK): a server that answered is not asked
