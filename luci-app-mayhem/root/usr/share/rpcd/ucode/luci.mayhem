@@ -10,6 +10,7 @@ import { parse_link, outbound_host, outbound_port, refused_by_xray } from 'mayhe
 import { list_key, entries, dnsmasq_nftset } from 'mayhem.rules';
 import { parse_conf, is_amnezia, uci_sections, to_conf } from 'mayhem.awg';
 import * as C from 'mayhem.const';
+import { tcp_ping } from 'mayhem.ping';
 
 const XRAY = getenv('MAYHEM_XRAY_BIN') ?? '/usr/libexec/mayhem/xray';
 const RUN = C.RUN_DIR;
@@ -671,6 +672,12 @@ const WARM = getenv('MAYHEM_RPC_WARM') ?? '/usr/share/mayhem-luci/warm.uc';
 const WARM_LAST = 1800;
 const WARM_MAX = 64;
 
+// Servers may be reached over IPv6 (the TCP ping takes an IPv6 address of a
+// name only then).
+function ipv6_allowed() {
+	return (uci_cursor().get('mayhem', 'settings', 'ip_family') ?? 'prefer_ipv4') != 'ipv4_only';
+}
+
 // The server of a tunnel: the endpoint of its first peer.
 function tunnel_endpoint(iface) {
 	const c = uci_open();
@@ -685,6 +692,14 @@ function tunnel_endpoint(iface) {
 		c.foreach('network', `${proto}_${iface}`, (p) => {
 			ep ??= p.endpoint_host;
 		});
+
+	// An obfuscated tunnel sends to its obfuscator on 127.0.0.1, which would
+	// answer at once: the server is the one the obfuscator talks to.
+	if (ep == '127.0.0.1') {
+		const rec = obfs_record(uci_cursor(), iface);
+
+		ep = rec?.host;
+	}
 
 	return (ep && match(ep, /^[A-Za-z0-9.:_-]+$/)) ? ep : null;
 }
@@ -702,7 +717,7 @@ const ACTIONS = {
 	// starting turns routing on as well: there is no separate switch for it
 	start: 'uci set mayhem.settings.enabled=1 && uci commit mayhem && /etc/init.d/mayhem start',
 	stop: '/etc/init.d/mayhem stop',
-	// noted for the dashboard: the next xray says it was restarted by hand
+	// noted for the log: the next xray says it was restarted by hand
 	restart: `echo "$(date +%s) manual" > ${RUN}/restart.why; /etc/init.d/mayhem restart`,
 	reload: '/etc/init.d/mayhem reload',
 	enable: '/usr/bin/mayhem enable',
@@ -2132,15 +2147,6 @@ function dashboard_parts(text) {
 	return res;
 }
 
-function xray_started() {
-	const m = match(trim(fs.readfile(`${RUN}/xray.started`) ?? ''), /^([0-9]+) ?(.*)$/);
-
-	if (!m || m[2] == '' || time() - int(m[1]) > 600)
-		return null;
-
-	return { time: int(m[1]), why: m[2] };
-}
-
 function dashboard(pid, state, out) {
 		const m = pid ? metrics(out.metrics) : { stats: {}, observatory: {} };
 		const c = uci_cursor();
@@ -2247,10 +2253,7 @@ function dashboard(pid, state, out) {
 			xray: trim(fs.readfile(`${RUN}/xray.version`) ?? '') || null,
 			rss_kb: pid ? rss_kb(pid) : null,
 			rss_total_kb: pid ? rss_kb(pid, true) : null,
-			// The last start of xray in the last 10 minutes with its reason
-			// (a restart Mayhem caused, or how the previous one ended), and
-			// what xray said when it would not start.
-			restarted: pid ? xray_started() : null,
+			// what xray said when it would not start
 			xray_error: pid ? null : (trim(fs.readfile(`${RUN}/xray.error`) ?? '') || null),
 			dnsmasq: out.dnsmasq,
 			status: read_json(`${RUN}/status.json`),
@@ -2481,6 +2484,13 @@ const methods = {
 				if (!n.port)
 					return { error: 'no port' };
 
+				// The sockets of this process (mayhem.ping); curl where
+				// there is no socket module.
+				const own = tcp_ping([ { key: 't', host: addr, port: n.port } ], TCP_WAIT * 1000, ipv6_allowed());
+
+				if (own)
+					return own.t;
+
 				const host = index(addr, ':') >= 0 ? `[${addr}]` : addr;
 				const one = `curl -s -o /dev/null --connect-timeout 5 -m 6 -w '%{time_namelookup} %{time_connect}\n' ${q(`http://${host}:${n.port}/`)}`;
 
@@ -2516,7 +2526,9 @@ const methods = {
 						push(res, { code: int(m[1]), t: m[2] * 1, fresh: int(m[3]) > 0 });
 				}
 
-				const okc = (r) => r && r.code >= 200 && r.code < 400;
+				// Any HTTP answer came back through the server (a site may
+				// answer a VPN address with 403 or 429).
+				const okc = (r) => r && r.code >= 100;
 
 				if (!okc(res[0]))
 					return { error: res[0] ? `HTTP ${res[0].code}` : 'timeout' };
@@ -2574,6 +2586,23 @@ const methods = {
 					waves[w] ??= [];
 					push(waves[w], { tag: tag, addr: n.address, port: n.port });
 				}
+			}
+
+			// All of them in this process (mayhem.ping): no process per
+			// server, so the numbers do not grow with the wave.
+			const flat = [];
+
+			for (let wave in waves)
+				for (let t in wave)
+					push(flat, { key: t.tag, host: t.addr, port: t.port });
+
+			const own = length(flat) ? tcp_ping(flat, TCP_WAIT * 1000, ipv6_allowed()) : {};
+
+			if (own) {
+				for (let t in flat)
+					res[t.key] = own[t.key] ?? { error: 'no connection' };
+
+				return { results: res };
 			}
 
 			let cmd = '', i = 0;
@@ -2724,8 +2753,8 @@ const methods = {
 
 			const state = read_json(`${RUN}/nodes.json`);
 
-			if (!match(state?.probe_url ?? C.DEFAULT_PROBE_URL, /^http:\/\//))
-				return { error: 'not an http:// URL' };
+			if (!match(state?.probe_url ?? C.DEFAULT_PROBE_URL, /^https?:\/\/[A-Za-z0-9.-]+(:[0-9]+)?(\/|$)/))
+				return { error: 'not an http(s):// URL' };
 
 			fs.mkdir(RUN, 0700);
 			fs.writefile(`${RUN}/warm.alive`, `${time()}\n`);

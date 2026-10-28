@@ -8,6 +8,9 @@
 'require mayhem.sheet as sheet';
 'require mayhem.linkedit as linkedit';
 'require mayhem.tunnels as tunnels';
+'require mayhem.dash.checks as checks';
+'require mayhem.dash.chain as chain';
+'require mayhem.dash.conns as conns';
 
 // The dashboard, the only page of Mayhem: three small widgets and the servers
 // in boxes by where they come from (keys, every subscription with its traffic
@@ -19,26 +22,15 @@
 const callDashboard = rpc.declare({ object: 'luci.mayhem', method: 'dashboard', expect: { '': {} } });
 const callAction = rpc.declare({ object: 'luci.mayhem', method: 'action', params: [ 'name' ], expect: { '': {} } });
 const callSelect = rpc.declare({ object: 'luci.mayhem', method: 'select_node', params: [ 'section', 'tag' ], expect: { '': {} } });
-const callProbe = rpc.declare({ object: 'luci.mayhem', method: 'probe', params: [ 'tag', 'method' ], expect: { '': {} } });
-const callProbeIcmp = rpc.declare({ object: 'luci.mayhem', method: 'probe_icmp', params: [ 'tags' ], expect: { '': {} } });
-const callProbeTcp = rpc.declare({ object: 'luci.mayhem', method: 'probe_tcp', params: [ 'tags' ], expect: { '': {} } });
-const callWarm = rpc.declare({ object: 'luci.mayhem', method: 'warm', params: [ 'now' ], expect: { '': {} } });
 const callSubUpdate = rpc.declare({ object: 'luci.mayhem', method: 'sub_update', params: [ 'name' ], expect: { '': {} } });
 const callRefresh = rpc.declare({ object: 'luci.mayhem', method: 'refresh_servers', expect: { '': {} } });
-const callExitInfo = rpc.declare({ object: 'luci.mayhem', method: 'exit_info', params: [ 'section', 'lang' ], expect: { '': {} } });
-const callSetPing = rpc.declare({ object: 'luci.mayhem', method: 'set_ping_method', params: [ 'method' ], expect: { '': {} } });
 const callRename = rpc.declare({ object: 'luci.mayhem', method: 'rename_server', params: [ 'section', 'tag', 'link', 'name' ], expect: { '': {} } });
 const callSetSelect = rpc.declare({ object: 'luci.mayhem', method: 'set_select', params: [ 'section', 'mode', 'chain', 'rules' ], expect: { '': {} } });
 const callParseOne = rpc.declare({ object: 'luci.mayhem', method: 'parse_link', params: [ 'link' ], expect: { '': {} } });
 const callServerDelete = rpc.declare({ object: 'luci.mayhem', method: 'server_delete', params: [ 'section', 'tag' ], expect: { '': {} } });
 const callServerEdit = rpc.declare({ object: 'luci.mayhem', method: 'server_edit', params: [ 'section', 'old', 'link' ], expect: { '': {} } });
-const callConns = rpc.declare({ object: 'luci.mayhem', method: 'connections', params: [ 'stop', 'device' ], expect: { '': {} } });
 
-const PROBE_PARALLEL = 4;
-// ICMP: servers per call; the router pings all of them at once.
-const ICMP_CHUNK = 64;
 const DAY = 86400;
-const PROBES = [ [ 'url', _('URL test') ], [ 'tcp', _('TCP ping') ], [ 'icmp', _('ICMP ping') ] ];
 
 const CSS = `
 .mh-top { display:flex; align-items:center; justify-content:space-between; gap:10px; flex-wrap:wrap; }
@@ -172,48 +164,10 @@ function countryName(cc, fallback) {
 	}
 }
 
-// Languages the geo services know city names in.
-function geoLang() {
-	const l = pageLang().replace('_', '-');
-	const known = [ 'en', 'de', 'es', 'fr', 'ja', 'pt-BR', 'ru', 'zh-CN' ];
-
-	return known.indexOf(l) >= 0 ? l : (known.indexOf(l.split('-')[0]) >= 0 ? l.split('-')[0] : 'en');
-}
-
-// Why xray was restarted, in words: the reason codes of mayhem_restart_why
-// and xray-run (lib.sh).
-const CONFIG_PARTS = {
-	dns: _('DNS'), inbounds: _('incoming ports'), routing: _('routing'), outbounds: _('services'), log: _('log'),
-	policy: _('timeouts'), burstObservatory: _('server checks'), observatory: _('server checks'), fakedns: 'FakeDNS'
-};
-
-function restartWhy(why) {
-	const m = /^([a-z]+)(?::(.*))?$/.exec(why || '') || [];
-
-	switch (m[1]) {
-	case 'config': {
-		const parts = (m[2] || '').split(',').filter((p) => p).map((p) => CONFIG_PARTS[p] || p)
-			.filter((p, i, a) => a.indexOf(p) === i);
-
-		return parts.length ? _('the settings changed (%s)').format(parts.join(', ')) : _('the settings changed');
-	}
-	case 'servers': return _('the servers could not be changed without a restart');
-	case 'geo': return _('geo data updated');
-	case 'memory': return _('the watchdog: too much memory');
-	case 'hang': return _('the watchdog: xray did not answer');
-	case 'manual': return _('restarted by hand');
-	case 'exit': return _('xray quit (code %s)').format(m[2] || '?');
-	default: return why || '?';
-	}
-}
-
 return view.extend({
 	data: null,
 	speed: null,
-	probes: {},
 	busy: {},
-	method: 'url',
-	conn: null,		// ping and exit of the default section, checked on demand
 	gone: {},		// tag -> time: deleted servers, hidden until the reload drops them
 	pendingSel: {},		// section -> { mode, chain, time }: a choice the reload has not applied yet
 	showServices: false,	// the state of the services under the badge
@@ -222,12 +176,12 @@ return view.extend({
 	// servers have real ones from the first look.
 	load() {
 		return callDashboard().then((d) => {
-			const m = PROBES.some((p) => p[0] === d.ping_method) ? d.ping_method : 'url';
+			const m = checks.known(d.ping_method) ? d.ping_method : 'url';
 
 			if (m !== 'url' || !d.running)
 				return d;
 
-			return callWarm(false).then((w) => {
+			return checks.load().then((w) => {
 				d.warm = w;
 				return d;
 			}, () => d);
@@ -325,7 +279,7 @@ return view.extend({
 			const main = mh.mainServer(this.data).section;
 
 			if (main && section === main.name)
-				this.checkConnection();
+				checks.checkConnection();
 		});
 	},
 
@@ -401,7 +355,7 @@ return view.extend({
 
 			for (const t of tags.length ? tags : [ n.tag ]) {
 				this.gone[t] = Date.now();
-				delete this.probes[t];
+				delete checks.probes[t];
 			}
 
 			this.hideGone(this.data);
@@ -436,222 +390,6 @@ return view.extend({
 		]);
 	},
 
-	// Ping and external address of the default section: once when the page
-	// opens, after a server change and with the latency test. Never polled.
-	checkConnection() {
-		const d = this.data;
-		const main = mh.mainServer(d);
-		const sec = main.section;
-
-		if (!sec || !d.running) {
-			this.conn = null;
-			this.redraw();
-			return Promise.resolve();
-		}
-
-		const conn = this.conn = { section: sec.name, busy: true };
-		const method = this.method;
-
-		this.redraw();
-
-		// The same check is the server's latency in its box: one number for
-		// one server, not two from two checks.
-		const warm = (method === 'url' && main.node) ? this.warmResult(main.node.tag) : null;
-		const ping = warm
-			? Promise.resolve().then(() => {
-				conn.ms = warm.ms;
-				conn.pingError = warm.error;
-			})
-			: main.node
-			? callProbe(main.node.tag, method).then((r) => {
-				conn.ms = r.ms;
-				conn.pingError = r.error;
-				this.probes[main.node.tag] = { method: method, value: (r.ms != null) ? r.ms : (r.error || 'error') };
-			})
-			: Promise.resolve();
-		const exit = callExitInfo(sec.name, geoLang()).then((r) => { conn.exit = r; });
-
-		return Promise.all([ ping, exit ]).catch(() => {}).finally(() => {
-			conn.busy = false;
-
-			if (this.conn === conn)
-				this.redraw();
-		});
-	},
-
-	setMethod(m) {
-		this.method = m;
-		callSetPing(m);
-
-		if (m === 'url')
-			this.pollWarm(false);
-	},
-
-	// URL test over kept-alive connections: the router keeps a connection
-	// through every server open while the dashboard asks (every poll), and
-	// sends a request over it every few seconds. The numbers are there at
-	// once and stay current. now: every server is asked at once.
-	pollWarm(now) {
-		return callWarm(now ? true : false).then((r) => {
-			if (this.applyWarm(r))
-				this.redraw();
-
-			return this.warm;
-		}).catch(() => null);
-	},
-
-	applyWarm(r) {
-		this.warm = (r && r.ok) ? r : null;
-
-		if (!this.warm || this.method !== 'url')
-			return false;
-
-		for (const tag in r.results) {
-			const x = r.results[tag];
-
-			this.probes[tag] = { method: 'url', value: (x.ms != null) ? x.ms : (x.error || 'error'), at: x.at };
-		}
-
-		return true;
-	},
-
-	warmResult(tag) {
-		const r = this.warm && this.warm.results && this.warm.results[tag];
-
-		return r || null;
-	},
-
-	// "Test latency" with kept-alive connections: every server at once, then
-	// a few looks until each has a number newer than the press.
-	probeWarm(nodes) {
-		return this.pollWarm(true).then((w) => {
-			if (!w)
-				return nodes;
-
-			const since = w.now;
-			const covered = nodes.filter((n) => w.tags.indexOf(n.tag) >= 0);
-			const rest = nodes.filter((n) => w.tags.indexOf(n.tag) < 0);
-			let tries = 0;
-
-			const look = () => new Promise((r) => window.setTimeout(r, 700)).then(() => this.pollWarm(false)).then((w2) => {
-				const res = (w2 && w2.results) || {};
-
-				if (++tries < 15 && covered.some((n) => !(res[n.tag] && res[n.tag].at >= since)))
-					return look();
-
-				return rest;
-			});
-
-			return covered.length ? look() : rest;
-		});
-	},
-
-	// Checks every server of the section with the chosen method, a few at a
-	// time, but never two of one address at once: subscriptions often have
-	// many servers on one host, and a burst of connections to it makes its
-	// firewall drop some (a lost SYN costs a second or three of "ping").
-	probeSection(sec, cold) {
-		const method = this.method;
-		const queue = sec.nodes.slice();
-		const key = 'probe:' + sec.name;
-		const busyHost = {};
-
-		if (this.busy[key])
-			return Promise.resolve();
-
-		this.busy[key] = true;
-		this.redraw();
-
-		// The URL test goes over the kept-alive connections; servers they do
-		// not cover (too many, or the router cannot keep them) are tested one
-		// by one as before.
-		if (method === 'url' && this.warm && !cold) {
-			return this.probeWarm(queue.slice()).then((rest) => {
-				delete this.busy[key];
-
-				if (!rest.length) {
-					this.redraw();
-					return;
-				}
-
-				return this.probeSection(Object.assign({}, sec, { nodes: rest }), true);
-			});
-		}
-
-		// A ping costs the router next to nothing, a call a whole process:
-		// ICMP asks for many servers at once.
-		// TCP too, in waves on the router; tunnels are tested one by one, through
-		// their interface.
-		if (method === 'icmp' || (method === 'tcp' && !cold)) {
-			const batch = method === 'tcp' ? queue.filter((n) => !n.iface) : queue;
-			const rest = method === 'tcp' ? queue.filter((n) => n.iface) : [];
-			const call = method === 'tcp' ? callProbeTcp : callProbeIcmp;
-			const chunks = [];
-
-			for (let i = 0; i < batch.length; i += ICMP_CHUNK)
-				chunks.push(batch.slice(i, i + ICMP_CHUNK));
-
-			if (rest.length)
-				delete this.busy[key];
-
-			return Promise.all(chunks.map((c) => call(c.map((n) => n.tag)).then((r) => {
-				for (const n of c) {
-					const x = (r.results || {})[n.tag] || { error: r.error || 'error' };
-
-					this.probes[n.tag] = { method: method, value: (x.ms != null) ? x.ms : (x.error || 'error') };
-				}
-
-				this.redraw();
-			}).catch(() => {})).concat(rest.length ? [ this.probeSection(Object.assign({}, sec, { nodes: rest }), true) ] : [])).finally(() => {
-				delete this.busy[key];
-				this.redraw();
-			});
-		}
-
-		const next = () => {
-			const i = queue.findIndex((n) => !n.address || !busyHost[n.address]);
-
-			return i < 0 ? null : queue.splice(i, 1)[0];
-		};
-
-		const worker = () => {
-			const n = next();
-
-			if (!n)
-				return queue.length ? new Promise((r) => window.setTimeout(r, 150)).then(worker) : Promise.resolve();
-
-			if (n.address)
-				busyHost[n.address] = true;
-
-			return callProbe(n.tag, method).then((r) => {
-				this.probes[n.tag] = { method: method, value: (r.ms != null) ? r.ms : (r.error || 'error') };
-				this.redraw();
-			}).catch(() => {}).finally(() => {
-				if (n.address)
-					delete busyHost[n.address];
-			}).then(worker);
-		};
-
-		const workers = [];
-
-		for (let i = 0; i < PROBE_PARALLEL; i++)
-			workers.push(worker());
-
-		return Promise.all(workers).finally(() => {
-			delete this.busy[key];
-			this.redraw();
-		});
-	},
-
-	probeAll(sections) {
-		this.busy.probeAll = true;
-		this.redraw();
-
-		return Promise.all(sections.map((s) => this.probeSection(s)).concat([ this.checkConnection() ])).finally(() => {
-			delete this.busy.probeAll;
-			this.redraw();
-		});
-	},
 
 	// Downloads every subscription again and applies the servers, also those
 	// that did not get into xray for some reason.
@@ -780,7 +518,7 @@ return view.extend({
 	},
 
 	connectionRows(d, working) {
-		const c = this.conn;
+		const c = checks.conn;
 		const sp = this.speed && working ? this.speed : null;
 		const rows = [
 			this.serverRow(d)
@@ -788,10 +526,6 @@ return view.extend({
 
 		if (d.dns_down)
 			rows.push([ _('DNS'), _('Provider\'s: the remote DNS does not answer'), 'mh-warn' ]);
-
-		// xray started again in the last minutes: when and why.
-		if (d.restarted)
-			rows.push([ _('Xray restarted'), '%s: %s'.format(mh.ago(d.restarted.time, d.time), restartWhy(d.restarted.why)), 'mh-warn', null, true ]);
 
 		rows.push(
 			[ _('Incoming'), sp ? rate(sp.down) : '—' ],
@@ -883,7 +617,7 @@ return view.extend({
 	// several times the real one: it shows only when the chosen check has
 	// nothing for the server. While that check is still coming: "…".
 	latency(n) {
-		const p = this.probes[n.tag];
+		const p = checks.probes[n.tag];
 
 		if (p) {
 			const label = p.method === 'url' ? '' : p.method.toUpperCase() + ' ';
@@ -910,11 +644,11 @@ return view.extend({
 		if (!this.data || !this.data.running)
 			return false;
 
-		if (this.firstCheck)
+		if (checks.firstCheck)
 			return true;
 
 		// Kept-alive URL test: the server is in it, its first answer is coming.
-		return this.method === 'url' && !!this.warm && (this.warm.tags || []).indexOf(n.tag) >= 0;
+		return checks.method === 'url' && !!checks.warm && (checks.warm.tags || []).indexOf(n.tag) >= 0;
 	},
 
 	tile(s, n) {
@@ -929,7 +663,7 @@ return view.extend({
 		if (s.name === 'pool' && s.mode === 'fallback') {
 			pos = (s.items || []).findIndex((i) => i.tag === n.tag);
 
-			if (this.isSub(n.source)) {
+			if (chain.isSub(n.source)) {
 				const r = this.subRule(s, n.source);
 
 				if (r.mode === 'manual')
@@ -1054,7 +788,7 @@ return view.extend({
 			'href': '#', 'class': 'mh-badge', 'title': _('Change in the chain'),
 			'click': ui.createHandlerFn(this, (ev) => {
 				ev.preventDefault();
-				return this.chainDialog(pool);
+				return chain.dialog(pool);
 			})
 		}, [ E('span', { 'class': 'mh-chain-no' }, String(pos + 1)), ' ', how ]);
 	},
@@ -1232,7 +966,7 @@ return view.extend({
 				ev.target.blur();
 
 				if (v === 'fallback')
-					return this.chainDialog(s);
+					return chain.dialog(s);
 
 				// The list by hand: the server it uses now, pinned.
 				if (pool)
@@ -1250,13 +984,13 @@ return view.extend({
 		if (mode === 'fallback') {
 			const change = E('a', { 'href': '#', 'class': 'mh-small', 'click': ui.createHandlerFn(this, (ev) => {
 				ev.preventDefault();
-				return this.chainDialog(s);
+				return chain.dialog(s);
 			}) }, _('Change'));
 
 			// The list: numbers on the servers and the subscriptions' badges
 			// show the chain; the line only names it.
 			if (pool) {
-				const names = (pend ? pend.chain : this.listEntries(s)).map((e) => e.charAt(0) === '@' ? this.subTitle(e.slice(1)) : this.entryLabel(s, e));
+				const names = (pend ? pend.chain : chain.listEntries(s)).map((e) => e.charAt(0) === '@' ? this.subTitle(e.slice(1)) : chain.entryLabel(s, e));
 
 				parts.push(change, E('span', { 'class': 'mh-muted mh-small mh-chain-line' }, names.join(' → ')));
 			}
@@ -1273,201 +1007,6 @@ return view.extend({
 		return E('div', { 'class': 'mh-chain' }, parts);
 	},
 
-	// --- the server list's chain ---------------------------------------------------
-	// Its items as the router keeps them: a server by name ("<subscription>\t
-	// <name>" for one of a subscription) or "@<subscription>", the server the
-	// subscription's rule picks.
-
-	isSub(src) {
-		return !!src && src !== 'link' && src !== 'json' && src !== 'interface';
-	},
-
-	nodeEntry(n) {
-		return this.isSub(n.source) ? n.source + '\t' + n.name : n.name;
-	},
-
-	listEntries(s) {
-		const byTag = {};
-
-		(s.nodes || []).forEach((n) => byTag[n.tag] = n);
-
-		return (s.items || []).map((i) => i.sub ? '@' + i.sub : byTag[i.tag] ? this.nodeEntry(byTag[i.tag]) : null).filter((e) => e);
-	},
-
-	// A subscription's rule in words; rules: those being edited, by name.
-	ruleText(s, sub, rules) {
-		const r = (rules && rules[sub]) || this.ruleOf(s, sub);
-
-		if (r.mode === 'manual')
-			return _('chosen: %s').format(r.selected || '?');
-
-		if (r.mode === 'fallback')
-			return _('its chain: %s').format((r.chain || []).join(' → ') || '?');
-
-		return _('fastest');
-	},
-
-	// The rule the router has, with names instead of tags.
-	ruleOf(s, sub) {
-		const r = (s.subs || {})[sub] || { mode: 'auto' };
-		const name = (t) => ((s.nodes || []).find((n) => n.tag === t) || {}).name;
-
-		return { mode: r.mode, selected: r.selected ? name(r.selected) : null, chain: (r.chain || []).map(name).filter((x) => x) };
-	},
-
-	entryLabel(s, e, rules) {
-		if (e.charAt(0) === '@')
-			return '%s (%s)'.format(this.subTitle(e.slice(1)), this.ruleText(s, e.slice(1), rules));
-
-		const i = e.indexOf('\t');
-
-		return i > 0 ? '%s · %s'.format(e.slice(i + 1), this.subTitle(e.slice(0, i))) : e;
-	},
-
-	// An ordered list with up, down, remove and "add": the chain, and inside
-	// it the chain of a subscription.
-	orderedList(items, label, choices, placeholder, changed) {
-		const list = E('ul', { 'class': 'mh-chain-list' });
-		const add = E('select', { 'class': 'cbi-input-select mh-add', 'style': 'width:100%' });
-
-		const draw = () => {
-			list.replaceChildren(...items.map((it, i) => E('li', [
-				E('span', { 'class': 'mh-chain-no' }, String(i + 1)),
-				E('div', { 'class': 'mh-grow' }, label(it, i)),
-				E('button', { 'class': 'btn', 'title': _('Up'), 'disabled': i === 0 ? '' : null,
-					'click': () => { items.splice(i - 1, 0, items.splice(i, 1)[0]); draw(); changed(); } }, '↑'),
-				E('button', { 'class': 'btn', 'title': _('Down'), 'disabled': i === items.length - 1 ? '' : null,
-					'click': () => { items.splice(i + 1, 0, items.splice(i, 1)[0]); draw(); changed(); } }, '↓'),
-				E('button', { 'class': 'btn cbi-button-remove', 'title': _('Remove'),
-					'click': () => { items.splice(i, 1); draw(); changed(); } }, '✕')
-			])));
-
-			if (!items.length)
-				list.appendChild(E('li', { 'class': 'mh-muted' }, _('Add servers in the order they should be tried.')));
-
-			const groups = choices().filter((g) => g.options.some((o) => items.indexOf(o[0]) < 0));
-
-			add.replaceChildren(E('option', { 'value': '' }, placeholder),
-				...groups.map((g) => {
-					const opts = g.options.filter((o) => items.indexOf(o[0]) < 0).map((o) => E('option', { 'value': o[0] }, o[1]));
-
-					return g.label ? E('optgroup', { 'label': g.label }, opts) : opts;
-				}).flat());
-		};
-
-		add.addEventListener('change', () => {
-			if (add.value)
-				items.push(add.value);
-
-			draw();
-			changed();
-		});
-
-		draw();
-
-		return { el: E('div', [ list, add ]), draw: draw };
-	},
-
-	// The chain of the server list: servers of any kind and whole
-	// subscriptions, each subscription with its rule, which can be changed
-	// here as well (it is the same rule as in the subscription's box).
-	listChainDialog(s) {
-		const subsOf = {};
-
-		for (const n of s.nodes || [])
-			if (this.isSub(n.source))
-				(subsOf[n.source] = subsOf[n.source] || []).push(n);
-
-		const subNames = Object.keys(subsOf);
-		const rules = {};
-
-		subNames.forEach((sub) => rules[sub] = this.ruleOf(s, sub));
-
-		const entries = s.mode === 'fallback' ? this.listEntries(s) : [];
-
-		const ruleEditor = (sub) => {
-			const r = rules[sub];
-			const box = E('div', { 'class': 'mh-rule' });
-			const draw = () => {
-				const mode = E('select', { 'class': 'cbi-input-select', 'change': (ev) => {
-					r.mode = ev.target.value;
-
-					if (r.mode === 'manual' && !r.selected)
-						r.selected = subsOf[sub][0].name;
-
-					draw();
-					outer.draw();
-				} }, [ [ 'auto', _('Fastest server') ], [ 'fallback', _('Fallback chain') ], [ 'manual', _('Chosen by hand') ] ]
-					.map((m) => E('option', { 'value': m[0], 'selected': m[0] === r.mode ? '' : null }, m[1])));
-				const rows = [ mode ];
-
-				// Chosen by hand: every server of the subscription, one marked.
-				if (r.mode === 'manual')
-					rows.push(E('div', { 'class': 'mh-pick-list' }, subsOf[sub].map((n) => E('label', [
-						E('input', { 'type': 'radio', 'name': 'mh-pick-' + sub, 'value': n.name, 'checked': n.name === r.selected ? '' : null,
-							'change': () => { r.selected = n.name; outer.draw(); } }),
-						' ', n.name, ' ', this.latency(n)
-					]))));
-				else if (r.mode === 'fallback') {
-					r.chain = r.chain || [];
-					rows.push(this.orderedList(r.chain, (name) => E('span', name),
-						() => [ { options: subsOf[sub].map((n) => [ n.name, n.name ]) } ], _('Add a server…'), () => outer.draw()).el);
-				}
-
-				box.replaceChildren(...rows);
-			};
-
-			draw();
-
-			return box;
-		};
-
-		const outer = this.orderedList(entries, (e) => {
-			const sub = e.charAt(0) === '@' ? e.slice(1) : null;
-
-			return sub && rules[sub] ? [ E('b', this.subTitle(sub)), ' ', E('span', { 'class': 'mh-muted mh-small' }, _('whole subscription')), ruleEditor(sub) ]
-				: [ E('b', this.entryLabel(s, e)) ];
-		}, () => [
-			{ label: _('Subscriptions'), options: subNames.map((sub) => [ '@' + sub, _('%s: the whole subscription').format(this.subTitle(sub)) ]) },
-			{ label: _('Server list'), options: (s.nodes || []).filter((n) => !this.isSub(n.source)).map((n) => [ n.name, n.name ]) },
-			...subNames.map((sub) => ({ label: this.subTitle(sub), options: subsOf[sub].map((n) => [ sub + '\t' + n.name, n.name ]) }))
-		], _('Add a server or a subscription…'), () => {});
-
-		ui.showModal(_('Fallback chain'), [
-			E('p', _('The first item carries the traffic while it works; when it stops answering, the next one takes over, and an item higher in the chain takes over again as soon as it works. A subscription stands for the server its rule picks: the fastest of its servers, its own chain, or the one chosen by hand. Checks run every 20 seconds, nothing restarts.')),
-			outer.el,
-			E('div', { 'class': 'right', 'style': 'margin-top:1em' }, [
-				E('button', { 'class': 'btn', 'click': () => { ui.hideModal(); this.redraw(); } }, _('Cancel')), ' ',
-				E('button', { 'class': 'btn cbi-button-action', 'click': ui.createHandlerFn(this, () => {
-					if (!entries.length) {
-						ui.addNotification(null, E('p', _('The chain is empty')), 'warning');
-						return;
-					}
-
-					for (const e of entries) {
-						const r = e.charAt(0) === '@' ? rules[e.slice(1)] : null;
-
-						if (r && r.mode === 'fallback' && !(r.chain || []).length) {
-							ui.addNotification(null, E('p', _('The chain of %s is empty').format(this.subTitle(e.slice(1)))), 'warning');
-							return;
-						}
-					}
-
-					// Only the rules of the subscriptions in the chain are sent.
-					const send = {};
-
-					entries.filter((e) => e.charAt(0) === '@' && rules[e.slice(1)]).forEach((e) => {
-						const r = rules[e.slice(1)];
-
-						send[e.slice(1)] = { mode: r.mode, chain: r.mode === 'fallback' ? r.chain : [], selected: r.mode === 'manual' ? r.selected : '' };
-					});
-
-					ui.hideModal();
-					return this.saveSelect(s.name, 'fallback', entries, send);
-				}) }, _('Save'))
-			])
-		], 'mh-chain-modal');
-	},
 
 	// The choice shows at once; the router takes a few seconds to reload, and
 	// until its data has the new mode the dashboard keeps showing the choice
@@ -1505,67 +1044,6 @@ return view.extend({
 		}
 	},
 
-	// The chain: servers in the order they are tried, up and down, add, remove.
-	chainDialog(s) {
-		if (s.name === 'pool')
-			return this.listChainDialog(s);
-
-		const byTag = {};
-
-		(s.nodes || []).forEach((n) => byTag[n.tag] = n);
-
-		let chain = (s.mode === 'fallback' ? (s.chain || []) : []).filter((t) => byTag[t]).map((t) => byTag[t].name);
-		const list = E('ul', { 'class': 'mh-chain-list' });
-		const add = E('select', { 'class': 'cbi-input-select', 'style': 'width:100%' });
-
-		const draw = () => {
-			list.replaceChildren(...chain.map((name, i) => E('li', [
-				E('span', { 'class': 'mh-chain-no' }, String(i + 1)),
-				E('b', name),
-				E('button', { 'class': 'btn', 'title': _('Up'), 'disabled': i === 0 ? '' : null,
-					'click': () => { chain.splice(i - 1, 0, chain.splice(i, 1)[0]); draw(); } }, '↑'),
-				E('button', { 'class': 'btn', 'title': _('Down'), 'disabled': i === chain.length - 1 ? '' : null,
-					'click': () => { chain.splice(i + 1, 0, chain.splice(i, 1)[0]); draw(); } }, '↓'),
-				E('button', { 'class': 'btn cbi-button-remove', 'title': _('Remove'),
-					'click': () => { chain.splice(i, 1); draw(); } }, '✕')
-			])));
-
-			if (!chain.length)
-				list.appendChild(E('li', { 'class': 'mh-muted' }, _('Add servers in the order they should be tried.')));
-
-			const rest = (s.nodes || []).filter((n) => chain.indexOf(n.name) < 0);
-
-			add.replaceChildren(E('option', { 'value': '' }, _('Add a server…')),
-				...rest.map((n) => E('option', { 'value': n.name }, n.name)));
-		};
-
-		add.addEventListener('change', () => {
-			if (add.value)
-				chain.push(add.value);
-
-			draw();
-		});
-
-		draw();
-
-		ui.showModal(_('Fallback chain'), [
-			E('p', _('The first server carries the traffic while it works. When it stops answering, the next one takes over, and so on; a server higher in the chain takes over again as soon as it works. Checks run every 20 seconds, nothing restarts.')),
-			list,
-			add,
-			E('div', { 'class': 'right', 'style': 'margin-top:1em' }, [
-				E('button', { 'class': 'btn', 'click': () => { ui.hideModal(); this.redraw(); } }, _('Cancel')), ' ',
-				E('button', { 'class': 'btn cbi-button-action', 'click': ui.createHandlerFn(this, () => {
-					if (chain.length < 2) {
-						ui.addNotification(null, E('p', _('A chain needs two servers or more')), 'warning');
-						return;
-					}
-
-					ui.hideModal();
-					return this.saveSelect(s.name, 'fallback', chain);
-				}) }, _('Save'))
-			])
-		]);
-	},
 
 	// The box at the side: checks and updates of every section, then the
 	// service controls; all buttons of one width and height.
@@ -1581,13 +1059,13 @@ return view.extend({
 				'title': _('Check method'),
 				'change': (ev) => {
 					ev.target.blur();
-					this.setMethod(ev.target.value);
+					checks.setMethod(ev.target.value);
 				}
-			}, PROBES.map((p) => E('option', { 'value': p[0], 'selected': p[0] === this.method ? '' : null }, p[1]))));
+			}, checks.METHODS.map((p) => E('option', { 'value': p[0], 'selected': p[0] === checks.method ? '' : null }, p[1]))));
 
 			side.push(mh.button({
 				icon: 'zap', text: _('Test latency'), busy: this.busy.probeAll,
-				click: ui.createHandlerFn(this, 'probeAll', proxies)
+				click: ui.createHandlerFn(checks, 'probeAll', proxies)
 			}));
 		}
 
@@ -1597,7 +1075,7 @@ return view.extend({
 				click: ui.createHandlerFn(this, 'refreshServers')
 			}));
 
-		side.push(mh.button({ icon: 'activity', text: _('Active connections'), click: () => this.openConns() }));
+		side.push(mh.button({ icon: 'activity', text: _('Active connections'), click: () => conns.open() }));
 
 		// The pages that open over the dashboard.
 		side.push(E('div', { 'class': 'mh-side-gap' }));
@@ -1610,229 +1088,6 @@ return view.extend({
 		return E('div', { 'class': 'mh-box mh-side' }, side.concat(diag.controls()));
 	},
 
-	// --- active connections ----------------------------------------------------
-	// What each device connects to, over which protocol, and which way it
-	// goes: a server through xray, a tunnel in the kernel, or direct. From the
-	// kernel's connection table; servers and names from xray's log while the
-	// window is open.
-
-	openConns() {
-		this.conns = null;
-		this.connsOpen = true;
-		this.connPaused = false;
-		this.connDev = '';
-		this.connBase = null;
-
-		const body = E('div', { 'id': 'mh-conns' }, E('p', { 'class': 'mh-muted' }, [ mh.icon('loader', true), ' ', _('Loading…') ]));
-
-		// The device list keeps its place: it is filled again, not redrawn,
-		// so an open list does not close under the hand.
-		const devs = E('select', {
-			'id': 'mh-conns-dev', 'class': 'cbi-input-select',
-			'change': (ev) => {
-				this.connDev = ev.target.value;
-				this.connBase = null;
-				this.fetchConns();
-			}
-		}, E('option', { 'value': '' }, _('All devices')));
-
-		const pause = E('button', { 'id': 'mh-conns-pause', 'class': 'btn', 'click': () => this.pauseConns() }, _('Pause'));
-		const clear = E('button', { 'class': 'btn', 'click': () => this.clearConns(),
-			'title': _('Shows only connections opened from now on, and the traffic from now on') }, _('Clear'));
-
-		ui.showModal(_('Active connections'), [
-			E('p', { 'class': 'mh-muted mh-small' },
-				_('Every connection of the network that is open now, grouped by device, address and route. A site name is known when its address came in a DNS answer through Xray; otherwise the address is shown.')),
-			E('div', { 'class': 'mh-conns-bar' }, [ devs, pause, clear,
-				E('span', { 'id': 'mh-conns-count', 'class': 'mh-small' }),
-				E('span', { 'id': 'mh-conns-note', 'class': 'mh-muted mh-small' }) ]),
-			body,
-			E('div', { 'class': 'right' }, E('button', { 'class': 'btn', 'click': () => this.closeConns() }, _('Close')))
-		], 'mh-conns-modal');
-
-		this.fetchConns();
-	},
-
-	// One request now; the next one in 3 s unless paused or closed.
-	fetchConns() {
-		window.clearTimeout(this.connsTimer);
-
-		if (!this.connsOpen)
-			return;
-
-		const seq = this.connSeq = (this.connSeq || 0) + 1;
-
-		callConns(false, this.connDev).then((r) => {
-			// An answer to a request made before the filter changed.
-			if (seq !== this.connSeq)
-				return;
-
-			this.conns = r;
-			this.drawConns();
-		}).catch(() => {}).finally(() => {
-			if (seq === this.connSeq && this.connsOpen && !this.connPaused)
-				this.connsTimer = window.setTimeout(() => this.fetchConns(), 3000);
-		});
-	},
-
-	pauseConns() {
-		this.connPaused = !this.connPaused;
-
-		const btn = document.getElementById('mh-conns-pause');
-
-		if (btn)
-			btn.textContent = this.connPaused ? _('Resume') : _('Pause');
-
-		if (this.connPaused)
-			window.clearTimeout(this.connsTimer);
-		else
-			this.fetchConns();
-
-		this.drawConns();
-	},
-
-	// From now on: what is there now is set aside, and what comes after is
-	// counted from here (a connection that carries more shows up again with
-	// the traffic since).
-	clearConns() {
-		const base = {};
-
-		for (const c of (this.conns && this.conns.rows) || [])
-			base[this.connKey(c)] = c.bytes;
-
-		this.connBase = base;
-		this.connBaseTime = new Date();
-		this.drawConns();
-	},
-
-	connKey(c) {
-		const x = c.route || {};
-
-		return [ c.network, c.ip, c.host, c.port, x.kind, x.server || '' ].join('|');
-	},
-
-	closeConns() {
-		this.connsOpen = false;
-		this.connSeq = (this.connSeq || 0) + 1;
-		window.clearTimeout(this.connsTimer);
-		ui.hideModal();
-		callConns(true).catch(() => {});
-	},
-
-	// Where a connection goes, in a word: the server (or tunnel) by its name.
-	connRoute(r) {
-		const x = r.route || {};
-
-		switch (x.kind) {
-		case 'proxy':
-		case 'tunnel': return [ x.server || '?', 'mh-ok' ];
-		case 'xray': return [ 'Xray', 'mh-ok' ];
-		case 'inbound': return [ _('Inbound to port %d').format(x.port), 'mh-ok' ];
-		case 'block': return [ _('Blocked'), 'mh-fail' ];
-		case 'dns': return [ 'DNS', '' ];
-		case 'direct': return [ _('Direct'), 'mh-muted' ];
-		default: return [ x.tag || '?', '' ];
-		}
-	},
-
-	drawConns() {
-		const box = document.getElementById('mh-conns');
-		const r = this.conns;
-
-		if (!box || !r)
-			return;
-
-		if (r.error) {
-			box.replaceChildren(E('p', { 'class': 'mh-fail' }, r.error));
-			return;
-		}
-
-		this.fillConnDevices(r.devices || []);
-
-		const cnt = document.getElementById('mh-conns-count');
-
-		if (cnt && r.counts) {
-			const h = r.hidden || {};
-
-			cnt.textContent = 'TCP: %d · UDP: %d'.format(r.counts.tcp || 0, r.counts.udp || 0) +
-				(h.total ? ' · ' + _('hidden: %d').format(h.total) : '');
-			cnt.title = h.total ? _('Not in the table: the router\'s own %d, to the router %d, being closed %d, local and multicast %d, not understood %d')
-				.format(h.router || 0, h.to_router || 0, h.closing || 0, h.local || 0, h.other || 0) : '';
-		}
-
-		const note = document.getElementById('mh-conns-note');
-
-		if (note)
-			note.textContent = [
-				this.connPaused ? _('Paused') : '',
-				this.connBase ? _('Since %s').format(this.connBaseTime.toLocaleTimeString()) : ''
-			].filter((x) => x).join(' · ');
-
-		// After "Clear": new connections, and old ones only with the traffic
-		// they carried since.
-		const rows = (r.rows || []).map((c) => {
-			const was = this.connBase ? this.connBase[this.connKey(c)] : null;
-
-			if (was == null)
-				return c;
-
-			return c.bytes > was ? Object.assign({}, c, { bytes: c.bytes - was }) : null;
-		}).filter((c) => c);
-
-		if (!rows.length) {
-			box.replaceChildren(E('p', { 'class': 'mh-muted' }, _('No connections yet.')));
-			return;
-		}
-
-		const tr = (cells, cls) => E('tr', { 'class': 'tr' + (cls ? ' ' + cls : '') }, cells);
-		const td = (title, content) => E('td', { 'class': 'td', 'data-title': title }, content);
-
-		box.replaceChildren(E('table', { 'class': 'table mh-rtable mh-conns' }, [
-			tr([ _('Device'), _('Destination'), _('Protocol'), _('Connected via'), _('Open connections'), _('Traffic') ].map((h) => E('th', { 'class': 'th' }, h)), 'table-titles'),
-			...rows.map((c) => {
-				const rt = this.connRoute(c);
-				const dest = (c.domain || mh.ipText(c.host)) + (c.port != null ? ':' + c.port : '');
-				const tip = c.domain ? mh.ipText(c.host) : null;
-
-				return tr([
-					td(_('Device'), c.device === 'router' ? _('This router') : (c.device || mh.ipText(c.ip))),
-					td(_('Destination'), [ E('span', { 'title': tip }, dest),
-						c.fake ? E('span', { 'class': 'mh-muted mh-small' }, ' FakeDNS') : '' ]),
-					td(_('Protocol'), c.network.toUpperCase()),
-					td(_('Connected via'), E('span', { 'class': rt[1] }, rt[0])),
-					td(_('Open connections'), String(c.count)),
-					td(_('Traffic'), mh.bytes(c.bytes))
-				]);
-			})
-		]), r.total > rows.length ? E('p', { 'class': 'mh-muted mh-small' }, _('The %d busiest of %d.').format(rows.length, r.total)) : '');
-	},
-
-	// The devices with connections; the chosen one stays chosen even when it
-	// has none at the moment.
-	fillConnDevices(list) {
-		const sel = document.getElementById('mh-conns-dev');
-
-		if (!sel || document.activeElement === sel)
-			return;
-
-		const name = (d) => d.name === 'router' ? _('This router') : (d.name ? '%s (%s)'.format(d.name, mh.ipText(d.ip)) : mh.ipText(d.ip));
-		const items = list.slice();
-
-		if (this.connDev && !items.some((d) => d.ip === this.connDev))
-			items.push({ ip: this.connDev, name: null, count: 0 });
-
-		const key = items.map((d) => d.ip + ' ' + d.name).join(',');
-
-		if (sel.dataset.key === key)
-			return;
-
-		sel.dataset.key = key;
-		sel.replaceChildren(
-			E('option', { 'value': '' }, _('All devices')),
-			...items.map((d) => E('option', { 'value': d.ip, 'selected': d.ip === this.connDev ? '' : null }, name(d)))
-		);
-		sel.value = this.connDev;
-	},
 
 	renderTunnel(s, now) {
 		const t = s.tunnel || {};
@@ -1927,26 +1182,28 @@ return view.extend({
 	render(d) {
 		this.data = d;
 		this.hideGone(d);
+		checks.bind(this);
+		chain.bind(this);
 
-		if (PROBES.some((p) => p[0] === d.ping_method))
-			this.method = d.ping_method;
+		if (checks.known(d.ping_method))
+			checks.method = d.ping_method;
 
 		// The URL test: its numbers came with the page. Another ping method:
 		// the servers are checked with it once when the page opens, and show
 		// no number until then (see latency()).
-		this.firstCheck = !(this.method === 'url' && this.applyWarm(d.warm));
+		checks.firstCheck = !(checks.method === 'url' && checks.applyWarm(d.warm));
 
 		window.setTimeout(() => {
 			const proxies = (d.sections || []).filter((s) => s.type === 'proxy' && (s.nodes || []).length);
 			const done = () => {
-				this.firstCheck = false;
+				checks.firstCheck = false;
 				this.redraw();
 			};
 
-			if (this.method === 'url')
-				return (this.warm ? Promise.resolve() : this.pollWarm(false)).then(done, done).then(() => this.checkConnection());
+			if (checks.method === 'url')
+				return (checks.warm ? Promise.resolve() : checks.pollWarm(false)).then(done, done).then(() => checks.checkConnection());
 
-			return (proxies.length ? this.probeAll(proxies) : this.checkConnection()).then(done, done);
+			return (proxies.length ? checks.probeAll(proxies) : checks.checkConnection()).then(done, done);
 		}, 0);
 
 		// Behind an open window or dialog, in a hidden tab or while the last answer has
@@ -1961,7 +1218,7 @@ return view.extend({
 
 			polling = true;
 
-			return this.refresh().then(() => (this.method === 'url' && this.data && this.data.running) ? this.pollWarm(false) : null)
+			return this.refresh().then(() => (checks.method === 'url' && this.data && this.data.running) ? checks.pollWarm(false) : null)
 				.catch(() => {}).finally(() => { polling = false; });
 		}, 3);
 

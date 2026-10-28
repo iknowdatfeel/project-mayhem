@@ -16,26 +16,32 @@
 // A section or the DNS that went direct before the switch was turned on is
 // put back at once.
 //
-// When a section is "down":
-//   one server or manual choice - the server in use failed two checks in a row;
-//   automatic choice            - and xray's own checks know no working server;
-//                                 a server pinned by hand that stops answering
-//                                 is stood in for by one that works, until it
-//                                 answers again;
-//   fallback chain              - and none of the chain's servers works.
-// A server is checked through the helper proxy with its own tag as the user
-// (a GET of the check URL, like a URL test). While a section is down, up to
-// two of its servers are tried per run: those xray saw working first.
+// The server in use is checked every run (a failed check is asked again at
+// once). When it does not answer, the other servers are checked at once, in
+// parallel, those xray saw working first, and the fastest that answers takes
+// over without waiting for xray's own checks, which come minutes apart:
+//   automatic choice   - the server that answers is pinned in the balancer
+//                        until xray's checks no longer pick the dead one;
+//   pinned by hand     - the server that answers stands in for the pinned
+//                        one until that one answers again;
+//   fallback chain     - fallback.uc moves the chain on.
+// A section is "down" (direct) only when the server in use failed two runs
+// in a row and no other server answered either. A server is checked through
+// the helper proxy with its own tag as the user (mayhem.check). While a
+// section is down, up to TRIES of its servers are tried per run, at once:
+// those xray saw working first, then the others in turn.
 
 'use strict';
 
 import * as fs from 'fs';
 import { RUN_DIR, API_PORT, METRICS_PORT, HELPER_PORT, HELPER_PASS, DEFAULT_PROBE_URL } from 'mayhem.const';
+import * as check from 'mayhem.check';
 
 const XRAY = getenv('MAYHEM_XRAY_BIN') ?? '/usr/libexec/mayhem/xray';
 const LIB = getenv('MAYHEM_LIB_DIR') ?? '/usr/share/mayhem';
 const FAILS = 2;
-const TRIES = 2;
+// servers checked at once for a section whose server stopped answering
+const TRIES = 4;
 
 function q(s) {
 	return "'" + replace(`${s}`, /'/g, "'\\''") + "'";
@@ -118,10 +124,7 @@ const url = match(state.probe_url ?? '', /^https?:\/\//) ? state.probe_url : DEF
 // GET of the check URL through the helper proxy as user `user`: a server
 // tag, or sec-<section> for the section's own path.
 function works(user) {
-	const out = trim(command(`curl -s -o /dev/null -m 6 -x ${q(`socks5h://${user}:${HELPER_PASS}@127.0.0.1:${HELPER_PORT}`)} -w '%{http_code}' ${q(url)} 2>/dev/null`));
-	const code = int(out);
-
-	return code >= 200 && code < 400;
+	return check.works(user, url, 6);
 }
 
 function bo(bal, tag) {
@@ -178,6 +181,41 @@ function members(s) {
 		return s.chain;
 
 	return map(s.nodes, (n) => n.tag);
+}
+
+// The fastest of these that answers, all checked at once; null when none.
+function fastest(users) {
+	const ms = check.works_many(users, url, 6);
+	let best = null;
+
+	for (let u in users)
+		if (ms[u] != null && (best == null || ms[u] < ms[best]))
+			best = u;
+
+	return best;
+}
+
+// Other servers of the section to try, at most n: those xray saw working
+// first (fastest first), then the rest in the section's order.
+function candidates(s, skip, n) {
+	const o = observatory();
+	const all = filter(members(s), (t) => index(skip, t) < 0);
+	const seen = sort(filter(all, (t) => o[t]?.alive == true), (a, b) => (o[a].delay ?? 0) - (o[b].delay ?? 0));
+
+	return slice([ ...seen, ...filter(all, (t) => index(seen, t) < 0) ], 0, n);
+}
+
+// The server xray's automatic choice takes by itself: the fastest it saw
+// working.
+function observed_best(s) {
+	const o = observatory();
+	let best = null;
+
+	for (let n in s.nodes)
+		if (o[n.tag]?.alive && (!best || o[n.tag].delay < o[best].delay))
+			best = n.tag;
+
+	return best;
 }
 
 // The choice the balancer had before it went direct. In automatic mode the
@@ -268,56 +306,67 @@ for (let sn in keys(state.sections ?? {})) {
 
 	if (!hs.down) {
 		// A server pinned on the way back from direct is let go once xray's
-		// checks see a working server.
+		// checks see a working server; one pinned in place of servers that
+		// stopped answering (avoid) once xray's own choice is none of them.
 		if (hs.pinned) {
 			const o = observatory();
+			const best = observed_best(s);
 
-			if (index(map(s.nodes, (n) => n.tag), hs.pinned) < 0)
+			if (index(map(s.nodes, (n) => n.tag), hs.pinned) < 0) {
 				delete hs.pinned;
-			else if (length(filter(s.nodes, (n) => o[n.tag]?.alive == true)) && bo(bal, s.override))
-				delete hs.pinned;
+				delete hs.avoid;
+			}
+			else if (hs.avoid ? (best != null && index(hs.avoid, best) < 0) : length(filter(s.nodes, (n) => o[n.tag]?.alive == true)))
+				if (bo(bal, s.override)) {
+					delete hs.pinned;
+					delete hs.avoid;
+				}
 		}
 
-		if (works(hs.pinned ?? in_use(sn, s))) {
+		const cur = hs.pinned ?? in_use(sn, s);
+
+		if (works(cur)) {
 			hs.fails = 0;
 			continue;
 		}
 
-		if (++hs.fails < FAILS)
-			continue;
+		hs.fails++;
 
-		// Automatic choice and chains: another server xray saw working
-		// takes over by itself - if it really works (xray checks each
-		// server once per interval, minutes apart).
+		// Automatic choice and chains: another server that answers takes
+		// over at once - xray checks each server once per interval, minutes
+		// apart, and keeps the dead one until then.
 		if (s.mode != 'manual' && s.mode != 'single') {
-			const o = observatory();
-			const others = filter(members(s), (t) => t != in_use(sn, s) && o[t]?.alive == true);
-			let other = false;
-
-			for (let t in slice(others, 0, TRIES + 1))
-				if (works(t)) {
-					other = t;
-					break;
-				}
+			const other = fastest(candidates(s, [ cur ], TRIES));
 
 			if (other) {
-				// The balancer takes it by itself, but not past a server
-				// pinned by hand: that one gets a stand-in.
 				if (s.mode == 'auto' && s.override) {
+					// Not past a server pinned by hand: that one gets a
+					// stand-in.
 					if (other == s.override) {
 						if (bo(bal, s.override))
 							delete hs.stand_in;
 					}
 					else if (bo(bal, other)) {
 						hs.stand_in = { pin: s.override, tag: other, mark: mark(s) };
-						hs.fails = 0;
 						log(`section ${sn}: the pinned server ${names(s, [ s.override ])} does not answer, ${names(s, [ other ])} stands in for it until it does`, 'warn');
 					}
 				}
+				else if (s.mode == 'auto') {
+					if (bo(bal, other)) {
+						hs.pinned = other;
+						hs.avoid = uniq([ ...(hs.avoid ?? []), cur ]);
+						log(`section ${sn}: ${names(s, [ cur ])} does not answer, now ${names(s, [ other ])}`, 'warn');
+					}
+				}
+				// A chain: fallback.uc moves it on to a server that answers.
 
+				hs.fails = 0;
 				continue;
 			}
 		}
+
+		if (hs.fails < FAILS)
+			continue;
 
 		if (!bo(bal, 'direct')) {
 			log(`section ${sn}: its servers do not answer, but xray did not take "direct"`, 'warn');
@@ -328,6 +377,8 @@ for (let sn in keys(state.sections ?? {})) {
 		hs.fails = 0;
 		hs.since = time();
 		delete hs.stand_in;
+		delete hs.pinned;
+		delete hs.avoid;
 		hs.mark = mark(s);
 		hs.next = 0;
 		log(`section ${sn}: no server answers (${names(s, members(s))}), its traffic goes direct until one does`, 'warn');
@@ -350,13 +401,9 @@ for (let sn in keys(state.sections ?? {})) {
 
 	hs.next = ((hs.next ?? 0) + taken) % (length(rest) || 1);
 
-	let good = null;
-
-	for (let t in tries)
-		if (works(t)) {
-			good = t;
-			break;
-		}
+	// All at once; the first in the order above that answers.
+	const ms = check.works_many(tries, url, 6);
+	const good = filter(tries, (t) => ms[t] != null)[0];
 
 	if (good) {
 		const r = restore(sn, s, good, true);

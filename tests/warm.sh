@@ -86,7 +86,9 @@ fast="$(field n-fast ms)"; slow="$(field n-slow ms)"
 [ -n "$fast" ] && [ "$fast" -ge 15 ] && [ "$fast" -lt 150 ] && ok "warm: request over the open connection ($fast ms, handshake 300)" || bad "warm: n-fast $fast ms"
 [ -n "$slow" ] && [ "$slow" -ge 100 ] && [ "$slow" -lt 250 ] && ok "warm: slower server ($slow ms)" || bad "warm: n-slow $slow ms"
 [ "$(field n-dead error)" = timeout ] && ok "warm: no answer is a timeout" || bad "warm: n-dead $(field n-dead error)"
-[ "$(field n-503 error)" = "HTTP 503" ] && ok "warm: HTTP error" || bad "warm: n-503 $(field n-503 error)"
+# Any HTTP answer came back through the server: a site that refuses VPN
+# addresses still shows the delay.
+[ -n "$(field n-503 ms)" ] && ok "warm: an HTTP error status is an answer too" || bad "warm: n-503 $(field n-503 error)"
 [ "$(field n-refused error)" = "no connection" ] && ok "warm: SOCKS refusal" || bad "warm: n-refused $(field n-refused error)"
 close="$(field n-close ms)"
 [ -n "$close" ] && ok "warm: a site without keep-alive still gets a number ($close ms)" || bad "warm: n-close $(field n-close error)"
@@ -137,6 +139,16 @@ DAEMON="$(cat "$T/run/warm.pid" 2>/dev/null)"
 sleep 0.3
 case "$(field n-fast ms)" in "") bad "warm: a new run dropped the last numbers" ;; *) ok "warm: a new run keeps the last numbers" ;; esac
 case "$(field n-dead ms)$(field n-dead error)" in "") ok "warm: errors of the last run are not kept" ;; *) bad "warm: n-dead kept: $(field n-dead error)" ;; esac
+kill "$DAEMON" 2>/dev/null
+DAEMON=""
+
+# An https:// check URL: asked as http:// on the same host (ucode has no TLS).
+sed -i 's#"probe_url": "http://#"probe_url": "https://#' "$T/run/nodes.json"
+out="$(warm_call false)"
+case "$out" in *'"ok": true'*) ok "rpcd: warm with an https:// check URL" ;; *) bad "rpcd: warm with https: $out" ;; esac
+DAEMON="$(cat "$T/run/warm.pid" 2>/dev/null)"
+for i in 1 2 3 4; do : > "$T/run/warm.alive"; sleep 1; done
+[ -n "$(field n-fast ms)" ] && grep -q 'request n-fast' "$T/log" && ok "warm: https URL measured over http" || bad "warm: https: n-fast $(field n-fast error)"
 kill "$DAEMON" 2>/dev/null
 DAEMON=""
 

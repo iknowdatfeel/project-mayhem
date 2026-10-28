@@ -10,7 +10,8 @@
 // already open.
 //
 // Connections go through xray's local SOCKS inbound, as user <server tag>,
-// the way the single URL test does. Only http:// URLs: ucode has no TLS.
+// the way the single URL test does. ucode has no TLS: an https:// URL is
+// asked as http:// on the same host (parse_url).
 // The process ends when the dashboard has not asked for a while (the rpcd
 // method "warm" touches ALIVE on every call) or xray is gone.
 //
@@ -65,10 +66,15 @@ function wanted(state) {
 	return out;
 }
 
+// An https:// URL is asked over plain HTTP on port 80 of the same host: ucode
+// has no TLS, and the delay through the server to that host is the same.
 function parse_url(u) {
-	const m = match(u ?? '', /^http:\/\/([A-Za-z0-9.-]+)(:([0-9]+))?(\/[^#]*)?$/);
+	const m = match(u ?? '', /^(https?):\/\/([A-Za-z0-9.-]+)(:([0-9]+))?(\/[^#]*)?$/);
 
-	return m ? { host: m[1], port: int(m[3] ?? 80), path: m[4] ?? '/' } : null;
+	if (!m)
+		return null;
+
+	return { host: m[2], port: (m[1] == 'http' && m[4]) ? int(m[4]) : 80, path: m[5] ?? '/' };
 }
 
 const state0 = read_json(`${RUN}/nodes.json`);
@@ -267,7 +273,9 @@ function response_done(n) {
 }
 
 function finish_request(n) {
-	const ok = n.status >= 200 && n.status < 400;
+	// Any HTTP answer came back through the server: a site that refuses
+	// VPN addresses (403, 429) or sends http to https still shows the delay.
+	const ok = n.status >= 100;
 
 	if (!ok)
 		result(n, { error: n.status ? `HTTP ${n.status}` : 'timeout' });

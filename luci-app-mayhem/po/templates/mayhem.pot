@@ -61,7 +61,7 @@ msgstr ""
 msgid "%s, up to date"
 msgstr ""
 
-#: htdocs/luci-static/resources/view/mayhem/dashboard.js
+#: htdocs/luci-static/resources/mayhem/dash/chain.js
 msgid "%s: the whole subscription"
 msgstr ""
 
@@ -81,7 +81,7 @@ msgstr ""
 msgid "A SOCKS5 and HTTP proxy on the router that sends everything into this section, for apps and devices that can use a proxy. Reachable from the LAN; the firewall closes it from the internet."
 msgstr ""
 
-#: htdocs/luci-static/resources/view/mayhem/dashboard.js
+#: htdocs/luci-static/resources/mayhem/dash/chain.js
 msgid "A chain needs two servers or more"
 msgstr ""
 
@@ -117,7 +117,7 @@ msgstr ""
 msgid "AUTO and STUN dress the packets as STUN; NONE leaves them as they are."
 msgstr ""
 
-#: htdocs/luci-static/resources/view/mayhem/dashboard.js
+#: htdocs/luci-static/resources/mayhem/dash/conns.js
 msgid "Active connections"
 msgstr ""
 
@@ -133,11 +133,11 @@ msgstr ""
 msgid "Add a server or a subscription with the \"Add connection\" button."
 msgstr ""
 
-#: htdocs/luci-static/resources/view/mayhem/dashboard.js
+#: htdocs/luci-static/resources/mayhem/dash/chain.js
 msgid "Add a server or a subscription…"
 msgstr ""
 
-#: htdocs/luci-static/resources/view/mayhem/dashboard.js
+#: htdocs/luci-static/resources/mayhem/dash/chain.js
 msgid "Add a server…"
 msgstr ""
 
@@ -161,7 +161,7 @@ msgstr ""
 msgid "Add server"
 msgstr ""
 
-#: htdocs/luci-static/resources/view/mayhem/dashboard.js
+#: htdocs/luci-static/resources/mayhem/dash/chain.js
 msgid "Add servers in the order they should be tried."
 msgstr ""
 
@@ -201,7 +201,7 @@ msgstr ""
 msgid "All current settings of Mayhem are replaced."
 msgstr ""
 
-#: htdocs/luci-static/resources/view/mayhem/dashboard.js
+#: htdocs/luci-static/resources/mayhem/dash/conns.js
 msgid "All devices"
 msgstr ""
 
@@ -293,7 +293,7 @@ msgstr ""
 msgid "Block QUIC (UDP/443)"
 msgstr ""
 
-#: htdocs/luci-static/resources/view/mayhem/dashboard.js
+#: htdocs/luci-static/resources/mayhem/dash/conns.js
 msgid "Blocked"
 msgstr ""
 
@@ -309,7 +309,7 @@ msgstr ""
 msgid "Bypass ports"
 msgstr ""
 
-#: htdocs/luci-static/resources/mayhem/linkedit.js
+#: htdocs/luci-static/resources/mayhem/dash/chain.js
 msgid "Cancel"
 msgstr ""
 
@@ -365,11 +365,11 @@ msgstr ""
 msgid "Choose or type an address"
 msgstr ""
 
-#: htdocs/luci-static/resources/view/mayhem/dashboard.js
+#: htdocs/luci-static/resources/mayhem/dash/chain.js
 msgid "Chosen by hand"
 msgstr ""
 
-#: htdocs/luci-static/resources/view/mayhem/dashboard.js
+#: htdocs/luci-static/resources/mayhem/dash/conns.js
 msgid "Clear"
 msgstr ""
 
@@ -381,7 +381,7 @@ msgstr ""
 msgid "Clock"
 msgstr ""
 
-#: htdocs/luci-static/resources/mayhem/diag.js
+#: htdocs/luci-static/resources/mayhem/dash/conns.js
 msgid "Close"
 msgstr ""
 
@@ -405,7 +405,7 @@ msgstr ""
 msgid "Configuration type"
 msgstr ""
 
-#: htdocs/luci-static/resources/view/mayhem/dashboard.js
+#: htdocs/luci-static/resources/mayhem/dash/conns.js
 msgid "Connected via"
 msgstr ""
 
@@ -469,11 +469,11 @@ msgstr ""
 msgid "Deleted servers restored: %d. Mayhem applies the list now."
 msgstr ""
 
-#: htdocs/luci-static/resources/view/mayhem/dashboard.js
+#: htdocs/luci-static/resources/mayhem/dash/conns.js
 msgid "Destination"
 msgstr ""
 
-#: htdocs/luci-static/resources/view/mayhem/dashboard.js
+#: htdocs/luci-static/resources/mayhem/dash/conns.js
 msgid "Device"
 msgstr ""
 
@@ -505,7 +505,7 @@ msgstr ""
 msgid "Diagnostics request it directly and through every section; it must answer with the IP address as plain text."
 msgstr ""
 
-#: htdocs/luci-static/resources/mayhem/diag.js
+#: htdocs/luci-static/resources/mayhem/dash/conns.js
 msgid "Direct"
 msgstr ""
 
@@ -549,7 +549,7 @@ msgstr ""
 msgid "Done."
 msgstr ""
 
-#: htdocs/luci-static/resources/view/mayhem/dashboard.js
+#: htdocs/luci-static/resources/mayhem/dash/chain.js
 msgid "Down"
 msgstr ""
 
@@ -657,7 +657,7 @@ msgstr ""
 msgid "Every 6 hours"
 msgstr ""
 
-#: htdocs/luci-static/resources/view/mayhem/dashboard.js
+#: htdocs/luci-static/resources/mayhem/dash/conns.js
 msgid "Every connection of the network that is open now, grouped by device, address and route. A site name is known when its address came in a DNS answer through Xray; otherwise the address is shown."
 msgstr ""
 
@@ -741,11 +741,11 @@ msgstr ""
 msgid "FakeDNS"
 msgstr ""
 
-#: htdocs/luci-static/resources/view/mayhem/dashboard.js
+#: htdocs/luci-static/resources/mayhem/dash/chain.js
 msgid "Fallback chain"
 msgstr ""
 
-#: htdocs/luci-static/resources/view/mayhem/dashboard.js
+#: htdocs/luci-static/resources/mayhem/dash/chain.js
 msgid "Fastest server"
 msgstr ""
 
@@ -821,7 +821,7 @@ msgstr ""
 msgid "How the server is chosen"
 msgstr ""
 
-#: htdocs/luci-static/resources/view/mayhem/dashboard.js
+#: htdocs/luci-static/resources/mayhem/dash/checks.js
 msgid "ICMP ping"
 msgstr ""
 
@@ -865,7 +865,7 @@ msgstr ""
 msgid "In sections a category is written as geosite:category or geosite:source:category. When several sources have the category, it is taken from the one higher in this list."
 msgstr ""
 
-#: htdocs/luci-static/resources/view/mayhem/dashboard.js
+#: htdocs/luci-static/resources/mayhem/dash/conns.js
 msgid "Inbound to port %d"
 msgstr ""
 
@@ -1005,7 +1005,7 @@ msgstr ""
 msgid "Lists update interval"
 msgstr ""
 
-#: htdocs/luci-static/resources/mayhem/diag.js
+#: htdocs/luci-static/resources/mayhem/dash/conns.js
 msgid "Loading…"
 msgstr ""
 
@@ -1117,7 +1117,7 @@ msgstr ""
 msgid "No answer"
 msgstr ""
 
-#: htdocs/luci-static/resources/view/mayhem/dashboard.js
+#: htdocs/luci-static/resources/mayhem/dash/conns.js
 msgid "No connections yet."
 msgstr ""
 
@@ -1173,7 +1173,7 @@ msgstr ""
 msgid "Not in the server list"
 msgstr ""
 
-#: htdocs/luci-static/resources/view/mayhem/dashboard.js
+#: htdocs/luci-static/resources/mayhem/dash/conns.js
 msgid "Not in the table: the router's own %d, to the router %d, being closed %d, local and multicast %d, not understood %d"
 msgstr ""
 
@@ -1273,7 +1273,7 @@ msgstr ""
 msgid "Open a .conf file…"
 msgstr ""
 
-#: htdocs/luci-static/resources/view/mayhem/dashboard.js
+#: htdocs/luci-static/resources/mayhem/dash/conns.js
 msgid "Open connections"
 msgstr ""
 
@@ -1317,11 +1317,11 @@ msgstr ""
 msgid "Paste a server key: vless://, vmess://, trojan://, ss://, hysteria2://, socks://, http(s)://, wireguard://, or an AmneziaVPN key (vpn://) or a WireGuard/AmneziaWG config. Several keys go one per line."
 msgstr ""
 
-#: htdocs/luci-static/resources/view/mayhem/dashboard.js
+#: htdocs/luci-static/resources/mayhem/dash/conns.js
 msgid "Pause"
 msgstr ""
 
-#: htdocs/luci-static/resources/view/mayhem/dashboard.js
+#: htdocs/luci-static/resources/mayhem/dash/conns.js
 msgid "Paused"
 msgstr ""
 
@@ -1369,7 +1369,7 @@ msgstr ""
 msgid "Problems found"
 msgstr ""
 
-#: htdocs/luci-static/resources/mayhem/page/servers.js
+#: htdocs/luci-static/resources/mayhem/dash/conns.js
 msgid "Protocol"
 msgstr ""
 
@@ -1421,7 +1421,7 @@ msgstr ""
 msgid "Remote lists"
 msgstr ""
 
-#: htdocs/luci-static/resources/view/mayhem/dashboard.js
+#: htdocs/luci-static/resources/mayhem/dash/chain.js
 msgid "Remove"
 msgstr ""
 
@@ -1489,7 +1489,7 @@ msgstr ""
 msgid "Restores a backup file. A backup without connections keeps the subscriptions and server keys this router has."
 msgstr ""
 
-#: htdocs/luci-static/resources/view/mayhem/dashboard.js
+#: htdocs/luci-static/resources/mayhem/dash/conns.js
 msgid "Resume"
 msgstr ""
 
@@ -1521,7 +1521,7 @@ msgstr ""
 msgid "Run again"
 msgstr ""
 
-#: htdocs/luci-static/resources/mayhem/linkedit.js
+#: htdocs/luci-static/resources/mayhem/dash/chain.js
 msgid "Save"
 msgstr ""
 
@@ -1569,7 +1569,7 @@ msgstr ""
 msgid "Server choice"
 msgstr ""
 
-#: htdocs/luci-static/resources/mayhem/diag.js
+#: htdocs/luci-static/resources/mayhem/dash/chain.js
 msgid "Server list"
 msgstr ""
 
@@ -1633,11 +1633,11 @@ msgstr ""
 msgid "Show IP addresses"
 msgstr ""
 
-#: htdocs/luci-static/resources/view/mayhem/dashboard.js
+#: htdocs/luci-static/resources/mayhem/dash/conns.js
 msgid "Shows only connections opened from now on, and the traffic from now on"
 msgstr ""
 
-#: htdocs/luci-static/resources/view/mayhem/dashboard.js
+#: htdocs/luci-static/resources/mayhem/dash/conns.js
 msgid "Since %s"
 msgstr ""
 
@@ -1677,7 +1677,7 @@ msgstr ""
 msgid "Subscription %s: %s"
 msgstr ""
 
-#: htdocs/luci-static/resources/mayhem/page/sections.js
+#: htdocs/luci-static/resources/mayhem/dash/chain.js
 msgid "Subscriptions"
 msgstr ""
 
@@ -1693,7 +1693,7 @@ msgstr ""
 msgid "TCP and UDP traffic to these destination ports goes past the routing to any address. A port or a range of ports. The domains and addresses of the section are excluded on any port."
 msgstr ""
 
-#: htdocs/luci-static/resources/view/mayhem/dashboard.js
+#: htdocs/luci-static/resources/mayhem/dash/checks.js
 msgid "TCP ping"
 msgstr ""
 
@@ -1705,7 +1705,7 @@ msgstr ""
 msgid "Text lists with one domain, rule or subnet per line, \"#\" for comments. They are downloaded and updated automatically."
 msgstr ""
 
-#: htdocs/luci-static/resources/view/mayhem/dashboard.js
+#: htdocs/luci-static/resources/mayhem/dash/conns.js
 msgid "The %d busiest of %d."
 msgstr ""
 
@@ -1729,11 +1729,11 @@ msgstr ""
 msgid "The automatic server choice and the URL test request it through each server."
 msgstr ""
 
-#: htdocs/luci-static/resources/view/mayhem/dashboard.js
+#: htdocs/luci-static/resources/mayhem/dash/chain.js
 msgid "The chain is empty"
 msgstr ""
 
-#: htdocs/luci-static/resources/view/mayhem/dashboard.js
+#: htdocs/luci-static/resources/mayhem/dash/chain.js
 msgid "The chain of %s is empty"
 msgstr ""
 
@@ -1749,11 +1749,11 @@ msgstr ""
 msgid "The file is kept on the router as it is, so it must be small (up to 8 MB). Big files are better added by URL."
 msgstr ""
 
-#: htdocs/luci-static/resources/view/mayhem/dashboard.js
+#: htdocs/luci-static/resources/mayhem/dash/chain.js
 msgid "The first item carries the traffic while it works; when it stops answering, the next one takes over, and an item higher in the chain takes over again as soon as it works. A subscription stands for the server its rule picks: the fastest of its servers, its own chain, or the one chosen by hand. Checks run every 20 seconds, nothing restarts."
 msgstr ""
 
-#: htdocs/luci-static/resources/view/mayhem/dashboard.js
+#: htdocs/luci-static/resources/mayhem/dash/chain.js
 msgid "The first server carries the traffic while it works. When it stops answering, the next one takes over, and so on; a server higher in the chain takes over again as soon as it works. Checks run every 20 seconds, nothing restarts."
 msgstr ""
 
@@ -1889,7 +1889,7 @@ msgstr ""
 msgid "This is an Amnezia subscription key (%s): it holds only access to the account, the tunnel config is issued to the AmneziaVPN app alone. In the app, open this subscription, export the AmneziaWG configuration file for the country you need and paste its text or pick the file here."
 msgstr ""
 
-#: htdocs/luci-static/resources/view/mayhem/dashboard.js
+#: htdocs/luci-static/resources/mayhem/dash/conns.js
 msgid "This router"
 msgstr ""
 
@@ -1913,7 +1913,7 @@ msgstr ""
 msgid "Through the active server; when that fails, direct."
 msgstr ""
 
-#: htdocs/luci-static/resources/view/mayhem/dashboard.js
+#: htdocs/luci-static/resources/mayhem/dash/conns.js
 msgid "Traffic"
 msgstr ""
 
@@ -1993,7 +1993,7 @@ msgstr ""
 msgid "URL or file"
 msgstr ""
 
-#: htdocs/luci-static/resources/view/mayhem/dashboard.js
+#: htdocs/luci-static/resources/mayhem/dash/checks.js
 msgid "URL test"
 msgstr ""
 
@@ -2017,7 +2017,7 @@ msgstr ""
 msgid "Until %s"
 msgstr ""
 
-#: htdocs/luci-static/resources/view/mayhem/dashboard.js
+#: htdocs/luci-static/resources/mayhem/dash/chain.js
 msgid "Up"
 msgstr ""
 
@@ -2161,10 +2161,6 @@ msgstr ""
 msgid "Xray recognizes BitTorrent by its first packets and sends it direct, past the proxy."
 msgstr ""
 
-#: htdocs/luci-static/resources/view/mayhem/dashboard.js
-msgid "Xray restarted"
-msgstr ""
-
 #: htdocs/luci-static/resources/mayhem/page/components.js
 msgid "Xray, Mayhem, geo data and lists are downloaded through the active server; when that fails, direct."
 msgstr ""
@@ -2181,7 +2177,7 @@ msgstr ""
 msgid "chosen by hand"
 msgstr ""
 
-#: htdocs/luci-static/resources/view/mayhem/dashboard.js
+#: htdocs/luci-static/resources/mayhem/dash/chain.js
 msgid "chosen: %s"
 msgstr ""
 
@@ -2197,23 +2193,15 @@ msgstr ""
 msgid "fallback chain"
 msgstr ""
 
-#: htdocs/luci-static/resources/view/mayhem/dashboard.js
+#: htdocs/luci-static/resources/mayhem/dash/chain.js
 msgid "fastest"
 msgstr ""
 
-#: htdocs/luci-static/resources/view/mayhem/dashboard.js
-msgid "geo data updated"
-msgstr ""
-
-#: htdocs/luci-static/resources/view/mayhem/dashboard.js
+#: htdocs/luci-static/resources/mayhem/dash/conns.js
 msgid "hidden: %d"
 msgstr ""
 
-#: htdocs/luci-static/resources/view/mayhem/dashboard.js
-msgid "incoming ports"
-msgstr ""
-
-#: htdocs/luci-static/resources/view/mayhem/dashboard.js
+#: htdocs/luci-static/resources/mayhem/dash/chain.js
 msgid "its chain: %s"
 msgstr ""
 
@@ -2227,10 +2215,6 @@ msgstr ""
 
 #: htdocs/luci-static/resources/mayhem/page/sections.js
 msgid "lists: %d"
-msgstr ""
-
-#: htdocs/luci-static/resources/view/mayhem/dashboard.js
-msgid "log"
 msgstr ""
 
 #: htdocs/luci-static/resources/mayhem/common.js
@@ -2250,47 +2234,7 @@ msgid "pinned by hand"
 msgstr ""
 
 #: htdocs/luci-static/resources/view/mayhem/dashboard.js
-msgid "restarted by hand"
-msgstr ""
-
-#: htdocs/luci-static/resources/view/mayhem/dashboard.js
-msgid "routing"
-msgstr ""
-
-#: htdocs/luci-static/resources/view/mayhem/dashboard.js
-msgid "server checks"
-msgstr ""
-
-#: htdocs/luci-static/resources/view/mayhem/dashboard.js
-msgid "services"
-msgstr ""
-
-#: htdocs/luci-static/resources/view/mayhem/dashboard.js
 msgid "the fastest of all servers; click one to choose it by hand"
-msgstr ""
-
-#: htdocs/luci-static/resources/view/mayhem/dashboard.js
-msgid "the servers could not be changed without a restart"
-msgstr ""
-
-#: htdocs/luci-static/resources/view/mayhem/dashboard.js
-msgid "the settings changed"
-msgstr ""
-
-#: htdocs/luci-static/resources/view/mayhem/dashboard.js
-msgid "the settings changed (%s)"
-msgstr ""
-
-#: htdocs/luci-static/resources/view/mayhem/dashboard.js
-msgid "the watchdog: too much memory"
-msgstr ""
-
-#: htdocs/luci-static/resources/view/mayhem/dashboard.js
-msgid "the watchdog: xray did not answer"
-msgstr ""
-
-#: htdocs/luci-static/resources/view/mayhem/dashboard.js
-msgid "timeouts"
 msgstr ""
 
 #: htdocs/luci-static/resources/mayhem/diag.js
@@ -2301,10 +2245,6 @@ msgstr ""
 msgid "wg-obfuscator with the same key in front of WireGuard"
 msgstr ""
 
-#: htdocs/luci-static/resources/view/mayhem/dashboard.js
+#: htdocs/luci-static/resources/mayhem/dash/chain.js
 msgid "whole subscription"
-msgstr ""
-
-#: htdocs/luci-static/resources/view/mayhem/dashboard.js
-msgid "xray quit (code %s)"
 msgstr ""
