@@ -609,6 +609,10 @@ msgstr ""
 msgid "Empty: the HWID of the router, %s."
 msgstr ""
 
+#: htdocs/luci-static/resources/mayhem/tunnels.js
+msgid "Empty: the endpoint of the .conf."
+msgstr ""
+
 #: htdocs/luci-static/resources/mayhem/page/sections.js
 msgid "Empty: the whole network. Other devices go on to the sections below, as if this one did not exist. Xray tells devices by their address: a device given by MAC needs a lease (best a static one, under DHCP and DNS → Static leases)."
 msgstr ""
@@ -623,6 +627,10 @@ msgstr ""
 
 #: htdocs/luci-static/resources/mayhem/page/servers.js
 msgid "Enter a name"
+msgstr ""
+
+#: htdocs/luci-static/resources/mayhem/tunnels.js
+msgid "Enter the obfuscator server address: the endpoint of this config is the router itself"
 msgstr ""
 
 #: htdocs/luci-static/resources/mayhem/diag.js
@@ -1218,6 +1226,10 @@ msgid "Obfuscator"
 msgstr ""
 
 #: htdocs/luci-static/resources/mayhem/tunnels.js
+msgid "Obfuscator server address"
+msgstr ""
+
+#: htdocs/luci-static/resources/mayhem/tunnels.js
 msgid "Obfuscator server port"
 msgstr ""
 
@@ -1741,6 +1753,14 @@ msgstr ""
 msgid "The domestic DNS is plain UDP: enter an IP address, or choose a provider that has one"
 msgstr ""
 
+#: htdocs/luci-static/resources/mayhem/tunnels.js
+msgid "The endpoint of this config is 127.0.0.1, an obfuscator on the router: enter the address of the server here."
+msgstr ""
+
+#: htdocs/luci-static/resources/mayhem/tunnels.js
+msgid "The endpoint of this config is 127.0.0.1: it was made for an obfuscator. Choose it below and enter the server address."
+msgstr ""
+
 #: htdocs/luci-static/resources/mayhem/page/sections.js
 msgid "The fastest (automatic)"
 msgstr ""
@@ -1862,7 +1882,7 @@ msgid "The subscription name may only contain letters, digits and _"
 msgstr ""
 
 #: htdocs/luci-static/resources/mayhem/tunnels.js
-msgid "The tunnel sends its UDP to the obfuscator on the router, which carries it to the endpoint of the .conf on this port; the server runs %s. Fake TCP lowers the MTU to 1428."
+msgid "The tunnel sends its UDP to the obfuscator on the router, which carries it to the server on this port; the server runs %s. The MTU of the tunnel goes down to leave room: 1380 with Phobos, 1428 with fake TCP."
 msgstr ""
 
 #: htdocs/luci-static/resources/mayhem/page/components.js
@@ -2231,6 +2251,10 @@ msgstr ""
 
 #: htdocs/luci-static/resources/view/mayhem/dashboard.js
 msgid "pinned by hand"
+msgstr ""
+
+#: htdocs/luci-static/resources/mayhem/tunnels.js
+msgid "the endpoint of the .conf"
 msgstr ""
 
 #: htdocs/luci-static/resources/view/mayhem/dashboard.js

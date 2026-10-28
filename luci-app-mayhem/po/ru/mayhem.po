@@ -1699,9 +1699,6 @@ msgstr "Настройки сброшены. Страница перезагру
 #: htdocs/luci-static/resources/view/mayhem/dashboard.js
 
 #: htdocs/luci-static/resources/mayhem/tunnels.js
-msgid "The tunnel sends its UDP to the obfuscator on the router, which carries it to the endpoint of the .conf on this port; the server runs %s. Fake TCP lowers the MTU to 1428."
-msgstr "Туннель отдаёт UDP обфускатору на роутере, а тот несёт его на Endpoint из .conf, на этот порт; на сервере нужен %s. Фейк TCP снижает MTU до 1428."
-
 #: htdocs/luci-static/resources/mayhem/page/components.js
 msgid "The update runs in the background. Open this window again in a few minutes to see the result."
 msgstr "Обновление идёт в фоне. Откройте это окно снова через несколько минут, чтобы увидеть результат."
@@ -2330,3 +2327,24 @@ msgstr "Переименовать подписку %s"
 #: htdocs/luci-static/resources/mayhem/page/servers.js
 msgid "Latin letters, digits and _. Its servers, the chain of the server list and the chosen server go along."
 msgstr "Латинские буквы, цифры и _. Серверы подписки, цепочка списка серверов и выбранный сервер сохраняются."
+
+msgid "the endpoint of the .conf"
+msgstr "Endpoint из .conf"
+
+msgid "Obfuscator server address"
+msgstr "Адрес сервера обфускатора"
+
+msgid "The endpoint of this config is 127.0.0.1, an obfuscator on the router: enter the address of the server here."
+msgstr "Endpoint этого конфига — 127.0.0.1, то есть обфускатор на роутере: укажите здесь адрес сервера."
+
+msgid "Empty: the endpoint of the .conf."
+msgstr "Пусто — Endpoint из .conf."
+
+msgid "The tunnel sends its UDP to the obfuscator on the router, which carries it to the server on this port; the server runs %s. The MTU of the tunnel goes down to leave room: 1380 with Phobos, 1428 with fake TCP."
+msgstr "Туннель отдаёт UDP обфускатору на роутере, а тот несёт его на сервер, на этот порт; на сервере нужен %s. MTU туннеля снижается, чтобы пакеты помещались: 1380 с Phobos, 1428 с фейк TCP."
+
+msgid "The endpoint of this config is 127.0.0.1: it was made for an obfuscator. Choose it below and enter the server address."
+msgstr "Endpoint этого конфига — 127.0.0.1: он сделан для обфускатора. Выберите обфускатор ниже и укажите адрес сервера."
+
+msgid "Enter the obfuscator server address: the endpoint of this config is the router itself"
+msgstr "Укажите адрес сервера обфускатора: Endpoint этого конфига — сам роутер"

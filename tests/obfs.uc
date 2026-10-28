@@ -50,7 +50,8 @@ let g = call('tunnel_get', { iface: 'awg0' });
 
 expect(`get: ${g.error}`, g.ok === true && g.obfs == null && g.installed?.phobos === true);
 
-// Phobos: the endpoint goes to the obfuscator, the MTU stays
+// Phobos: the endpoint goes to the obfuscator, the MTU leaves room for
+// the masking
 let r = call('tunnel_set', { iface: 'awg0', conf: g.conf, obfs: 'phobos', obfs_port: 13255, obfs_key: 's3cret', obfs_masking: 'STUN' });
 let c = cursor();
 let p = peer(c, 'awg0');
@@ -60,7 +61,7 @@ expect(`phobos: endpoint ${p?.endpoint_host}:${p?.endpoint_port}`, p?.endpoint_h
 expect('phobos: record', c.get('mayhem', 'ob_awg0', 'kind') == 'phobos' && c.get('mayhem', 'ob_awg0', 'host') == '203.0.113.10' &&
 	c.get('mayhem', 'ob_awg0', 'eport') == '51820' && c.get('mayhem', 'ob_awg0', 'port') == '13255' &&
 	c.get('mayhem', 'ob_awg0', 'key') == 's3cret' && c.get('mayhem', 'ob_awg0', 'masking') == 'STUN');
-expect('phobos: no MTU of its own', c.get('network', 'awg0', 'mtu') == null && !zone(c));
+expect(`phobos: MTU ${c.get('network', 'awg0', 'mtu')}`, c.get('network', 'awg0', 'mtu') == '1380' && !zone(c));
 
 // the .conf still shows the server
 g = call('tunnel_get', { iface: 'awg0' });
@@ -100,6 +101,21 @@ p = peer(c, 'awg9');
 expect(`off: ${r.error}`, r.ok === true);
 expect(`off: endpoint ${p?.endpoint_host}:${p?.endpoint_port}`, p?.endpoint_host == '203.0.113.10' && p?.endpoint_port == '51820');
 expect('off: MTU and record', c.get('network', 'awg9', 'mtu') == null && c.get('mayhem', 'ob_awg9') == null);
+
+// A .conf made for a local obfuscator (Phobos: "Endpoint = 127.0.0.1:13255"):
+// 127.0.0.1 is not the server - without its address the obfuscation is
+// refused, with it the obfuscator goes there.
+g = call('tunnel_get', { iface: 'awg9' });
+const local_conf = replace(g.conf, /Endpoint = [^\n]*/, 'Endpoint = 127.0.0.1:13255');
+r = call('tunnel_set', { iface: 'awg9', conf: local_conf, obfs: 'phobos', obfs_port: 13255, obfs_key: 'k' });
+expect(`local endpoint without a server: ${r.error}`, r.error != null && index(r.error, 'address') >= 0);
+r = call('tunnel_set', { iface: 'awg9', conf: local_conf, obfs: 'phobos', obfs_port: 13255, obfs_key: 'k', obfs_host: '198.51.100.7' });
+c = cursor();
+p = peer(c, 'awg9');
+expect(`local endpoint with a server: ${r.error}`, r.ok === true && c.get('mayhem', 'ob_awg9', 'host') == '198.51.100.7' &&
+	p?.endpoint_host == '127.0.0.1' && p?.endpoint_port != '13255');
+g = call('tunnel_get', { iface: 'awg9' });
+expect(`get: the server, not 127.0.0.1: ${g.conf}`, index(g.conf, 'Endpoint = 198.51.100.7:13255') >= 0 && g.obfs?.host == '198.51.100.7');
 
 // deleting the tunnel deletes its obfuscation
 g = call('tunnel_get', { iface: 'awg9' });
