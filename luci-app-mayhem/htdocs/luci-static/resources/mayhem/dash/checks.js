@@ -81,7 +81,7 @@ return baseclass.extend({
 		}
 
 		const method = this.method;
-		const conn = this.conn = { section: sec.name, busy: true, method: method };
+		const conn = this.conn = { section: sec.name, tag: main.node && main.node.tag, busy: true, method: method };
 
 		this.view.redraw();
 
@@ -146,6 +146,9 @@ return baseclass.extend({
 		if (!this.warm || this.method !== 'url')
 			return false;
 
+		const main = mh.mainServer(this.view.data);
+		const conn = this.conn;
+
 		for (const tag in r.results) {
 			const x = r.results[tag];
 			const p = this.probes[tag];
@@ -155,6 +158,14 @@ return baseclass.extend({
 				continue;
 
 			this.probes[tag] = { method: 'url', value: (x.ms != null) ? x.ms : (x.error || 'error'), at: x.at };
+
+			// The connection widget follows the same fresh measurement as
+			// the active server's tile, including recovery after a timeout.
+			if (conn && conn.method === 'url' && conn.tag === tag &&
+			    main.node && main.node.tag === tag && main.section.name === conn.section) {
+				conn.ms = x.ms;
+				conn.pingError = x.error;
+			}
 		}
 
 		return true;

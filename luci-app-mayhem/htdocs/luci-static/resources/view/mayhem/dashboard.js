@@ -500,7 +500,7 @@ return view.extend({
 		return (sub && sub.info && sub.info.title) || name;
 	},
 
-	// The server the main traffic uses now and how it was chosen.
+	// The server the main traffic uses now.
 	serverRow(d) {
 		const m = mh.mainServer(d);
 		const s = m.section;
@@ -516,10 +516,7 @@ return view.extend({
 		if (s.down)
 			return [ _('Server'), _('Direct: the servers do not answer'), 'mh-warn' ];
 
-		const how = s.mode === 'auto' ? (s.pinned ? (s.name === 'pool' ? _('chosen by hand') : _('pinned by hand')) : _('automatic'))
-			: s.mode === 'fallback' ? _('fallback chain') : null;
-
-		return [ _('Server'), m.node ? (how ? '%s (%s)'.format(m.node.name, how) : m.node.name) : '—' ];
+		return [ _('Server'), m.node ? m.node.name : '—' ];
 	},
 
 	connectionRows(d, working) {
@@ -545,6 +542,8 @@ return view.extend({
 
 		if (c.ms != null)
 			rows.push([ _('Ping time'), _('%d ms').format(c.ms), latencyClass(c.ms, c.method) ]);
+		else if (c.method === 'tcp' && c.pingError === 'UDP protocol')
+			rows.push([ _('Ping time'), 'N/A', 'mh-muted', c.pingError ]);
 		else
 			rows.push([ _('Ping time'), c.busy ? wait : _('No answer'), c.busy ? 'mh-muted' : 'mh-fail', c.pingError ]);
 
