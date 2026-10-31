@@ -671,7 +671,7 @@ return view.extend({
 		if (s.name === 'pool' && s.mode === 'fallback') {
 			pos = (s.items || []).findIndex((i) => i.tag === n.tag);
 
-			if (chain.isSub(n.source)) {
+			if (chain.isSub(n.source) && (s.items || []).some((i) => i.sub === n.source)) {
 				const r = this.subRule(s, n.source);
 
 				if (r.mode === 'manual')
