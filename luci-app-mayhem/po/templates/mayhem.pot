@@ -2206,10 +2206,6 @@ msgid "applying…"
 msgstr ""
 
 #: htdocs/luci-static/resources/view/mayhem/dashboard.js
-msgid "automatic"
-msgstr ""
-
-#: htdocs/luci-static/resources/view/mayhem/dashboard.js
 msgid "chosen by hand"
 msgstr ""
 
@@ -2223,10 +2219,6 @@ msgstr ""
 
 #: htdocs/luci-static/resources/mayhem/page/sections.js
 msgid "example.com matches the domain and its subdomains; full: is the exact name, keyword: a substring, regexp: a regular expression."
-msgstr ""
-
-#: htdocs/luci-static/resources/view/mayhem/dashboard.js
-msgid "fallback chain"
 msgstr ""
 
 #: htdocs/luci-static/resources/mayhem/dash/chain.js
@@ -2263,10 +2255,6 @@ msgstr ""
 
 #: htdocs/luci-static/resources/mayhem/tunnels.js
 msgid "phantun_server in front of WireGuard"
-msgstr ""
-
-#: htdocs/luci-static/resources/view/mayhem/dashboard.js
-msgid "pinned by hand"
 msgstr ""
 
 #: htdocs/luci-static/resources/mayhem/tunnels.js
