@@ -100,7 +100,16 @@ return baseclass.extend({
 				this.result(main.node.tag, method, r);
 			})
 			: Promise.resolve();
-		const exit = callExitInfo(sec.name, geoLang()).then((r) => { conn.exit = r; });
+		// A failed lookup must not leave the address missing for the whole
+		// visit. Retry once, unless a newer connection check has replaced us.
+		const lookup = () => callExitInfo(sec.name, geoLang()).catch(() => ({ error: 'timeout' }));
+		const exit = lookup().then((r) => {
+			if (r.ip || this.conn !== conn)
+				return r;
+
+			return new Promise((resolve) => window.setTimeout(resolve, 3000)).then(() =>
+				this.conn === conn ? lookup() : r);
+		}).then((r) => { conn.exit = r; });
 
 		return Promise.all([ ping, exit ]).catch(() => {}).finally(() => {
 			conn.busy = false;
