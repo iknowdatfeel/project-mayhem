@@ -629,6 +629,9 @@ return view.extend({
 			if (p.pending)
 				return E('span', { 'class': 'mh-muted', 'title': _('Checking…') }, label + '…');
 
+			if (p.method === 'tcp' && p.value === 'UDP protocol')
+				return E('span', { 'class': 'mh-muted', 'title': p.value }, label + 'N/A');
+
 			if (typeof p.value === 'string')
 				return E('span', { 'class': 'mh-fail', 'title': p.value }, label + _('No answer'));
 
