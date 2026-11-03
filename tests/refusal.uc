@@ -36,8 +36,7 @@ for (let a in addrs) {
 	}
 }
 
-// The current core requires transport security when the flat VLESS Address
-// is absent, including the legacy vnext form, even for private addresses.
+// The legacy vnext form is normalized before transport validation too.
 for (let a in [ '192.168.1.5', '1.2.3.4' ]) {
 	const ob = { tag: 'x', protocol: 'vless', settings: { vnext: [ { address: a, port: 443,
 		users: [ { id: '11111111-2222-3333-4444-555555555555', encryption: 'none' } ] } ] },
