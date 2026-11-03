@@ -583,6 +583,12 @@ def main():
             shot(pg, 'dashboard_logs')
             pg.click('.mh-sheet-close')
             pg.wait_for_selector('.mh-sheet-overlay', state='detached', timeout=5000)
+            with pg.expect_request(severity_request, timeout=10000):
+                settings_tool(pg, 'logs')
+            if pg.input_value('#mh-settings-logs .mh-log-tools label select') != 'warning':
+                raise RuntimeError('the log display filter was not restored')
+            pg.click('.mh-sheet-close')
+            pg.wait_for_selector('.mh-sheet-overlay', state='detached', timeout=5000)
 
         def backup_modal(pg):
             # the backup is in the settings, next to the reset
@@ -683,11 +689,15 @@ def main():
 
         def settings_tabs(pg):
             ids = pg.eval_on_selector_all('.mh-settings-tabs [role="tab"]', 'es => es.map(e => e.id)')
-            expected = ['main', 'routing', 'mux', 'components', 'connections', 'diagnostics', 'logs']
+            expected = ['routing', 'mux', 'components', 'connections', 'diagnostics', 'logs', 'main']
             if ids != ['mh-settings-tab-' + name for name in expected]:
                 raise RuntimeError('settings tabs have the wrong order: %s' % ids)
             if pg.get_by_role('button', name=TRANSLATIONS.get('Back', 'Back'), exact=True).count():
                 raise RuntimeError('settings still have a Back button')
+            if pg.locator('.mh-settings-tabs .mh-icon').count() != len(expected):
+                raise RuntimeError('a settings tab has no icon')
+            pg.click('#mh-settings-tab-main')
+            pg.wait_for_selector('#mh-settings-main [data-name="memlimit"] input', timeout=10000)
             mem = '#mh-settings-main [data-name="memlimit"] input'
             if pg.locator('#mh-settings-main [data-name="log_level"]').count():
                 raise RuntimeError('general settings still contain a logging-level field')
