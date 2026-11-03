@@ -2433,3 +2433,9 @@ msgstr "Все уровни"
 
 msgid "Xray log level"
 msgstr "Уровень записи Xray"
+
+msgid "Removing AmneziaWG"
+msgstr "Удаление AmneziaWG"
+
+msgid "Removal failed, see the log above."
+msgstr "Не удалось удалить компоненты. Подробности в журнале выше."

@@ -80,7 +80,6 @@ return baseclass.extend({
 		const root = this.root = E('div', { 'class': 'mh-settings' });
 		let diagnosed = false;
 		const tabs = [
-			[ 'main', _('Main'), () => this.renderMain() ],
 			[ 'routing', _('Routing'), () => routing.load().then((data) => routing.render(data)) ],
 			[ 'mux', _('Multiplexing'), () => mux.load().then(() => mux.render()) ],
 			[ 'components', _('Component updates'), () => components.load().then((data) => components.render(data)) ],
@@ -89,7 +88,8 @@ return baseclass.extend({
 				if (!diagnosed) { diagnosed = true; diag.run(); }
 				else diag.drawList();
 			} ],
-			[ 'logs', _('Logs'), () => diag.logContent(), () => diag.startLogs(), () => diag.stopLogs() ]
+			[ 'logs', _('Logs'), () => diag.logContent(), () => diag.startLogs(), () => diag.stopLogs() ],
+			[ 'main', _('Advanced'), () => this.renderMain() ]
 		];
 		const bar = E('div', { 'class': 'mh-settings-tabs', 'role': 'tablist', 'aria-label': _('Settings') });
 		let active = null;

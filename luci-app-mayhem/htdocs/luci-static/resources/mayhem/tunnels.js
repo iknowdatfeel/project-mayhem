@@ -31,6 +31,7 @@ const NAMES = {
 
 const TITLES = {
 	awg: _('Installing AmneziaWG'),
+	'awg-remove': _('Removing AmneziaWG'),
 	protos: _('Restarting the network'),
 	dnsmasq: _('Installing dnsmasq-full'),
 	xray: _('Updating Xray'),
@@ -92,7 +93,7 @@ return baseclass.extend({
 				ui.showModal(null, [
 					log,
 					E('p', inst.rc === '0' ? _('Done.') : inst.rc == null ? _('The installer stopped without a result, see the log above.')
-						: _('Failed, see the log above. Nothing else was changed.')),
+						: what === 'awg-remove' ? _('Removal failed, see the log above.') : _('Failed, see the log above. Nothing else was changed.')),
 					E('div', { 'class': 'right' }, E('button', { 'class': 'btn', 'click': () => { ui.hideModal(); sheet.reload(); } }, _('Back')))
 				]);
 			}).catch(() => {}).finally(() => { checking = false; }));
