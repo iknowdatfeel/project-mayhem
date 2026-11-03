@@ -331,6 +331,11 @@ return baseclass.extend({
 	logContent() {
 		this.stopLogs();
 		let component = 'all', level = 'all', lines = 300, follow = true, timer = null, raw = '';
+		try {
+			const saved = window.localStorage.getItem('mayhem.log.filter.level');
+			if ([ 'all', 'debug', 'info', 'warning', 'error' ].indexOf(saved) >= 0) level = saved;
+		}
+		catch (e) {}
 		let active = false, busy = false, revision = 0, pending = false, first = true;
 		const pre = E('pre', { 'class': 'mh-log' }, _('Loading…'));
 		const error = E('div', { 'class': 'mh-fail', 'role': 'status' });
@@ -398,7 +403,12 @@ return baseclass.extend({
 					(ev) => { component = ev.target.value; change(); }),
 				E('label', [ _('Minimum displayed level') + ': ',
 					select([ [ 'all', _('All levels') ], [ 'debug', 'debug' ], [ 'info', 'info' ], [ 'warning', 'warning' ], [ 'error', 'error' ] ], level,
-						(ev) => { level = ev.target.value; change(); }) ]),
+						(ev) => {
+							level = ev.target.value;
+							try { window.localStorage.setItem('mayhem.log.filter.level', level); }
+							catch (e) {}
+							change();
+						}) ]),
 				select([ [ '100', _('100 lines') ], [ '300', _('300 lines') ], [ '1000', _('1000 lines') ] ], String(lines),
 					(ev) => { lines = +ev.target.value; change(); }),
 				E('label', [ E('input', { 'type': 'checkbox', 'checked': '', 'change': (ev) => {
