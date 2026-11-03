@@ -1,0 +1,18 @@
+{
+	"admin/services/mayhem": {
+		"title": "Mayhem",
+		"order": 40,
+		"action": {
+			"type": "view",
+			"path": "mayhem/dashboard"
+		},
+		"depends": {
+			"acl": [
+				"luci-app-mayhem"
+			],
+			"uci": {
+				"mayhem": true
+			}
+		}
+	}
+}

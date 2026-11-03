@@ -1,0 +1,20 @@
+config settings 'settings'
+	option enabled '1'
+	option mode 'lists'
+	list interface 'br-lan'
+	option probe_interval '1m'
+
+config dns 'dns'
+	list remote 'https://1.1.1.1/dns-query'
+
+config device 'device'
+	option hwid 'TESTHWID12345678'
+
+config subscription 'mysub'
+	option url 'http://example.invalid/sub'
+
+config section 'main'
+	option type 'proxy'
+	list subscription 'mysub'
+	option select 'auto'
+	list domain 'youtube.com'

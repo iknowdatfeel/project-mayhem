@@ -1,0 +1,2 @@
+[{"remarks":"NL xray","outbounds":[{"tag":"proxy","protocol":"vless","settings":{"vnext":[{"address":"nl.example","port":443,"users":[{"id":"11111111-2222-3333-4444-555555555555","encryption":"none"}]}]},"streamSettings":{"network":"raw","security":"tls"}},{"tag":"direct","protocol":"freedom"}]},
+ {"remarks":"chain","outbounds":[{"tag":"proxy","protocol":"vless","settings":{"address":"a","port":1,"id":"11111111-2222-3333-4444-555555555555"},"streamSettings":{"sockopt":{"dialerProxy":"x"}}}]}]

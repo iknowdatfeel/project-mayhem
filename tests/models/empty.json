@@ -1,0 +1,9 @@
+{
+  "settings": {
+    "mode": "global"
+  },
+  "dns": {},
+  "sections": [],
+  "runtime": {},
+  "_expect": "fail"
+}

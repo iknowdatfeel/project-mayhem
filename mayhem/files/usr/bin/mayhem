@@ -1,0 +1,807 @@
+#!/bin/sh
+# Mayhem command line.
+
+. /usr/share/mayhem/lib.sh
+
+usage() {
+	cat <<EOF
+Mayhem $MAYHEM_VERSION - xray-based traffic routing for OpenWrt
+
+Usage: mayhem <command>
+
+  start | stop | restart     control the service
+  enable | disable           turn routing on/off (saved in /etc/config/mayhem)
+  status                     service state as JSON
+  check                      validate the configuration without applying it
+  show-config                print the generated xray config
+  sub-update [NAME]          download subscriptions now (all or one)
+  geo-update [SOURCE]        download geo data now (all sources or one)
+  lists-update               download rule lists now
+  xray-install [VERSION]     download the official xray build (default $MAYHEM_XRAY_VERSION)
+  self-update [TAG]          install the latest release of Mayhem (or TAG) with its own installer
+  auto-update                self-update if a newer release is out and automatic
+                             updates are on (the scheduler runs it nightly)
+  awg-install                install AmneziaWG (kernel module, tools, LuCI protocol)
+                             from the awg-openwrt builds for this firmware
+  wg-install                 install WireGuard (kernel module, tools, LuCI protocol)
+  tunnel-protos              restart the network if it has not loaded an installed
+                             tunnel protocol (AmneziaWG, WireGuard) yet
+  dnsmasq-full               replace dnsmasq with dnsmasq-full (needed for tunnel
+                             sections in kernel mode); rolls back on failure
+  bbr                        install the TCP BBR module and switch the router's TCP
+                             to it (kept across reboots)
+  obfs-install phobos|faketcp
+                             install a WireGuard obfuscator: wg-obfuscator (Phobos)
+                             or phantun (fake TCP)
+  version                    print versions
+EOF
+}
+
+json_str() {
+	# minimal JSON string escaping for status output
+	printf '"%s"' "$(printf '%s' "$1" | sed 's/\\/\\\\/g; s/"/\\"/g')"
+}
+
+cmd_status() {
+	local enabled running=false nft=false xver gen
+
+	enabled="$(uci -q get mayhem.settings.enabled)"
+	/etc/init.d/mayhem running >/dev/null 2>&1 && running=true
+	nft -t list table inet "$MAYHEM_NFT_TABLE" >/dev/null 2>&1 && nft=true
+	xver="$(cat "$MAYHEM_RUN_DIR/xray.version" 2>/dev/null)"
+	[ -n "$xver" ] || xver="$(mayhem_xray_version)"
+	gen="$(cat "$MAYHEM_RUN_DIR/status.json" 2>/dev/null)"
+
+	printf '{"version":%s,"enabled":%s,"running":%s,"intercepting":%s,"xray":%s,"conflicts":%s,"config":%s}\n' \
+		"$(json_str "$MAYHEM_VERSION")" \
+		"$([ "$enabled" = 1 ] && echo true || echo false)" \
+		"$running" "$nft" \
+		"$([ -n "$xver" ] && json_str "$xver" || echo null)" \
+		"$(json_str "$(mayhem_conflicts)")" \
+		"${gen:-null}"
+}
+
+xray_asset() {
+	local arch
+
+	arch="$(. /etc/openwrt_release 2>/dev/null; echo "$DISTRIB_ARCH")"
+	[ -n "$arch" ] || arch="$(uname -m)"
+
+	case "$arch" in
+		aarch64*)                     echo "linux-arm64-v8a xray" ;;
+		arm_cortex-a*)                echo "linux-arm32-v7a xray" ;;
+		arm_arm1176*|arm_mpcore*)     echo "linux-arm32-v6 xray" ;;
+		arm_*)                        echo "linux-arm32-v5 xray" ;;
+		mipsel_*|mipsle*)             echo "linux-mips32le xray_softfloat" ;;
+		mips64el_*)                   echo "linux-mips64le xray" ;;
+		mips64_*)                     echo "linux-mips64 xray" ;;
+		mips_*|mips)                  echo "linux-mips32 xray_softfloat" ;;
+		x86_64)                       echo "linux-64 xray" ;;
+		i386_*|i686|i386)             echo "linux-32 xray" ;;
+		riscv64*)                     echo "linux-riscv64 xray" ;;
+		*) return 1 ;;
+	esac
+}
+
+version_newer() {
+	# $1 newer than $2: numbers separated by dots, compared one by one
+	awk -v a="$1" -v b="$2" 'BEGIN {
+		n = split(a, x, /[.-]/); m = split(b, y, /[.-]/)
+		for (i = 1; i <= (n > m ? n : m); i++)
+			if (x[i] + 0 != y[i] + 0)
+				exit !(x[i] + 0 > y[i] + 0)
+		exit 1
+	}'
+}
+
+# The tag of the latest Mayhem release (v1.2.3).
+latest_tag() {
+	local f=/tmp/mayhem-release.json tag
+
+	fetch "https://api.github.com/repos/${MAYHEM_REPO:-iknowdatfeel/project-mayhem}/releases/latest" "$f" ||
+		{ rm -f "$f"; echo "Cannot ask GitHub for the latest release" >&2; return 1; }
+	tag="$(sed -n 's/.*"tag_name": *"\([^"]*\)".*/\1/p' "$f" | head -n 1)"
+	rm -f "$f"
+	[ -n "$tag" ] || { echo "No release found" >&2; return 1; }
+	echo "$tag"
+}
+
+fetch() {
+	# $1 url, $2 output file; through Xray first when downloads go through it
+	local px
+
+	px="$(mayhem_download_proxy)"
+
+	if [ -n "$px" ] && command -v curl >/dev/null 2>&1 && curl -fsSL -m 300 -x "$px" -o "$2" "$1" 2>/dev/null; then
+		return 0
+	fi
+
+	if command -v curl >/dev/null 2>&1; then
+		curl -fsSL --retry 2 -o "$2" "$1"
+	else
+		wget -q -O "$2" "$1"
+	fi
+}
+
+cmd_xray_install() {
+	local ver="${1:-$MAYHEM_XRAY_VERSION}" asset bin url tmp="/tmp/mayhem-xray" sum want new
+
+	ver="${ver#v}"
+
+	# Every update of Mayhem runs this: the same xray again would cost 13-20 MB
+	# in /tmp and 36 MB written to flash for nothing.
+	if [ -z "${MAYHEM_FORCE:-}" ] && [ -x "$MAYHEM_XRAY_BIN" ] && [ "$(mayhem_xray_version)" = "$ver" ]; then
+		echo "xray $ver is already installed"
+		return 0
+	fi
+
+	set -- $(xray_asset) || { echo "Unsupported architecture" >&2; return 1; }
+	asset="$1"
+	bin="$2"
+	url="https://github.com/XTLS/Xray-core/releases/download/v$ver/Xray-$asset.zip"
+
+	rm -rf "$tmp"
+	mkdir -p "$tmp" || return 1
+
+	echo "Downloading xray $ver ($asset)..."
+	if ! fetch "$url" "$tmp/xray.zip" || ! fetch "$url.dgst" "$tmp/xray.dgst"; then
+		echo "Download failed: $url" >&2
+		rm -rf "$tmp"
+		return 1
+	fi
+
+	want="$(awk -F'= ' 'tolower($1) ~ /sha2-256|sha256/ { print tolower($2); exit }' "$tmp/xray.dgst")"
+	sum="$(sha256sum "$tmp/xray.zip" | awk '{ print $1 }')"
+
+	if [ -z "$want" ] || [ "$sum" != "$want" ]; then
+		echo "Checksum mismatch, refusing to install" >&2
+		rm -rf "$tmp"
+		return 1
+	fi
+
+	new="$MAYHEM_XRAY_BIN.new"
+	mkdir -p "$(dirname "$MAYHEM_XRAY_BIN")"
+
+	# Extract only the binary; the bundled geo files are not used.
+	if ! unzip -p "$tmp/xray.zip" "$bin" > "$new" || [ ! -s "$new" ]; then
+		echo "Not enough flash space or a broken archive" >&2
+		rm -f "$new"
+		rm -rf "$tmp"
+		return 1
+	fi
+
+	rm -rf "$tmp"
+	chmod 0755 "$new"
+
+	if ! "$new" version >/dev/null 2>&1; then
+		echo "Downloaded xray does not run on this router" >&2
+		rm -f "$new"
+		return 1
+	fi
+
+	mv -f "$new" "$MAYHEM_XRAY_BIN"
+	echo "Installed: $("$MAYHEM_XRAY_BIN" version | head -n 1)"
+
+	/etc/init.d/mayhem running >/dev/null 2>&1 && /etc/init.d/mayhem restart
+	return 0
+}
+
+# --- packages ------------------------------------------------------------------
+
+PM=opkg
+PM_EXT=ipk
+command -v apk >/dev/null 2>&1 && { PM=apk; PM_EXT=apk; }
+
+pkg_has() {
+	if [ "$PM" = apk ]; then
+		apk info -e "$1" >/dev/null 2>&1
+	else
+		opkg list-installed 2>/dev/null | grep -q "^$1 - "
+	fi
+}
+
+# Package lists live in RAM on OpenWrt: after a reboot there are none, and
+# dependencies of a downloaded package cannot be found without them.
+pkg_update() {
+	echo "Updating the package lists..."
+
+	if [ "$PM" = apk ]; then
+		apk update >/dev/null 2>&1
+	else
+		opkg update >/dev/null 2>&1
+	fi || echo "Could not update the package lists, trying with what there is" >&2
+}
+
+# While dnsmasq is replaced the router has no DNS of its own: the package
+# manager asks the provider's servers (or public ones) directly meanwhile.
+RESOLV=/tmp/resolv.conf
+resolv_direct() {
+	local ns
+
+	ns="$(awk '$1 == "nameserver" && $2 !~ /^(127\.|::1$)/ { print "nameserver " $2 }' /tmp/resolv.conf.d/resolv.conf.auto 2>/dev/null)"
+	[ -n "$ns" ] || ns="nameserver 77.88.8.8
+nameserver 1.1.1.1"
+
+	cp "$RESOLV" "$RESOLV.mayhem" 2>/dev/null
+	printf '%s\n' "$ns" > "$RESOLV.new" && mv -f "$RESOLV.new" "$RESOLV"
+}
+
+resolv_restore() {
+	[ -f "$RESOLV.mayhem" ] && mv -f "$RESOLV.mayhem" "$RESOLV"
+}
+
+pkg_add_file() {
+	if [ "$PM" = apk ]; then
+		apk add --allow-untrusted "$1"
+	else
+		opkg install "$1"
+	fi
+}
+
+AWG_RELEASES="https://github.com/Slava-Shchipunov/awg-openwrt/releases/download"
+AWG_API="${MAYHEM_AWG_API:-https://api.github.com/repos/Slava-Shchipunov/awg-openwrt/releases/tags}"
+
+# The SHA-256 of a release file as GitHub lists it ("digest" of the asset):
+# $1 the release description (JSON), $2 the file name.
+awg_digest() {
+	ucode -e '
+		let r;
+		try { r = json(require("fs").readfile(ARGV[0]) ?? ""); } catch (e) { r = null; }
+		for (let a in r?.assets ?? [])
+			if (a.name == ARGV[1] && match(a.digest ?? "", /^sha256:[0-9a-f]{64}$/))
+				print(substr(a.digest, 7), "\n");
+	' -- "$1" "$2" 2>/dev/null | head -n 1
+}
+
+tunnel_protos_load() {
+	# netifd loads protocol handlers only when it starts: a reload does not
+	# see one installed later, and its interfaces stay "unsupported protocol"
+	# (proto "none"). Restarts the network if an installed one is missing.
+	local handlers p missing=""
+
+	handlers="$(ubus call network get_proto_handlers 2>/dev/null)" || return 0
+	[ -n "$handlers" ] || return 0
+
+	for p in amneziawg wireguard; do
+		[ -e "/lib/netifd/proto/$p.sh" ] || continue
+		echo "$handlers" | grep -q "\"$p\"" || missing="$missing $p"
+	done
+
+	if [ -z "$missing" ]; then
+		echo "The network knows all installed tunnel protocols"
+		return 0
+	fi
+
+	echo "Restarting the network so that it loads:$missing"
+	/etc/init.d/network restart
+}
+
+# WireGuard from the official packages: the kernel module, the tools and the
+# LuCI protocol page; the network restarts if it has not loaded the protocol.
+cmd_wg_install() {
+	local p
+
+	if pkg_has kmod-wireguard && pkg_has wireguard-tools; then
+		echo "WireGuard is already installed"
+		tunnel_protos_load
+		return 0
+	fi
+
+	pkg_update
+
+	for p in kmod-wireguard wireguard-tools luci-proto-wireguard; do
+		pkg_has "$p" && continue
+		echo "Installing $p..."
+
+		if [ "$PM" = apk ]; then
+			apk add "$p"
+		else
+			opkg install "$p"
+		fi || { [ "$p" = luci-proto-wireguard ] && continue; echo "Installing $p failed" >&2; return 1; }
+	done
+
+	tunnel_protos_load
+	echo "WireGuard is installed"
+}
+
+# TCP BBR for the router's own connections: xray's connections to its
+# servers carry all the proxied TCP, and BBR keeps them fast on lossy and
+# long links. The kernel module comes from the feeds; the setting is kept in
+# /etc/sysctl.d for the next boot. Nothing changes when the firmware has no
+# such module. --no-install: only switch it on if the module is there (the
+# package scripts, while the package manager is busy).
+BBR_SYSCTL="${MAYHEM_BBR_SYSCTL:-/etc/sysctl.d/12-mayhem-bbr.conf}"
+BBR_AVAIL="${MAYHEM_BBR_AVAIL:-/proc/sys/net/ipv4/tcp_available_congestion_control}"
+
+bbr_on() {
+	local f="$BBR_AVAIL"
+
+	grep -qw bbr "$f" 2>/dev/null || modprobe tcp_bbr >/dev/null 2>&1 || insmod tcp_bbr >/dev/null 2>&1
+	grep -qw bbr "$f" 2>/dev/null || return 1
+
+	mkdir -p "$(dirname "$BBR_SYSCTL")"
+	printf '# Mayhem: TCP BBR for the connections of the router (xray to its servers)\nnet.ipv4.tcp_congestion_control=bbr\n' > "$BBR_SYSCTL"
+	sysctl -w net.ipv4.tcp_congestion_control=bbr >/dev/null 2>&1
+}
+
+cmd_bbr() {
+	if bbr_on; then
+		echo "TCP BBR is on"
+		return 0
+	fi
+
+	[ "$1" = --no-install ] && return 1
+
+	if ! pkg_has kmod-tcp-bbr; then
+		pkg_update
+		echo "Installing kmod-tcp-bbr..."
+
+		if [ "$PM" = apk ]; then
+			apk add kmod-tcp-bbr
+		else
+			opkg install kmod-tcp-bbr
+		fi || { echo "Installing kmod-tcp-bbr failed: the firmware keeps its TCP congestion control" >&2; return 1; }
+	fi
+
+	if bbr_on; then
+		echo "TCP BBR is on"
+		return 0
+	fi
+
+	echo "The BBR module does not load on this firmware: TCP congestion control stays as it was" >&2
+	return 1
+}
+
+cmd_awg_install() {
+	local arch target ver postfix dir="/tmp/mayhem-awg" p file got want sum
+
+	if pkg_has kmod-amneziawg && pkg_has amneziawg-tools; then
+		echo "AmneziaWG is already installed"
+		tunnel_protos_load
+		return 0
+	fi
+
+	if ! mayhem_fw_release; then
+		echo "Cannot read the firmware version, target and architecture (version '$FW_VERSION', target '$FW_TARGET', arch '$FW_ARCH')" >&2
+		return 1
+	fi
+
+	ver="$FW_VERSION"
+	target="$FW_TARGET"
+	arch="$FW_ARCH"
+	echo "OpenWrt $ver, $target, $arch"
+
+	case "$ver" in
+		*SNAPSHOT*|*-rc*)
+			echo "AmneziaWG builds exist only for stable releases, this is $ver" >&2
+			return 1
+			;;
+	esac
+
+	# The kernel module needs other kernel modules from the official feeds.
+	pkg_update
+
+	# Packages are built per release and target: the kernel module must match.
+	postfix="_v${ver}_${arch}_${target%%/*}_${target#*/}"
+	rm -rf "$dir"
+	mkdir -p "$dir" || return 1
+
+	# Every file is checked against the SHA-256 that GitHub lists for it, as
+	# xray is against its .dgst: a broken or replaced download is not installed.
+	if ! fetch "$AWG_API/v$ver" "$dir/release.json" || [ ! -s "$dir/release.json" ]; then
+		echo "Cannot read the checksums of the AmneziaWG $ver release: $AWG_API/v$ver" >&2
+		rm -rf "$dir"
+		return 1
+	fi
+
+	for p in kmod-amneziawg amneziawg-tools luci-proto-amneziawg; do
+		# What is already there stays: a second run after a failed one only
+		# adds what is missing.
+		if pkg_has "$p"; then
+			echo "$p is already installed"
+			continue
+		fi
+
+		got=""
+
+		# opkg installs only .ipk and apk only .apk
+		file="$p$postfix.$PM_EXT"
+		echo "Downloading $file..."
+
+		if fetch "$AWG_RELEASES/v$ver/$file" "$dir/$file" && [ -s "$dir/$file" ]; then
+			want="$(awg_digest "$dir/release.json" "$file")"
+			sum="$(sha256sum "$dir/$file" | awk '{ print $1 }')"
+
+			if [ -z "$want" ] || [ "$sum" != "$want" ]; then
+				echo "Checksum mismatch for $file (got $sum, expected ${want:-none}), refusing to install" >&2
+				rm -rf "$dir"
+				return 1
+			fi
+
+			got="$dir/$file"
+		else
+			rm -f "$dir/$file"
+		fi
+
+		if [ -z "$got" ]; then
+			# The LuCI page for the protocol is a convenience, not a requirement.
+			[ "$p" = luci-proto-amneziawg ] && continue
+			echo "No $p build for OpenWrt $ver ($target, $arch): $AWG_RELEASES/v$ver/$file" >&2
+			rm -rf "$dir"
+			return 1
+		fi
+
+		if ! pkg_add_file "$got"; then
+			echo "Installing $p failed (see above). The kernel module needs the official package feeds for its dependencies; on a custom firmware build the kernel may not match the official one." >&2
+			rm -rf "$dir"
+			return 1
+		fi
+	done
+
+	rm -rf "$dir"
+	modprobe amneziawg >/dev/null 2>&1
+
+	if [ ! -e /sys/module/amneziawg ]; then
+		echo "The amneziawg kernel module does not load" >&2
+		return 1
+	fi
+
+	tunnel_protos_load
+	echo "AmneziaWG is installed"
+}
+
+# --- WireGuard obfuscators ---------------------------------------------------------
+# Static builds from the GitHub releases of their projects, checked against the
+# SHA-256 GitHub lists for each file:
+#   phobos   wg-obfuscator (github.com/ClusterM/wg-obfuscator)
+#   faketcp  phantun client (github.com/dndx/phantun)
+WG_OBFUSCATOR_VERSION="${MAYHEM_WG_OBFUSCATOR_VERSION:-1.6}"
+PHANTUN_VERSION="${MAYHEM_PHANTUN_VERSION:-0.8.1}"
+OBFS_DIR="${MAYHEM_OBFS_DIR:-/usr/libexec/mayhem}"
+GH_API="${MAYHEM_GH_API:-https://api.github.com/repos}"
+
+# The build for this router: $1 phobos or faketcp. Prints the file names to
+# look for in the release, best first.
+obfs_assets() {
+	local arch
+
+	arch="$(. /etc/openwrt_release 2>/dev/null; echo "$DISTRIB_ARCH")"
+	[ -n "$arch" ] || arch="$(uname -m)"
+
+	if [ "$1" = phobos ]; then
+		local v="wg-obfuscator-v$WG_OBFUSCATOR_VERSION-linux"
+
+		# Static builds: a soft-float one runs on any FPU.
+		case "$arch" in
+			aarch64*)                 echo "$v-arm64.tar.gz" ;;
+			arm_cortex-a*)            echo "$v-armv7-softfp.tar.gz" ;;
+			arm_arm1176*|arm_mpcore*) echo "$v-armv6-softfp.tar.gz" ;;
+			arm_*)                    echo "$v-armv5-sf.tar.gz" ;;
+			mipsel_24kc*|mipsel_74kc*|mipsel_1004kc*) echo "$v-mipsel-mips32r2.tar.gz $v-mipsel-mips32-sf.tar.gz" ;;
+			mipsel_*|mipsle*)         echo "$v-mipsel-mips32-sf.tar.gz" ;;
+			mips64el_*)               echo "$v-mips64el.tar.gz" ;;
+			mips64_*)                 echo "$v-mips64.tar.gz" ;;
+			mips_24kc*|mips_74kc*)    echo "$v-mips-mips32r2.tar.gz $v-mips-mips32-sf.tar.gz" ;;
+			mips_*|mips)              echo "$v-mips-mips32-sf.tar.gz" ;;
+			x86_64)                   echo "$v-x64.tar.gz" ;;
+			i386_*|i686|i386)         echo "$v-x86.tar.gz" ;;
+			riscv64*)                 echo "$v-riscv64.tar.gz" ;;
+			*) return 1 ;;
+		esac
+	else
+		local t
+
+		case "$arch" in
+			aarch64*)                 t=aarch64-unknown-linux-musl ;;
+			arm_cortex-a*)            t=armv7-unknown-linux-musleabihf ;;
+			arm_*)                    t=arm-unknown-linux-musleabihf ;;
+			mipsel_*|mipsle*)         t=mipsel-unknown-linux-musl ;;
+			mips64_*)                 t=mips64-unknown-linux-muslabi64 ;;
+			mips_*|mips)              t=mips-unknown-linux-musl ;;
+			x86_64)                   t=x86_64-unknown-linux-musl ;;
+			i386_*|i686|i386)         t=i686-unknown-linux-musl ;;
+			*) return 1 ;;
+		esac
+
+		echo "phantun_$t.zip phantun_${t}_nightly.zip"
+	fi
+}
+
+cmd_obfs_install() {
+	local kind="$1" repo ver bin name dir="/tmp/mayhem-obfs" file="" f want sum
+
+	case "$kind" in
+		phobos)  repo=ClusterM/wg-obfuscator; ver="v$WG_OBFUSCATOR_VERSION"; name=wg-obfuscator; bin="$OBFS_DIR/wg-obfuscator" ;;
+		faketcp) repo=dndx/phantun; ver="v$PHANTUN_VERSION"; name=phantun_client; bin="$OBFS_DIR/phantun_client" ;;
+		*) echo "Usage: mayhem obfs-install phobos|faketcp" >&2; return 1 ;;
+	esac
+
+	if [ -x "$bin" ] && [ -z "${MAYHEM_FORCE:-}" ]; then
+		echo "$name is already installed"
+	else
+		set -- $(obfs_assets "$kind") || { echo "No $name build for this architecture" >&2; return 1; }
+		rm -rf "$dir"
+		mkdir -p "$dir/x" || return 1
+
+		if ! fetch "$GH_API/$repo/releases/tags/$ver" "$dir/release.json" || [ ! -s "$dir/release.json" ]; then
+			echo "Cannot read the $name $ver release: $GH_API/$repo/releases/tags/$ver" >&2
+			rm -rf "$dir"
+			return 1
+		fi
+
+		for f in "$@"; do
+			[ -n "$(awg_digest "$dir/release.json" "$f")" ] && { file="$f"; break; }
+		done
+
+		if [ -z "$file" ]; then
+			echo "No $name $ver build for this router ($*)" >&2
+			rm -rf "$dir"
+			return 1
+		fi
+
+		echo "Downloading $file..."
+
+		if ! fetch "https://github.com/$repo/releases/download/$ver/$file" "$dir/$file" || [ ! -s "$dir/$file" ]; then
+			echo "Download failed: $file" >&2
+			rm -rf "$dir"
+			return 1
+		fi
+
+		want="$(awg_digest "$dir/release.json" "$file")"
+		sum="$(sha256sum "$dir/$file" | awk '{ print $1 }')"
+
+		if [ "$sum" != "$want" ]; then
+			echo "Checksum mismatch for $file (got $sum, expected $want), refusing to install" >&2
+			rm -rf "$dir"
+			return 1
+		fi
+
+		case "$file" in
+			*.zip) unzip -o -q "$dir/$file" -d "$dir/x" ;;
+			*) tar -xzf "$dir/$file" -C "$dir/x" ;;
+		esac
+
+		f="$(find "$dir/x" -type f -name "$name" | head -n 1)"
+
+		if [ -z "$f" ] || [ ! -s "$f" ]; then
+			echo "No $name in $file" >&2
+			rm -rf "$dir"
+			return 1
+		fi
+
+		mkdir -p "$OBFS_DIR"
+
+		if ! cp "$f" "$bin.new" || ! chmod 755 "$bin.new" || ! mv -f "$bin.new" "$bin"; then
+			echo "Not enough flash space" >&2
+			rm -f "$bin.new"
+			rm -rf "$dir"
+			return 1
+		fi
+
+		rm -rf "$dir"
+		echo "$name ${ver#v} is installed"
+	fi
+
+	# phantun needs TUN devices from the kernel.
+	if [ "$kind" = faketcp ] && [ ! -e /dev/net/tun ] && ! pkg_has kmod-tun; then
+		pkg_update
+
+		if [ "$PM" = apk ]; then
+			apk add kmod-tun
+		else
+			opkg install kmod-tun
+		fi || { echo "Installing kmod-tun failed" >&2; return 1; }
+	fi
+
+	/etc/init.d/mayhem-obfs enable 2>/dev/null
+	echo "The obfuscator is ready"
+}
+
+first_file() {
+	local f
+
+	for f in "$@"; do
+		[ -f "$f" ] && { echo "$f"; return 0; }
+	done
+}
+
+# Swaps dnsmasq for dnsmasq-full. Both packages are downloaded before anything
+# is removed, and the old one is put back if the new one does not install or
+# does not start: the router must never be left without DNS and DHCP. While
+# there is no dnsmasq, the router resolves through the provider's servers, so
+# that the package manager can still fetch what dnsmasq-full depends on.
+cmd_dnsmasq_full() {
+	local dir="/tmp/mayhem-dnsmasq" full old ok=0
+
+	if mayhem_dnsmasq_nftset; then
+		echo "dnsmasq already supports nftset"
+		return 0
+	fi
+
+	rm -rf "$dir"
+	mkdir -p "$dir" || return 1
+	cp /etc/config/dhcp "$dir/dhcp" 2>/dev/null
+
+	pkg_update
+	echo "Downloading dnsmasq-full..."
+
+	if [ "$PM" = apk ]; then
+		apk fetch -o "$dir" dnsmasq-full dnsmasq 2>&1 | tail -n 3
+		full="$(first_file "$dir"/dnsmasq-full-*.apk)"
+		old="$(first_file "$dir"/dnsmasq-[0-9]*.apk)"
+	else
+		(cd "$dir" && opkg download dnsmasq-full 2>&1 | tail -n 3 && opkg download dnsmasq 2>&1 | tail -n 3)
+		full="$(first_file "$dir"/dnsmasq-full_*.ipk)"
+		old="$(first_file "$dir"/dnsmasq_*.ipk)"
+	fi
+
+	if [ -z "$full" ] || [ -z "$old" ]; then
+		echo "Cannot download dnsmasq-full and dnsmasq from the package feeds, nothing was changed" >&2
+		rm -rf "$dir"
+		return 1
+	fi
+
+	resolv_direct
+	echo "Replacing dnsmasq..."
+
+	if [ "$PM" = apk ]; then
+		apk del dnsmasq 2>&1 | tail -n 5
+	else
+		opkg remove dnsmasq >/dev/null 2>&1 || opkg remove --force-depends dnsmasq 2>&1 | tail -n 5
+	fi
+
+	if pkg_has dnsmasq; then
+		echo "dnsmasq cannot be removed (see above), nothing was changed" >&2
+		resolv_restore
+		rm -rf "$dir"
+		return 1
+	fi
+
+	# The files came from the feeds through the package manager, which checked
+	# them against the signed index; apk itself wants every local file signed,
+	# and OpenWrt signs only the index.
+	echo "Installing dnsmasq-full..."
+	pkg_add_file "$full" 2>&1 | tail -n 8
+
+	[ -f "$dir/dhcp" ] && cp "$dir/dhcp" /etc/config/dhcp
+	resolv_restore
+	/etc/init.d/dnsmasq enable >/dev/null 2>&1
+	/etc/init.d/dnsmasq restart >/dev/null 2>&1
+	sleep 2
+
+	mayhem_dnsmasq_nftset && pidof dnsmasq >/dev/null 2>&1 && ok=1
+
+	if [ "$ok" = 1 ]; then
+		rm -rf "$dir"
+		echo "dnsmasq-full is installed"
+		# Kernel tunnel sections can fill their sets now.
+		/etc/init.d/mayhem running >/dev/null 2>&1 && /etc/init.d/mayhem reload
+		return 0
+	fi
+
+	echo "dnsmasq-full did not work, putting dnsmasq back" >&2
+	resolv_direct
+
+	if [ "$PM" = apk ]; then
+		apk del dnsmasq-full >/dev/null 2>&1
+	else
+		opkg remove dnsmasq-full >/dev/null 2>&1
+	fi
+
+	pkg_add_file "$old" 2>&1 | tail -n 8
+
+	# Without its package back the router has no DNS and DHCP: the feeds.
+	if ! pkg_has dnsmasq && ! pkg_has dnsmasq-full; then
+		echo "Installing dnsmasq from the package feeds..."
+		if [ "$PM" = apk ]; then
+			apk add dnsmasq 2>&1 | tail -n 5
+		else
+			opkg install dnsmasq 2>&1 | tail -n 5
+		fi
+	fi
+
+	[ -f "$dir/dhcp" ] && cp "$dir/dhcp" /etc/config/dhcp
+	resolv_restore
+	/etc/init.d/dnsmasq enable >/dev/null 2>&1
+	/etc/init.d/dnsmasq restart >/dev/null 2>&1
+	rm -rf "$dir"
+	return 1
+}
+
+case "$1" in
+	start|stop|restart|reload)
+		/etc/init.d/mayhem "$1"
+		;;
+	enable|disable)
+		uci set mayhem.settings.enabled="$([ "$1" = enable ] && echo 1 || echo 0)"
+		uci commit mayhem
+		[ "$1" = enable ] && /etc/init.d/mayhem enable
+		/etc/init.d/mayhem restart
+		;;
+	status)
+		cmd_status
+		;;
+	check)
+		ucode "$MAYHEM_GEN" --check
+		;;
+	show-config)
+		ucode "$MAYHEM_GEN" --print
+		;;
+	sub-update)
+		ucode "$MAYHEM_SUB" update ${2:+"$2"} --force
+		rc=$?
+		if [ "$rc" = 3 ]; then
+			/etc/init.d/mayhem running >/dev/null 2>&1 && /etc/init.d/mayhem reload
+			rc=0
+		fi
+		exit "$rc"
+		;;
+	geo-update|lists-update)
+		if [ "$1" = geo-update ]; then
+			ucode "$MAYHEM_UPDATE" geo ${2:+"$2"} --force
+		else
+			ucode "$MAYHEM_UPDATE" lists --force
+		fi
+		rc=$?
+		if [ "$rc" = 3 ]; then
+			/etc/init.d/mayhem running >/dev/null 2>&1 && /etc/init.d/mayhem reload
+			rc=0
+		fi
+		exit "$rc"
+		;;
+	xray-install)
+		cmd_xray_install "$2"
+		;;
+	tunnel-protos)
+		tunnel_protos_load
+		;;
+	awg-install)
+		cmd_awg_install
+		;;
+	wg-install)
+		cmd_wg_install
+		;;
+	dnsmasq-full)
+		cmd_dnsmasq_full
+		;;
+	bbr)
+		cmd_bbr "$2"
+		;;
+	obfs-install)
+		cmd_obfs_install "$2"
+		;;
+	auto-update)
+		# Run by the scheduler once a day: installs a newer release when
+		# automatic updates are on.
+		[ "$(uci -q get mayhem.settings.auto_update)" = 1 ] || exit 0
+		tag="$(latest_tag)" || exit 1
+		latest="${tag#v}"
+		version_newer "$latest" "$MAYHEM_VERSION" || { echo "Mayhem $MAYHEM_VERSION is up to date"; exit 0; }
+		mayhem_log "updating Mayhem $MAYHEM_VERSION to $latest"
+		exec "$0" self-update "$tag"
+		;;
+	self-update)
+		# The installer of the latest release (or of the release $2), taken
+		# from that release, not from main: it installs the packages it was
+		# written for. It restarts Mayhem at the end.
+		tag="${2:-$(latest_tag)}" || exit 1
+		case "$tag" in
+			''|*[!A-Za-z0-9._-]*) echo "Not a release tag: $tag" >&2; exit 1 ;;
+		esac
+		f=/tmp/mayhem-install.sh
+		fetch "https://raw.githubusercontent.com/${MAYHEM_REPO:-iknowdatfeel/project-mayhem}/$tag/install.sh" "$f" ||
+			{ echo "Cannot download the installer of $tag" >&2; exit 1; }
+		MAYHEM_TAG="$tag" MAYHEM_PROXY="$(mayhem_download_proxy)" sh "$f" </dev/null
+		rc=$?
+		rm -f "$f"
+		exit "$rc"
+		;;
+	version)
+		echo "mayhem $MAYHEM_VERSION"
+		echo "xray $(mayhem_xray_version || echo 'not installed') (pinned $MAYHEM_XRAY_VERSION)"
+		;;
+	*)
+		usage
+		[ -n "$1" ] && exit 1
+		;;
+esac

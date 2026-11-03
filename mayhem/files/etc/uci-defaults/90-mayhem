@@ -1,0 +1,66 @@
+#!/bin/sh
+# Mayhem: device profile for subscription requests. Runs once after install;
+# keeps values the user already has.
+
+uci -q get mayhem.device >/dev/null || uci set mayhem.device=device
+
+if [ -z "$(uci -q get mayhem.device.hwid)" ]; then
+	uci set mayhem.device.hwid="$(tr -dc 'A-Za-z0-9' </dev/urandom 2>/dev/null | head -c 16)"
+fi
+
+if [ -z "$(uci -q get mayhem.device.model)" ]; then
+	uci set mayhem.device.model="$(cat /tmp/sysinfo/model 2>/dev/null || echo OpenWrt)"
+fi
+
+[ -n "$(uci -q get mayhem.device.user_agent)" ] || uci set mayhem.device.user_agent='Happ/3.13.0'
+[ -n "$(uci -q get mayhem.device.os)" ] || uci set mayhem.device.os='Android'
+[ -n "$(uci -q get mayhem.device.os_version)" ] || uci set mayhem.device.os_version='14'
+[ -n "$(uci -q get mayhem.device.locale)" ] || uci set mayhem.device.locale='ru'
+
+# Geo sources for installs that predate geo support.
+if ! uci -q get mayhem.geo >/dev/null; then
+	uci set mayhem.geo=geo
+	uci set mayhem.geo.update_hour='4'
+	uci set mayhem.geo.via_xray='1'
+	uci set mayhem.geo.lists_interval='24'
+fi
+
+if ! uci -q show mayhem | grep -q '=geo_source$'; then
+	base='https://github.com/runetfreedom/russia-v2ray-rules-dat/releases/latest/download'
+	uci set mayhem.rf_geosite=geo_source
+	uci set mayhem.rf_geosite.kind='geosite'
+	uci set mayhem.rf_geosite.url="$base/geosite.dat"
+	uci set mayhem.rf_geoip=geo_source
+	uci set mayhem.rf_geoip.kind='geoip'
+	uci set mayhem.rf_geoip.url="$base/geoip.dat"
+fi
+
+# The web interface: without keep-alive. Chrome keeps idle connections to the
+# router, uhttpd closes them after 20 s, and a Mac whose Wi-Fi dozes misses
+# that: the next call goes over a dead connection and LuCI shows "XHR request
+# aborted by browser", on any page. Without keep-alive every call opens its
+# own connection (a few ms on a LAN). Once, and only over the default value:
+# a value set by hand stays, and so does putting it back after this.
+if [ -z "$(uci -q get mayhem.settings.uhttpd_tuned)" ] && uci -q get uhttpd.main >/dev/null; then
+	ka="$(uci -q get uhttpd.main.http_keepalive)"
+
+	if [ -z "$ka" ] || [ "$ka" = 20 ]; then
+		uci set uhttpd.main.http_keepalive='0'
+		uci commit uhttpd
+		# later: an update from LuCI is still talking to uhttpd now
+		( sleep 10; /etc/init.d/uhttpd restart ) >/dev/null 2>&1 </dev/null &
+	fi
+
+	uci set mayhem.settings.uhttpd_tuned='1'
+fi
+
+uci commit mayhem
+
+# TCP BBR when its module is there (an update through the package manager:
+# the installer also installs the module).
+/usr/bin/mayhem bbr --no-install >/dev/null 2>&1
+
+# Older configurations: the server list (0.12) and what comes after.
+ucode /usr/share/mayhem/migrate.uc >/dev/null 2>&1
+
+exit 0

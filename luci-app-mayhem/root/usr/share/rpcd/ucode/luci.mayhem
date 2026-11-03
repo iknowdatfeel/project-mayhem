@@ -1,0 +1,4298 @@
+// Mayhem: rpcd backend for the LuCI app (ubus object "luci.mayhem").
+// The dashboard is polled every few seconds, so it only reads files under
+// /var/run/mayhem and xray's metrics endpoint; nothing heavy is spawned.
+// No method waits for a process inside rpcd: see deferred_sh() and APART.
+
+'use strict';
+
+import * as fs from 'fs';
+import { parse_link, outbound_host, outbound_port, refused_by_xray } from 'mayhem.links';
+import { list_key, entries, as_list, dnsmasq_nftset } from 'mayhem.rules';
+import { parse_conf, is_amnezia, uci_sections, to_conf } from 'mayhem.awg';
+import * as C from 'mayhem.const';
+import { tcp_ping } from 'mayhem.ping';
+import * as runstate from 'mayhem.runstate';
+
+const XRAY = getenv('MAYHEM_XRAY_BIN') ?? '/usr/libexec/mayhem/xray';
+const RUN = C.RUN_DIR;
+
+function q(s) {
+	return "'" + replace(`${s}`, /'/g, "'\\''") + "'";
+}
+
+function run(cmd) {
+	const p = fs.popen(cmd, 'r');
+
+	if (!p)
+		return null;
+
+	const out = p.read('all');
+
+	p.close();
+
+	return out;
+}
+
+// --- not holding rpcd ----------------------------------------------------------
+// rpcd serves every plugin in its one process, and uhttpd stops altogether
+// while rpcd is busy: before each call it asks rpcd whether the session may
+// make it, and waits for the answer. A kept-alive connection whose time runs
+// out meanwhile is closed with the next call already sent over it: the page
+// gets no answer ("XHR request aborted by browser"). So no method waits for a
+// process here. It is started through rpcd's own file.exec, which does not
+// wait either; the method returns that pending call, and rpcd sends the answer
+// when the process is done. Outside rpcd (tests, call.uc) it runs in place.
+let ubus_conn = null;
+
+function ubus_link() {
+	if (getenv('MAYHEM_RPC_CHILD') != null)
+		return null;
+
+	if (ubus_conn == null) {
+		try {
+			ubus_conn = require('ubus').connect(getenv('MAYHEM_UBUS_SOCKET'), 120) ?? false;
+		}
+		catch (e) {
+			ubus_conn = false;
+		}
+	}
+
+	return ubus_conn || null;
+}
+
+let apart_seq = 0;
+
+// Runs a shell command and answers with done(what it printed).
+function deferred_sh(req, cmd, done) {
+	const conn = type(req?.reply) == 'function' ? ubus_link() : null;
+
+	if (!conn)
+		return done(run(cmd));
+
+	fs.mkdir(RUN, 0700);
+
+	const out = `${RUN}/rpc.${++apart_seq}.${time()}.out`;
+	const pending = conn.defer('file', 'exec', { command: '/bin/sh', params: [ '-c', `exec >${q(out)} 2>/dev/null; ${cmd}` ] }, () => {
+		const text = fs.readfile(out) ?? '';
+		let res;
+
+		fs.unlink(out);
+
+		try {
+			res = done(text);
+		}
+		catch (e) {
+			res = { error: `${e}` };
+		}
+
+		req.reply(type(res) == 'object' ? res : {});
+	});
+
+	if (!pending) {
+		// ubusd restarted: connect again next time
+		ubus_conn = null;
+		fs.unlink(out);
+
+		return done(run(cmd));
+	}
+
+	return pending;
+}
+
+// --- changes applied in the background ------------------------------------------
+// A reload of Mayhem (and of the network for tunnels) takes from a second to
+// half a minute on a router. It runs apart; meanwhile a file applying.<pid>
+// tells the dashboard that the servers it shows are about to change, so it
+// keeps asking and shows that the change is on its way.
+const APPLY_STALE = 300;
+
+function apply_bg(cmd) {
+	fs.mkdir(RUN, 0700);
+	system(`(f=${RUN}/applying.$$; : > "$f"; ${cmd}; rm -f "$f") >/dev/null 2>&1 </dev/null &`);
+}
+
+// An explicit choice changes the restart key and capture generation. The
+// generator rebuilds chains; fallback then applies their current choice.
+function reconnect_epoch(c) {
+	c.set('mayhem', 'settings', 'reconnect_epoch', `${(int(c.get('mayhem', 'settings', 'reconnect_epoch')) || 0) + 1}`);
+}
+
+function reload_choice() {
+	const lib = getenv('MAYHEM_LIB_DIR') ?? '/usr/share/mayhem';
+	apply_bg(`/etc/init.d/mayhem reload && ucode ${q(lib + '/fallback.uc')}`);
+}
+
+function applying() {
+	const now = time();
+
+	for (let f in fs.glob(`${RUN}/applying.*`) ?? []) {
+		const st = fs.stat(f);
+
+		if (st && now - st.mtime < APPLY_STALE)
+			return true;
+
+		fs.unlink(f);
+	}
+
+	return false;
+}
+
+function read_json(path) {
+	try {
+		return json(fs.readfile(path) ?? '');
+	}
+	catch (e) {
+		return null;
+	}
+}
+
+function write_json(path, v) {
+	const tmp = `${path}.tmp`;
+
+	return fs.writefile(tmp, sprintf('%J\n', v)) != null && fs.rename(tmp, path);
+}
+
+// Where the choice of a dashboard section is kept: a subscription's group
+// (section sub_<name>) keeps it with the subscription.
+function choice_target(c, sn) {
+	if (c.get('mayhem', sn) == 'subscription')
+		return sn;
+
+	const m = match(sn ?? '', /^sub_(.+)$/);
+
+	return (m && c.get('mayhem', m[1]) == 'subscription') ? m[1] : sn;
+}
+
+// A server chosen by hand while its section went direct (its servers did not
+// answer): the choice is tried at once instead of on the next check, 20 s
+// later. The section is no longer "down" (the dashboard says so), and a
+// check runs now: it puts the section back to direct if the new server does
+// not answer either, and brings the remote DNS back when it does.
+function health_now(sn, after) {
+	const h = read_json(`${RUN}/health.json`);
+
+	if (type(h?.sections?.[sn]) == 'object' && h.sections[sn].down) {
+		h.sections[sn] = { down: false, fails: 0, picked: time() };
+		write_json(`${RUN}/health.json`, h);
+	}
+
+	const lib = getenv('MAYHEM_LIB_DIR') ?? '/usr/share/mayhem';
+
+	system(`(${after ? after + '; ' : ''}ucode ${q(lib + '/health.uc')}) >/dev/null 2>&1 </dev/null &`);
+}
+
+// A UCI cursor for any config. MAYHEM_UCI_SAVE_DIR: the tests keep UCI
+// deltas next to their config (a shared /tmp/.uci may belong to another user).
+function uci_open() {
+	const save = getenv('MAYHEM_UCI_SAVE_DIR');
+
+	return save ? require('uci').cursor(C.UCI_DIR, save) : require('uci').cursor(C.UCI_DIR);
+}
+
+function uci_cursor() {
+	const c = uci_open();
+
+	c.load('mayhem');
+
+	return c;
+}
+
+// Commits the configs one after another; false when one could not be saved.
+function commit_all(c, ...configs) {
+	for (let cfg in configs)
+		if (!c.commit(cfg))
+			return false;
+
+	return true;
+}
+
+function xray_pid() {
+	const pid = trim(fs.readfile(`${RUN}/xray.pid`) ?? '');
+
+	return (pid != '' && fs.access(`/proc/${pid}`)) ? pid : null;
+}
+
+// The memory xray took (its data: RssAnon), what the watchdog and GOMEMLIMIT
+// are about. VmRSS adds ~20 MB of its own code read from flash, which the
+// kernel drops and reads again as it needs: rss_kb(pid, true).
+function rss_kb(pid, total) {
+	const st = fs.readfile(`/proc/${pid}/status`) ?? '';
+	const m = (!total && match(st, /RssAnon:[[:space:]]+([0-9]+)/)) || match(st, /VmRSS:[[:space:]]+([0-9]+)/);
+
+	return m ? int(m[1]) : null;
+}
+
+function metrics_cmd() {
+	return `curl -s -m 2 http://127.0.0.1:${C.METRICS_PORT}/debug/vars`;
+}
+
+function metrics(text) {
+	try {
+		const j = json(text ?? run(metrics_cmd()) ?? '');
+
+		return { stats: j?.stats?.outbound ?? {}, observatory: j?.observatory ?? {} };
+	}
+	catch (e) {
+		return { stats: {}, observatory: {} };
+	}
+}
+
+function os_release() {
+	const m = match(fs.readfile('/etc/openwrt_release') ?? '', /DISTRIB_DESCRIPTION='([^']*)'/);
+
+	return m ? trim(m[1]) : null;
+}
+
+function mayhem_version() {
+	const m = match(fs.readfile('/usr/share/mayhem/const.sh') ?? '', /MAYHEM_VERSION="([^"]*)"/);
+
+	return m ? m[1] : null;
+}
+
+// The server a section is using right now.
+function active_tag(s, obs) {
+	if (!length(s.nodes ?? []))
+		return null;
+
+	if (s.mode == 'single')
+		return s.nodes[0].tag;
+
+	if (s.mode == 'manual' || s.mode == 'fallback')
+		return s.selected;
+
+	if (s.override)
+		return s.override;
+
+	// leastPing: the fastest server that answered the last check
+	let best = null;
+
+	for (let n in s.nodes) {
+		const o = obs[n.tag];
+
+		if (o?.alive && (!best || o.delay < best.delay))
+			best = { tag: n.tag, delay: o.delay };
+	}
+
+	return best?.tag ?? s.nodes[0].tag;
+}
+
+// The downloaded subscriptions as the dashboard needs them (number of
+// servers, info), kept while their file stays the same: the dashboard asks
+// every few seconds, and a subscription of 200 servers is a JSON file of
+// hundreds of kilobytes to read and parse each time.
+const sub_files = {};
+
+function sub_file(name) {
+	const path = `${C.SUBS_DIR}/${name}.json`;
+	const st = fs.stat(path);
+	const key = st ? `${st.mtime} ${st.size}` : null;
+
+	if (!key)
+		return null;
+
+	if (sub_files[name]?.key != key) {
+		const cache = read_json(path);
+
+		sub_files[name] = { key: key, data: cache ? { nodes: cache.nodes ?? [], skipped: cache.skipped, updated: cache.updated, info: cache.info } : null };
+	}
+
+	return sub_files[name].data;
+}
+
+function subscriptions() {
+	const out = [];
+	const state = read_json(`${RUN}/subs-state.json`) ?? {};
+	const c = uci_cursor();
+
+	c.foreach('mayhem', 'subscription', (s) => {
+		const cache = sub_file(s['.name']);
+		const st = state[s['.name']] ?? {};
+
+		// Fresh counters and check time are kept in RAM, the cache on flash
+		// only changes together with the servers.
+		push(out, {
+			name: s['.name'],
+			enabled: (s.enabled ?? '1') == '1',
+			nodes: length(cache?.nodes ?? []),
+			skipped: cache?.skipped ?? 0,
+			updated: max(st.updated ?? 0, cache?.updated ?? 0) || null,
+			info: st.info ?? cache?.info,
+			error: st.error,
+			last_try: st.last_try,
+			via_why: st.via == 'direct' ? st.via_why : null
+		});
+	});
+
+	return out;
+}
+
+function update_running() {
+	const pid = trim(fs.readfile(`${RUN}/update.lock/pid`) ?? '');
+
+	return pid != '' && fs.access(`/proc/${pid}`) == true;
+}
+
+// Geo sources and rule lists: what was downloaded, when, and errors.
+// With `full`, also every category of every source with its size.
+function data_status(full) {
+	const c = uci_cursor();
+	const state = read_json(`${RUN}/data-state.json`) ?? {};
+	const res = { running: update_running(), sources: [], lists: [] };
+
+	if (full)
+		res.categories = { geosite: [], geoip: [] };
+
+	c.foreach('mayhem', 'geo_source', (s) => {
+		const idx = read_json(`${C.GEO_DIR}/${s['.name']}.json`);
+		const st = state.geo?.[s['.name']] ?? {};
+		const kind = s.kind == 'geoip' ? 'geoip' : 'geosite';
+
+		push(res.sources, {
+			name: s['.name'],
+			kind: kind,
+			enabled: (s.enabled ?? '1') == '1',
+			updated: max(st.last_ok ?? 0, idx?.updated ?? 0) || null,
+			size: idx?.size,
+			categories: idx ? length(keys(idx.categories ?? {})) : null,
+			copied: idx?.copied ?? [],
+			error: st.error,
+			via: st.via
+		});
+
+		if (full && idx && (s.enabled ?? '1') == '1')
+			for (let cat in sort(keys(idx.categories ?? {})))
+				push(res.categories[kind], { name: cat, count: idx.categories[cat], source: s['.name'] });
+	});
+
+	const seen = {};
+
+	c.foreach('mayhem', 'section', (s) => {
+		for (let u in entries(s.list_url)) {
+			if (seen[u])
+				continue;
+
+			seen[u] = true;
+
+			const st = state.lists?.[u] ?? {};
+			const f = fs.stat(`${C.LISTS_DIR}/${list_key(u)}.lst`);
+
+			push(res.lists, {
+				url: u, section: s['.name'],
+				updated: max(st.last_ok ?? 0, f?.mtime ?? 0) || null,
+				bytes: f?.size, error: st.error
+			});
+		}
+	});
+
+	return res;
+}
+
+function install_running() {
+	const pid = trim(fs.readfile(`${RUN}/install.pid`) ?? '');
+
+	return pid != '' && fs.access(`/proc/${pid}`) == true;
+}
+
+const NETIFD_PROTO = getenv('MAYHEM_NETIFD_PROTO_DIR') ?? '/lib/netifd/proto';
+const SYS_NET = getenv('MAYHEM_SYS_NET') ?? '/sys/class/net';
+
+function has_awg() {
+	return fs.access(`${NETIFD_PROTO}/amneziawg.sh`) == true && (NETIFD_PROTO != '/lib/netifd/proto' || fs.access('/usr/bin/awg') == true);
+}
+
+function has_wireguard() {
+	return fs.access(`${NETIFD_PROTO}/wireguard.sh`) == true;
+}
+
+// Protocols the running netifd has loaded, null if it does not answer.
+// netifd reads them only when it starts: one installed later stays unknown
+// until the network restarts, and its interfaces get proto "none".
+function proto_handlers() {
+	try {
+		return json(run('ubus call network get_proto_handlers 2>/dev/null') ?? '');
+	}
+	catch (e) {
+		return null;
+	}
+}
+
+// --- WireGuard obfuscation ------------------------------------------------------
+// A tunnel's UDP goes to a local obfuscator, which carries it to the server:
+//   phobos   wg-obfuscator: the packets XORed with a key, optionally dressed as
+//            STUN; the server runs wg-obfuscator with the same key;
+//   faketcp  phantun: the packets as a TCP connection, for networks that cut
+//            or slow down UDP; the server runs phantun_server.
+// The peer's endpoint then is 127.0.0.1:<lport>. Mayhem keeps the real one in
+// "config obfs 'ob_<iface>'" (iface, kind, host, eport, port, lport, key,
+// masking, mtu) and shows it in the .conf. Fake TCP takes 12 bytes more than
+// UDP: the tunnel's MTU is 1428 at most then.
+const OBFS_BIN = {
+	phobos: getenv('MAYHEM_WG_OBFUSCATOR') ?? '/usr/libexec/mayhem/wg-obfuscator',
+	faketcp: getenv('MAYHEM_PHANTUN') ?? '/usr/libexec/mayhem/phantun_client'
+};
+const OBFS_MASKING = [ 'AUTO', 'STUN', 'NONE' ];
+const FT_MTU = 1428;
+// wg-obfuscator adds up to 28 bytes (STUN masking and padding) to each packet:
+// with WireGuard's usual 1420 a full packet no longer fits in 1500 and is cut
+// in two on the way, which networks with DPI often drop.
+const PH_MTU = 1380;
+const OBFS_PORT0 = 41820;
+
+function obfs_record(cm, iface) {
+	return cm.get('mayhem', `ob_${iface}`) == 'obfs' ? cm.get_all('mayhem', `ob_${iface}`) : null;
+}
+
+function obfs_first_peer(cn, proto, iface) {
+	let first = null;
+
+	cn.foreach('network', `${proto}_${iface}`, (p) => { first ??= p; });
+
+	return first;
+}
+
+// The firewall zone of the fake TCP devices (mhft*): out to the WAN, which
+// masquerades them like the LAN.
+function obfs_zone(cf) {
+	let found = false;
+
+	cf.foreach('firewall', 'zone', (z) => {
+		if (z.name == 'mayhem_ft')
+			found = true;
+	});
+
+	if (found)
+		return;
+
+	const zone = cf.add('firewall', 'zone');
+
+	cf.set('firewall', zone, 'name', 'mayhem_ft');
+	cf.set('firewall', zone, 'device', [ 'mhft+' ]);
+	cf.set('firewall', zone, 'input', 'REJECT');
+	cf.set('firewall', zone, 'output', 'ACCEPT');
+	cf.set('firewall', zone, 'forward', 'REJECT');
+
+	const fwd = cf.add('firewall', 'forwarding');
+
+	cf.set('firewall', fwd, 'src', 'mayhem_ft');
+	cf.set('firewall', fwd, 'dest', 'wan');
+}
+
+// A loopback address: the .conf of a tunnel made for a local obfuscator
+// (Phobos and others give "Endpoint = 127.0.0.1:13255") names it, not the
+// server.
+function loopback_host(h) {
+	return !!match(h ?? '', /^(127\.|::1$|\[::1\]$|localhost$)/);
+}
+
+// Sets the obfuscation of a tunnel: o = { kind: 'phobos'|'faketcp', port,
+// key, masking, host } or null for none. The obfuscator talks to o.host
+// (the server) when given, else to the peer's endpoint: the real one from the
+// .conf, or the record's while the endpoint is the local obfuscator. A
+// loopback address is never the server. Returns an error or null.
+function obfs_apply(cn, cm, cf, iface, proto, o) {
+	const rec = obfs_record(cm, iface);
+	const sid = `ob_${iface}`;
+	const peer = obfs_first_peer(cn, proto, iface);
+
+	if (!peer)
+		return 'the tunnel has no peer';
+
+	const local = loopback_host(peer.endpoint_host);
+	const given = o?.host ? trim(o.host) : null;
+	const host = given ?? ((local && rec && !loopback_host(rec.host)) ? rec.host : (local ? null : peer.endpoint_host));
+	// The WireGuard port of the server; a .conf for a local obfuscator has
+	// none, the obfuscator's port stands in.
+	const eport = !local ? (peer.endpoint_port ?? '51820') : (rec && !loopback_host(rec.host)) ? rec.eport : `${o?.port ?? rec?.eport ?? 51820}`;
+	const mtu_now = cn.get('network', iface, 'mtu');
+	// The tunnel's own MTU: from the record while fake TCP has set its own.
+	const mtu = (rec && rec.mtu != null) ? rec.mtu : (mtu_now ?? '-');
+
+	const restore = () => {
+		cn.set('network', peer['.name'], 'endpoint_host', host);
+		cn.set('network', peer['.name'], 'endpoint_port', `${eport}`);
+
+		if (mtu == '-')
+			cn.delete('network', iface, 'mtu');
+		else
+			cn.set('network', iface, 'mtu', mtu);
+	};
+
+	if (!o) {
+		if (rec) {
+			if (host)
+				restore();
+
+			cm.delete('mayhem', sid);
+		}
+
+		return null;
+	}
+
+	if (!OBFS_BIN[o.kind])
+		return 'unknown obfuscator';
+
+	if (!host || loopback_host(host))
+		return 'enter the address of the obfuscator server: the endpoint of this config is the obfuscator on the router (127.0.0.1)';
+
+	if (!match(host, /^[A-Za-z0-9.:_-]+$/))
+		return 'invalid obfuscator server address';
+
+	if (o.port < 1 || o.port > 65535)
+		return 'invalid obfuscator port';
+
+	if (o.kind == 'phobos' && !match(o.key ?? '', /^[!-~]{1,255}$/))
+		return 'the obfuscation key must have 1 to 255 visible characters, no spaces';
+
+	let lport = int(rec?.lport ?? 0);
+
+	if (!lport) {
+		const used = {};
+
+		cm.foreach('mayhem', 'obfs', (r) => { used[r.lport] = true; });
+
+		for (lport = OBFS_PORT0; used[`${lport}`]; lport++)
+			;
+	}
+
+	if (!rec)
+		cm.set('mayhem', sid, 'obfs');
+
+	cm.set('mayhem', sid, 'iface', iface);
+	cm.set('mayhem', sid, 'kind', o.kind);
+	cm.set('mayhem', sid, 'host', host);
+	cm.set('mayhem', sid, 'eport', `${eport}`);
+	cm.set('mayhem', sid, 'port', `${o.port}`);
+	cm.set('mayhem', sid, 'lport', `${lport}`);
+	cm.set('mayhem', sid, 'mtu', mtu);
+
+	if (o.kind == 'phobos') {
+		cm.set('mayhem', sid, 'key', o.key);
+		cm.set('mayhem', sid, 'masking', index(OBFS_MASKING, o.masking) >= 0 ? o.masking : 'AUTO');
+		cn.set('network', iface, 'mtu', `${(mtu != '-' && int(mtu) < PH_MTU) ? int(mtu) : PH_MTU}`);
+	}
+	else {
+		cm.delete('mayhem', sid, 'key');
+		cm.delete('mayhem', sid, 'masking');
+		cn.set('network', iface, 'mtu', `${(mtu != '-' && int(mtu) < FT_MTU) ? int(mtu) : FT_MTU}`);
+		obfs_zone(cf);
+	}
+
+	cn.set('network', peer['.name'], 'endpoint_host', '127.0.0.1');
+	cn.set('network', peer['.name'], 'endpoint_port', `${lport}`);
+
+	return null;
+}
+
+function network_cursor() {
+	const c = uci_open();
+
+	c.load('network');
+
+	return c;
+}
+
+function handshakes_cmd(device) {
+	return `(awg show ${device} latest-handshakes || wg show ${device} latest-handshakes) 2>/dev/null`;
+}
+
+// Tunnel sections: state from the watchdog and the latest handshake
+// (`out`: what handshakes_cmd() printed, run here when not given).
+function tunnel_state(name, device, out) {
+	const st = trim(fs.readfile(`${RUN}/tunnel.${name}`) ?? '');
+	let hs = null;
+
+	if (match(device ?? '', /^[A-Za-z0-9_.-]+$/)) {
+		out ??= run(handshakes_cmd(device)) ?? '';
+
+		for (let line in split(out, '\n')) {
+			const m = match(line, /[[:space:]]([0-9]+)$/);
+
+			if (m && int(m[1]) > (hs ?? 0))
+				hs = int(m[1]);
+		}
+	}
+
+	return { state: st != '' ? st : null, handshake: hs };
+}
+
+function try_link_name(link) {
+	try {
+		return parse_link(link).name;
+	}
+	catch (e) {
+		return null;
+	}
+}
+
+function uri_escape(s) {
+	let out = '';
+
+	for (let i = 0; i < length(s); i++) {
+		const c = ord(s, i);
+
+		out += (match(chr(c), /[A-Za-z0-9._~-]/) ? chr(c) : sprintf('%%%02X', c));
+	}
+
+	return out;
+}
+
+// The key with a new name: the part after "#", or "ps" inside a vmess key.
+// null when the key keeps its name elsewhere.
+function rename_link(link, name) {
+	let out = null;
+
+	// A server kept as Xray JSON: its name is the tag.
+	if (substr(trim(link), 0, 1) == '{') {
+		try {
+			const j = json(link);
+
+			j.tag = name;
+			out = sprintf('%J', j);
+		}
+		catch (e) {
+			out = null;
+		}
+	}
+	else if (match(link, /^vmess:\/\/[A-Za-z0-9+\/=_-]+$/)) {
+		try {
+			const j = json(b64dec(replace(replace(substr(link, 8), '-', '+'), '_', '/')));
+
+			j.ps = name;
+			out = 'vmess://' + b64enc(sprintf('%J', j));
+		}
+		catch (e) {
+			out = null;
+		}
+	}
+	else {
+		const h = index(link, '#');
+
+		out = (h >= 0 ? substr(link, 0, h) : link) + '#' + uri_escape(name);
+	}
+
+	return (out != null && try_link_name(out) == name) ? out : null;
+}
+
+// A host to reach through a tunnel for its checks: answers TCP on port 80
+// and ICMP from anywhere.
+const TUNNEL_PROBE_URL = 'http://1.1.1.1/';
+const TUNNEL_PROBE_URL2 = 'http://1.0.0.1/';
+const TUNNEL_PING_HOST = '1.1.1.1';
+// ICMP: seconds to wait for a reply (a live server answers in well under a
+// second), pings run at once by probe_icmp, servers in one probe_icmp call.
+const ICMP_WAIT = 2;
+const ICMP_WAVE = 32;
+// TCP: connections at once (a curl each), seconds to connect.
+const TCP_WAVE = 16;
+const TCP_WAIT = 4;
+const ICMP_MAX = 256;
+
+// URL test over kept-alive connections: the process, the servers it keeps.
+const WARM = getenv('MAYHEM_RPC_WARM') ?? '/usr/share/mayhem-luci/warm.uc';
+// How old the numbers of the last URL test may be when the dashboard opens.
+const WARM_LAST = 1800;
+const WARM_MAX = 64;
+
+// Servers may be reached over IPv6 (the TCP ping takes an IPv6 address of a
+// name only then).
+function ipv6_allowed() {
+	return (uci_cursor().get('mayhem', 'settings', 'ip_family') ?? 'prefer_ipv4') != 'ipv4_only';
+}
+
+// The server of a tunnel: the endpoint of its first peer.
+function tunnel_endpoint(iface) {
+	const c = uci_open();
+	let ep = null;
+
+	if (!c.load('network'))
+		return null;
+
+	const proto = c.get('network', iface, 'proto');
+
+	if (proto)
+		c.foreach('network', `${proto}_${iface}`, (p) => {
+			ep ??= p.endpoint_host;
+		});
+
+	// An obfuscated tunnel sends to its obfuscator on 127.0.0.1, which would
+	// answer at once: the server is the one the obfuscator talks to.
+	if (ep == '127.0.0.1') {
+		const rec = obfs_record(uci_cursor(), iface);
+
+		ep = (rec?.host && !loopback_host(rec.host)) ? rec.host : null;
+	}
+
+	return (ep && match(ep, /^[A-Za-z0-9.:_-]+$/)) ? ep : null;
+}
+
+function find_node(state, tag) {
+	for (let sn in keys(state?.sections ?? {}))
+		for (let n in state.sections[sn].nodes ?? [])
+			if (n.tag == tag)
+				return { section: sn, node: n, info: state.sections[sn] };
+
+	return null;
+}
+
+const ACTIONS = {
+	// starting turns routing on as well: there is no separate switch for it
+	start: 'uci set mayhem.settings.enabled=1 && uci commit mayhem && /etc/init.d/mayhem start',
+	stop: '/etc/init.d/mayhem stop',
+	// noted for the log: the next xray says it was restarted by hand
+	restart: `echo "$(date +%s) manual" > ${RUN}/restart.why; /etc/init.d/mayhem restart`,
+	reload: '/etc/init.d/mayhem reload',
+	enable: '/usr/bin/mayhem enable',
+	disable: '/usr/bin/mayhem disable',
+	// start on boot or not; the service keeps its current state
+	autostart_on: '/etc/init.d/mayhem enable',
+	autostart_off: '/etc/init.d/mayhem disable'
+};
+
+const IP_CHECK_URL = 'https://api.ipify.org';
+const LIB = getenv('MAYHEM_LIB_DIR') ?? '/usr/share/mayhem';
+
+// --- diagnostics ------------------------------------------------------------------
+// Each check: { group, name, status: ok | warn | fail | info, detail }.
+
+function check(list, group, name, status, detail) {
+	push(list, { group: group, name: name, status: status, detail: detail ?? '' });
+}
+
+function lines_of(text) {
+	return filter(split(text ?? '', '\n'), (l) => trim(l) != '');
+}
+
+function listening(ports) {
+	const out = run(`sh -c '. ${LIB}/lib.sh; for p in ${join(' ', ports)}; do mayhem_port_listening $p && echo $p; done' 2>/dev/null`) ?? '';
+
+	return map(lines_of(out), (l) => int(l));
+}
+
+function diag_local() {
+	const res = [];
+	const c = uci_cursor();
+	const enabled = c.get('mayhem', 'settings', 'enabled') == '1';
+	const pid = xray_pid();
+	const active = pid != null && fs.access(`${RUN}/active`) == true;
+	const generated = read_json(`${RUN}/status.json`);
+	const st = generated ?? {};
+	const state = read_json(`${RUN}/nodes.json`) ?? { sections: {} };
+
+	// Service
+	if (!enabled)
+		check(res, 'service', 'Routing', 'warn', 'disabled in the settings');
+	else if (active)
+		check(res, 'service', 'Routing', 'ok', 'traffic is redirected to xray');
+	else if (pid)
+		check(res, 'service', 'Routing', 'fail', 'xray runs, but traffic is not redirected');
+	else
+		check(res, 'service', 'Routing', 'fail', 'xray is not running');
+
+	let mstatus = null;
+
+	try {
+		mstatus = json(run('/usr/bin/mayhem status 2>/dev/null') ?? '');
+	}
+	catch (e) {
+		mstatus = null;
+	}
+
+	if (mstatus?.conflicts)
+		check(res, 'service', 'Other proxy clients', 'fail', `running: ${mstatus.conflicts}`);
+	else
+		check(res, 'service', 'Other proxy clients', 'ok', 'none running');
+
+	// Configuration
+	for (let e in st.errors ?? [])
+		check(res, 'config', 'Error', 'fail', e);
+
+	for (let w in st.warnings ?? [])
+		check(res, 'config', 'Warning', 'warn', w);
+
+	if (!generated)
+		check(res, 'config', 'Configuration', 'warn', 'no generated configuration status');
+	else if (!length(st.errors ?? []) && !length(st.warnings ?? []))
+		check(res, 'config', 'Configuration', 'ok', 'no errors or warnings');
+
+	// xray
+	const ver = trim(fs.readfile(`${RUN}/xray.version`) ?? '');
+
+	check(res, 'xray', 'Version', ver != '' ? 'ok' : (fs.access(XRAY) ? 'info' : 'fail'),
+		ver != '' ? ver : (fs.access(XRAY) ? 'installed' : 'not installed: mayhem xray-install'));
+
+	if (pid) {
+		const rss = rss_kb(pid);
+		const limit = (st.memlimit_mib ?? 0) * 1024;
+
+		check(res, 'xray', 'Memory', (limit && rss > limit) ? 'warn' : 'ok',
+			sprintf('%d MiB in use, soft limit %d MiB', int((rss ?? 0) / 1024), st.memlimit_mib ?? 0));
+
+		const want = [ C.TPROXY_PORT, C.DNS_PORT, C.API_PORT ];
+		const got = listening(want);
+		const missing = filter(want, (p) => index(got, p) < 0);
+
+		check(res, 'xray', 'Ports', length(missing) ? 'fail' : 'ok',
+			length(missing) ? `not listening: ${join(', ', missing)}` : `listening: ${join(', ', want)}`);
+	}
+
+	// Kernel side
+	const chain = run(`nft list chain inet ${C.NFT_TABLE} prerouting 2>/dev/null`) ?? '';
+
+	if (chain == '') {
+		check(res, 'kernel', 'nftables', active ? 'fail' : 'info', 'no Mayhem table');
+	}
+	else {
+		let packets = 0;
+
+		for (let l in lines_of(chain)) {
+			const m = match(l, /tproxy .*counter packets ([0-9]+)/);
+
+			if (m)
+				packets += int(m[1]);
+		}
+
+		check(res, 'kernel', 'nftables', 'ok', `table loaded, ${packets} packets sent to xray`);
+	}
+
+	const rules = run('ip rule 2>/dev/null') ?? '';
+
+	check(res, 'kernel', 'Policy routing', index(rules, `lookup ${C.RT_TABLE}`) >= 0 ? 'ok' : (active ? 'fail' : 'info'),
+		index(rules, `lookup ${C.RT_TABLE}`) >= 0 ? `rule for table ${C.RT_TABLE} is in place` : 'no rule');
+
+	// DNS
+	const dnsmasq_pid = trim(run('pidof dnsmasq 2>/dev/null') ?? '');
+
+	check(res, 'dns', 'dnsmasq', dnsmasq_pid != '' ? 'ok' : 'fail', dnsmasq_pid != '' ? 'running' : 'not running');
+
+	const conf_dirs = lines_of(run(`sh -c '. ${LIB}/lib.sh; mayhem_dnsmasq_dirs' 2>/dev/null`));
+	const has_conf = length(filter(conf_dirs, (d) => fs.access(`${d}/mayhem.conf`))) > 0;
+
+	// dnsmasq reads its servers from dns.servers: xray while it works, the
+	// provider's otherwise.
+	const to_xray = index(fs.readfile(C.DNS_SERVERS) ?? '', `#${C.DNS_PORT}`) >= 0;
+
+	check(res, 'dns', 'Redirect to xray', has_conf && to_xray ? 'ok' : (active ? 'fail' : 'info'),
+		!has_conf ? 'dnsmasq does not use xray' : to_xray ? 'dnsmasq forwards queries to xray' : 'dnsmasq asks the provider\'s servers until xray works');
+
+	// By lists, only the names of the rules go to xray when dnsmasq can match
+	// all of them.
+	if (state.mode == 'lists' && state.dns)
+		check(res, 'dns', 'Queries through xray', state.dns.split ? 'ok' : 'info',
+			state.dns.split ? sprintf('only the names of the rules (%d), the rest goes to the provider directly', state.dns.names ?? 0)
+				: sprintf('all of them: dnsmasq cannot match %s', state.dns.why ?? '?'));
+
+	const health = read_json(`${RUN}/health.json`) ?? {};
+	if (health.dns?.down || fs.access(`${RUN}/dns.degraded`))
+		check(res, 'dns', 'Remote DNS', 'fail', 'remote DNS failed; queries may use the provider fallback');
+	for (let sn in keys(health.sections ?? {}))
+		if (health.sections[sn].down)
+			check(res, 'service', sn, 'fail', state.killswitch ? 'VPN failed; traffic waits for it' : 'VPN failed; traffic goes direct');
+
+	// Tunnels
+	for (let sn in keys(state.sections ?? {})) {
+		const s = state.sections[sn];
+
+		if (s.type != 'interface')
+			continue;
+
+		const t = tunnel_state(sn, s.device);
+		const age = t.handshake ? time() - t.handshake : null;
+
+		check(res, 'tunnels', `${sn} (${s.interface})`, t.state == 'up' ? 'ok' : ((t.state == 'down' || t.state == 'held') ? 'fail' : 'info'),
+			(t.state ?? 'unknown') + (age != null ? sprintf(', last handshake %d s ago', age) : ''));
+	}
+
+	// Data
+	const data = data_status(false);
+
+	const ago = (ts) => {
+		const s = time() - ts;
+
+		return s < 3600 ? sprintf('%d min ago', s / 60) : s < 86400 ? sprintf('%d h ago', s / 3600) : sprintf('%d d ago', s / 86400);
+	};
+
+	for (let x in data.sources) {
+		if (!x.enabled)
+			continue;
+
+		if (x.error)
+			check(res, 'data', `Geo source ${x.name}`, 'warn', x.error);
+		else if (x.categories != null)
+			check(res, 'data', `Geo source ${x.name}`, 'ok',
+				sprintf('%d categories', x.categories) + (x.updated ? `, updated ${ago(x.updated)}` : ''));
+		else
+			check(res, 'data', `Geo source ${x.name}`, 'info', 'not downloaded: no section uses it yet');
+	}
+
+	for (let l in data.lists)
+		if (l.error)
+			check(res, 'data', `List ${l.url}`, 'warn', l.error);
+		else
+			check(res, 'data', `List ${l.url}`, l.updated ? 'ok' : 'info', l.updated ? `updated ${ago(l.updated)}` : 'not downloaded yet');
+
+	for (let sub in subscriptions()) {
+		if (!sub.enabled)
+			continue;
+
+		if (sub.error)
+			check(res, 'data', `Subscription ${sub.name}`, 'warn', sub.error);
+		else if (sub.info?.hwid?.limit)
+			check(res, 'data', `Subscription ${sub.name}`, 'fail', 'device limit reached');
+		else
+			check(res, 'data', `Subscription ${sub.name}`, sub.updated ? 'ok' : 'info',
+				sprintf('%d servers', sub.nodes) + (sub.updated ? `, updated ${ago(sub.updated)}` : ''));
+	}
+
+	// System
+	const year = localtime(time()).year;
+
+	check(res, 'system', 'Clock', year >= 2025 ? 'ok' : 'fail',
+		year >= 2025 ? 'set' : 'the clock is wrong: TLS connections will fail');
+
+	for (let l in lines_of(fs.readfile(`${RUN}/watchdog.log`)))
+		check(res, 'system', 'Watchdog', 'warn', l);
+
+	const targets = [ { id: 'direct', name: 'Direct' } ];
+
+	for (let sn in keys(state.sections ?? {})) {
+		const s = state.sections[sn];
+
+		if (s.type == 'proxy' || s.type == 'interface')
+			push(targets, { id: sn, name: sn, type: s.type });
+	}
+
+	return { checks: res, targets: targets, active: active };
+}
+
+// Resolves a domain through dnsmasq: [ addresses ] or null.
+function lookup(domain) {
+	const out = run(`nslookup ${q(domain)} 127.0.0.1 2>/dev/null`) ?? '';
+	const ips = [];
+	let answer = false;
+
+	for (let l in lines_of(out)) {
+		if (match(l, /^Name:/))
+			answer = true;
+
+		const m = answer ? match(l, /^Address( [0-9]+)?:[[:space:]]*([0-9a-fA-F:.]+)$/) : null;
+
+		if (m)
+			push(ips, m[2]);
+	}
+
+	return length(ips) ? ips : null;
+}
+
+function first_domain(sec) {
+	for (let d in entries(sec.domain)) {
+		const m = match(d, /^(domain:|full:)?([a-z0-9-]+(\.[a-z0-9-]+)+)$/);
+
+		if (m)
+			return m[2];
+	}
+
+	return null;
+}
+
+function diag_dns() {
+	const res = [];
+	const c = uci_cursor();
+	const fake = c.get('mayhem', 'dns', 'fakedns') == '1';
+	const direct = lookup('openwrt.org');
+
+	check(res, 'dns', 'Domain outside the lists (openwrt.org)', direct ? 'ok' : 'fail',
+		direct ? join(', ', direct) : 'no answer');
+
+	c.foreach('mayhem', 'section', (s) => {
+		if ((s.enabled ?? '1') != '1' || index([ 'proxy', 'interface' ], s.type ?? 'proxy') < 0)
+			return;
+
+		const d = first_domain(s);
+
+		if (!d)
+			return;
+
+		const ips = lookup(d);
+		let status = ips ? 'ok' : 'fail';
+		let detail = ips ? join(', ', ips) : 'no answer';
+
+		if (ips && fake && (s.type ?? 'proxy') == 'proxy' && !match(ips[0], /^198\.(18|19)\./)) {
+			status = 'warn';
+			detail += ' (FakeDNS is on, a 198.18.x.x address was expected: the device may use another DNS)';
+		}
+
+		check(res, 'dns', `${s['.name']}: ${d}`, status, detail);
+	});
+
+	return { checks: res };
+}
+
+// curl arguments that send a request through a section: its tunnel device or
+// the helper SOCKS user of the section. "direct" needs none.
+function section_via(state, target) {
+	if (target == 'direct')
+		return { via: '' };
+
+	const s = state.sections?.[target];
+
+	if (!s)
+		return { error: 'unknown section' };
+
+	if (s.type == 'interface') {
+		if (!match(s.device ?? '', /^[A-Za-z0-9_.-]+$/))
+			return { error: 'no device' };
+
+		return { via: `--interface ${q(s.device)}` };
+	}
+
+	if (!xray_pid())
+		return { error: 'xray is not running' };
+
+	return { via: `-x ${q(`socks5h://sec-${target}:${C.HELPER_PASS}@127.0.0.1:${C.HELPER_PORT}`)}` };
+}
+
+// The section the dashboard shows the connection of: the default section of
+// "everything through proxy", otherwise the first proxy section.
+function default_section(state) {
+	const want = state?.default_section ?? uci_cursor().get('mayhem', 'settings', 'default_section');
+	const secs = state?.sections ?? {};
+
+	if (want && secs[want])
+		return want;
+
+	for (let sn in keys(secs))
+		if (secs[sn].type == 'proxy')
+			return sn;
+
+	return null;
+}
+
+// Services that tell the address a request comes from and where it is. They
+// are asked in turn; the city comes in the language of the page if they know it.
+const GEO_LANGS = [ 'en', 'de', 'es', 'fr', 'ja', 'pt-BR', 'ru', 'zh-CN' ];
+const GEO_SERVICES = [
+	(lang) => `https://ipwho.is/?lang=${lang}&fields=success,ip,country,country_code,city`,
+	(lang) => 'https://api.ip.sb/geoip',
+	(lang) => `http://ip-api.com/json/?lang=${lang}&fields=status,query,country,countryCode,city`
+];
+
+function exit_geo(via, lang) {
+	for (let svc in GEO_SERVICES) {
+		let j = null;
+
+		try {
+			j = json(run(`curl -s -m 6 ${via} ${q(svc(lang))} 2>/dev/null`) ?? '');
+		}
+		catch (e) {
+			continue;
+		}
+
+		const ip = j?.ip ?? j?.query;
+
+		if (type(j) != 'object' || j.success === false || (j.status != null && j.status != 'success') ||
+		    !match(`${ip}`, /^[0-9a-fA-F:.]+$/))
+			continue;
+
+		const cc = j.country_code ?? j.countryCode;
+
+		return {
+			ip: ip,
+			country_code: match(`${cc}`, /^[A-Za-z]{2}$/) ? uc(cc) : null,
+			country: type(j.country) == 'string' ? j.country : null,
+			city: type(j.city) == 'string' ? j.city : null
+		};
+	}
+
+	return null;
+}
+
+// curl options that pin the host of a URL to its address from the provider's
+// DNS servers, past dnsmasq and xray. Empty when that does not work.
+function resolve_direct(url) {
+	const m = match(url ?? '', /^(https?):\/\/([^\/:?#]+)(:([0-9]+))?/);
+
+	if (!m || match(m[2], /^[0-9.]+$|:/))
+		return '';
+
+	const port = m[4] ?? (m[1] == 'https' ? '443' : '80');
+	let servers = [];
+
+	for (let f in [ '/tmp/resolv.conf.d/resolv.conf.auto', '/tmp/resolv.conf.auto' ]) {
+		for (let line in split(fs.readfile(f) ?? '', '\n')) {
+			const n = match(line, /^[[:space:]]*nameserver[[:space:]]+([0-9.]+)/);
+
+			if (n && !match(n[1], /^127\./))
+				push(servers, n[1]);
+		}
+
+		if (length(servers))
+			break;
+	}
+
+	for (let ns in servers) {
+		const out = run(`nslookup ${q(m[2])} ${q(ns)} 2>/dev/null`) ?? '';
+		let seen_name = false;
+
+		for (let line in split(out, '\n')) {
+			if (match(line, /^Name:/))
+				seen_name = true;
+
+			const a = seen_name ? match(line, /^Address( [0-9]+)?:[[:space:]]*([0-9]+\.[0-9]+\.[0-9]+\.[0-9]+)/) : null;
+
+			if (a)
+				return `--resolve ${q(`${m[2]}:${port}:${a[2]}`)}`;
+		}
+	}
+
+	return '';
+}
+
+// External address and response time through a section (or direct).
+function diag_exit(target) {
+	const res = [];
+	const state = read_json(`${RUN}/nodes.json`) ?? { sections: {} };
+	const url = uci_cursor().get('mayhem', 'settings', 'ip_check_url') ?? IP_CHECK_URL;
+	const v = section_via(state, target);
+
+	if (v.error)
+		return { checks: [ { group: 'exit', name: target, status: 'fail', detail: v.error } ] };
+
+	const requested = state.sections?.[target];
+	const section = requested?.pool ? state.sections?.pool : requested;
+	if (section?.type == 'proxy') {
+		let tag = section.override ?? section.selected;
+		if (!tag && length(section.nodes ?? []) == 1)
+			tag = section.nodes[0].tag;
+		if (!tag && section.balancer) {
+			let part = null, selected = null, override = null;
+			for (let l in lines_of(run(`${XRAY} api bi --server=127.0.0.1:${C.API_PORT} ${q(section.balancer)} 2>/dev/null`))) {
+				const m = match(l, /^[ \t]+[0-9]+[ \t]+([^ \t]+)/);
+				if (index(l, 'Override') >= 0) part = 'o';
+				else if (index(l, 'Selects') >= 0) part = 's';
+				else if (m && part == 'o') override ??= m[1];
+				else if (m && part == 's') selected ??= m[1];
+			}
+			tag = override ?? selected;
+		}
+		const node = filter(section.nodes ?? [], (n) => n.tag == tag)[0];
+		if (!node)
+			check(res, 'exit', `${target}: VPN server`, 'fail', 'no active VPN server; the section may be using direct fallback');
+		else {
+			const probe_url = state.probe_url ?? C.DEFAULT_PROBE_URL;
+			const proxy = `socks5h://${tag}:${C.HELPER_PASS}@127.0.0.1:${C.HELPER_PORT}`;
+			const result = trim(run(`curl -s -o /dev/null -m 10 -x ${q(proxy)} -w '%{http_code}' ${q(probe_url)} 2>/dev/null`) ?? '');
+			const ok = match(result, /^[1-5][0-9][0-9]$/) != null;
+			check(res, 'exit', `${target}: ${node.name}`, ok ? 'ok' : 'fail', ok ? `VPN server answered, HTTP ${result}` : 'VPN server did not answer');
+		}
+		const health = read_json(`${RUN}/health.json`);
+		if (health?.sections?.[requested?.pool ? 'pool' : target]?.down)
+			check(res, 'exit', target, 'fail', state.killswitch ? 'traffic waits for the VPN' : 'traffic uses direct fallback');
+	}
+
+	// Directly means with the provider's DNS too: with FakeDNS the router's own
+	// lookups get fake addresses that lead into xray.
+	const via = target == 'direct' ? `--noproxy '*' ${resolve_direct(url)}` : v.via;
+	const out = trim(run(`curl -s -m 10 ${via} -w ' %{http_code} %{time_total}' ${q(url)} 2>/dev/null`) ?? '');
+	const m = match(out, /^([0-9a-fA-F:.]+) ([0-9]+) ([0-9.]+)$/);
+
+	if (m && int(m[2]) == 200)
+		check(res, 'exit', target == 'direct' ? 'Direct' : target, 'ok', sprintf('%s, %d ms', m[1], int(m[3] * 1000)));
+	else
+		check(res, 'exit', target == 'direct' ? 'Direct' : target, 'fail', `no answer from ${url}`);
+
+	return { checks: res };
+}
+
+// --- backup -----------------------------------------------------------------------
+// The whole UCI config of Mayhem and the rule list files of the sections.
+// Without connections: no subscriptions, server links, outbound JSON or HWID;
+// restoring such a backup keeps the connections the router has.
+
+const BACKUP_TYPES = [ 'settings', 'dns', 'geo', 'geo_source', 'device', 'subscription', 'pool', 'section' ];
+const LINK_OPTIONS = [ 'link', 'subscription', 'outbound_json', 'proxy_type' ];
+const LIST_MAX = 262144;
+
+function safe_list_path(p) {
+	return type(p) == 'string' && match(p, /^\/etc\/mayhem\/[A-Za-z0-9_.\/-]+$/) && index(p, '..') < 0;
+}
+
+function uci_sections_ordered(c) {
+	const all = c.get_all('mayhem') ?? {};
+
+	return sort(values(all), (a, b) => a['.index'] - b['.index']);
+}
+
+function backup_export(with_links) {
+	const c = uci_cursor();
+	const sections = [];
+	const files = {};
+
+	for (let s in uci_sections_ordered(c)) {
+		if (index(BACKUP_TYPES, s['.type']) < 0)
+			continue;
+
+		if (!with_links && s['.type'] == 'subscription')
+			continue;
+
+		const out = { '.type': s['.type'], '.name': s['.anonymous'] ? null : s['.name'] };
+
+		for (let k in keys(s)) {
+			if (substr(k, 0, 1) == '.')
+				continue;
+
+			if (!with_links && (((s['.type'] == 'section' || s['.type'] == 'pool') && index(LINK_OPTIONS, k) >= 0) || (s['.type'] == 'device' && k == 'hwid')))
+				continue;
+
+			out[k] = s[k];
+		}
+
+		if (s['.type'] == 'section')
+			for (let f in entries(s.list_file)) {
+				const st = fs.stat(f);
+
+				if (safe_list_path(f) && st?.type == 'file' && st.size <= LIST_MAX)
+					files[f] = fs.readfile(f);
+			}
+
+		push(sections, out);
+	}
+
+	return {
+		mayhem_backup: 1,
+		version: mayhem_version(),
+		created: time(),
+		connections: !!with_links,
+		sections: sections,
+		files: files
+	};
+}
+
+function valid_value(v) {
+	if (type(v) == 'string')
+		return true;
+
+	return type(v) == 'array' && length(filter(v, (x) => type(x) != 'string')) == 0;
+}
+
+function backup_import(b, no_reload) {
+	if (type(b) != 'object' || b.mayhem_backup != 1 || type(b.sections) != 'array')
+		return { error: 'this is not a Mayhem backup' };
+
+	for (let s in b.sections) {
+		if (type(s) != 'object' || index(BACKUP_TYPES, s['.type']) < 0)
+			return { error: 'unknown section in the backup' };
+
+		if (s['.name'] != null && !match(`${s['.name']}`, /^[A-Za-z0-9_]+$/))
+			return { error: 'invalid section name in the backup' };
+
+		for (let k in keys(s))
+			if (substr(k, 0, 1) != '.' && (!match(k, /^[a-z_][a-z0-9_]*$/) || !valid_value(s[k])))
+				return { error: `invalid option "${k}" in the backup` };
+	}
+
+	const c = uci_cursor();
+	const keep = {};
+
+	// A backup without connections keeps the ones this router has.
+	if (!b.connections) {
+		keep.subs = [];
+		keep.links = {};
+
+		for (let s in uci_sections_ordered(c)) {
+			if (s['.type'] == 'subscription')
+				push(keep.subs, s);
+			else if (s['.type'] == 'section' || s['.type'] == 'pool') {
+				keep.links[s['.name']] = {};
+
+				for (let k in LINK_OPTIONS)
+					if (s[k] != null)
+						keep.links[s['.name']][k] = s[k];
+			}
+			else if (s['.type'] == 'device' && s.hwid)
+				keep.hwid = s.hwid;
+		}
+	}
+
+	for (let s in uci_sections_ordered(c))
+		c.delete('mayhem', s['.name']);
+
+	const put = (s) => {
+		let name = s['.name'];
+
+		if (name != null)
+			c.set('mayhem', name, s['.type']);
+		else
+			name = c.add('mayhem', s['.type']);
+
+		for (let k in keys(s))
+			if (substr(k, 0, 1) != '.')
+				c.set('mayhem', name, k, s[k]);
+
+		return name;
+	};
+
+	let added_subs = false;
+
+	for (let s in b.sections) {
+		// Subscriptions of the router go where the backup had its own.
+		if (keep.subs && !added_subs && s['.type'] == 'section') {
+			for (let sub in keep.subs)
+				put(sub);
+
+			added_subs = true;
+		}
+
+		const name = put(s);
+
+		if (keep.links && (s['.type'] == 'section' || s['.type'] == 'pool'))
+			for (let k in keys(keep.links[name] ?? {}))
+				c.set('mayhem', name, k, keep.links[name][k]);
+
+		if (keep.hwid && s['.type'] == 'device')
+			c.set('mayhem', name, 'hwid', keep.hwid);
+	}
+
+	if (keep.subs && !added_subs)
+		for (let sub in keep.subs)
+			put(sub);
+
+	// The server list of the router, when the backup has none.
+	if (keep.links?.pool && !c.get('mayhem', 'pool')) {
+		c.set('mayhem', 'pool', 'pool');
+
+		for (let k in keys(keep.links.pool))
+			c.set('mayhem', 'pool', k, keep.links.pool[k]);
+	}
+
+	c.commit('mayhem');
+
+	// A backup of an older version: brought up to date.
+	if (!c.get('mayhem', 'pool'))
+		system(`ucode ${LIB}/migrate.uc >/dev/null 2>&1`);
+
+	let files = 0;
+
+	for (let f in keys(b.files ?? {})) {
+		const data = b.files[f];
+
+		if (!safe_list_path(f) || type(data) != 'string' || length(data) > LIST_MAX)
+			continue;
+
+		system(`mkdir -p ${q(fs.dirname(f))}`);
+
+		if (fs.writefile(`${f}.tmp`, data) != null && fs.rename(`${f}.tmp`, f))
+			files++;
+	}
+
+	if (!no_reload)
+		apply_bg('/etc/init.d/mayhem reload');
+
+	return { ok: true, sections: length(b.sections), files: files, kept_connections: !b.connections };
+}
+
+// --- reset ------------------------------------------------------------------------
+// The config the package ships, with or without the subscriptions, server keys
+// and HWID the router has now.
+
+const DEFAULTS = getenv('MAYHEM_DEFAULTS') ?? '/usr/share/mayhem/defaults.conf';
+
+function reset_config(keep) {
+	const data = fs.readfile(DEFAULTS);
+
+	if (!data)
+		return { error: 'the default config is missing' };
+
+	const dir = `/tmp/mayhem-defaults.${clock()[1]}`;
+
+	fs.mkdir(dir, 0700);
+	fs.writefile(`${dir}/mayhem`, data);
+
+	const dc = require('uci').cursor(dir);
+
+	dc.load('mayhem');
+
+	const sections = map(uci_sections_ordered(dc), (x) => {
+		const o = { '.type': x['.type'], '.name': x['.anonymous'] ? null : x['.name'] };
+
+		for (let k in keys(x))
+			if (substr(k, 0, 1) != '.')
+				o[k] = x[k];
+
+		return o;
+	});
+
+	fs.unlink(`${dir}/mayhem`);
+	fs.rmdir(dir);
+
+	// Server keys of every section go to the server list; subscriptions stay.
+	const links = [];
+
+	if (keep)
+		for (let x in uci_sections_ordered(uci_cursor()))
+			if (x['.type'] == 'section' || x['.type'] == 'pool')
+				for (let l in (type(x.link) == 'array' ? x.link : (x.link ? [ x.link ] : [])))
+					if (index(links, l) < 0) push(links, l);
+
+	const res = backup_import({ mayhem_backup: 1, connections: !keep, sections: sections }, true);
+
+	if (res.error)
+		return res;
+
+	const c = uci_cursor();
+
+	if (!c.get('mayhem', 'pool'))
+		c.set('mayhem', 'pool', 'pool');
+
+	if (keep && length(links))
+		c.set('mayhem', 'pool', 'link', links);
+	else
+		c.delete('mayhem', 'pool', 'link');
+
+	if (!c.get('mayhem', 'device'))
+		c.set('mayhem', 'device', 'device');
+
+	if (!c.get('mayhem', 'device', 'hwid'))
+		c.set('mayhem', 'device', 'hwid', trim(run("tr -dc 'A-Za-z0-9' </dev/urandom 2>/dev/null | head -c 16") ?? ''));
+
+	if (!c.get('mayhem', 'device', 'model'))
+		c.set('mayhem', 'device', 'model', trim(fs.readfile('/tmp/sysinfo/model') ?? '') || 'OpenWrt');
+
+	c.commit('mayhem');
+	apply_bg('/etc/init.d/mayhem reload');
+
+	return { ok: true, kept_connections: !!keep };
+}
+
+// --- section names ------------------------------------------------------------------
+
+function rename_section(from, to) {
+	if (!match(from ?? '', /^[A-Za-z0-9_]+$/) || !match(to ?? '', /^[A-Za-z0-9_]+$/))
+		return { error: 'a section name may only contain letters, digits and _' };
+
+	if (to == 'pool')
+		return { error: 'this name is taken by the server list' };
+
+	const c = uci_cursor();
+
+	if (c.get('mayhem', from) != 'section')
+		return { error: 'no such section' };
+
+	if (c.get('mayhem', to) != null)
+		return { error: 'this name is taken' };
+
+	c.rename('mayhem', from, to);
+
+	// Settings that name the section.
+	for (let ref in [ [ 'settings', 'default_section' ], [ 'dns', 'proxy_section' ], [ 'geo', 'update_section' ] ])
+		if (c.get('mayhem', ref[0], ref[1]) == from)
+			c.set('mayhem', ref[0], ref[1], to);
+
+	c.foreach('mayhem', 'subscription', (x) => {
+		if (x.update_section == from)
+			c.set('mayhem', x['.name'], 'update_section', to);
+	});
+
+	c.commit('mayhem');
+	apply_bg('/etc/init.d/mayhem reload');
+
+	return { ok: true };
+}
+
+function rename_subscription(from, to) {
+	if (!match(from ?? '', /^[A-Za-z0-9_]+$/) || !match(to ?? '', /^[A-Za-z0-9_]+$/))
+		return { error: 'a subscription name may only contain letters, digits and _' };
+
+	const c = uci_cursor();
+
+	if (c.get('mayhem', from) != 'subscription')
+		return { error: 'no such subscription (save it first)' };
+
+	if (from == to)
+		return { ok: true, name: to };
+
+	if (c.get('mayhem', to) != null || index([ 'pool', 'settings', 'dns', 'geo', 'device' ], to) >= 0)
+		return { error: 'this name is taken' };
+
+	c.rename('mayhem', from, to);
+
+	// The chain of the server list: "@<subscription>" (by its rule) and
+	// "<subscription><TAB><server>".
+	const swap = (v) => {
+		if (substr(v, 0, 1) == '@' && substr(v, 1) == from)
+			return `@${to}`;
+
+		if (substr(v, 0, length(from) + 1) == `${from}\t`)
+			return to + substr(v, length(from));
+
+		return v;
+	};
+
+	if (c.get('mayhem', 'pool') != null) {
+		const ch = c.get('mayhem', 'pool', 'chain');
+
+		if (ch != null)
+			c.set('mayhem', 'pool', 'chain', type(ch) == 'array' ? map(ch, swap) : swap(ch));
+	}
+
+	// Sections with servers of their own name their subscriptions.
+	c.foreach('mayhem', 'section', (x) => {
+		if (x.subscription != null)
+			c.set('mayhem', x['.name'], 'subscription', type(x.subscription) == 'array'
+				? map(x.subscription, (v) => v == from ? to : v) : (x.subscription == from ? to : x.subscription));
+	});
+
+	if (!c.commit('mayhem'))
+		return { error: 'the config could not be saved' };
+
+	// The downloaded servers and the state of the downloads go along; without
+	// them the subscription is downloaded again after the reload.
+	const dir = C.SUBS_DIR;
+	const cache = read_json(`${dir}/${from}.json`);
+
+	if (cache) {
+		cache.name = to;
+
+		if (write_json(`${dir}/${to}.json`, cache))
+			fs.unlink(`${dir}/${from}.json`);
+	}
+
+	const st = read_json(`${RUN}/subs-state.json`);
+
+	if (st?.[from]) {
+		st[to] = st[from];
+		delete st[from];
+		write_json(`${RUN}/subs-state.json`, st);
+	}
+
+	apply_bg('/etc/init.d/mayhem reload');
+
+	return { ok: true, name: to };
+}
+
+// Downloads the subscriptions (all, or the one named) now. The servers are
+// applied in the background, so the call does not wait for the reload; with
+// `always` also when nothing changed: servers that did not make it into xray
+// get there.
+function subs_download(name, always) {
+	const lib = getenv('MAYHEM_LIB_DIR') ?? '/usr/share/mayhem';
+	const out = run(`ucode ${q(lib + '/sub.uc')} update ${name != '' ? q(name) : ''} --force 2>/dev/null; echo "rc=$?"`) ?? '';
+	let results = null, rc = 0;
+
+	for (let line in split(out, '\n')) {
+		const m = match(line, /^rc=([0-9]+)$/);
+
+		if (m)
+			rc = int(m[1]);
+		else if (substr(line, 0, 1) == '[') {
+			try {
+				results = json(line);
+			}
+			catch (e) {
+				results = null;
+			}
+		}
+	}
+
+	if (rc == 3 || always)
+		apply_bg('/etc/init.d/mayhem reload');
+
+	return results;
+}
+
+// --- components ---------------------------------------------------------------------
+
+const REPO = getenv('MAYHEM_REPO') ?? 'iknowdatfeel/project-mayhem';
+
+// Latest release of a GitHub repository, through the default section first.
+// Numbers of a version: "v26.9.30" -> [ 26, 9, 30 ].
+function version_parts(v) {
+	return map(split(replace(v ?? '', /^v/, ''), /[.-]/), (x) => int(x) || 0);
+}
+
+function version_newer(a, b) {
+	const x = version_parts(a), y = version_parts(b);
+
+	for (let i = 0; i < max(length(x), length(y)); i++)
+		if ((x[i] ?? 0) != (y[i] ?? 0))
+			return (x[i] ?? 0) > (y[i] ?? 0);
+
+	return false;
+}
+
+// The latest release of a repository, or with tags the newest version among
+// its tags: Xray marks most of its releases as pre-releases, so its
+// "releases/latest" is older than the version Mayhem ships with.
+function latest_release(repo, tags) {
+	const state = read_json(`${RUN}/nodes.json`) ?? { sections: {} };
+	const v = section_via(state, default_section(state) ?? 'direct');
+	const url = tags ? `https://api.github.com/repos/${repo}/tags?per_page=100`
+		: `https://api.github.com/repos/${repo}/releases/latest`;
+
+	for (let via in (v.error || v.via == '') ? [ '' ] : [ v.via, '' ]) {
+		try {
+			const j = json(run(`curl -s -m 15 ${via} -H 'Accept: application/vnd.github+json' ${q(url)} 2>/dev/null`) ?? '');
+			let best = null;
+
+			if (!tags && type(j?.tag_name) == 'string')
+				return replace(j.tag_name, /^v/, '');
+
+			if (type(j) != 'array')
+				continue;
+
+			for (let tag in j) {
+				const name = tag?.name;
+
+				if (type(name) == 'string' && match(name, /^v?[0-9]+(\.[0-9]+)+$/) && (best == null || version_newer(name, best)))
+					best = name;
+			}
+
+			if (best)
+				return replace(best, /^v/, '');
+		}
+		catch (e) {
+			continue;
+		}
+	}
+
+	return null;
+}
+
+function xray_installed() {
+	if (!fs.access(XRAY))
+		return null;
+
+	// xray-run notes the version of the binary it started: no second xray
+	// process (~30 MB) just to print it.
+	const noted = trim(fs.readfile(`${RUN}/xray.version`) ?? '');
+	const bin = fs.stat(XRAY), file = fs.stat(`${RUN}/xray.version`);
+
+	if (match(noted, /^[0-9][0-9A-Za-z.-]*$/) && bin && file && file.mtime >= bin.mtime)
+		return noted;
+
+	const m = match(run(`${XRAY} version 2>/dev/null`) ?? '', /Xray ([0-9][^ ]*)/);
+
+	return m ? m[1] : 'installed';
+}
+
+// TCP ping from curl's "namelookup connect" times. time_connect counts the
+// name lookup too: a server name missing from the dnsmasq cache adds the DNS
+// round trip (a second through a remote DNS) to the ping, so it is taken off.
+function tcp_time(out) {
+	const m = match(trim(out ?? ''), /^([0-9.]+) ([0-9.]+)$/);
+
+	if (!m || m[2] * 1 <= 0)
+		return { error: 'no connection' };
+
+	return { ms: int((m[2] * 1 - m[1] * 1) * 1000) || 1 };
+}
+
+// The last of several lines in the format of tcp_time(): the second
+// connection is timed on a path the first one has warmed up. When the second
+// one fails, the first one counts.
+function last_tcp_time(out) {
+	let last = null;
+
+	for (let l in split(out ?? '', '\n')) {
+		const r = tcp_time(l);
+
+		if (r.ms != null)
+			last = r.ms;
+	}
+
+	return last != null ? { ms: last } : { error: 'no connection' };
+}
+
+// --- the dashboard ---------------------------------------------------------------
+// Everything it shows that needs a process, in one shell command: xray's
+// counters, whether dnsmasq runs and the latest handshake of every tunnel.
+// --- active connections ---------------------------------------------------------
+// xray writes every connection it takes ("from A accepted tcp:B [in >> out]")
+// and every DNS answer it gives to CONN_LOG; the scheduler folds it every
+// minute into CONN_NAMES (mayhem_conn_fold in lib.sh), so names and servers
+// are known for connections opened before the window. The connections still
+// in the kernel's table are the active ones.
+const CONN_READ_MAX = 262144;
+const CONN_KEEP = 131072;
+const CONN_ROWS = 300;
+const CONN_NAMES = `${RUN}/conn.names`;
+
+// The last bytes of a file (whole lines).
+function file_tail(path, n) {
+	const st = fs.stat(path);
+
+	if (!st || st.type != 'file')
+		return '';
+
+	const fh = fs.open(path, 'r');
+
+	if (!fh)
+		return '';
+
+	if (st.size > n)
+		fh.seek(st.size - n);
+
+	const text = fh.read('all') ?? '';
+
+	fh.close();
+
+	if (st.size > n) {
+		const nl = index(text, '\n');
+
+		return nl < 0 ? '' : substr(text, nl + 1);
+	}
+
+	return text;
+}
+
+// An address as people write it: the kernel lists IPv6 in full
+// (0000:...:0001), DNS answers and "ip addr" in short (::1).
+function short_ip(a) {
+	if (a == null || index(a, ':') < 0 || index(a, '::') >= 0)
+		return a;
+
+	const g = map(split(a, ':'), (x) => ltrim(lc(x), '0') || '0');
+
+	if (length(g) != 8)
+		return a;
+
+	// The longest run of zero groups (two or more) becomes "::".
+	let best = -1, blen = 0;
+
+	for (let i = 0; i < 8; i++) {
+		if (g[i] != '0')
+			continue;
+
+		let j = i;
+
+		while (j < 8 && g[j] == '0')
+			j++;
+
+		if (j - i > blen && j - i > 1) {
+			best = i;
+			blen = j - i;
+		}
+
+		i = j;
+	}
+
+	if (best < 0)
+		return join(':', g);
+
+	return join(':', slice(g, 0, best)) + '::' + join(':', slice(g, best + blen));
+}
+
+function loopback(a) {
+	return match(a, /^127\./) != null || a == '::1';
+}
+
+// Device names by address: the DHCP leases, and for the other addresses of
+// the same device (IPv6) its MAC address in the neighbour table. local: every
+// address of a device next to the router (leases, neighbours) - a connection
+// from elsewhere to one of them came in from outside.
+function device_names() {
+	const out = {}, by_mac = {}, local = {};
+
+	for (let l in split(fs.readfile(getenv('MAYHEM_LEASES') ?? '/tmp/dhcp.leases') ?? '', '\n')) {
+		const f = split(l, ' ');
+
+		if (length(f) >= 4) {
+			local[f[2]] = true;
+
+			if (f[3] != '*') {
+				out[f[2]] = f[3];
+				by_mac[lc(f[1])] = f[3];
+			}
+		}
+	}
+
+	for (let l in split(run(getenv('MAYHEM_NEIGH_CMD') ?? 'ip neigh show 2>/dev/null') ?? '', '\n')) {
+		const m = match(l, /^([^ ]+) .*lladdr ([0-9a-fA-F:]+)/);
+
+		if (!m)
+			continue;
+
+		local[m[1]] = true;
+
+		if (by_mac[lc(m[2])])
+			out[m[1]] ??= by_mac[lc(m[2])];
+	}
+
+	return { names: out, local: local };
+}
+
+// What the folded log says: { hosts: address -> name, tags: "tcp ip:port" ->
+// outbound tag }. Read again only when it changed (the dashboard asks every
+// 3 s, the scheduler folds once a minute).
+let conn_names_cache = null;
+
+function conn_names() {
+	const st = fs.stat(CONN_NAMES);
+	const stamp = st ? `${st.mtime} ${st.size}` : '';
+
+	if (conn_names_cache?.stamp == stamp)
+		return conn_names_cache;
+
+	const hosts = {}, tags = {};
+	const fh = st ? fs.open(CONN_NAMES, 'r') : null;
+
+	if (fh) {
+		let l;
+
+		while ((l = fh.read('line')) != null && l != '') {
+			const f = split(rtrim(l, '\n'), ' ');
+
+			if (f[0] == 'd' && length(f) == 3)
+				hosts[f[1]] = f[2];
+			else if (f[0] == 'c' && length(f) == 4)
+				tags[`${f[1]} ${f[2]}`] = f[3];
+		}
+
+		fh.close();
+	}
+
+	return conn_names_cache = { stamp: stamp, hosts: hosts, tags: tags };
+}
+
+// What an outbound tag stands for: a server of a section, direct, blocked.
+function route_of(tag, state) {
+	if (tag == 'direct' || tag == 'direct-udp')
+		return { kind: 'direct' };
+
+	if (tag == 'block')
+		return { kind: 'block' };
+
+	if (tag == 'dns-out')
+		return { kind: 'dns' };
+
+	for (let sn in keys(state?.sections ?? {})) {
+		const s = state.sections[sn];
+		// The server list itself (its section is "pool"), or a section that
+		// takes its active server.
+		const pool = sn == 'pool' || s.pool == true;
+
+		if (tag == `f-${sn}`)
+			return { kind: 'proxy', section: sn, server: s.nodes?.[0]?.name, protocol: s.nodes?.[0]?.protocol, pool: pool };
+
+		for (let n in s.nodes ?? [])
+			if (n.tag == tag)
+				return { kind: n.iface ? 'tunnel' : 'proxy', section: sn, server: n.name, protocol: n.tproto ?? n.protocol, pool: pool };
+	}
+
+	return { kind: 'other', tag: tag };
+}
+
+// Every TCP and UDP connection the kernel tracks: { network, src, sport, dst,
+// dport, rdst (where the answers go: a router address when NAT took it), rsrc
+// and rsport (who answers: the router when it took the connection to itself,
+// a device when a forwarded port took it there), bytes, mark, closing (TCP
+// that is being closed), bad (a line not understood) }. Read line by line: a
+// busy router tracks thousands.
+// One line per connection, the fields cut out by awk (splitting thousands of
+// lines into words in ucode took most of a second on a fast machine):
+// "proto state src dst sport dport rsrc rdst rsport bytes mark lo rlo mc fk dlo",
+// state "-" for UDP, empty fields where the kernel gave none; 1 or 0: the
+// source is a loopback address (lo), the reply's source (rlo), the
+// destination (dlo); the
+// destination is multicast, broadcast or link-local (mc), in the FakeDNS
+// range (fk) - regexps in ucode cost as much again for every connection.
+const CONNTRACK_AWK = `
+function lo(a) { return a ~ /^127\\./ || a == "::1" || a == "0000:0000:0000:0000:0000:0000:0000:0001" }
+$3 == "tcp" || $3 == "udp" {
+	s = ""; d = ""; sp = ""; dp = ""; rs = ""; rd = ""; rsp = ""; b = 0; m = 0; st = "-"
+	if ($3 == "tcp") st = $6
+	for (i = 4; i <= NF; i++) {
+		e = index($i, "=")
+		if (!e) continue
+		k = substr($i, 1, e - 1); v = substr($i, e + 1)
+		if (k == "src") { if (s == "") s = v; else if (rs == "") rs = v }
+		else if (k == "dst") { if (d == "") d = v; else if (rd == "") rd = v }
+		else if (k == "sport") { if (sp == "") sp = v; else if (rsp == "") rsp = v }
+		else if (k == "dport") { if (dp == "") dp = v }
+		else if (k == "bytes") b += v
+		else if (k == "mark") m = v
+	}
+	print $3, st, s, d, sp, dp, rs, rd, rsp, b, m, lo(s) ? 1 : 0, lo(rs) ? 1 : 0,
+		(d ~ /^(22[4-9]\\.|23[0-9]\\.|255\\.|ff|fe80:)/) ? 1 : 0, (d ~ /^198\\.1[89]\\./) ? 1 : 0, lo(d) ? 1 : 0
+}`;
+const CLOSING = { TIME_WAIT: true, CLOSE: true, CLOSE_WAIT: true, LAST_ACK: true, FIN_WAIT: true };
+
+function conntrack_each(fn) {
+	const path = getenv('MAYHEM_CONNTRACK') ?? '/proc/net/nf_conntrack';
+
+	if (!fs.access(path, 'r'))
+		return false;
+
+	const p = fs.popen(`awk ${q(CONNTRACK_AWK)} ${q(path)} 2>/dev/null`, 'r');
+
+	if (!p)
+		return false;
+
+	let l;
+
+	while ((l = p.read('line')) != null && l != '') {
+		const t = split(rtrim(l, '\n'), ' ');
+		const proto = t[0];
+
+		if (proto == 'tcp' && CLOSING[t[1]]) {
+			fn({ network: proto, closing: true });
+			continue;
+		}
+
+		if (t[2] == '' || t[5] == '' || t[2] == null) {
+			fn({ network: proto, bad: true });
+			continue;
+		}
+
+		fn({ network: proto, src: short_ip(t[2]), sport: t[4], dst: short_ip(t[3]), dport: int(t[5]),
+			rdst: short_ip(t[7] || null), rsrc: short_ip(t[6] || null), rsport: int(t[8] || 0),
+			bytes: int(t[9]), mark: int(t[10]), lo: t[11] == '1', rlo: t[12] == '1', mc: t[13] == '1', fk: t[14] == '1', dlo: t[15] == '1' });
+	}
+
+	p.close();
+
+	return true;
+}
+
+// The router's addresses and the device each is on.
+function router_addrs() {
+	const out = {};
+
+	for (let l in split(run(getenv('MAYHEM_ADDRS_CMD') ?? 'ip -o addr show 2>/dev/null') ?? '', '\n')) {
+		const m = match(l, /^[0-9]+: ([^ ]+) +inet6? ([^/ ]+)/);
+
+		if (m && m[1] != 'lo')
+			out[m[2]] = replace(m[1], /@.*$/, '');
+	}
+
+	return out;
+}
+
+// A path in the kernel: the tunnel devices of sections and servers.
+function tunnel_devices(state) {
+	const out = {};
+
+	for (let sn in keys(state?.sections ?? {})) {
+		const s = state.sections[sn];
+
+		if (s.type == 'interface' && s.device)
+			out[s.device] = { section: sn, server: s.label ?? s.interface ?? s.device, protocol: s.tproto };
+
+		for (let n in s.nodes ?? [])
+			if (n.iface && n.device)
+				out[n.device] ??= { section: sn, server: n.name, protocol: n.tproto };
+	}
+
+	return out;
+}
+
+function connections(stop, device) {
+	// Nothing to switch off: the log is always kept (folded by the scheduler).
+	if (stop)
+		return { ok: true };
+
+	const log = C.CONN_LOG;
+	let st = fs.lstat(log);
+
+	// An xray started by an older xray-run writes to /dev/null.
+	if (xray_pid() && st?.type != 'file') {
+		system(`sh -c '. ${LIB}/lib.sh; mayhem_conn_log' >/dev/null 2>&1`);
+		st = fs.lstat(log);
+	}
+
+	// A busy minute: folded now rather than read at length.
+	if (st?.type == 'file' && st.size > 2 * CONN_KEEP)
+		system(`sh -c '. ${LIB}/lib.sh; mayhem_conn_fold' >/dev/null 2>&1`);
+
+	const state = read_json(`${RUN}/nodes.json`) ?? { sections: {} };
+	const devnames = device_names();
+	const names = devnames.names;
+	const local = devnames.local;
+	const mine = router_addrs();
+	const tuns = tunnel_devices(state);
+	const folded = conn_names();
+	const host_of = folded.hosts;
+	const tag_of = folded.tags;
+	const recent_hosts = {}, recent_tags = {};
+
+	// What xray wrote since the last fold.
+	for (let l in split(file_tail(log, CONN_READ_MAX), '\n')) {
+		// DNS answers: which name an address came for.
+		let m = match(l, /(got answer:|cache HIT:|cache OPTIMISTE:) ([^ ]+) -> \[([^]]*)\]/);
+
+		if (m) {
+			const name = rtrim(m[2], '.');
+
+			for (let ip in split(m[3], ', '))
+				if (ip != '' && !match(ip, /^198\.1[89]\./))
+					recent_hosts[ip] = name;
+
+			continue;
+		}
+
+		m = match(l, /^[0-9\/]+ [0-9:.]+ from (tcp:|udp:)?(.+):([0-9]+) accepted (tcp|udp):(.+):([0-9]+) \[([^]]+)\]/);
+
+		if (!m)
+			continue;
+
+		const det = split(m[7], ' ');
+
+		recent_tags[`${m[4]} ${trim(m[2], '[]')}:${m[3]}`] = det[length(det) - 1];
+	}
+
+	const rows = {};
+	let order = [];
+	const gen_mask = C.CT_GEN_MASK;
+	// What is not in the table, and why: with these the rows add up to every
+	// TCP and UDP connection of the kernel.
+	const hidden = { total: 0, router: 0, to_router: 0, closing: 0, local: 0, other: 0 };
+	const hide = (why) => {
+		hidden[why]++;
+		hidden.total++;
+	};
+
+	const ok = conntrack_each((c) => {
+		if (c.closing || c.bad)
+			return hide(c.closing ? 'closing' : 'other');
+
+		const marked = (c.mark & gen_mask) != 0;
+		const router = mine[c.src] || c.lo;
+
+		// From outside to a device: through a forwarded port (UPnP too), or
+		// routed to its own address (IPv6). The row is the device's; where
+		// it came from is the destination.
+		let into = null;
+
+		if (!router && mine[c.dst] && c.rsrc && !mine[c.rsrc] && !c.rlo)
+			into = { ip: c.rsrc, port: c.rsport };
+		else if (!router && !local[c.src] && local[c.dst] && !mine[c.dst])
+			into = { ip: c.dst, port: c.dport };
+
+		if (into) {
+			const key = `${c.network} ${into.ip} in ${c.src} ${into.port}`;
+
+			if (!rows[key]) {
+				rows[key] = {
+					device: names[into.ip] ?? null, ip: into.ip, network: c.network,
+					host: c.src, port: null, fake: false, domain: recent_hosts[c.src] ?? host_of[c.src],
+					route: { kind: 'inbound', port: into.port }, count: 0, bytes: 0
+				};
+				push(order, key);
+			}
+
+			rows[key].count++;
+			rows[key].bytes += c.bytes;
+			return;
+		}
+
+		// The router's own connections only when they went through Mayhem
+		// (to xray): the rest is xray reaching its servers, DNS and the like.
+		if (router && !marked)
+			return hide('router');
+
+		// To the router itself (DNS, the web interface), local and multicast.
+		if (mine[c.dst] || c.dlo)
+			return hide('to_router');
+
+		if (c.mc)
+			return hide('local');
+
+		const k = `${c.network} ${c.src}:${c.sport}`;
+		const tag = recent_tags[k] ?? (marked ? tag_of[k] : null);
+		let route = tag ? route_of(tag, state) : null;
+
+		if (!route) {
+			const nat = mine[c.rdst];
+
+			// DNS to another server, taken by the router (dnsmasq).
+			if (mine[c.rsrc] && c.dport == 53)
+				route = { kind: 'dns' };
+			else if (nat && tuns[nat])
+				route = { kind: 'tunnel', section: tuns[nat].section, server: tuns[nat].server, protocol: tuns[nat].protocol };
+			else if (nat)
+				route = { kind: 'direct', via: nat };
+			else if (marked)
+				route = { kind: 'xray' };
+			else
+				route = { kind: 'direct' };
+		}
+
+		// The FakeDNS pool is 198.18.0.0/15, a range of its own: an address
+		// there is Mayhem's fake one only while xray has FakeDNS (otherwise
+		// it came from elsewhere - a VPN app on the device, an old answer).
+		const fake = state.fakedns != false && c.fk;
+		const key = `${c.network} ${c.src} ${c.dst} ${c.dport} ${route.kind} ${route.server ?? ''}`;
+
+		if (!rows[key]) {
+			rows[key] = {
+				device: router ? 'router' : (names[c.src] ?? null), ip: c.src, network: c.network,
+				host: c.dst, port: c.dport, fake: fake, domain: fake ? null : (recent_hosts[c.dst] ?? host_of[c.dst]),
+				route: route, count: 0, bytes: 0
+			};
+			push(order, key);
+		}
+
+		rows[key].count++;
+		rows[key].bytes += c.bytes;
+	});
+
+	if (!ok)
+		return { error: 'the kernel does not list its connections (/proc/net/nf_conntrack)' };
+
+	// A connection through xray whose server the log does not know (opened
+	// before it was written, a lost line) goes where the others of the same
+	// device to the same address and port go: one row, the traffic summed.
+	// (The busiest such row by device, address and port: looked up, not
+	// searched for every row - with thousands of connections that took
+	// seconds on a router.)
+	const busiest = {};
+	const same_way = (r) => `${r.network} ${r.ip} ${r.host} ${r.port}`;
+
+	for (let k in order) {
+		const x = rows[k];
+		const w = same_way(x);
+
+		if ((x.route.kind == 'proxy' || x.route.kind == 'tunnel') && (!busiest[w] || x.bytes > busiest[w].bytes))
+			busiest[w] = x;
+	}
+
+	for (let k in order) {
+		const r = rows[k];
+
+		if (r.route.kind != 'xray')
+			continue;
+
+		const to = busiest[same_way(r)];
+
+		if (to) {
+			to.count += r.count;
+			to.bytes += r.bytes;
+			to.domain ??= r.domain;
+			r.count = 0;
+		}
+	}
+
+	order = filter(order, (k) => rows[k].count > 0);
+
+	// Every device with connections, for the filter; then only the one asked
+	// for, before the busiest are cut off.
+	const devs = {};
+
+	for (let k in order) {
+		const r = rows[k];
+
+		devs[r.ip] ??= { ip: r.ip, name: r.device, count: 0 };
+		devs[r.ip].count += r.count;
+	}
+
+	const out = filter(map(order, (k) => rows[k]), (r) => !device || r.ip == device);
+	const counts = { tcp: 0, udp: 0 };
+
+	for (let r in out)
+		counts[r.network] += r.count;
+
+	// The busiest first.
+	sort(out, (a, b) => b.bytes - a.bytes);
+
+	return { rows: slice(out, 0, CONN_ROWS), total: length(out), counts: counts, hidden: hidden, log: xray_pid() != null,
+		devices: sort(values(devs), (a, b) => b.count - a.count) };
+}
+
+const MARK = '@@mayhem@@';
+
+function dashboard_cmd(pid, state) {
+	const parts = [ pid ? metrics_cmd() : 'true', `echo; echo ${MARK}dnsmasq; pidof dnsmasq 2>/dev/null` ];
+
+	for (let sn in keys(state.sections ?? {})) {
+		const dev = state.sections[sn].device;
+
+		if (state.sections[sn].type == 'interface' && match(dev ?? '', /^[A-Za-z0-9_.-]+$/))
+			push(parts, `echo ${MARK}hs ${dev}; ${handshakes_cmd(dev)}`);
+	}
+
+	return join('; ', parts);
+}
+
+function dashboard_parts(text) {
+	const chunks = split(text ?? '', MARK);
+	const res = { metrics: trim(chunks[0] ?? ''), dnsmasq: false, hs: {} };
+
+	for (let i = 1; i < length(chunks); i++) {
+		const nl = index(chunks[i], '\n');
+		const head = nl < 0 ? chunks[i] : substr(chunks[i], 0, nl);
+		const rest = nl < 0 ? '' : substr(chunks[i], nl + 1);
+
+		if (head == 'dnsmasq')
+			res.dnsmasq = trim(rest) != '';
+		else if (substr(head, 0, 3) == 'hs ')
+			res.hs[substr(head, 3)] = rest;
+	}
+
+	return res;
+}
+
+function dashboard(pid, state, out) {
+		const m = pid ? metrics(out.metrics) : { stats: {}, observatory: {} };
+		const c = uci_cursor();
+		const sections = [];
+		const totals = { proxy: { up: 0, down: 0 }, direct: { up: 0, down: 0 }, all: { up: 0, down: 0 } };
+		const kernel_tun = {};
+		// Sections whose servers do not answer go direct (kill switch off).
+		const health = pid ? (read_json(`${RUN}/health.json`) ?? {}) : {};
+
+		for (let sn in keys(state.sections ?? {})) {
+			const s = state.sections[sn];
+			const nodes = [];
+			const traffic = { up: 0, down: 0 };
+
+			for (let n in s.nodes ?? []) {
+				const o = m.observatory[n.tag];
+				const t = m.stats[n.tag] ?? {};
+
+				traffic.up += t.uplink ?? 0;
+				traffic.down += t.downlink ?? 0;
+
+				push(nodes, {
+					tag: n.tag, name: n.name, protocol: n.protocol, address: n.address,
+					port: n.port, udp: n.udp, source: n.source, iface: n.iface, tproto: n.tproto, link: n.link, usec: n.usec,
+					delay: o ? o.delay : null, alive: o ? o.alive : null,
+					up: t.uplink ?? 0, down: t.downlink ?? 0
+				});
+			}
+
+			const sec = {
+				name: sn, type: s.type, mode: s.mode, balancer: s.balancer, pool: s.pool == true,
+				// A server standing in for a pinned one that does not answer
+				// (health.uc) carries the traffic.
+				active: s.type == 'proxy' ? (health.sections?.[sn]?.stand_in?.tag ?? active_tag(s, m.observatory)) : null,
+				pinned: s.override ?? null, nodes: nodes, traffic: traffic,
+				chain: s.chain ?? null, units: s.units ?? null, items: s.items ?? null, subs: s.subs ?? null,
+				down: health.sections?.[sn]?.down == true,
+				down_since: health.sections?.[sn]?.since ?? null
+			};
+
+			// A tunnel chosen among the section's servers carries the rest
+			// of the traffic in the kernel: its interface counts it.
+			if (s.kernel) {
+				const kn = filter(s.nodes ?? [], (n) => n.iface == s.kernel)[0];
+				const dev = kn?.device ?? s.kernel;
+
+				if (match(dev, /^[A-Za-z0-9_.@-]+$/)) {
+					const b = (f) => +trim(fs.readfile(`${SYS_NET}/${dev}/statistics/${f}`) ?? '0') || 0;
+
+					sec.kernel = s.kernel;
+					totals.all.up += b('tx_bytes');
+					totals.all.down += b('rx_bytes');
+				}
+			}
+
+			if (s.type == 'interface') {
+				sec.interface = s.interface;
+				sec.label = c.get('mayhem', s.interface) == 'tunnel' ? c.get('mayhem', s.interface, 'label') : null;
+				sec.device = s.device;
+				sec.tunnel = tunnel_state(sn, s.device, out.hs[s.device] ?? '');
+
+				// The kernel sends this traffic past xray: the interface
+				// counts it (what xray sends into it as well).
+				if (s.mode == 'kernel' && match(s.device ?? '', /^[A-Za-z0-9_.@-]+$/)) {
+					const b = (f) => +trim(fs.readfile(`${SYS_NET}/${s.device}/statistics/${f}`) ?? '0') || 0;
+
+					kernel_tun[sn] = true;
+					sec.traffic = { up: b('tx_bytes'), down: b('rx_bytes') };
+					totals.all.up += sec.traffic.up;
+					totals.all.down += sec.traffic.down;
+				}
+			}
+
+			push(sections, sec);
+		}
+
+		for (let tag in keys(m.stats)) {
+			const t = m.stats[tag];
+			const k = index([ 'n-', 'f-' ], substr(tag, 0, 2)) >= 0 ? 'proxy' : ((tag == 'direct' || tag == 'direct-udp') ? 'direct' : null);
+
+			if (k) {
+				totals[k].up += t.uplink ?? 0;
+				totals[k].down += t.downlink ?? 0;
+			}
+
+			// Everything that leaves the router through xray: servers,
+			// tunnels in xray mode and direct; not DNS and not blocked.
+			const im = match(tag, /^i-(.+)-[0-9]+$/);
+
+			if (k || (im && !kernel_tun[im[1]])) {
+				totals.all.up += t.uplink ?? 0;
+				totals.all.down += t.downlink ?? 0;
+			}
+		}
+
+		let has_connections = length(filter(sections, (s) => length(s.nodes ?? []) || s.type == 'interface')) > 0;
+		for (let kind in [ 'subscription', 'tunnel', 'pool', 'section' ])
+			c.foreach('mayhem', kind, (s) => {
+				if (kind == 'subscription' || kind == 'tunnel' || length(entries(s.link)) ||
+				    length(entries(s.iface_node)) || s.outbound_json || s.type == 'interface')
+					has_connections = true;
+			});
+
+		return {
+			has_connections: has_connections,
+			time: time(),
+			version: mayhem_version(),
+			enabled: c.get('mayhem', 'settings', 'enabled') == '1',
+			autostart: length(fs.glob('/etc/rc.d/S[0-9][0-9]mayhem') ?? []) > 0,
+			running: pid != null,
+			applying: applying(),
+			active: pid != null && fs.access(`${RUN}/active`) == true,
+			xray: trim(fs.readfile(`${RUN}/xray.version`) ?? '') || null,
+			rss_kb: pid ? rss_kb(pid) : null,
+			rss_total_kb: pid ? rss_kb(pid, true) : null,
+			// what xray said when it would not start
+			xray_error: pid ? null : (trim(fs.readfile(`${RUN}/xray.error`) ?? '') || null),
+			dnsmasq: out.dnsmasq,
+			status: read_json(`${RUN}/status.json`),
+			mode: state.mode,
+			probe_url: state.probe_url,
+			default_section: default_section(state),
+			ping_method: c.get('mayhem', 'settings', 'ping_method') ?? 'url',
+			// the remote DNS does not answer: its names go to the provider
+			dns_down: health.dns?.down == true,
+			dns_down_since: health.dns?.since ?? null,
+			model: trim(fs.readfile('/tmp/sysinfo/model') ?? '') || null,
+			system: os_release(),
+			sections: sections,
+			totals: totals,
+			subscriptions: subscriptions()
+		};
+}
+
+const methods = {
+	status: {
+		call: function() {
+			try {
+				return json(run('/usr/bin/mayhem status 2>/dev/null') ?? '');
+			}
+			catch (e) {
+				return { error: 'mayhem status failed' };
+			}
+		}
+	},
+
+	// rpcd does not wait for the processes: the answer goes when they are done.
+	dashboard: {
+		call: function(req) {
+			const pid = xray_pid();
+			const state = read_json(`${RUN}/nodes.json`) ?? { sections: {} };
+
+			return deferred_sh(req, dashboard_cmd(pid, state), (out) => dashboard(pid, state, dashboard_parts(out)));
+		}
+	},
+
+	// The connections xray took since the dashboard started asking, the
+	// active ones first; stop: the window closed, the log goes off.
+	connections: {
+		args: { stop: false, device: '' },
+		call: function(req) {
+			return connections(req.args?.stop == true, req.args?.device ?? '');
+		}
+	},
+
+	select_node: {
+		args: { section: '', tag: '' },
+		call: function(req) {
+			const sn = req.args?.section;
+			const tag = req.args?.tag ?? '';
+			const state = read_json(`${RUN}/nodes.json`);
+			const s = state?.sections?.[sn];
+
+			// A server of a subscription whose rule is "chosen by hand":
+			// the rule's choice. It counts where the list's chain names the
+			// subscription; elsewhere it is only kept.
+			if (!s && sn) {
+				const c = uci_cursor();
+				const pool = state?.sections?.pool;
+				const node = filter(pool?.nodes ?? [], (n) => n.tag == tag && n.source == sn)[0];
+
+				if (c.get('mayhem', sn) != 'subscription')
+					return { error: 'unknown section' };
+
+				if (!node)
+					return { error: 'unknown server' };
+
+				const used = pool?.mode == 'fallback' && length(filter(pool.items ?? [], (i) => i.sub == sn)) > 0;
+				if (used) reconnect_epoch(c);
+				c.set('mayhem', sn, 'select', 'manual');
+				c.set('mayhem', sn, 'selected', node.name);
+
+				if (!c.commit('mayhem'))
+					return { error: 'the configuration could not be saved' };
+
+				// nodes.json as it is now (mayhem.runstate)
+				runstate.update(RUN, (st) => {
+					const p = st.sections?.pool;
+
+					if (!p)
+						return false;
+
+					p.subs ??= {};
+					p.subs[sn] = { mode: 'manual', selected: tag };
+				});
+
+				if (used)
+					reload_choice();
+
+				return { ok: true };
+			}
+
+			if (!s?.balancer)
+				return { error: 'this section has a single server' };
+
+			const node = filter(s.nodes, (n) => n.tag == tag)[0];
+
+			if (tag != '' && !node)
+				return { error: 'unknown server' };
+
+			if (tag == '' && s.mode == 'manual')
+				return { error: 'a manual section needs a server' };
+
+			// The server list: a server chosen by hand, from a chain as well,
+			// makes the list "chosen by hand" (a pinned server of its
+			// automatic choice: the same balancer and checks).
+			const to_manual = sn == 'pool' && s.mode == 'fallback' && tag != '';
+
+			if (s.mode == 'fallback' && !to_manual)
+				return { error: 'the fallback chain chooses the server' };
+
+			// The rest once xray took the choice.
+			const finish = () => {
+				// Remember the choice by name: tags change when the server list does.
+				// A tunnel by its interface, which its name can change without.
+				const c = uci_cursor();
+				const key = node?.iface ?? node?.name;
+				const ut = choice_target(c, sn);
+				const manual = s.mode == 'manual';
+
+				// The section as read, and as it is in nodes.json now (a
+				// reload may have written it while xray took the choice).
+				const apply = (x) => {
+					if (to_manual) {
+						x.mode = 'auto';
+						x.override = tag;
+						delete x.selected;
+					}
+					else if (manual)
+						x.selected = tag;
+					else if (tag != '')
+						x.override = tag;
+					else
+						delete x.override;
+				};
+
+				if (to_manual) {
+					c.set('mayhem', ut, 'select', 'auto');
+					c.set('mayhem', ut, 'override', key);
+				}
+				else if (manual)
+					c.set('mayhem', ut, 'selected', key);
+				else if (tag != '')
+					c.set('mayhem', ut, 'override', key);
+				else
+					c.delete('mayhem', ut, 'override');
+
+				reconnect_epoch(c);
+				if (!c.commit('mayhem'))
+					return { error: 'the configuration could not be saved' };
+				apply(s);
+				runstate.update(RUN, (st) => {
+					const x = st.sections?.[sn];
+
+					if (!x || (tag != '' && index(map(x.nodes ?? [], (n) => n.tag), tag) < 0))
+						return false;
+
+					apply(x);
+				});
+
+				// The choice for the next start of xray as well.
+				runstate.set_overrides(RUN, { [s.balancer]: tag });
+
+				health_now(sn);
+
+				// Rebuild the kernel path and close the old Xray connections.
+				reload_choice();
+
+				return { ok: true };
+			};
+
+			if (!xray_pid())
+				return finish();
+
+			// `xray api` is a process of its own (a second or so on a router):
+			// rpcd answers when it is done, without a ucode child process.
+			const cmd = `${XRAY} api bo --server=127.0.0.1:${C.API_PORT} -b ${q(s.balancer)} ${tag != '' ? q(tag) : '-r'} >/dev/null 2>&1; echo $?`;
+
+			return deferred_sh(req, cmd, (out) => trim(out ?? '1') != '0' ? { error: 'xray did not accept the choice' } : finish());
+		}
+	},
+
+	probe: {
+		args: { tag: '', method: 'url' },
+		call: function(req) {
+			const state = read_json(`${RUN}/nodes.json`);
+			const f = find_node(state, req.args?.tag);
+
+			if (!f)
+				return { error: 'unknown server' };
+
+			const n = f.node;
+			const addr = n.address ?? '';
+			let out, m;
+
+			// A tunnel has no address or TCP port of its own: ICMP pings its
+			// server (the peer's endpoint), or through the tunnel when the
+			// server does not answer; TCP times a connection through it.
+			if (n.iface && req.args?.method != 'url') {
+				const dev = n.device ?? n.iface;
+
+				if (!match(dev, /^[A-Za-z0-9_.@-]+$/))
+					return { error: 'no interface' };
+
+				// An idle WireGuard/AmneziaWG tunnel first makes a handshake
+				// (the first packet waits for it, a lost one costs 5 s): a
+				// ping through it wakes the tunnel, then two connections
+				// through it are timed and the second one counts.
+				if (req.args?.method == 'tcp')
+					return last_tcp_time(run(`ping -c 1 -W 3 -I ${q(dev)} ${TUNNEL_PING_HOST} >/dev/null 2>&1; ` +
+						`curl -s --interface ${q(dev)} --connect-timeout 4 -m 5 -o /dev/null -o /dev/null ` +
+						`-w '%{time_namelookup} %{time_connect}\n' ${q(TUNNEL_PROBE_URL)} ${q(TUNNEL_PROBE_URL2)}`));
+
+				const ep = tunnel_endpoint(n.iface);
+
+				out = (ep ? run(`ping -c 1 -W ${ICMP_WAIT} ${q(ep)} 2>&1`) : '') ?? '';
+				m = match(out, /time=([0-9.]+)/);
+
+				if (!m) {
+					out = run(`ping -c 1 -W ${ICMP_WAIT} -I ${q(dev)} ${TUNNEL_PING_HOST} 2>&1`) ?? '';
+					m = match(out, /time=([0-9.]+)/);
+				}
+
+				return m ? { ms: int(m[1] * 1) || 1 } : { error: 'no reply' };
+			}
+
+			if (req.args?.method != 'url' && !match(addr, /^[A-Za-z0-9.:_-]+$/))
+				return { error: 'no address' };
+
+			switch (req.args?.method) {
+			case 'tcp':
+				if (n.udp)
+					return { error: 'UDP protocol' };
+
+				if (!n.port)
+					return { error: 'no port' };
+
+				// The sockets of this process (mayhem.ping); curl where
+				// there is no socket module.
+				const own = tcp_ping([ { key: 't', host: addr, port: n.port } ], TCP_WAIT * 1000, ipv6_allowed());
+
+				if (own)
+					return own.t;
+
+				const host = index(addr, ':') >= 0 ? `[${addr}]` : addr;
+				const one = `curl -s -o /dev/null --connect-timeout 5 -m 6 -w '%{time_namelookup} %{time_connect}\n' ${q(`http://${host}:${n.port}/`)}`;
+
+				// One connection, as v2rayNG measures it.
+				return last_tcp_time(run(one));
+
+			case 'icmp':
+				out = run(`ping -c 1 -W ${ICMP_WAIT} ${q(addr)} 2>&1`) ?? '';
+				m = match(out, /time=([0-9.]+)/);
+
+				return m ? { ms: int(m[1] * 1) || 1 } : { error: 'no reply' };
+
+			case 'url':
+				if (!xray_pid())
+					return { error: 'xray is not running' };
+
+				const proxy = `socks5h://${n.tag}:${C.HELPER_PASS}@127.0.0.1:${C.HELPER_PORT}`;
+				const url = state.probe_url ?? C.DEFAULT_PROBE_URL;
+
+				// Two requests over one connection. The first also pays for the
+				// handshakes with the server and the site (several round trips,
+				// a lost packet costs a second or three): it only proves that the
+				// server works. The second is the delay through the server itself,
+				// and it hardly jumps from one check to the next.
+				out = run(`curl -s -m 10 -x ${q(proxy)} -o /dev/null -o /dev/null -w '%{http_code} %{time_starttransfer} %{num_connects}\n' ${q(url)} ${q(url)}`) ?? '';
+
+				const res = [];
+
+				for (let l in split(trim(out), '\n')) {
+					m = match(l, /^([0-9]+) ([0-9.]+) ([0-9]+)$/);
+
+					if (m)
+						push(res, { code: int(m[1]), t: m[2] * 1, fresh: int(m[3]) > 0 });
+				}
+
+				// Any HTTP answer came back through the server (a site may
+				// answer a VPN address with 403 or 429).
+				const okc = (r) => r && r.code >= 100;
+
+				if (!okc(res[0]))
+					return { error: res[0] ? `HTTP ${res[0].code}` : 'timeout' };
+
+				// The second request went over the same connection: its time.
+				if (okc(res[1]) && !res[1].fresh)
+					return { ms: int(res[1].t * 1000) || 1 };
+
+				return { ms: int(res[0].t * 1000) || 1 };
+
+			default:
+				return { error: 'unknown method' };
+			}
+		}
+	},
+
+	// ICMP ping of many servers in one call: a ping is cheap, the process of
+	// a call is not (each probe() call starts ucode with the whole plugin).
+	// One ping per address, all at once, in waves of ICMP_WAVE; servers on
+	// one address share its answer. A tunnel pings its server, through the
+	// tunnel when the server does not answer, as probe() does.
+	// TCP ping of many servers in one call, as v2rayNG does it: the time of one
+	// connection to the server's address and port, straight from the router.
+	// Waves of TCP_WAVE at once (a curl each; more would load a small router
+	// and the numbers with it), one connection per address in a wave: many
+	// servers of a subscription share a host, whose firewall drops a burst.
+	probe_tcp: {
+		args: { tags: [] },
+		call: function(req) {
+			const state = read_json(`${RUN}/nodes.json`);
+			const want = type(req.args?.tags) == 'array' ? slice(req.args.tags, 0, ICMP_MAX) : [];
+			const res = {}, waves = [];
+
+			for (let tag in want) {
+				const f = find_node(state, tag);
+				const n = f?.node;
+
+				if (!n)
+					res[tag] = { error: 'unknown server' };
+				else if (n.iface)
+					res[tag] = { error: 'tunnel' };
+				else if (n.udp)
+					res[tag] = { error: 'UDP protocol' };
+				else if (!n.port)
+					res[tag] = { error: 'no port' };
+				else if (!match(n.address ?? '', /^[A-Za-z0-9.:_-]+$/))
+					res[tag] = { error: 'no address' };
+				else {
+					// the first wave without this address and with room
+					let w = 0;
+
+					while (w < length(waves) && (length(waves[w]) >= TCP_WAVE || length(filter(waves[w], (x) => x.addr == n.address))))
+						w++;
+
+					waves[w] ??= [];
+					push(waves[w], { tag: tag, addr: n.address, port: n.port });
+				}
+			}
+
+			// All of them in this process (mayhem.ping): no process per
+			// server, so the numbers do not grow with the wave.
+			const flat = [];
+
+			for (let wave in waves)
+				for (let t in wave)
+					push(flat, { key: t.tag, host: t.addr, port: t.port });
+
+			const own = length(flat) ? tcp_ping(flat, TCP_WAIT * 1000, ipv6_allowed()) : {};
+
+			if (own) {
+				for (let t in flat)
+					res[t.key] = own[t.key] ?? { error: 'no connection' };
+
+				return { results: res };
+			}
+
+			let cmd = '', i = 0;
+			const byi = [];
+
+			for (let wave in waves) {
+				for (let t in wave) {
+					const host = index(t.addr, ':') >= 0 ? `[${t.addr}]` : t.addr;
+
+					byi[i] = t.tag;
+					cmd += `( echo "${i} $(curl -s -o /dev/null --connect-timeout ${TCP_WAIT} -m ${TCP_WAIT + 1} -w '%{time_namelookup} %{time_connect}' ${q(`http://${host}:${t.port}/`)})" ) & `;
+					i++;
+				}
+
+				cmd += 'wait; ';
+			}
+
+			for (let l in split(length(cmd) ? (run(cmd) ?? '') : '', '\n')) {
+				const m = match(l, /^([0-9]+) (.*)$/);
+
+				if (m && byi[int(m[1])] != null)
+					res[byi[int(m[1])]] = tcp_time(m[2]);
+			}
+
+			for (let t in byi)
+				res[t] ??= { error: 'no connection' };
+
+			return { results: res };
+		}
+	},
+
+	probe_icmp: {
+		args: { tags: [] },
+		call: function(req) {
+			const state = read_json(`${RUN}/nodes.json`);
+			const targets = [], index_of = {}, res = {};
+			const want = type(req.args?.tags) == 'array' ? slice(req.args.tags, 0, ICMP_MAX) : [];
+
+			const target = (addr, dev) => {
+				const k = `${dev ?? ''} ${addr}`;
+
+				if (index_of[k] == null) {
+					index_of[k] = length(targets);
+					push(targets, { addr: addr, dev: dev });
+				}
+
+				return index_of[k];
+			};
+
+			const pings = (list) => {
+				let cmd = '';
+
+				for (let i, t in list) {
+					const dev = t.dev ? `-I ${q(t.dev)} ` : '';
+
+					cmd += `( r="$(ping -c 1 -W ${ICMP_WAIT} ${dev}${q(t.addr)} 2>/dev/null | sed -n 's/.*time=\\([0-9.]*\\).*/\\1/p' | head -n 1)"; ` +
+						`echo "${i} \${r:--}" ) & `;
+
+					if ((i + 1) % ICMP_WAVE == 0)
+						cmd += 'wait; ';
+				}
+
+				const ms = [];
+
+				for (let l in split(run(cmd + 'wait') ?? '', '\n')) {
+					const m = match(l, /^([0-9]+) ([0-9.]+)$/);
+
+					if (m)
+						ms[int(m[1])] = int(m[2] * 1) || 1;
+				}
+
+				return ms;
+			};
+
+			const plan = {};
+
+			for (let tag in want) {
+				const f = find_node(state, tag);
+
+				if (!f) {
+					res[tag] = { error: 'unknown server' };
+					continue;
+				}
+
+				const n = f.node;
+
+				if (n.iface) {
+					const dev = n.device ?? n.iface;
+
+					if (!match(dev, /^[A-Za-z0-9_.@-]+$/)) {
+						res[tag] = { error: 'no interface' };
+						continue;
+					}
+
+					const ep = tunnel_endpoint(n.iface);
+
+					plan[tag] = { first: ep ? target(ep) : null, dev: dev };
+				}
+				else if (match(n.address ?? '', /^[A-Za-z0-9.:_-]+$/))
+					plan[tag] = { first: target(n.address) };
+				else
+					res[tag] = { error: 'no address' };
+			}
+
+			const ms = pings(targets);
+			const second = [], via = {};
+
+			for (let tag, p in plan) {
+				if (p.first != null && ms[p.first] != null)
+					res[tag] = { ms: ms[p.first] };
+				else if (p.dev) {
+					if (via[p.dev] == null) {
+						push(second, { addr: TUNNEL_PING_HOST, dev: p.dev });
+						via[p.dev] = length(second) - 1;
+					}
+
+					p.second = via[p.dev];
+				}
+				else
+					res[tag] = { error: 'no reply' };
+			}
+
+			const ms2 = length(second) ? pings(second) : [];
+
+			for (let tag, p in plan)
+				if (p.second != null)
+					res[tag] = ms2[p.second] != null ? { ms: ms2[p.second] } : { error: 'no reply' };
+
+			return { results: res };
+		}
+	},
+
+	// URL test over kept-alive connections (warm.uc): starts it when it does
+	// not run, keeps it running (it stops a minute after the last call) and
+	// answers with what it measured. now: check every server at once.
+	warm: {
+		args: { now: false },
+		call: function(req) {
+			try {
+				require('socket');
+			}
+			catch (e) {
+				return { error: 'no socket module' };
+			}
+
+			if (!xray_pid())
+				return { error: 'xray is not running' };
+
+			const state = read_json(`${RUN}/nodes.json`);
+
+			if (!match(state?.probe_url ?? C.DEFAULT_PROBE_URL, /^https?:\/\/[A-Za-z0-9.-]+(:[0-9]+)?(\/|$)/))
+				return { error: 'not an http(s):// URL' };
+
+			fs.mkdir(RUN, 0700);
+			fs.writefile(`${RUN}/warm.alive`, `${time()}\n`);
+
+			if (req.args?.now)
+				fs.writefile(`${RUN}/warm.now`, '');
+
+			const pid = trim(fs.readfile(`${RUN}/warm.pid`) ?? '');
+
+			const fresh = !match(pid, /^[0-9]+$/) || index(fs.readfile(`/proc/${pid}/cmdline`) ?? '', 'warm.uc') < 0;
+
+			if (fresh)
+				system(`(ucode ${q(WARM)} >/dev/null 2>&1 </dev/null & echo $! > ${q(RUN + '/warm.pid')}) >/dev/null 2>&1 </dev/null`);
+
+			const tags = [], seen = {};
+
+			for (let sn in sort(keys(state?.sections ?? {})))
+				for (let n in state.sections[sn].nodes ?? [])
+					if (n.tag && !seen[n.tag] && length(tags) < WARM_MAX) {
+						seen[n.tag] = true;
+						push(tags, n.tag);
+					}
+
+			const j = read_json(`${RUN}/warm.json`);
+			const now = time();
+			const period = j?.period ?? 10;
+			const results = {};
+
+			// A result older than three rounds is from a connection that
+			// stalled, or from an earlier run. Except while the run is new: then
+			// the numbers of the last one (up to half an hour old) show until
+			// its own come, rather than nothing.
+			const young = fresh || j?.started >= now - 3 * period;
+
+			for (let tag, r in j?.results ?? {})
+				if (seen[tag] && (r?.at >= now - 3 * period || (young && r?.ms != null && r?.at >= now - WARM_LAST)))
+					results[tag] = r;
+
+			return { ok: true, now: now, period: period, tags: tags, results: results };
+		}
+	},
+
+	sub_update: {
+		args: { name: '' },
+		call: function(req) {
+			const name = req.args?.name ?? '';
+
+			if (name != '' && !match(name, /^[A-Za-z0-9_]+$/))
+				return { error: 'invalid name' };
+
+			const results = subs_download(name, false);
+
+			return results != null ? { results: results } : { error: 'update failed' };
+		}
+	},
+
+	geo: {
+		call: function() {
+			return data_status(true);
+		}
+	},
+
+	// Geo downloads take minutes: they run in the background and the page
+	// polls the state.
+	data_update: {
+		args: { what: 'geo', name: '' },
+		call: function(req) {
+			const what = req.args?.what;
+			const name = req.args?.name ?? '';
+
+			if (what != 'geo' && what != 'lists')
+				return { error: 'unknown data' };
+
+			if (name != '' && !match(name, /^[A-Za-z0-9_]+$/))
+				return { error: 'invalid name' };
+
+			if (update_running())
+				return { busy: true };
+
+			const cmd = what == 'geo' ? `geo-update ${name != '' ? q(name) : ''}` : 'lists-update';
+
+			system(`/usr/bin/mayhem ${cmd} >/dev/null 2>&1 &`);
+
+			return { started: true };
+		}
+	},
+
+	// A .dat file uploaded through LuCI becomes a geo source. Unlike downloads it
+	// is kept whole on flash, so big files are refused.
+	geo_import: {
+		args: { name: '', kind: 'geosite' },
+		call: function(req) {
+			const name = req.args?.name ?? '';
+			const kind = req.args?.kind == 'geoip' ? 'geoip' : 'geosite';
+			const up = '/tmp/mayhem-upload.dat';
+			const st = fs.stat(up);
+
+			if (!match(name, /^[A-Za-z0-9_]+$/))
+				return { error: 'invalid name' };
+
+			if (!st)
+				return { error: 'no uploaded file' };
+
+			if (st.size > 8 * 1024 * 1024) {
+				fs.unlink(up);
+				return { error: 'the file is larger than 8 MB: add it by URL instead' };
+			}
+
+			const c = uci_cursor();
+
+			if (c.get('mayhem', name) != null && c.get('mayhem', name) != 'geo_source') {
+				fs.unlink(up);
+				return { error: 'this name is taken by another section' };
+			}
+
+			const dir = `${C.GEO_DIR}/upload`;
+			const path = `${dir}/${name}.dat`;
+			const data = fs.readfile(up);
+
+			fs.unlink(up);
+			fs.mkdir(fs.dirname(C.GEO_DIR), 0755);
+			fs.mkdir(C.GEO_DIR, 0755);
+			fs.mkdir(dir, 0755);
+
+			if (fs.writefile(`${path}.tmp`, data) == null || !fs.rename(`${path}.tmp`, path))
+				return { error: `cannot save the file: ${fs.error()}` };
+
+			c.set('mayhem', name, 'geo_source');
+			c.set('mayhem', name, 'kind', kind);
+			c.set('mayhem', name, 'url', path);
+			c.set('mayhem', name, 'enabled', '1');
+			c.commit('mayhem');
+
+			system(`/usr/bin/mayhem geo-update ${q(name)} >/dev/null 2>&1 &`);
+
+			return { ok: true, path: path };
+		}
+	},
+
+	tunnel_info: {
+		call: function() {
+			const out = run('ubus call network.interface dump 2>/dev/null') ?? '';
+			let dump = null;
+
+			try {
+				dump = json(out);
+			}
+			catch (e) {
+				dump = null;
+			}
+
+			const handlers = proto_handlers();
+			const awg = has_awg(), wireguard = has_wireguard();
+			const net = network_cursor();
+
+			return {
+				awg: awg,
+				wireguard: wireguard,
+				// installed, but the network has not loaded it yet
+				protos_missing: type(handlers) == 'object'
+					? filter([ awg ? 'amneziawg' : null, wireguard ? 'wireguard' : null ], (p) => p && !handlers[p])
+					: [],
+				nftset: dnsmasq_nftset(run('dnsmasq --version 2>/dev/null')),
+				install: {
+					running: install_running(),
+					what: trim(fs.readfile(`${RUN}/install.what`) ?? '') || null,
+					rc: trim(fs.readfile(`${RUN}/install.rc`) ?? '') || null,
+					log: fs.readfile(`${RUN}/install.log`)
+				},
+				// An interface of an unknown protocol runs as "none": its own
+				// protocol comes from the config.
+				interfaces: map(dump?.interface ?? [], (i) => ({
+					name: i.interface,
+					proto: (i.proto == 'none' ? net.get('network', i.interface, 'proto') : null) ?? i.proto,
+					up: i.up, device: i.l3_device ?? i.device
+				}))
+			};
+		}
+	},
+
+	// Package changes take a while and restart services: they run in the
+	// background, tunnel_info reports progress.
+	system_install: {
+		args: { what: '', version: '' },
+		call: function(req) {
+			const ver = match(req.args?.version ?? '', /^[0-9][0-9A-Za-z.-]*$/) ? req.args.version : '';
+			const cmds = { awg: 'awg-install', protos: 'tunnel-protos', dnsmasq: 'dnsmasq-full', xray: `xray-install ${ver}`, mayhem: 'self-update', wg: 'wg-install',
+				phobos: 'obfs-install phobos', faketcp: 'obfs-install faketcp' };
+			const cmd = cmds[req.args?.what];
+
+			if (!cmd)
+				return { error: 'unknown package' };
+
+			if (install_running())
+				return { busy: true };
+
+			fs.writefile(`${RUN}/install.what`, req.args.what);
+			fs.unlink(`${RUN}/install.rc`);
+			// A session of its own: updating Mayhem restarts rpcd and the service.
+			const detach = system('command -v setsid >/dev/null 2>&1') == 0 ? 'setsid ' : '';
+
+			system(`${detach}sh -c 'echo $$ > ${RUN}/install.pid; /usr/bin/mayhem ${cmd} > ${RUN}/install.log 2>&1; echo $? > ${RUN}/install.rc; rm -f ${RUN}/install.pid' >/dev/null 2>&1 </dev/null &`);
+
+			return { started: true };
+		}
+	},
+
+	// Creates a network interface (and optionally a Mayhem section) from a
+	// WireGuard/AmneziaWG .conf. vpn:// keys are decoded in the browser.
+	awg_import: {
+		args: { name: '', conf: '', section: false, pool: true, label: '' },
+		call: function(req) {
+			let name = req.args?.name ?? '';
+
+			// No name: the first free awgN.
+			if (name == '') {
+				const nc = uci_open();
+
+				nc.load('network');
+
+				for (let i = 0; i < 100 && name == ''; i++)
+					if (nc.get('network', `awg${i}`) == null)
+						name = `awg${i}`;
+			}
+
+			if (!match(name, /^[a-z][a-z0-9_]{0,14}$/))
+				return { error: 'the name must start with a letter and have at most 15 lower-case letters, digits or _' };
+
+			let conf, cfg;
+
+			try {
+				conf = parse_conf(req.args?.conf);
+			}
+			catch (e) {
+				return { error: e.message };
+			}
+
+			const amnezia = is_amnezia(conf);
+			let proto;
+
+			if (has_awg())
+				proto = 'amneziawg';
+			else if (!amnezia && has_wireguard())
+				proto = 'wireguard';
+			else
+				return { error: amnezia ? 'install AmneziaWG first' : 'install AmneziaWG or WireGuard first' };
+
+			try {
+				cfg = uci_sections(conf, proto);
+			}
+			catch (e) {
+				return { error: e.message };
+			}
+
+			const c = uci_open();
+
+			c.load('network');
+			c.load('firewall');
+			c.load('mayhem');
+
+			if (c.get('network', name) != null)
+				return { error: `network interface ${name} already exists` };
+
+			c.set('network', name, 'interface');
+
+			for (let k in keys(cfg.iface))
+				c.set('network', name, k, cfg.iface[k]);
+
+			for (let p in cfg.peers) {
+				const sid = c.add('network', `${proto}_${name}`);
+
+				for (let k in keys(p))
+					c.set('network', sid, k, p[k]);
+			}
+
+			// One firewall zone for all Mayhem tunnels: LAN traffic leaves through
+			// them with masquerade, nothing comes in.
+			let zone = null;
+
+			c.foreach('firewall', 'zone', (z) => {
+				if (z.name == 'mayhem')
+					zone = z['.name'];
+			});
+
+			if (!zone) {
+				zone = c.add('firewall', 'zone');
+				c.set('firewall', zone, 'name', 'mayhem');
+				c.set('firewall', zone, 'input', 'REJECT');
+				c.set('firewall', zone, 'output', 'ACCEPT');
+				c.set('firewall', zone, 'forward', 'REJECT');
+				c.set('firewall', zone, 'masq', '1');
+				c.set('firewall', zone, 'mtu_fix', '1');
+
+				const fwd = c.add('firewall', 'forwarding');
+
+				c.set('firewall', fwd, 'src', 'lan');
+				c.set('firewall', fwd, 'dest', 'mayhem');
+			}
+
+			const nets = c.get('firewall', zone, 'network') ?? [];
+
+			c.set('firewall', zone, 'network', [ ...(type(nets) == 'array' ? nets : [ nets ]), name ]);
+
+			// Every tunnel is a server of the server list (chosen on the
+			// dashboard like any other server); this one may opt out.
+			if (req.args?.pool === false) {
+				c.set('mayhem', name, 'tunnel');
+				c.set('mayhem', name, 'server', '0');
+			}
+
+			const label = trim(req.args?.label ?? '');
+
+			if (label != '') {
+				if (c.get('mayhem', name) == null)
+					c.set('mayhem', name, 'tunnel');
+
+				c.set('mayhem', name, 'label', label);
+			}
+
+			let section = null;
+
+			if (req.args?.section === true) {
+				section = name;
+
+				for (let i = 2; c.get('mayhem', section) != null; i++)
+					section = `${name}_${i}`;
+
+				c.set('mayhem', section, 'section');
+				c.set('mayhem', section, 'enabled', '1');
+				c.set('mayhem', section, 'type', 'interface');
+				c.set('mayhem', section, 'interface', name);
+				c.set('mayhem', section, 'route_mode', 'kernel');
+			}
+
+			if (!commit_all(c, 'mayhem', 'network', 'firewall'))
+				return { error: 'the config could not be saved' };
+
+			apply_bg('/etc/init.d/network reload; /etc/init.d/firewall reload; /etc/init.d/mayhem reload');
+
+			// A config made for a local obfuscator: the dialog asks for the
+			// obfuscation and its server next.
+			return { ok: true, interface: name, proto: proto, section: section, pool: req.args?.pool !== false, v6: cfg.v6,
+				loopback: loopback_host(cfg.peers[0]?.endpoint_host), allowed: cfg.allowed };
+		}
+	},
+
+	// Renames a server: a key by the name in the key itself, a subscription
+	// server by an alias kept with the subscription, a tunnel by its name.
+	// The dashboard names it by section and tag, the key list by the key.
+	rename_server: {
+		args: { section: '', tag: '', link: '', name: '' },
+		call: function(req) {
+			const name = trim(req.args?.name ?? '');
+
+			if (name == '' || length(name) > 64 || match(name, /[\t\n\r]/))
+				return { error: 'the name must have 1 to 64 characters on one line' };
+
+			const c = uci_cursor();
+			let sec = req.args?.section ?? '', link = req.args?.link ?? '', old = null;
+			let node = null;
+
+			if (link == '') {
+				const f = find_node(read_json(`${RUN}/nodes.json`), req.args?.tag ?? '');
+
+				if (!f || f.section != sec)
+					return { error: 'unknown server' };
+
+				node = f.node;
+				old = node.name;
+			}
+			else
+				sec = 'pool';
+
+			const usec = sec;
+
+			if (node?.iface) {
+				if (c.get('mayhem', node.iface) == null)
+					c.set('mayhem', node.iface, 'tunnel');
+
+				c.set('mayhem', node.iface, 'label', name);
+			}
+			else if (node && node.source != 'link' && node.source != 'json') {
+				if (c.get('mayhem', node.source) != 'subscription')
+					return { error: 'this server cannot be renamed' };
+
+				const orig = node.orig ?? node.name;
+				const list = filter(c.get('mayhem', node.source, 'alias') ?? [], (a) => substr(a, 0, length(orig) + 1) != `${orig}\t`);
+
+				push(list, `${orig}\t${name}`);
+				c.set('mayhem', node.source, 'alias', list);
+			}
+			else {
+				const links = c.get('mayhem', usec, 'link') ?? [];
+				const all = type(links) == 'array' ? links : [ links ];
+				let i = -1;
+
+				for (let k = 0; k < length(all) && i < 0; k++) {
+					if (link != '' ? all[k] == link : (try_link_name(all[k]) == old))
+						i = k;
+				}
+
+				if (i < 0)
+					return { error: node?.source == 'json' ? 'a JSON server is renamed in its JSON' : 'the server key was not found' };
+
+				old ??= try_link_name(all[i]);
+
+				const renamed = rename_link(all[i], name);
+
+				if (!renamed)
+					return { error: 'this key has no place for a name' };
+
+				all[i] = renamed;
+				c.set('mayhem', usec, 'link', all);
+			}
+
+			// The chosen or pinned server keeps being chosen, and it keeps its
+			// place in a fallback chain.
+			const in_list = (v) => v == null ? [] : (type(v) == 'array' ? v : [ v ]);
+			const swap_list = (sec, opt, from, to) => {
+				const v = c.get('mayhem', sec, opt);
+
+				if (v != null && index(in_list(v), from) >= 0)
+					c.set('mayhem', sec, opt, map(in_list(v), (x) => x == from ? to : x));
+			};
+
+			for (let k in [ 'selected', 'override' ])
+				if (old != null && c.get('mayhem', usec, k) == old)
+					c.set('mayhem', usec, k, name);
+
+			if (node && !node.iface && node.source != 'link' && node.source != 'json') {
+				// A server of a subscription is named by the provider's name
+				// there, which stays the same whatever it is called.
+				const orig = node.orig ?? node.name;
+
+				if (old != null && old != orig) {
+					swap_list('pool', 'chain', `${node.source}\t${old}`, `${node.source}\t${orig}`);
+					swap_list(node.source, 'chain', old, orig);
+
+					if (c.get('mayhem', node.source, 'selected') == old)
+						c.set('mayhem', node.source, 'selected', orig);
+				}
+			}
+			else if (old != null && !node?.iface)
+				swap_list(usec, 'chain', old, name);
+
+			c.commit('mayhem');
+			apply_bg('/etc/init.d/mayhem reload');
+
+			return { ok: true, name: name };
+		}
+	},
+
+	// Renames a tunnel interface: the network interface and its peers (whose
+	// type carries the name), the firewall zone, and every Mayhem reference.
+	rename_interface: {
+		args: { from: '', to: '' },
+		call: function(req) {
+			const from = req.args?.from ?? '', to = req.args?.to ?? '';
+
+			if (!match(to, /^[a-z][a-z0-9_]{0,14}$/))
+				return { error: 'the name must start with a letter and have at most 15 lower-case letters, digits or _' };
+
+			const c = uci_open();
+
+			c.load('network');
+			c.load('firewall');
+			c.load('mayhem');
+
+			if (!match(from, /^[A-Za-z0-9_]+$/) || c.get('network', from) != 'interface')
+				return { error: `network interface ${from} does not exist` };
+
+			if (from == to)
+				return { ok: true, interface: to };
+
+			if (c.get('network', to) != null)
+				return { error: `network interface ${to} already exists` };
+
+			const copy_opts = (cfg, src, dst) => {
+				const all = c.get_all(cfg, src) ?? {};
+
+				for (let k in keys(all))
+					if (substr(k, 0, 1) != '.')
+						c.set(cfg, dst, k, all[k]);
+			};
+
+			c.set('network', to, 'interface');
+			copy_opts('network', from, to);
+
+			// Peers are sections of type "<proto>_<interface>".
+			const proto = c.get('network', from, 'proto') ?? '';
+			const peers = [];
+
+			c.foreach('network', `${proto}_${from}`, (p) => push(peers, p['.name']));
+
+			for (let p in peers) {
+				const sid = c.add('network', `${proto}_${to}`);
+
+				copy_opts('network', p, sid);
+				c.delete('network', p);
+			}
+
+			c.delete('network', from);
+
+			const swap = (v) => type(v) == 'array' ? map(v, (x) => x == from ? to : x) : (v == from ? to : v);
+
+			c.foreach('firewall', 'zone', (z) => {
+				if (z.network != null)
+					c.set('firewall', z['.name'], 'network', swap(z.network));
+			});
+
+			c.foreach('mayhem', 'section', (sec) => {
+				if (sec.interface == from)
+					c.set('mayhem', sec['.name'], 'interface', to);
+
+				if (sec.iface_node != null)
+					c.set('mayhem', sec['.name'], 'iface_node', swap(sec.iface_node));
+
+				for (let k in [ 'selected', 'override' ])
+					if (sec[k] == from)
+						c.set('mayhem', sec['.name'], k, to);
+			});
+
+			if (c.get('mayhem', 'pool') != null) {
+				const p = c.get_all('mayhem', 'pool');
+
+				if (p.iface_node != null)
+					c.set('mayhem', 'pool', 'iface_node', swap(p.iface_node));
+
+				// The chain names a tunnel by its interface.
+				if (p.chain != null)
+					c.set('mayhem', 'pool', 'chain', swap(p.chain));
+
+				for (let k in [ 'selected', 'override' ])
+					if (p[k] == from)
+						c.set('mayhem', 'pool', k, to);
+			}
+
+			// The tunnel's name lives under the interface name.
+			if (c.get('mayhem', from) == 'tunnel') {
+				c.set('mayhem', to, 'tunnel');
+				copy_opts('mayhem', from, to);
+				c.delete('mayhem', from);
+			}
+
+			// The obfuscation of the tunnel goes along.
+			if (c.get('mayhem', `ob_${from}`) == 'obfs') {
+				c.set('mayhem', `ob_${to}`, 'obfs');
+				copy_opts('mayhem', `ob_${from}`, `ob_${to}`);
+				c.set('mayhem', `ob_${to}`, 'iface', to);
+				c.delete('mayhem', `ob_${from}`);
+			}
+
+			if (!commit_all(c, 'network', 'firewall', 'mayhem'))
+				return { error: 'the config could not be saved' };
+
+			apply_bg('/etc/init.d/mayhem-obfs restart; /etc/init.d/network reload; /etc/init.d/firewall reload; /etc/init.d/mayhem reload');
+
+			return { ok: true, interface: to };
+		}
+	},
+
+	// Versions for the diagnostics page and bug reports.
+	sysinfo: {
+		call: function() {
+			let xver = trim(fs.readfile(`${RUN}/xray.version`) ?? '');
+
+			if (xver == '' && fs.access(XRAY)) {
+				const m = match(run(`${XRAY} version 2>/dev/null`) ?? '', /Xray ([0-9][^ ]*)/);
+
+				xver = m ? m[1] : 'installed';
+			}
+
+			return {
+				mayhem: mayhem_version(),
+				xray: xver != '' ? xver : null,
+				openwrt: os_release(),
+				model: trim(fs.readfile('/tmp/sysinfo/model') ?? '') || null,
+				kernel: trim(fs.readfile('/proc/sys/kernel/osrelease') ?? '') || null
+			};
+		}
+	},
+
+	diagnose: {
+		args: { part: 'local', target: '' },
+		call: function(req) {
+			switch (req.args?.part) {
+			case 'local': return diag_local();
+			case 'dns': return diag_dns();
+			case 'exit': return diag_exit(req.args?.target ?? 'direct');
+			default: return { error: 'unknown part' };
+			}
+		}
+	},
+
+	logs: {
+		args: { component: 'all', lines: 300 },
+		call: function(req) {
+			const n = int(req.args?.lines ?? 300);
+			const pats = {
+				all: /mayhem|xray|dnsmasq/i,
+				mayhem: /mayhem/i,
+				xray: /xray/i,
+				dnsmasq: /dnsmasq/i
+			};
+			const re = pats[req.args?.component] ?? pats.all;
+			const out = filter(lines_of(run('logread 2>/dev/null')), (l) => match(l, re));
+
+			return { lines: slice(out, -(n > 0 && n <= 2000 ? n : 300)) };
+		}
+	},
+
+	set_log_level: {
+		args: { level: 'warning' },
+		call: function(req) {
+			const level = req.args?.level;
+
+			if (index([ 'debug', 'info', 'warning', 'error', 'none' ], level) < 0)
+				return { error: 'unknown level' };
+
+			const c = uci_cursor();
+
+			c.set('mayhem', 'settings', 'log_level', level);
+			c.commit('mayhem');
+			apply_bg('/etc/init.d/mayhem reload');
+
+			return { ok: true };
+		}
+	},
+
+	check: {
+		call: function() {
+			try {
+				return json(run('/usr/bin/mayhem check 2>/dev/null') ?? '');
+			}
+			catch (e) {
+				return { ok: false, errors: [ 'check failed' ] };
+			}
+		}
+	},
+
+	action: {
+		args: { name: 'restart' },
+		call: function(req) {
+			const cmd = ACTIONS[req.args?.name];
+
+			if (!cmd)
+				return { error: 'unknown action' };
+
+			run(`${cmd} >/dev/null 2>&1`);
+
+			return { result: true };
+		}
+	},
+
+	// Server links as the generator sees them: name, protocol, address, and
+	// why xray would refuse the server.
+	parse_link: {
+		args: { link: '', links: [] },
+		call: function(req) {
+			const one = (l) => {
+				try {
+					const r = parse_link(l);
+					const why = refused_by_xray(r.outbound);
+
+					return {
+						ok: !why, name: r.name, protocol: r.outbound.protocol,
+						address: outbound_host(r.outbound), port: outbound_port(r.outbound),
+						warnings: r.warnings, error: why ? `xray does not accept this server: ${why}` : null
+					};
+				}
+				catch (e) {
+					return { ok: false, error: e.message };
+				}
+			};
+
+			if (type(req.args?.links) == 'array')
+				return { results: map(slice(req.args.links, 0, 500), (l) => one(`${l}`)) };
+
+			// One server: also its Xray outbound, for editing it as JSON.
+			const r = one(req.args?.link);
+
+			try {
+				r.outbound = parse_link(req.args?.link).outbound;
+			}
+			catch (e) {
+				r.outbound = null;
+			}
+
+			return r;
+		}
+	},
+
+	// Where a section leads: its external address with country and city.
+	// Asked once when the dashboard opens, not polled.
+	exit_info: {
+		args: { section: '', lang: 'en' },
+		call: function(req) {
+			const state = read_json(`${RUN}/nodes.json`) ?? { sections: {} };
+			const sn = req.args?.section || default_section(state);
+
+			if (!sn)
+				return { error: 'no proxy section' };
+
+			const v = section_via(state, sn);
+
+			if (v.error)
+				return { section: sn, error: v.error };
+
+			const lang = index(GEO_LANGS, req.args?.lang) >= 0 ? req.args.lang : 'en';
+			const geo = exit_geo(v.via, lang);
+
+			if (geo)
+				return { section: sn, ...geo };
+
+			// No geo service answered: at least the address.
+			const url = uci_cursor().get('mayhem', 'settings', 'ip_check_url') ?? IP_CHECK_URL;
+			const ip = trim(run(`curl -s -m 8 ${v.via} ${q(url)} 2>/dev/null`) ?? '');
+
+			return match(ip, /^[0-9a-fA-F:.]+$/) ? { section: sn, ip: ip } : { section: sn, error: 'no answer' };
+		}
+	},
+
+	reset_config: {
+		args: { connections: true },
+		call: function(req) {
+			return reset_config(req.args?.connections !== false);
+		}
+	},
+
+	rename_section: {
+		args: { name: '', new_name: '' },
+		call: function(req) {
+			return rename_section(req.args?.name, req.args?.new_name);
+		}
+	},
+
+	// Downloads every subscription again and applies the servers even when
+	// nothing changed: servers that did not make it into xray get there.
+	refresh_servers: {
+		call: function() {
+			return { results: subs_download('', true) ?? [] };
+		}
+	},
+
+	// A new name for a subscription: its section, its downloaded servers and
+	// every place that names it (the chain of the server list, sections with
+	// servers of their own).
+	rename_subscription: {
+		args: { name: '', new_name: '' },
+		call: function(req) {
+			return rename_subscription(req.args?.name, req.args?.new_name);
+		}
+	},
+
+	// Installed and latest versions of Xray and Mayhem.
+	components: {
+		args: { check: false },
+		call: function(req) {
+			const res = {
+				mayhem: mayhem_version(),
+				xray: xray_installed(),
+				xray_pinned: match(fs.readfile(`${LIB}/const.sh`) ?? '', /MAYHEM_XRAY_VERSION="([^"]*)"/)?.[1],
+				install: install_running() ? 'running' : null,
+				// tunnel protocols and WireGuard obfuscators: installed or not
+				awg: has_awg(),
+				wireguard: has_wireguard(),
+				phobos: fs.access(OBFS_BIN.phobos, 'x') == true,
+				faketcp: fs.access(OBFS_BIN.faketcp, 'x') == true
+			};
+
+			if (req.args?.check) {
+				res.xray_latest = latest_release('XTLS/Xray-core', true);
+				res.mayhem_latest = latest_release(REPO);
+			}
+
+			return res;
+		}
+	},
+
+	backup_export: {
+		args: { connections: true },
+		call: function(req) {
+			return backup_export(req.args?.connections !== false);
+		}
+	},
+
+	backup_import: {
+		args: { backup: {} },
+		call: function(req) {
+			return backup_import(req.args?.backup);
+		}
+	},
+
+	// The check method picked on the dashboard is kept for the next visit.
+	// Written straight to UCI: nothing reloads, the generator does not use it.
+	set_ping_method: {
+		args: { method: 'url' },
+		call: function(req) {
+			if (index([ 'url', 'tcp', 'icmp' ], req.args?.method) < 0)
+				return { error: 'unknown method' };
+
+			const c = uci_cursor();
+
+			c.set('mayhem', 'settings', 'ping_method', req.args.method);
+			c.commit('mayhem');
+
+			return { ok: true };
+		}
+	},
+
+	// A server key (or JSON server) of the server list or of a section is
+	// replaced by an edited one. A new name carries the choices along.
+	server_edit: {
+		args: { section: '', old: '', link: '', tag: '' },
+		call: function(req) {
+			const sec = req.args?.section || 'pool';
+			let link = trim(req.args?.link ?? '');
+			const c = uci_cursor();
+			let parsed;
+
+			if (c.get('mayhem', sec) != 'pool' && c.get('mayhem', sec) != 'section')
+				return { error: 'unknown section' };
+
+			// JSON goes in as one line.
+			if (substr(link, 0, 1) == '{') {
+				try {
+					link = sprintf('%J', json(link));
+				}
+				catch (e) {
+					return { error: 'the server config is not valid JSON' };
+				}
+			}
+
+			if (match(link, /[\r\n]/))
+				return { error: 'one server only' };
+
+			try {
+				parsed = parse_link(link);
+			}
+			catch (e) {
+				return { error: e.message };
+			}
+
+			const why = refused_by_xray(parsed.outbound);
+
+			if (why)
+				return { error: `xray does not accept this server: ${why}` };
+
+			if (req.args?.tag) {
+				const found = find_node(read_json(`${RUN}/nodes.json`), req.args.tag);
+				if (!found || found.section != sec)
+					return { error: 'unknown server' };
+
+				const n = found.node;
+				if (c.get('mayhem', n.source) == 'subscription') {
+					if (n.link != req.args.old)
+						return { error: 'the server changed; open the editor again' };
+
+					const orig = n.orig ?? n.name;
+					const list = filter(as_list(c.get('mayhem', n.source, 'server_override')), (v) => {
+						try { return json(v).name != orig; } catch (e) { return true; }
+					});
+					push(list, sprintf('%J', { name: orig, link: link }));
+					c.set('mayhem', n.source, 'server_override', list);
+
+					if (parsed.name != '' && parsed.name != n.name) {
+						if (length(parsed.name) > 64 || match(parsed.name, /[\t\n\r]/))
+							return { error: 'the name must have 1 to 64 characters on one line' };
+						const aliases = filter(as_list(c.get('mayhem', n.source, 'alias')), (a) => substr(a, 0, length(orig) + 1) != `${orig}\t`);
+						push(aliases, `${orig}\t${parsed.name}`);
+						c.set('mayhem', n.source, 'alias', aliases);
+						for (let kind in [ 'pool', 'section', 'subscription' ])
+							c.foreach('mayhem', kind, (p) => {
+								const sid = p['.name'];
+								if (kind == 'subscription' ? sid != n.source : (kind == 'section' && index(entries(p.subscription), n.source) < 0)) return;
+								const to = kind == 'subscription' ? orig : parsed.name;
+								for (let k in [ 'selected', 'override' ])
+									if (c.get('mayhem', sid, k) == n.name)
+										c.set('mayhem', sid, k, to);
+								if (p.chain != null)
+									c.set('mayhem', sid, 'chain', map(as_list(p.chain), (v) =>
+										v == `${n.source}\t${n.name}` ? `${n.source}\t${orig}` : v == n.name ? to : v));
+							});
+					}
+					if (!c.commit('mayhem'))
+						return { error: 'the configuration could not be saved' };
+					apply_bg('/etc/init.d/mayhem reload');
+					return { ok: true, name: parsed.name };
+				}
+			}
+
+			const links = c.get('mayhem', sec, 'link') ?? [];
+			const all = type(links) == 'array' ? links : [ links ];
+			const i = index(all, req.args?.old ?? '');
+
+			if (i < 0)
+				return { error: 'the server key was not found' };
+
+			let old = null;
+
+			try {
+				old = parse_link(all[i]).name;
+			}
+			catch (e) {
+				old = null;
+			}
+
+			all[i] = link;
+			c.set('mayhem', sec, 'link', all);
+
+			if (old != null && parsed.name != '' && old != parsed.name) {
+				for (let k in [ 'selected', 'override' ])
+					if (c.get('mayhem', sec, k) == old)
+						c.set('mayhem', sec, k, parsed.name);
+
+				const chain = c.get('mayhem', sec, 'chain');
+
+				if (chain)
+					c.set('mayhem', sec, 'chain', map(type(chain) == 'array' ? chain : [ chain ], (n) => n == old ? parsed.name : n));
+			}
+
+			c.commit('mayhem');
+			apply_bg('/etc/init.d/mayhem reload');
+
+			return { ok: true, name: parsed.name };
+		}
+	},
+
+	// Takes a tunnel out of Mayhem. mode "hide": it stops being a server of
+	// the server list (mayhem.<iface>.server = 0), the interface stays; "show"
+	// puts it back. "full": the network interface goes as well, with its
+	// peers, its place in firewall zones, the tunnel sections that use it and
+	// every choice that names it.
+	tunnel_delete: {
+		args: { iface: '', mode: 'hide' },
+		call: function(req) {
+			const iface = req.args?.iface ?? '';
+			const c = uci_open();
+
+			c.load('network');
+			c.load('firewall');
+			c.load('mayhem');
+
+			if (!match(iface, /^[A-Za-z0-9_]+$/) || c.get('network', iface) != 'interface')
+				return { error: `network interface ${iface} does not exist` };
+
+			const drop = (v) => type(v) == 'array' ? filter(v, (x) => x != iface) : (v == iface ? null : v);
+			const set_or_delete = (cfg, sid, opt, v) => {
+				if (v == null || (type(v) == 'array' && !length(v)))
+					c.delete(cfg, sid, opt);
+				else
+					c.set(cfg, sid, opt, v);
+			};
+
+			const mode = req.args?.mode ?? 'hide';
+
+			if (index([ 'hide', 'show', 'full' ], mode) < 0)
+				return { error: 'unknown mode' };
+
+			if (mode == 'show') {
+				if (c.get('mayhem', iface) == 'tunnel')
+					c.delete('mayhem', iface, 'server');
+			}
+			else if (mode == 'hide') {
+				if (c.get('mayhem', iface) == null)
+					c.set('mayhem', iface, 'tunnel');
+
+				c.set('mayhem', iface, 'server', '0');
+			}
+			else {
+				const proto = c.get('network', iface, 'proto') ?? '';
+				const peers = [];
+
+				c.foreach('network', `${proto}_${iface}`, (p) => push(peers, p['.name']));
+
+				for (let p in peers)
+					c.delete('network', p);
+
+				c.delete('network', iface);
+
+				c.foreach('firewall', 'zone', (z) => {
+					if (z.network != null)
+						set_or_delete('firewall', z['.name'], 'network', drop(z.network));
+				});
+
+				const gone = [];
+
+				c.foreach('mayhem', 'section', (sec) => {
+					if (sec.type == 'interface' && sec.interface == iface)
+						push(gone, sec['.name']);
+				});
+
+				for (let sn in gone)
+					c.delete('mayhem', sn);
+
+				const clean = (sid) => {
+					const v = c.get_all('mayhem', sid);
+
+					if (!v)
+						return;
+
+					if (v.iface_node != null)
+						set_or_delete('mayhem', sid, 'iface_node', drop(v.iface_node));
+
+					for (let k in [ 'selected', 'override' ])
+						if (v[k] == iface)
+							c.delete('mayhem', sid, k);
+
+					if (v.chain != null)
+						set_or_delete('mayhem', sid, 'chain', drop(v.chain));
+				};
+
+				c.foreach('mayhem', 'section', (sec) => clean(sec['.name']));
+				clean('pool');
+
+				if (c.get('mayhem', iface) == 'tunnel')
+					c.delete('mayhem', iface);
+
+				if (c.get('mayhem', `ob_${iface}`) == 'obfs')
+					c.delete('mayhem', `ob_${iface}`);
+
+				if (index(gone, c.get('mayhem', 'settings', 'default_section')) >= 0)
+					c.delete('mayhem', 'settings', 'default_section');
+			}
+
+			if (!commit_all(c, 'network', 'firewall', 'mayhem'))
+				return { error: 'the config could not be saved' };
+
+			apply_bg(mode == 'full'
+				? `ifdown ${q(iface)}; /etc/init.d/mayhem-obfs restart; /etc/init.d/network reload; /etc/init.d/firewall reload; /etc/init.d/mayhem reload`
+				: '/etc/init.d/mayhem reload');
+
+			return { ok: true };
+		}
+	},
+
+	// A server off the dashboard. A key or a JSON server leaves its list; a
+	// subscription's server gets into the subscription's list of deleted
+	// servers, so it does not come back with the next update (server_restore
+	// brings it back); a tunnel leaves the server list and stays a network
+	// interface. Mayhem reloads.
+	server_delete: {
+		args: { section: '', tag: '' },
+		call: function(req) {
+			const f = find_node(read_json(`${RUN}/nodes.json`), req.args?.tag ?? '');
+
+			if (!f || f.section != (req.args?.section ?? ''))
+				return { error: 'unknown server' };
+
+			const n = f.node;
+
+			const c = uci_cursor();
+
+			// Like tunnel_delete with mode "hide".
+			if (n.iface) {
+				if (c.get('mayhem', n.iface) == null)
+					c.set('mayhem', n.iface, 'tunnel');
+
+				c.set('mayhem', n.iface, 'server', '0');
+
+				if (!c.commit('mayhem'))
+					return { error: 'the config could not be saved' };
+
+				apply_bg('/etc/init.d/mayhem reload');
+
+				return { ok: true };
+			}
+
+			const usec = n.usec ?? f.section;
+			let gone = n.name;
+
+			if (n.source == 'link' && n.link) {
+				const links = c.get('mayhem', usec, 'link') ?? [];
+				const all = type(links) == 'array' ? links : [ links ];
+				const left = filter(all, (l) => l != n.link);
+
+				if (length(left) == length(all))
+					return { error: 'the server key was not found' };
+
+				if (length(left))
+					c.set('mayhem', usec, 'link', left);
+				else
+					c.delete('mayhem', usec, 'link');
+			}
+			else if (n.source != 'link' && n.source != 'json' && c.get('mayhem', n.source) == 'subscription') {
+				// Kept with the subscription (the provider's name), so the
+				// subscription's window can bring the server back.
+				const orig = n.orig ?? n.name;
+				const had = c.get('mayhem', n.source, 'hidden') ?? [];
+				const list = type(had) == 'array' ? had : [ had ];
+
+				if (index(list, orig) < 0)
+					push(list, orig);
+
+				c.set('mayhem', n.source, 'hidden', list);
+			}
+			else
+				return { error: 'this server cannot be deleted here' };
+
+			// A choice or a chain naming the server forgets it.
+			for (let k in [ 'selected', 'override' ])
+				if (c.get('mayhem', usec, k) == gone)
+					c.delete('mayhem', usec, k);
+
+			// In the list's chain a server of a subscription is also named
+			// "<subscription>\t<name>", and the subscription's own rule may
+			// name it.
+			const sub = (n.source != 'link' && n.source != 'json' && c.get('mayhem', n.source) == 'subscription') ? n.source : null;
+			const forget = (sid, names) => {
+				const chain = c.get('mayhem', sid, 'chain');
+
+				if (chain != null) {
+					const rest = filter(type(chain) == 'array' ? chain : [ chain ], (x) => index(names, x) < 0);
+
+					if (length(rest))
+						c.set('mayhem', sid, 'chain', rest);
+					else
+						c.delete('mayhem', sid, 'chain');
+				}
+			};
+
+			forget(usec, sub ? [ gone, `${sub}\t${gone}` ] : [ gone ]);
+
+			if (sub) {
+				if (c.get('mayhem', sub, 'selected') == gone)
+					c.delete('mayhem', sub, 'selected');
+
+				forget(sub, [ gone ]);
+			}
+
+			if (!c.commit('mayhem'))
+				return { error: 'the config could not be saved' };
+
+			apply_bg('/etc/init.d/mayhem reload');
+
+			return { ok: true };
+		}
+	},
+
+	// Brings servers deleted from a subscription back: one by its name (as the
+	// provider names it), or all of them with an empty name. The servers appear
+	// again, Mayhem reloads. Returns what is still deleted.
+	server_restore: {
+		args: { subscription: '', name: '' },
+		call: function(req) {
+			const sub = req.args?.subscription ?? '';
+			const name = req.args?.name ?? '';
+			const c = uci_cursor();
+
+			if (c.get('mayhem', sub) != 'subscription')
+				return { error: 'unknown subscription' };
+
+			const had = c.get('mayhem', sub, 'hidden') ?? [];
+			const list = type(had) == 'array' ? had : [ had ];
+
+			if (name != '' && index(list, name) < 0)
+				return { error: 'this server is not deleted' };
+
+			const left = name == '' ? [] : filter(list, (h) => h != name);
+
+			if (length(left))
+				c.set('mayhem', sub, 'hidden', left);
+			else
+				c.delete('mayhem', sub, 'hidden');
+
+			if (!c.commit('mayhem'))
+				return { error: 'the config could not be saved' };
+
+			apply_bg('/etc/init.d/mayhem reload');
+
+			return { ok: true, hidden: left };
+		}
+	},
+
+	// A tunnel (AmneziaWG or WireGuard interface) as a .conf and as its
+	// options, for editing.
+	tunnel_get: {
+		args: { iface: '' },
+		call: function(req) {
+			const iface = req.args?.iface ?? '';
+			const c = network_cursor();
+
+			if (!match(iface, /^[a-z][a-z0-9_]{0,14}$/) || c.get('network', iface) != 'interface')
+				return { error: 'unknown interface' };
+
+			const proto = c.get('network', iface, 'proto');
+
+			if (proto != 'amneziawg' && proto != 'wireguard')
+				return { error: 'only AmneziaWG and WireGuard tunnels can be edited here' };
+
+			const opts = { ...(c.get_all('network', iface) ?? {}) };
+			const peers = [];
+
+			c.foreach('network', `${proto}_${iface}`, (p) => push(peers, { ...p }));
+
+			// With an obfuscator the .conf shows the server and the MTU of the
+			// tunnel itself, not the local obfuscator.
+			const rec = obfs_record(uci_cursor(), iface);
+
+			if (rec && length(peers) && loopback_host(peers[0].endpoint_host) && !loopback_host(rec.host)) {
+				peers[0].endpoint_host = rec.host;
+				peers[0].endpoint_port = rec.eport;
+
+				if (rec.mtu == '-')
+					delete opts.mtu;
+				else if (rec.mtu)
+					opts.mtu = rec.mtu;
+			}
+
+			return {
+				ok: true, proto: proto, conf: to_conf(opts, peers),
+				obfs: rec ? { kind: rec.kind, port: int(rec.port), key: rec.key, masking: rec.masking, host: loopback_host(rec.host) ? null : rec.host } : null,
+				// the .conf points at a local obfuscator: the server's address is asked for
+				loopback: length(peers) > 0 && loopback_host(peers[0].endpoint_host),
+				installed: { phobos: fs.access(OBFS_BIN.phobos, 'x') == true, faketcp: fs.access(OBFS_BIN.faketcp, 'x') == true }
+			};
+		}
+	},
+
+	// Saves an edited .conf over the tunnel: the interface keeps its name,
+	// protocol, firewall zone and Mayhem settings; its keys, addresses,
+	// obfuscation parameters and peers are replaced. The tunnel reconnects.
+	tunnel_set: {
+		args: { iface: '', conf: '', obfs: '', obfs_port: 0, obfs_key: '', obfs_masking: '', obfs_host: '' },
+		call: function(req) {
+			const iface = req.args?.iface ?? '';
+			const c = uci_open();
+
+			c.load('network');
+
+			if (!match(iface, /^[a-z][a-z0-9_]{0,14}$/) || c.get('network', iface) != 'interface')
+				return { error: 'unknown interface' };
+
+			const proto = c.get('network', iface, 'proto');
+
+			if (proto != 'amneziawg' && proto != 'wireguard')
+				return { error: 'only AmneziaWG and WireGuard tunnels can be edited here' };
+
+			let conf, cfg;
+
+			try {
+				conf = parse_conf(req.args?.conf);
+
+				if (proto == 'wireguard' && is_amnezia(conf))
+					die('this config has AmneziaWG parameters, but the tunnel is plain WireGuard');
+
+				cfg = uci_sections(conf, proto);
+			}
+			catch (e) {
+				return { error: e.message };
+			}
+
+			// Options the config does not set go: they came from the old one.
+			const keep = [ 'proto', 'disabled', 'auto', 'force_link', 'defaultroute', 'peerdns', 'dns', 'ip6prefix', 'nohostroute', 'fwmark', 'metric' ];
+			const old = c.get_all('network', iface) ?? {};
+
+			for (let k in keys(old))
+				if (substr(k, 0, 1) != '.' && index(keep, k) < 0 && cfg.iface[k] == null)
+					c.delete('network', iface, k);
+
+			for (let k in keys(cfg.iface))
+				c.set('network', iface, k, cfg.iface[k]);
+
+			const gone = [];
+
+			c.foreach('network', `${proto}_${iface}`, (p) => push(gone, p['.name']));
+
+			for (let sid in gone)
+				c.delete('network', sid);
+
+			for (let p in cfg.peers) {
+				const sid = c.add('network', `${proto}_${iface}`);
+
+				for (let k in keys(p))
+					c.set('network', sid, k, p[k]);
+			}
+
+			// Obfuscation: no "obfs" keeps it as it was, "none" turns it off,
+			// "phobos" or "faketcp" turns it on with the port (and key).
+			const cm = uci_cursor();
+			const rec = obfs_record(cm, iface);
+			const kind = req.args?.obfs ?? '';
+			let o = null;
+
+			if (kind == '' && rec)
+				o = { kind: rec.kind, port: int(rec.port), key: rec.key, masking: rec.masking };
+			else if (kind != '' && kind != 'none')
+				o = { kind: kind, port: int(req.args?.obfs_port ?? 0), key: req.args?.obfs_key, masking: req.args?.obfs_masking,
+					host: length(req.args?.obfs_host ?? '') ? req.args.obfs_host : null };
+
+			if (o && OBFS_BIN[o.kind] && !fs.access(OBFS_BIN[o.kind], 'x'))
+				return { error: `${o.kind == 'phobos' ? 'wg-obfuscator' : 'phantun'} is not installed` };
+
+			// The .conf brings the tunnel's own MTU: the record learns it.
+			if (rec)
+				cm.set('mayhem', `ob_${iface}`, 'mtu', c.get('network', iface, 'mtu') ?? '-');
+
+			c.load('firewall');
+
+			const err = obfs_apply(c, cm, c, iface, proto, o);
+
+			if (err)
+				return { error: err };
+
+			if (!commit_all(c, 'network', 'firewall') || !cm.commit('mayhem'))
+				return { error: 'the config could not be saved' };
+
+			apply_bg(`/etc/init.d/mayhem-obfs restart; /etc/init.d/firewall reload; /etc/init.d/network reload; sleep 2; ifup ${iface}; /etc/init.d/mayhem reload`);
+
+			return { ok: true };
+		}
+	},
+
+	// How a section with several servers picks one: auto (the fastest), manual
+	// (chosen on the dashboard) or fallback (a chain of servers by name, the
+	// first that works). The server list has auto (one server may be pinned)
+	// and fallback, whose items may also be "@<subscription>" (the server the
+	// subscription's rule picks) and "<subscription>\t<name>". A subscription
+	// gets its rule: auto, manual (selected: a server name) or fallback.
+	// Explicit mode changes close old connections after rebuilding the choice.
+	set_select: {
+		args: { section: '', mode: '', chain: [], selected: '', rules: {} },
+		call: function(req) {
+			const c = uci_cursor();
+			const sn = choice_target(c, req.args?.section ?? '');
+			const mode = req.args?.mode ?? '';
+			const kind = c.get('mayhem', sn);
+			const modes = kind == 'pool' ? [ 'auto', 'fallback' ] : [ 'auto', 'manual', 'fallback' ];
+
+			if (index(modes, mode) < 0)
+				return { error: 'unknown mode' };
+
+			if (kind != 'pool' && kind != 'subscription' && (kind != 'section' || (c.get('mayhem', sn, 'type') ?? 'proxy') != 'proxy'))
+				return { error: 'not a proxy section' };
+
+			const chain = filter(type(req.args?.chain) == 'array' ? req.args.chain : [], (n) => type(n) == 'string' && n != '' && length(n) <= 256);
+
+			// A list's chain may be one subscription; a chain of servers needs two.
+			if (mode == 'fallback' && length(chain) < (kind == 'pool' ? 1 : 2))
+				return { error: kind == 'pool' ? 'the chain is empty' : 'a chain needs two servers or more' };
+
+			c.set('mayhem', sn, 'select', mode);
+
+			if (mode == 'fallback')
+				c.set('mayhem', sn, 'chain', chain);
+			else
+				c.delete('mayhem', sn, 'chain');
+
+			if (mode == 'manual' && type(req.args?.selected) == 'string' && req.args.selected != '')
+				c.set('mayhem', sn, 'selected', req.args.selected);
+
+			// The list's chain dialog also sets the rules of the subscriptions
+			// it names, saved together: one reload.
+			if (kind == 'pool' && type(req.args?.rules) == 'object')
+				for (let sub, r in req.args.rules) {
+					if (c.get('mayhem', sub) != 'subscription' || type(r) != 'object' || index([ 'auto', 'manual', 'fallback' ], r.mode) < 0)
+						return { error: `unknown subscription or rule: ${sub}` };
+
+					const names = filter(type(r.chain) == 'array' ? r.chain : [], (n) => type(n) == 'string' && n != '' && length(n) <= 256);
+
+					if (r.mode == 'fallback' && !length(names))
+						return { error: `the chain of ${sub} is empty` };
+
+					c.set('mayhem', sub, 'select', r.mode);
+					c.delete('mayhem', sub, 'override');
+
+					if (r.mode == 'fallback')
+						c.set('mayhem', sub, 'chain', names);
+					else
+						c.delete('mayhem', sub, 'chain');
+
+					if (r.mode == 'manual' && type(r.selected) == 'string' && r.selected != '')
+						c.set('mayhem', sub, 'selected', r.selected);
+				}
+
+			// A chain decides by itself; a server pinned in automatic mode
+			// would only get in its way.
+			if (mode != 'auto' || kind == 'subscription')
+				c.delete('mayhem', sn, 'override');
+
+			const state = read_json(`${RUN}/nodes.json`);
+			const used = kind != 'subscription' || (state?.sections?.pool?.mode == 'fallback' &&
+				length(filter(state.sections.pool.items ?? [], (i) => i.sub == sn)) > 0);
+			if (used) reconnect_epoch(c);
+			if (!c.commit('mayhem'))
+				return { error: 'the configuration could not be saved' };
+
+			fs.unlink(`${RUN}/fallback.fails`);
+			reload_choice();
+
+			if (kind != 'subscription')
+				health_now(req.args?.section ?? sn, 'sleep 3');
+
+			return { ok: true };
+		}
+	}
+};
+
+// --- calls that start processes ---------------------------------------------
+// These methods run a program (curl through a server, a download, `mayhem
+// status`, `xray api`, logread, an init script) and would hold rpcd meanwhile
+// (see deferred_sh() above). They run in a child process (call.uc) instead,
+// and rpcd answers when it exits; outside rpcd they run in place.
+const APART = [ 'probe', 'probe_icmp', 'probe_tcp', 'exit_info', 'sub_update', 'refresh_servers', 'components', 'diagnose', 'connections',
+	'status', 'check', 'sysinfo', 'logs', 'tunnel_info', 'action', 'backup_import', 'reset_config' ];
+const CALL = getenv('MAYHEM_RPC_CALL') ?? '/usr/share/mayhem-luci/call.uc';
+
+function run_apart(name, inplace, req) {
+	if (!fs.access(CALL) || ubus_link() == null || type(req?.reply) != 'function')
+		return inplace(req);
+
+	const cmd = `MAYHEM_RPC_CHILD=1 exec ucode ${q(CALL)} ${q(name)} ${q(sprintf('%J', req.args ?? {}))}`;
+
+	return deferred_sh(req, cmd, (text) => {
+		let res = null;
+
+		try {
+			res = json(text);
+		}
+		catch (e) {
+			res = null;
+		}
+
+		return type(res) == 'object' ? res : { error: 'the call failed' };
+	});
+}
+
+// A function per method: loop variables are not captured one per pass.
+function apart(name) {
+	const inplace = methods[name].call;
+
+	return (req) => run_apart(name, inplace, req);
+}
+
+for (let name in APART)
+	methods[name].call = apart(name);
+
+return { 'luci.mayhem': methods };

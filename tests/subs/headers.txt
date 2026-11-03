@@ -1,0 +1,10 @@
+HTTP/1.1 302 Found
+Location: /x
+
+HTTP/1.1 200 OK
+subscription-userinfo: upload=100; download=2048; total=10737418240; expire=1798761600
+profile-update-interval: 6
+profile-title: base64:0JzQvtGPINC/0L7QtNC/0LjRgdC60LA=
+x-hwid-active: true
+x-hwid-limit: true
+

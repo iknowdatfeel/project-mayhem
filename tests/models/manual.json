@@ -1,0 +1,12 @@
+{
+  "settings": { "mode": "global", "default_section": "pick", "interface": ["br-lan"] },
+  "dns": { "remote": ["https://1.1.1.1/dns-query"] },
+  "sections": [
+    { ".name": "pick", "type": "proxy", "enabled": "1", "select": "manual", "selected": "B",
+      "link": [
+        "ss://2022-blake3-aes-128-gcm:AAECAwQFBgcICQoLDA0ODw%3D%3D@5.6.7.8:8443#A",
+        "trojan://pw@b.example:443?sni=b.example#B"
+      ] }
+  ],
+  "runtime": { "wan_dns": ["192.168.1.1"], "ipv6": false, "mem_total_kb": 262144 }
+}

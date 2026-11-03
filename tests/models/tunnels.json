@@ -1,0 +1,97 @@
+{
+  "settings": {
+    "mode": "lists",
+    "interface": [
+      "br-lan"
+    ],
+    "ip_family": "prefer_ipv4"
+  },
+  "dns": {
+    "remote": [
+      "https://1.1.1.1/dns-query"
+    ],
+    "fakedns": "1"
+  },
+  "sections": [
+    {
+      ".name": "awg",
+      "type": "interface",
+      "enabled": "1",
+      "interface": "awg0",
+      "domain": [
+        "youtube.com",
+        "full:www.example.org",
+        "keyword:tube",
+        "regexp:^a[0-9]+\\.test$"
+      ],
+      "ip": [
+        "91.108.4.0/22",
+        "2001:db8::/32"
+      ],
+      "local_port": "1080"
+    },
+    {
+      ".name": "vpn",
+      "type": "interface",
+      "enabled": "1",
+      "interface": "wg1",
+      "route_mode": "xray",
+      "domain": [
+        "chatgpt.com"
+      ],
+      "local_port": "1080"
+    },
+    {
+      ".name": "mix",
+      "type": "proxy",
+      "enabled": "1",
+      "select": "auto",
+      "link": [
+        "trojan://pw@de.example:443?sni=de.example#DE"
+      ],
+      "iface_node": [
+        "awg0"
+      ],
+      "domain": [
+        "instagram.com"
+      ],
+      "local_port": "1081",
+      "local_user": "u",
+      "local_pass": "p"
+    },
+    {
+      ".name": "down",
+      "type": "interface",
+      "enabled": "1",
+      "interface": "tun9",
+      "domain": [
+        "down.test"
+      ]
+    }
+  ],
+  "runtime": {
+    "wan_dns": [
+      "192.168.1.1"
+    ],
+    "ipv6": true,
+    "mem_total_kb": 262144,
+    "dnsmasq_nftset": true,
+    "ifaces": {
+      "awg0": {
+        "device": "awg0",
+        "up": true,
+        "v6": false
+      },
+      "wg1": {
+        "device": "wg1",
+        "up": true,
+        "v6": true
+      },
+      "tun9": {
+        "device": "tun9",
+        "up": false,
+        "v6": false
+      }
+    }
+  }
+}
