@@ -176,10 +176,11 @@ return baseclass.extend({
       role: "tablist",
       "aria-label": _("Settings"),
     });
-    const rows = [0, 1].map(() =>
-      E("div", { class: "mh-settings-tabrow", role: "presentation" }),
-    );
-    rows.forEach((row) => bar.appendChild(row));
+    const row = E("div", {
+      class: "mh-settings-tabrow",
+      role: "presentation",
+    });
+    bar.appendChild(row);
     let active = null;
     const activate = (tab) => {
       if (active === tab) return tab.loading || Promise.resolve();
@@ -247,15 +248,15 @@ return baseclass.extend({
         },
         [mh.icon(icons[tab[0]], true), E("span", tab[1])],
       );
-      rows[i < 7 ? 0 : 1].appendChild(tab.button);
+      row.appendChild(tab.button);
     });
     root.appendChild(
       E(
         "style",
         `
-.mh-settings-tabs { display:flex; flex-direction:column; overflow-x:auto; gap:4px; border-bottom:1px solid var(--border-color-low, #ddd); margin-bottom:16px; }
-.mh-settings-tabrow { display:flex; justify-content:flex-start; min-width:max-content; gap:4px; }
-.mh-settings-tabs [role=tab] { display:inline-flex; flex-shrink:0; white-space:nowrap; align-items:center; gap:6px; background:none; color:inherit; border:0; border-bottom:3px solid transparent; padding:6px 8px; cursor:pointer; }
+.mh-settings-tabs { display:flex; overflow:visible; gap:4px; border-bottom:1px solid var(--border-color-low, #ddd); margin-bottom:16px; }
+.mh-settings-tabrow { display:flex; flex-wrap:nowrap; justify-content:flex-start; gap:4px; }
+.mh-settings-tabs [role=tab] { display:inline-flex; flex-shrink:0; white-space:nowrap; align-items:center; gap:6px; background:none; color:inherit; border:0; border-bottom:3px solid transparent; padding:6px 6px; cursor:pointer; }
 .mh-settings-tabs [aria-selected=true] { border-bottom-color:var(--primary-color-high, #37c); font-weight:bold; }
 .mh-settings > [role=tabpanel][hidden] { display:none; }
 `,
