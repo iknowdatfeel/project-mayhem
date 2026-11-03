@@ -487,6 +487,10 @@ printf '%s\n%s\n' "$SS_LINK_A" "$SS_LINK_B" | base64 | tr -d '\n' > "$WORK/sub.t
 
 write_uci() {
 	# $1 server choice lines for the section, $2 how to download the subscription
+	# Editing rules on a router preserves this private setting. Rebuilding
+	# the fixture must not accidentally request another reconnect.
+	local epoch
+	epoch="$(sed -n '/^[[:space:]]*option reconnect_epoch /p' "$MAYHEM_UCI_DIR/mayhem" 2>/dev/null)"
 	{
 		printf '%s\n' \
 			"config settings 'settings'" \
@@ -497,6 +501,7 @@ write_uci() {
 			"	option probe_url 'http://45.0.0.2:8080/204'" \
 			"	option probe_interval '1m'" \
 			"	option ip_check_url 'http://45.0.0.2:8080/'" \
+			"$epoch" \
 			"" \
 			"config dns 'dns'" \
 			"	list domestic '45.0.0.2'" \
