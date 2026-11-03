@@ -150,13 +150,13 @@ function installModalClose() {
 		const modal = showModal.apply(this, arguments);
 		if (!open && !document.getElementById('mayhem-body')) return modal;
 		const buttons = Array.from(modal.querySelectorAll('button'));
-		if (buttons.some((b) => b.textContent.trim() === _('Close') || b.title === _('Close')))
+		if (buttons.some((b) => b.textContent.trim() === _('Back') || b.title === _('Close')))
 			return modal;
 		// Reuse LuCI's dismissal handler to unwind nested form dialogs.
 		const dismiss = buttons.reverse().find((b) => [ _('Cancel'), _('Dismiss') ].indexOf(b.textContent.trim()) >= 0);
 		modal.insertBefore(E('div', { 'class': 'mh-modal-close' }, E('button', {
 			'class': 'btn', 'type': 'button', 'click': () => dismiss ? dismiss.click() : ui.hideModal()
-		}, _('Close'))), modal.firstChild);
+		}, _('Back'))), modal.firstChild);
 		return modal;
 	};
 }

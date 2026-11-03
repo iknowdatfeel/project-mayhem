@@ -93,7 +93,7 @@ return baseclass.extend({
 					log,
 					E('p', inst.rc === '0' ? _('Done.') : inst.rc == null ? _('The installer stopped without a result, see the log above.')
 						: _('Failed, see the log above. Nothing else was changed.')),
-					E('div', { 'class': 'right' }, E('button', { 'class': 'btn', 'click': () => { ui.hideModal(); sheet.reload(); } }, _('Close')))
+					E('div', { 'class': 'right' }, E('button', { 'class': 'btn', 'click': () => { ui.hideModal(); sheet.reload(); } }, _('Back')))
 				]);
 			}).catch(() => {}).finally(() => { checking = false; }));
 

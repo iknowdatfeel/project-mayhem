@@ -257,6 +257,10 @@ msgstr ""
 msgid "B"
 msgstr ""
 
+#: htdocs/luci-static/resources/mayhem/dash/conns.js
+msgid "Back"
+msgstr ""
+
 #: htdocs/luci-static/resources/view/mayhem/dashboard.js
 msgid "Back to automatic"
 msgstr ""
@@ -373,7 +377,7 @@ msgstr ""
 msgid "Clock"
 msgstr ""
 
-#: htdocs/luci-static/resources/mayhem/dash/conns.js
+#: htdocs/luci-static/resources/mayhem/sheet.js
 msgid "Close"
 msgstr ""
 

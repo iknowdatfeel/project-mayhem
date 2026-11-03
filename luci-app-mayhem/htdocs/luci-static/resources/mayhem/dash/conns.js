@@ -55,7 +55,7 @@ return baseclass.extend({
 
 	open() {
 		ui.showModal(_('Active connections'), [ this.content(),
-			E('div', { 'class': 'right' }, E('button', { 'class': 'btn', 'click': () => this.close() }, _('Close')))
+			E('div', { 'class': 'right' }, E('button', { 'class': 'btn', 'click': () => this.close() }, _('Back')))
 		], 'mh-conns-modal');
 		this.start();
 	},
