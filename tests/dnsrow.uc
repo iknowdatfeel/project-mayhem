@@ -1,5 +1,4 @@
-// Several DNS servers: one after another by default (fallback), each with a
-// short timeout, and a DNS session that outlives the whole row; all at once
+// Several DNS servers: one after another with standard Xray timeouts; all at once
 // only when asked and only where the provider's DNS stays out of the race.
 // Prints one line per failed expectation; no output means all is well.
 //   ucode tests/dnsrow.uc
@@ -29,33 +28,20 @@ let fails = 0;
 function expect(what, cond, res) {
 	if (!cond) {
 		fails++;
-		print(`FAIL ${what}: ${sprintf('%J', res.xray.dns)} idle ${res.xray.policy.levels['1'].connIdle}\n`);
+		print(`FAIL ${what}: ${sprintf('%J', res.xray.dns)} idle ${res.xray.policy.levels?.['1']?.connIdle}\n`);
 	}
 }
 
-const remote_servers = (res) => filter(res.xray.dns.servers, (x) => index([ R1, R2 ], x.address) >= 0);
-const idle = (res) => res.xray.policy.levels['1'].connIdle;
+// The user requested Xray defaults for UDP and internal DNS, including
+// resolver timeouts. Omitting overrides follows the installed core version.
+for (let remotes in [ [ R1 ], [ R1, R2 ], [ R1, R2, 'https://9.9.9.9/dns-query' ] ]) {
+	const r = build(model('global', remotes));
+	expect('fallback by default', !r.xray.dns.enableParallelQuery, r);
+	expect('DNS uses core timeouts', !length(filter(r.xray.dns.servers, (x) => x.timeoutMs != null)), r);
+	expect('session timeouts use core defaults', r.xray.policy.levels == null, r);
+}
 
-// Default: fallback, 1 s per server, 3 s for the last one (a DoH connection
-// from scratch through a slow server), the session lives for the whole row.
-let r = build(model('global', [ R1, R2 ]));
-expect('fallback by default', !r.xray.dns.enableParallelQuery, r);
-expect('short timeout per server in a row, a patient last one', length(remote_servers(r)) == 2 &&
-	filter(remote_servers(r), (x) => x.address == R1)[0].timeoutMs == 1000 &&
-	filter(remote_servers(r), (x) => x.address == R2)[0].timeoutMs == 3000, r);
-expect('the DNS session outlives the row', idle(r) * 1000 > 4 * 1000, r);
-
-// Three servers: a row of 5 s, the session still a short one.
-r = build(model('global', [ R1, R2, 'https://9.9.9.9/dns-query' ]));
-expect('three servers: 1 s, 1 s, 3 s', length(filter(r.xray.dns.servers, (x) => match(x.address, /^https:/) && x.timeoutMs == 1000)) == 2 &&
-	filter(r.xray.dns.servers, (x) => x.address == 'https://9.9.9.9/dns-query')[0].timeoutMs == 3000, r);
-expect('three servers: the session outlives the row', idle(r) * 1000 > 5 * 1000 && idle(r) <= 7, r);
-
-// One remote server: nothing to fall back to, xray's own timeout.
-r = build(model('global', [ R1 ]));
-expect('one server: default timeout', !length(filter(remote_servers(r), (x) => x.timeoutMs != null)), r);
-expect('one server: short session', idle(r) == 4, r);
-
+let r;
 // Parallel when asked, in global mode without FakeDNS.
 r = build(model('global', [ R1, R2 ], { parallel: '1' }));
 expect('parallel when asked', r.xray.dns.enableParallelQuery == true, r);

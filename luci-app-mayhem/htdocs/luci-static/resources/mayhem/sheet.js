@@ -141,6 +141,8 @@ function show(name, onclose) {
 	if (!PAGES[name])
 		return Promise.resolve();
 
+	// Settings can open another page; preserve the dashboard refresh callback.
+	onclose = onclose || (open && open.onclose);
 	close();
 
 	const body = E('div', { 'class': 'mh-sheet-body' }, E('p', { 'class': 'spinning' }, _('Loading…')));

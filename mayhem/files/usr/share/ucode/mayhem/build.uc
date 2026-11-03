@@ -20,46 +20,8 @@ const FAMILY = {
 
 const SERVICE_PROTOCOLS = [ 'freedom', 'direct', 'blackhole', 'block', 'dns', 'loopback' ];
 
-// dnsmasq asks every query from a new source port, and xray keeps each such
-// UDP session open for connIdle (300 s by default) with a few goroutines:
-// about a thousand idle DNS sessions on a home network, 20-30 MB of RAM.
-// DNS sessions get their own level with a short idle timeout. xray itself
-// gives up on a DNS server after 4 s, so a session that lives 4-8 s after the
-// query (xray checks once per timeout) loses no answer that could come: at 30
-// queries a second it holds 22 MB instead of 28 with 10 s.
-const DNS_LEVEL = 1;
-const DNS_IDLE = 4;
-
-// One after another, xray waits for a server that does not answer for its
-// timeout (4 s by default) before it asks the next one, and the session of
-// the query may already be gone by then: the answer of the second server was
-// lost. With several servers in a row each gets DNS_TRY_MS, and the session
-// lives long enough for the whole row.
-// A remote DoH server answers through the proxy in 0.1-0.5 s. Under a heavy
-// download through the same server one of its kept connections may stall:
-// its queries wait for the whole timeout while the next server of the row
-// answers at once. A second keeps that cost small.
-const DNS_TRY_MS = 1000;
-// The last server of a row has nobody to hand over to: it gets the time a
-// DoH connection needs from scratch through a slow server (TCP and TLS
-// through the proxy, then the query: four round trips of 300-500 ms). With a
-// second for it too, every server of the row failed right after the main
-// server changed, when no DoH connection through the new one was open yet.
-const DNS_LAST_MS = 3000;
-
 // How long xray may answer with an expired DNS record while it asks again.
 const DNS_STALE = 3600;
-
-// Every UDP flow that reaches xray is a session (2 sockets, 3 goroutines,
-// ~35 KB), and in "lists" mode that is every flow of the network: a torrent
-// client's DHT alone opens thousands, each living 2-3 minutes after its last
-// packet. UDP that goes direct leaves through an outbound of its own whose
-// sessions close 45-90 s after their last packet (xray checks for activity
-// once per connIdle); TCP keeps the default 300 s, idle push connections must
-// live. UDP that is alive sends more often: NAT mappings on home routers
-// expire after 30-60 s, so apps keep them warm.
-const UDP_LEVEL = 2;
-const UDP_IDLE = 45;
 
 // Rules taken from one downloaded or local list (see collect_rules).
 const LIST_RULES_MAX = 200000;
@@ -413,13 +375,12 @@ function tun_mark(idx) {
 // cap: null when every flow of the LAN goes to xray (global mode); otherwise { px4, px6 }: only what the rules send through a
 // proxy reaches xray - fake addresses of its domains and the subnets of its
 // IP rules - and the rest of the traffic never leaves the kernel.
-function build_nft_text(S, v6, sets, tunnels, dns_redirect, fake_pool, kdef, cap) {
+function build_nft_text(S, v6, sets, tunnels, dns_redirect, fake_pool, kdef, cap, path_generation) {
 	const ifaces = map(length(sets.ifaces) ? sets.ifaces : [ 'br-lan' ], (i) => sprintf('%J', i));
 	const mark = sprintf('0x%x', C.FWMARK);
 	const keep = sprintf('0x%x', 0xffffffff & ~C.TUN_MASK);
-	// The path generation: 1 without a kernel tunnel for the rest of the
-	// traffic, 2 or 3 with one (two tunnels in a row differ too).
-	const gen = sprintf('0x%x', (kdef ? 2 + (kdef.mark & 1) : 1) << C.CT_GEN_SHIFT);
+	// A changed main path or explicit server choice invalidates old flows.
+	const gen = sprintf('0x%x', path_generation << C.CT_GEN_SHIFT);
 	const gmask = sprintf('0x%x', C.CT_GEN_MASK);
 	const stale = sprintf('0x%x', C.STALE_MARK);
 	const tag = `ct mark set ct mark & ${sprintf('0x%x', 0xffffffff & ~C.CT_GEN_MASK)} | ${gen}`;
@@ -439,6 +400,10 @@ function build_nft_text(S, v6, sets, tunnels, dns_redirect, fake_pool, kdef, cap
 
 	push(s, nft_set('local4', 'ipv4_addr', local ? C.LOCAL4 : C.LOCAL4_ALWAYS));
 	push(s, nft_set('local6', 'ipv6_addr', local ? C.LOCAL6 : C.LOCAL6_ALWAYS));
+	push(s, nft_set('endpoint4', 'ipv4_addr', sets.endpoint4 ?? []));
+	push(s, nft_set('endpoint6', 'ipv6_addr', sets.endpoint6 ?? []));
+	push(s, '\tset endpoint_d4 {\n\t\ttype ipv4_addr\n\t}\n');
+	push(s, '\tset endpoint_d6 {\n\t\ttype ipv6_addr\n\t}\n');
 	push(s, nft_set('block4', 'ipv4_addr', sets.block4));
 	push(s, nft_set('block6', 'ipv6_addr', sets.block6));
 	push(s, nft_set('direct4', 'ipv4_addr', sets.direct4));
@@ -528,6 +493,7 @@ function build_nft_text(S, v6, sets, tunnels, dns_redirect, fake_pool, kdef, cap
 	}
 
 	push(s, '\t\tfib daddr type { local, broadcast, multicast } return\n');
+	push(s, '\t\tip daddr @endpoint4 return\n\t\tip6 daddr @endpoint6 return\n\t\tip daddr @endpoint_d4 return\n\t\tip6 daddr @endpoint_d6 return\n');
 	push(s, '\t\tip daddr @local4 return\n');
 	push(s, '\t\tip6 daddr @local6 return\n');
 	push(s, `\t\tip daddr @block4 ${refuse}\n`);
@@ -696,6 +662,7 @@ function build_nft_text(S, v6, sets, tunnels, dns_redirect, fake_pool, kdef, cap
 			push(s, '\t\tmeta l4proto != tcp return\n');
 			push(s, '\t\tct direction reply return\n');
 			push(s, '\t\tfib daddr type { local, broadcast, multicast } return\n');
+			push(s, '\t\tip daddr @endpoint4 return\n\t\tip6 daddr @endpoint6 return\n\t\tip daddr @endpoint_d4 return\n\t\tip6 daddr @endpoint_d6 return\n');
 			push(s, '\t\tip daddr @local4 return\n');
 			push(s, '\t\tip6 daddr @local6 return\n');
 			push(s, '\t\tth dport 53 return\n');
@@ -735,10 +702,10 @@ function build_nft_text(S, v6, sets, tunnels, dns_redirect, fake_pool, kdef, cap
 	return join('', s) + '}\n';
 }
 
-function build_nft(S, v6, sets, tunnels, dns_redirect, fake_pool, kdef, cap) {
+function build_nft(S, v6, sets, tunnels, dns_redirect, fake_pool, kdef, cap, path_generation) {
 	HOSTSETS = {};
 
-	return with_hostsets(build_nft_text(S, v6, sets, tunnels, dns_redirect, fake_pool, kdef, cap));
+	return with_hostsets(build_nft_text(S, v6, sets, tunnels, dns_redirect, fake_pool, kdef, cap, path_generation));
 }
 
 // The fixed tail of a regexp rule as a domain: ^r+\d+\.googlevideo\.com$ ->
@@ -1029,10 +996,12 @@ function collect_nodes(sec, model, warn) {
 				continue;
 
 			try {
-				const ob = node.outbound ? copy(node.outbound) : parse_link(node.link).outbound;
+				const custom = model.server_overrides?.[sub]?.[nn];
+				const ob = custom ? parse_link(custom).outbound : (node.outbound ? copy(node.outbound) : parse_link(node.link).outbound);
+				const link = custom ?? node.link ?? sprintf('%J', { ...ob, tag: model.aliases?.[sub]?.[nn] ?? nn });
 
 				// Filters see the provider's name; the user's name is shown.
-				push(nodes, { name: model.aliases?.[sub]?.[nn] ?? nn, orig: nn, outbound: ob, source: sub });
+				push(nodes, { name: model.aliases?.[sub]?.[nn] ?? nn, orig: nn, outbound: ob, source: sub, link: link, usec: name });
 			}
 			catch (e) {
 				warn(`${label}: server "${nn}" from "${sub}": ${e.message}; skipped`);
@@ -1501,8 +1470,7 @@ export function build(model) {
 	// never sent direct by mistake.
 	const outbounds = [
 		{ tag: 'block', protocol: 'blackhole', settings: {} },
-		{ tag: 'direct', protocol: 'freedom', settings: {}, streamSettings: { sockopt: { domainStrategy: F.freedom } } },
-		{ tag: 'direct-udp', protocol: 'freedom', settings: { userLevel: UDP_LEVEL }, streamSettings: { sockopt: { domainStrategy: F.freedom } } }
+		{ tag: 'direct', protocol: 'freedom', settings: {}, streamSettings: { sockopt: { domainStrategy: F.freedom } } }
 	];
 
 	const sets = { block4: uset(), block6: uset(), direct4: uset(), direct6: uset(), direct_ports: uset() };
@@ -2089,17 +2057,50 @@ export function build(model) {
 	let kdef = null;
 	const kdef_tun = mode == 'global' ? filter(tunnels, (t) => t.name == default_name)[0] : null;
 
-	// nft.conf and dnsmasq.conf stay as they were made while what they are
-	// made from does not change (model.net_cache, from gen.uc: the rules of
-	// the sections, the settings, geo files, lists, the router; not the
-	// servers). Their domains are not spelled out again: with a big category
-	// that took most of a reload. One entry per kernel tunnel taking the rest
-	// of the traffic, and one without.
+	// VPN endpoints bypass the interception together with local networks.
+	// Literal addresses work in the kernel immediately; dnsmasq fills the
+	// dynamic sets for names, using real DNS answers rather than FakeDNS.
+	const endpoint4 = [], endpoint6 = [], endpoint_domains = [];
+	const endpoint = (host) => {
+		if (!is_true(S.exclude_local ?? '1') || type(host) != 'string' || host == '') return;
+		host = replace(replace(host, /^\[/, ''), /\]$/, '');
+		if (is_ip(host))
+			uniq_push(index(host, ':') >= 0 ? endpoint6 : endpoint4, host);
+		else {
+			const d = norm_domain(`full:${host}`);
+			if (d.value && substr(d.value, 0, 5) == 'full:')
+				uniq_push(endpoint_domains, substr(d.value, 5));
+		}
+	};
+	for (let ob in outbounds) {
+		endpoint(outbound_host(ob));
+		const xh = ob.streamSettings?.xhttpSettings ?? ob.streamSettings?.splithttpSettings;
+		endpoint(xh?.extra?.downloadSettings?.address ?? xh?.downloadSettings?.address);
+		if (ob.protocol == 'wireguard')
+			for (let p in ob.settings?.peers ?? []) {
+				const m = match(p.endpoint ?? '', /^(\[[^]]+\]|[^:]+):[0-9]+$/);
+				if (m) endpoint(m[1]);
+			}
+	}
+	for (let inf in values(R.ifaces ?? {}))
+		for (let host in inf.endpoints ?? []) endpoint(host);
+	if (length(endpoint_domains) && R.dnsmasq_nftset === false)
+		warn('bypassing VPN server domains in the kernel needs dnsmasq-full (nftset support)');
+
+	const path_key = sprintf('%J', [ default_name, kdef_tun?.device ?? null, S.reconnect_epoch ?? '0' ]);
+	const previous_path = R.flow_path;
+	const previous_gen = int_opt(previous_path?.generation, 0, 1, 3);
+	const path_generation = previous_gen
+		? (previous_path.key == path_key ? previous_gen : previous_gen % 3 + 1)
+		: (kdef_tun && nftset ? 2 + (tun_mark(kdef_tun.index) & 1) : 1);
+	state.flow_path = { key: path_key, generation: path_generation };
+
 	const NC = model.net_cache;
 	const net_slot = kdef_tun && nftset ? `k-${replace(kdef_tun.device ?? kdef_tun.name, /[^A-Za-z0-9_.@-]/g, '_')}` : 'x';
 	const net_key = NC ? NC.base + sprintf('%J', {
 		tunnels: map(tunnels, (t) => [ t.name, t.index, t.device, t.v6, t.mark ?? null ]),
-		kdef: kdef_tun?.name, nftset: nftset ? true : false, default: default_name
+		kdef: kdef_tun?.name, nftset: nftset ? true : false, default: default_name,
+		endpoints: [ endpoint4, endpoint6, endpoint_domains ], generation: path_generation
 	}) : null;
 	const net_entry = NC ? NC.get(net_slot) : null;
 	const net_hit = net_entry != null && net_entry.key == net_key ? net_entry : null;
@@ -2277,7 +2278,7 @@ export function build(model) {
 	}
 
 	const servers = [];
-	const host_rules = [ ...server_hosts, ...node_hosts ];
+	const host_rules = [ ...server_hosts, ...node_hosts, ...map(endpoint_domains, (h) => `full:${h}`) ];
 
 	if (length(host_rules))
 		for (let d in domestic)
@@ -2366,7 +2367,7 @@ export function build(model) {
 			const remote_named = (x) => (x.type == 'interface' && x.kernel) || (!fake && (x.type == 'proxy' || x.type == 'interface'));
 			const keep = dns_names(filter(xray_dns, (x) => !remote_named(x)), model);
 
-			dns_fallback = isp + (keep.names ? server_lines(keep.names, `127.0.0.1#${C.DNS_PORT}`) : '');
+			dns_fallback = isp + (keep.names ? server_lines(filter(keep.names, (h) => index(endpoint_domains, h) < 0), `127.0.0.1#${C.DNS_PORT}`) : '');
 		}
 		else if (!fake)
 			dns_fallback = isp;
@@ -2388,27 +2389,6 @@ export function build(model) {
 			warn('parallel DNS queries: the provider\'s DNS gets the names of proxied sites too (they are asked together); without that leak only when all traffic goes through the proxy without FakeDNS');
 	}
 
-	// One after another: a short timeout per server when there is a next one.
-	let dns_idle = DNS_IDLE;
-
-	if (!parallel) {
-		const remote_addrs2 = map(remote, (r) => r.address);
-		const domestic_addrs = map(domestic, (d) => d.address);
-		const row = max(length(remote), length(domestic));
-
-		for (let x in servers) {
-			const ri = index(remote_addrs2, x.address), di = index(domestic_addrs, x.address);
-
-			if (length(remote) > 1 && ri >= 0)
-				x.timeoutMs = ri == length(remote) - 1 ? DNS_LAST_MS : DNS_TRY_MS;
-			else if (length(domestic) > 1 && di >= 0)
-				x.timeoutMs = di == length(domestic) - 1 ? DNS_LAST_MS : DNS_TRY_MS;
-		}
-
-		if (row > 1)
-			dns_idle = max(DNS_IDLE, int(((row - 1) * DNS_TRY_MS + DNS_LAST_MS + 999) / 1000) + 1);
-	}
-
 	// Address for non-A/AAAA queries that the DNS outbound passes through.
 	const plain = filter(domestic, (d) => is_ip(d.address))[0] ??
 		{ address: C.FALLBACK_DOMESTIC_DNS[0] };
@@ -2419,7 +2399,6 @@ export function build(model) {
 		settings: {
 			address: plain.address,
 			port: plain.port ?? 53,
-			userLevel: DNS_LEVEL,
 			rules: [
 				{ action: 'hijack', qType: '1,28' },
 				{ action: 'return', qType: '65', rCode: 0 },
@@ -2476,20 +2455,18 @@ export function build(model) {
 
 	push(rules, { inboundTag: [ 'dns-module' ], outboundTag: 'direct' });
 
+	const client_inbounds = [ 'tproxy-in', ...map(local_inbounds, (ib) => ib.tag) ];
+	if (length(endpoint4) || length(endpoint6))
+		push(rules, { inboundTag: client_inbounds, ip: [ ...endpoint4, ...endpoint6 ], outboundTag: 'direct' });
+	if (length(endpoint_domains))
+		push(rules, { inboundTag: client_inbounds, domain: map(endpoint_domains, (h) => `full:${h}`), outboundTag: 'direct' });
+
 	for (let r in local_rules)
 		push(rules, r);
 
 	// Section rules are for intercepted traffic only, so that helper users
 	// reach their own rules at the end.
 	const intercepted = (r) => ({ inboundTag: [ 'tproxy-in' ], ...r });
-
-	// Direct UDP leaves through "direct-udp" (short idle timeout, see UDP_IDLE).
-	const direct_udp = (r) => {
-		if (r.outboundTag == 'direct')
-			push(rules, intercepted({ ...r, network: 'udp', outboundTag: 'direct-udp' }));
-
-		push(rules, intercepted(r));
-	};
 
 	// A fake address xray does not know (given out before a restart, or
 	// pushed out of the pool) leads nowhere: refused at once, so the app asks
@@ -2507,7 +2484,7 @@ export function build(model) {
 
 	// BitTorrent is recognized by sniffing its first packets.
 	if (is_true(S.torrent_direct))
-		direct_udp({ protocol: [ 'bittorrent' ], outboundTag: 'direct' });
+		push(rules, intercepted({ protocol: [ 'bittorrent' ], outboundTag: 'direct' }));
 
 	for (let r in tun_rules)
 		push(rules, intercepted(r));
@@ -2515,7 +2492,7 @@ export function build(model) {
 	for (let r in section_rules)
 		push(rules, intercepted(r));
 
-	direct_udp({ network: 'tcp,udp', ...final_target });
+	push(rules, intercepted({ network: 'tcp,udp', ...final_target }));
 
 	for (let r in helper_rules)
 		push(rules, r);
@@ -2585,7 +2562,7 @@ export function build(model) {
 				listen: '127.0.0.1',
 				port: C.DNS_PORT,
 				protocol: 'dokodemo-door',
-				settings: { address: plain.address, port: 53, network: 'tcp,udp', userLevel: DNS_LEVEL }
+				settings: { address: plain.address, port: 53, network: 'tcp,udp' }
 			}
 		],
 		outbounds: outbounds,
@@ -2594,8 +2571,6 @@ export function build(model) {
 		metrics: { tag: 'metrics', listen: `127.0.0.1:${C.METRICS_PORT}` },
 		stats: {},
 		policy: {
-			// '1' is DNS_LEVEL, '2' is UDP_LEVEL
-			levels: { '1': { connIdle: dns_idle }, '2': { connIdle: UDP_IDLE } },
 			system: { statsOutboundUplink: true, statsOutboundDownlink: true }
 		}
 	};
@@ -2653,6 +2628,14 @@ export function build(model) {
 	// DNS through the server in use), and the nightly catch-up
 	// (mayhem_dns_catchup) restarts xray with it at the update hour.
 	const key = copy(xray);
+	// A user choice closes all Xray connections once. Keeping the epoch in
+	// the restart key avoids a second restart on the next routine reload.
+	key.reconnect_epoch = int(S.reconnect_epoch) || 0;
+	// Xray v26.10.31 keeps XHTTP managers in globalDialerMap, keyed by
+	// MemoryStreamConfig pointers. Handler removal does not evict them.
+	// A transport change therefore requires a fresh process, not API swaps.
+	key.xhttp_transports = sort(filter(xray.outbounds, (ob) =>
+		index([ 'xhttp', 'splithttp' ], ob.streamSettings?.network) >= 0), (a, b) => a.tag < b.tag ? -1 : a.tag > b.tag ? 1 : 0);
 
 	key.outbounds = filter(key.outbounds, (o) => !match(o.tag, /^[nf]-/));
 	// Rules and balancers are replaced in running xray as a whole (live.uc):
@@ -2689,12 +2672,15 @@ export function build(model) {
 	const nft = net_hit ? net_hit.nft : build_nft(S, v6, {
 		ifaces: entries(S.interface),
 		...bypass_sets(S, nwarn),
+		endpoint4: endpoint4, endpoint6: endpoint6,
 		block4: sets.block4.items, block6: sets.block6.items,
 		direct4: sets.direct4.items, direct6: sets.direct6.items, direct_ports: sets.direct_ports.items,
 		dir_domains: gdir != null
 	}, tunnels, dns_redirect, fake ? C.FAKEDNS_POOL : null, kdef,
-		capture_all ? null : { px4: px4.items, px6: v6 ? px6.items : [] });
+		capture_all ? null : { px4: px4.items, px6: v6 ? px6.items : [] }, path_generation);
 	const dnsmasq = net_hit ? net_hit.dnsmasq : `no-resolv\nservers-file=${C.DNS_SERVERS}\n` +
+		server_lines(endpoint_domains, `${plain.address}${plain.port ? `#${plain.port}` : ''}`) +
+		(R.dnsmasq_nftset !== false ? nftset_lines(endpoint_domains, 'endpoint_d4', 'endpoint_d6') : '') +
 		(nftset ? join('', map(tunnels, (t) => nftset_lines(t.domains, `tun_${t.name}_d4`, `tun_${t.name}_d6`))) : '') +
 		(kdef ? nftset_lines(kdef.blkd, 'blk_d4', 'blk_d6') + nftset_lines(kdef.dird, 'dir_d4', 'dir_d6') +
 			nftset_lines(kdef.pxd, 'px_d4', 'px_d6') : '') +
@@ -2715,7 +2701,7 @@ export function build(model) {
 		// What dnsmasq asks while xray works: "@ISP@" stands for the
 		// provider's servers, which the service puts in when it switches.
 		dns_xray: split != null
-			? (upstream ?? '@ISP@\n') + server_lines(split, `127.0.0.1#${C.DNS_PORT}`)
+			? (upstream ?? '@ISP@\n') + server_lines(filter(split, (h) => index(endpoint_domains, h) < 0), `127.0.0.1#${C.DNS_PORT}`)
 			: `server=127.0.0.1#${C.DNS_PORT}\n`,
 		dns_fallback: dns_fallback,
 		dnsmasq: dnsmasq,

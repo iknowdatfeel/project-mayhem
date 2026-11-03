@@ -65,6 +65,12 @@ function ifaces(names) {
 		if (!match(n, /^[A-Za-z0-9_.-]+$/))
 			continue;
 
+		const endpoints = [];
+		if (has_net && index([ 'wireguard', 'amneziawg' ], proto(n)) >= 0)
+			net.foreach('network', `${proto(n)}_${n}`, (p) => {
+				if (p.endpoint_host) push(endpoints, p.endpoint_host);
+			});
+
 		let st = null;
 
 		try {
@@ -76,7 +82,7 @@ function ifaces(names) {
 
 		if (type(st) != 'object') {
 			// Not a netifd interface: maybe a plain device name.
-			out[n] = { device: n, up: access(`/sys/class/net/${n}`) == true, v6: false, proto: proto(n) };
+			out[n] = { device: n, up: access(`/sys/class/net/${n}`) == true, v6: false, proto: proto(n), endpoints: endpoints };
 			continue;
 		}
 
@@ -85,7 +91,8 @@ function ifaces(names) {
 			up: st.up == true,
 			v6: length(st['ipv6-address'] ?? []) > 0,
 			// From the config: a protocol netifd has not loaded runs as "none".
-			proto: proto(n) ?? st.proto
+			proto: proto(n) ?? st.proto,
+			endpoints: endpoints
 		};
 	}
 
@@ -204,6 +211,7 @@ function runtime(sections) {
 
 	return {
 		wan_dns: wan_dns(),
+		flow_path: read_json(`${RUN_DIR}/nodes.json`)?.flow_path,
 		ipv6: access('/proc/net/if_inet6') == true,
 		mem_total_kb: mem_total_kb(),
 		router_ips: router_ips(),
@@ -557,9 +565,19 @@ function load_model(both) {
 
 	// Servers of a subscription the user renamed: "original<TAB>new name".
 	const aliases = {};
+	const server_overrides = {};
 
 	c.foreach('mayhem', 'subscription', (s) => {
-		for (let a in entries(s.alias)) {
+		for (let v in as_list(s.server_override)) {
+			try {
+				const o = json(v);
+				if (type(o.name) == 'string' && type(o.link) == 'string') {
+					server_overrides[s['.name']] ??= {};
+					server_overrides[s['.name']][o.name] = o.link;
+				}
+			} catch (e) { /* invalid local override is ignored */ }
+		}
+		for (let a in as_list(s.alias)) {
 			const i = index(a, '\t');
 
 			if (i > 0) {
@@ -655,6 +673,7 @@ function load_model(both) {
 		settings: settings,
 		tunnel_labels: tunnel_labels,
 		aliases: aliases,
+		server_overrides: server_overrides,
 		hidden: hidden,
 		sub_exclude: sub_exclude,
 		dns: c.get_all('mayhem', 'dns') ?? {},

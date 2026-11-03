@@ -98,7 +98,7 @@ else
 	bad "entries: $out"
 fi
 
-# Several DNS servers: fallback with a short timeout each, parallel on request.
+# Several DNS servers: core timeouts, parallel on request.
 if out="$(uc "$ROOT/tests/dnsrow.uc" 2>&1)"; then
 	ok "DNS servers in a row"
 else
@@ -495,27 +495,22 @@ else
 	ok "model plaintext: refused servers are skipped with a warning"
 fi
 
-# Memory: direct UDP leaves through an outbound with a short idle timeout,
-# servers are checked one at a time over the interval, the config is compact.
+# Standard TCP/UDP lifetimes; direct traffic uses the normal freedom outbound.
 if ! uc -e "
 	const x = json(require('fs').readfile('$OUT/lists/xray.json'));
-	const du = filter(x.outbounds, (o) => o.tag == 'direct-udp')[0];
-	const lvl = du?.settings?.userLevel;
-	const r = x.routing.rules;
-	const fin = filter(r, (q) => q.network == 'tcp,udp' && q.inboundTag?.[0] == 'tproxy-in');
-	const udp = filter(r, (q) => q.network == 'udp' && q.outboundTag == 'direct-udp');
-	exit((du && lvl && x.policy.levels[sprintf('%d', lvl)]?.connIdle < 300 && length(fin) == 1 && length(udp) == 1 &&
-		index(r, udp[0]) == index(r, fin[0]) - 1 && fin[0].outboundTag == 'direct') ? 0 : 1);
+	const fin = filter(x.routing.rules, (q) => q.network == 'tcp,udp' && q.inboundTag?.[0] == 'tproxy-in');
+	exit((x.policy.levels == null && !length(filter(x.outbounds, (o) => o.tag == 'direct-udp')) &&
+		length(fin) == 1 && fin[0].outboundTag == 'direct') ? 0 : 1);
 " 2>/dev/null; then
-	bad "model lists: direct UDP does not leave through direct-udp"
+	bad "model lists: TCP/UDP do not use Xray defaults"
 elif ! uc -e "
 	const x = json(require('fs').readfile('$OUT/global/xray.json'));
 	const r = x.routing.rules;
 	const fin = filter(r, (q) => q.network == 'tcp,udp' && q.inboundTag?.[0] == 'tproxy-in')[0];
-	const torrent = filter(r, (q) => q.protocol?.[0] == 'bittorrent' && q.network == 'udp')[0];
-	exit((fin?.balancerTag && r[index(r, fin) - 1].outboundTag != 'direct-udp' && torrent?.outboundTag == 'direct-udp') ? 0 : 1);
+	const torrent = filter(r, (q) => q.protocol?.[0] == 'bittorrent')[0];
+	exit((fin?.balancerTag && torrent?.outboundTag == 'direct') ? 0 : 1);
 " 2>/dev/null; then
-	bad "model global: the rest of the UDP must go through the proxy, torrent UDP through direct-udp"
+	bad "model global: the rest must use the proxy and torrents must go direct"
 elif ! uc -e "
 	const x = json(require('fs').readfile('$OUT/subs/xray.json'));
 	const b = x.burstObservatory;
@@ -530,7 +525,7 @@ elif ! uc -e "
 " 2>/dev/null; then
 	bad "model lists: an expired DNS answer is not served while it is renewed (serveStale)"
 else
-	ok "memory: direct UDP idle timeout, spread server checks, compact config; stale DNS answers"
+	ok "core timeouts, spread server checks, compact config; stale DNS answers"
 fi
 
 # The rest of the traffic into a kernel tunnel (main section, global mode):

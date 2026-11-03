@@ -80,10 +80,7 @@ return baseclass.extend({
 				row(_('Rule lists'), updated(listTime), E('span', { 'class': 'mh-muted' }, _('Automatically')), data('lists')),
 				// Tunnel protocols and WireGuard obfuscators: installed when needed.
 				// After a tunnel protocol the network restarts if it has not loaded it.
-				pkg('AmneziaWG', c.awg, 'awg'),
-				pkg('WireGuard', c.wireguard, 'wg'),
-				pkg(_('Phobos obfuscator (wg-obfuscator)'), c.phobos, 'phobos'),
-				pkg(_('Phantun obfuscator (wg-phantun)'), c.faketcp, 'faketcp')
+				pkg('AmneziaWG', c.awg, 'awg')
 			);
 		};
 

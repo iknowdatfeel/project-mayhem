@@ -10,7 +10,6 @@
 'require mayhem.tunnels as tunnels';
 'require mayhem.dash.checks as checks';
 'require mayhem.dash.chain as chain';
-'require mayhem.dash.conns as conns';
 
 // The dashboard, the only page of Mayhem: three small widgets and the servers
 // in boxes by where they come from (keys, every subscription with its traffic
@@ -23,12 +22,11 @@ const callDashboard = rpc.declare({ object: 'luci.mayhem', method: 'dashboard', 
 const callAction = rpc.declare({ object: 'luci.mayhem', method: 'action', params: [ 'name' ], expect: { '': {} } });
 const callSelect = rpc.declare({ object: 'luci.mayhem', method: 'select_node', params: [ 'section', 'tag' ], expect: { '': {} } });
 const callSubUpdate = rpc.declare({ object: 'luci.mayhem', method: 'sub_update', params: [ 'name' ], expect: { '': {} } });
-const callRefresh = rpc.declare({ object: 'luci.mayhem', method: 'refresh_servers', expect: { '': {} } });
 const callRename = rpc.declare({ object: 'luci.mayhem', method: 'rename_server', params: [ 'section', 'tag', 'link', 'name' ], expect: { '': {} } });
 const callSetSelect = rpc.declare({ object: 'luci.mayhem', method: 'set_select', params: [ 'section', 'mode', 'chain', 'rules' ], expect: { '': {} } });
 const callParseOne = rpc.declare({ object: 'luci.mayhem', method: 'parse_link', params: [ 'link' ], expect: { '': {} } });
 const callServerDelete = rpc.declare({ object: 'luci.mayhem', method: 'server_delete', params: [ 'section', 'tag' ], expect: { '': {} } });
-const callServerEdit = rpc.declare({ object: 'luci.mayhem', method: 'server_edit', params: [ 'section', 'old', 'link' ], expect: { '': {} } });
+const callServerEdit = rpc.declare({ object: 'luci.mayhem', method: 'server_edit', params: [ 'section', 'old', 'link', 'tag' ], expect: { '': {} } });
 
 const DAY = 86400;
 
@@ -55,11 +53,19 @@ const CSS = `
 .mh-del:hover { color:var(--error-color-medium, red); }
 .mh-head { display:flex; align-items:center; justify-content:space-between; gap:10px; flex-wrap:wrap; }
 .mh-head .mh-grow { flex:1 1 auto; }
-.mh-layout { display:grid; grid-template-columns:1fr 1fr 240px; grid-template-rows:auto 1fr; grid-template-areas:"conn sys side" "servers servers side"; grid-gap:10px; align-items:start; }
-.mh-a-conn { grid-area:conn; align-self:stretch; min-width:0; } .mh-a-sys { grid-area:sys; align-self:stretch; min-width:0; } .mh-a-side { grid-area:side; } .mh-a-servers { grid-area:servers; }
-@media (max-width: 900px) { .mh-layout { grid-template-columns:1fr; grid-template-rows:none; grid-template-areas:"conn" "sys" "side" "servers"; } }
-.mh-widget-row { white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
-.mh-widget-row.mh-wrap { white-space:normal; }
+.mh-layout { display:grid; grid-template-columns:minmax(0, 1fr) 240px; grid-template-areas:"servers side"; gap:10px; align-items:start; }
+.mh-a-side { grid-area:side; min-width:0; align-content:start; }
+.mh-a-servers { grid-area:servers; min-width:0; }
+.mh-a-conn, .mh-a-sys { min-width:0; }
+.mh-widget-row { display:flex; flex-direction:column; gap:1px; margin-top:6px; min-width:0; }
+.mh-widget-row > span:last-child { display:-webkit-box; -webkit-box-orient:vertical; -webkit-line-clamp:2; overflow:hidden; overflow-wrap:anywhere; line-height:1.4; }
+@media (max-width: 900px) {
+ .mh-layout { grid-template-columns:minmax(0, 1fr); grid-template-areas:"controls" "servers" "conn" "sys"; }
+ .mh-a-side { display:contents; }
+ .mh-a-side > .mh-side { grid-area:controls; }
+ .mh-a-conn { grid-area:conn; }
+ .mh-a-sys { grid-area:sys; }
+}
 .mh-whead { display:flex; justify-content:space-between; align-items:baseline; gap:8px; }
 .mh-split { display:grid; grid-template-columns:1fr 240px; grid-column-gap:12px; align-items:start; }
 @media (max-width: 700px) { .mh-split { grid-template-columns:1fr; grid-row-gap:10px; } }
@@ -331,16 +337,16 @@ return view.extend({
 	},
 
 	// The pencil of a server: a key is edited as Xray JSON, a tunnel as its
-	// .conf; a subscription's server only gets a name of its own.
+	// .conf; subscription servers use the same editor as keys.
 	editServer(section, n) {
 		if (n.iface && (n.tproto === 'amneziawg' || n.tproto === 'wireguard'))
 			return tunnels.editDialog(n.iface, () => window.setTimeout(() => this.refresh(), 3000));
 
-		if (!n.link || !n.usec)
+		if (!n.link)
 			return this.renameDialog(section, n);
 
 		return callParseOne(n.link).then((r) => {
-			linkedit.dialog(n.link, r.outbound, n.name, (link) => callServerEdit(n.usec, n.link, link).then((res) => {
+			linkedit.dialog(n.link, r.outbound, n.name, (link) => callServerEdit(n.usec || section, n.link, link, n.tag).then((res) => {
 				if (res.error)
 					return res.error;
 
@@ -395,22 +401,6 @@ return view.extend({
 		]);
 	},
 
-
-	// Downloads every subscription again and applies the servers, also those
-	// that did not get into xray for some reason.
-	refreshServers() {
-		this.busy.refresh = true;
-		this.redraw();
-
-		return callRefresh().then((r) => {
-			for (const res of (r.results || []))
-				if (!res.ok)
-					ui.addNotification(null, E('p', _('Subscription %s: %s').format(res.name, res.error)), 'error');
-		}).finally(() => {
-			delete this.busy.refresh;
-			return this.refresh();
-		});
-	},
 
 	// Downloads the given subscriptions again, one after another.
 	updateSubs(key, names) {
@@ -823,12 +813,15 @@ return view.extend({
 
 		// The keys and tunnels of the list have their group even empty, but
 		// only while there is no subscription either.
-		if (pool && !(this.data.subscriptions || []).length) {
+		if (pool && !(this.data.subscriptions || []).some((s) => s.enabled)) {
 			by.link = [];
 			order.push('link');
 		}
 
 		for (const n of s.nodes || []) {
+			if (subs[n.source] && !subs[n.source].enabled)
+				continue;
+
 			const src = own(n.source || 'link') ? 'link' : n.source;
 
 			if (!by[src]) {
@@ -1061,8 +1054,6 @@ return view.extend({
 	// service controls; all buttons of one width and height.
 	renderSide(d) {
 		const proxies = (d.sections || []).filter((s) => s.type === 'proxy');
-		const own = { link: true, json: true, interface: true };
-		const subNames = [ ...new Set([].concat(...proxies.map((s) => s.nodes.map((n) => n.source))).filter((x) => x && !own[x])) ];
 		const side = [];
 
 		if (proxies.length) {
@@ -1081,20 +1072,12 @@ return view.extend({
 			}));
 		}
 
-		if (proxies.length || subNames.length)
-			side.push(mh.button({
-				icon: 'refresh', text: _('Refresh the dashboard'), busy: this.busy.refresh,
-				click: ui.createHandlerFn(this, 'refreshServers')
-			}));
-
-		side.push(mh.button({ icon: 'activity', text: _('Active connections'), click: () => conns.open() }));
-
-		// The pages that open over the dashboard.
+		// The remaining tools are available from Settings.
 		side.push(E('div', { 'class': 'mh-side-gap' }));
-		side.push(this.navButton('servers', 'plus', 'cbi-button-add mh-navbtn', _('Add connection')));
-		side.push(this.navButton('sections', 'route', 'cbi-button mh-navbtn'));
+		side.push(this.navButton('servers', d.has_connections ? 'logs' : 'plus',
+			d.has_connections ? 'cbi-button-neutral mh-navbtn' : 'cbi-button-add mh-navbtn',
+			d.has_connections ? _('Connection list') : _('Add connection')));
 		side.push(this.navButton('settings', 'settings', 'cbi-button mh-navbtn'));
-		side.push(this.navButton('components', 'package', 'cbi-button mh-navbtn'));
 		side.push(E('div', { 'class': 'mh-side-gap' }));
 
 		return E('div', { 'class': 'mh-box mh-side' }, side.concat(diag.controls()));
@@ -1123,10 +1106,9 @@ return view.extend({
 		]);
 	},
 
-	// Subscriptions xray has no servers of: turned off, not downloaded yet or
-	// failed. Their state is still worth seeing.
+	// Enabled subscriptions with no servers yet, or with download failures.
 	renderLoose(subs, now) {
-		return Object.values(subs).filter((s) => !s.shown).map((s) => E('div', { 'class': 'mh-group' }, [
+		return Object.values(subs).filter((s) => s.enabled && !s.shown).map((s) => E('div', { 'class': 'mh-group' }, [
 			this.subHead(s, now),
 			E('div', { 'class': 'mh-muted mh-small' }, _('%d servers').format(s.nodes))
 		]));
@@ -1176,18 +1158,17 @@ return view.extend({
 				])
 			].concat(tunnels.map((t) => this.renderTunnel(t, d.time)))));
 
-		// The connection and the system on top, the servers under them, the
-		// column of buttons at the side all the way down.
+		// The sidebar holds the controls, connection and system cards.
+		// Narrow screens put the server list between controls and details.
 		const [ conn, sys ] = this.renderWidgets(d);
 		const side = this.renderSide(d);
 
 		conn.classList.add('mh-a-conn');
 		sys.classList.add('mh-a-sys');
-		side.classList.add('mh-a-side');
 
 		return [ this.renderTop(d), this.renderAlert(d), E('div', { 'class': 'mh-layout' }, [
-			conn, sys, side,
-			E('div', { 'class': 'mh-stack mh-a-servers' }, boxes)
+			E('div', { 'class': 'mh-stack mh-a-servers' }, boxes),
+			E('aside', { 'class': 'mh-stack mh-a-side' }, [ side, conn, sys ])
 		]) ];
 	},
 

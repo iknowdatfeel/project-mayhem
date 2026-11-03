@@ -548,7 +548,7 @@ return baseclass.extend({
 		o.rmempty = false;
 
 		o = s.option(form.Flag, 'exclude_local', _('Bypass local networks'),
-			_('Addresses of local networks (10.0.0.0/8, 192.168.0.0/16 and others) always go direct.'));
+			_('Local networks and VPN server addresses go direct. Server domains need dnsmasq-full for bypassing in the kernel.'));
 		o.default = '1';
 		o.rmempty = false;
 

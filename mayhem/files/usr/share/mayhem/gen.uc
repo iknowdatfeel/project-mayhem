@@ -11,7 +11,7 @@
 // nft.conf and dnsmasq.conf are kept in DIR/net-cache and taken from there
 // while what they are made from stays the same: the rules of the sections,
 // the settings, geo files, lists, what the router has, Mayhem itself. New
-// servers or subscriptions do not change them. One entry per kernel tunnel
+// servers also change them when the endpoint bypass sets change. One entry per kernel tunnel
 // that takes the rest of the traffic (a tunnel of the server list) and one
 // without. --warm, run in the background after a start, fills the entries
 // of the other choices of the server list, so a switch between a tunnel and
@@ -88,6 +88,7 @@ function net_base(model) {
 
 	// Which server a chain uses now: the build adds the tunnel it means.
 	delete R.fallback;
+	delete R.flow_path;
 
 	// Devices come and go; only sections limited to some use them.
 	if (!length(filter(sections, (s) => s.devices != null)))

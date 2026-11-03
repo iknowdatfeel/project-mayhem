@@ -62,4 +62,11 @@ expect('vnext Vision: UDP only', mux['vnext.example']?.concurrency == -1);
 expect('vnext without Vision: Mux for TCP too', mux['ws.example']?.concurrency > 0);
 expect('XHTTP: no Mux', mux['xh.example'] == null);
 
+const unchanged = build(model);
+expect('unchanged XHTTP keeps the restart key', sprintf('%J', res.key) == sprintf('%J', unchanged.key));
+model.subscriptions.sub.nodes[3].outbound.streamSettings.xhttpSettings.path = '/edited';
+expect('changing XHTTP restarts Xray to release old transports', sprintf('%J', res.key) != sprintf('%J', build(model).key));
+model.subscriptions.sub.nodes = slice(model.subscriptions.sub.nodes, 0, 3);
+expect('removing XHTTP restarts Xray', sprintf('%J', res.key) != sprintf('%J', build(model).key));
+
 exit(fails ? 1 : 0);

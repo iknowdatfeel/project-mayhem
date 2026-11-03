@@ -24,7 +24,7 @@ export const TUN_MASK = 0x40000ff;
 
 // Connections that go through xray or into the tunnel of the main section
 // carry a "path generation" in their conntrack mark. When the path changes
-// (a tunnel picked as the main server, or left), packets of connections of
+// (a main tunnel changes, or a server is explicitly chosen), packets of connections of
 // the old generation are marked STALE_MARK in prerouting and answered with a
 // TCP reset in forward: the device reconnects at once instead of waiting for
 // answers that never come.
