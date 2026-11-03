@@ -2229,10 +2229,6 @@ msgstr ""
 msgid "Xray is not installed: run \"mayhem xray-install\""
 msgstr ""
 
-#: htdocs/luci-static/resources/mayhem/diag.js
-msgid "Xray log level"
-msgstr ""
-
 #: htdocs/luci-static/resources/mayhem/page/settings.js
 msgid "Xray memory limit (GOMEMLIMIT), MiB"
 msgstr ""
