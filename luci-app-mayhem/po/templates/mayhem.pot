@@ -521,6 +521,10 @@ msgstr ""
 msgid "Discard changes"
 msgstr ""
 
+#: htdocs/luci-static/resources/mayhem/sheet.js
+msgid "Dismiss"
+msgstr ""
+
 #: htdocs/luci-static/resources/mayhem/page/sections.js
 msgid "DoQ (QUIC, direct)"
 msgstr ""
@@ -581,7 +585,7 @@ msgstr ""
 msgid "Downloaded directly: not through Xray"
 msgstr ""
 
-#: htdocs/luci-static/resources/mayhem/page/servers.js
+#: htdocs/luci-static/resources/mayhem/page/mux.js
 msgid "Drop: browsers fall back to TCP"
 msgstr ""
 
@@ -1033,7 +1037,7 @@ msgstr ""
 msgid "Log level"
 msgstr ""
 
-#: htdocs/luci-static/resources/mayhem/diag.js
+#: htdocs/luci-static/resources/mayhem/page/settings.js
 msgid "Logs"
 msgstr ""
 
@@ -1043,6 +1047,10 @@ msgstr ""
 
 #: htdocs/luci-static/resources/mayhem/diag.js
 msgid "Made %s, Mayhem %s."
+msgstr ""
+
+#: htdocs/luci-static/resources/mayhem/page/settings.js
+msgid "Main"
 msgstr ""
 
 #: htdocs/luci-static/resources/mayhem/tunnels.js
@@ -1093,11 +1101,15 @@ msgstr ""
 msgid "Mixed proxy user"
 msgstr ""
 
-#: htdocs/luci-static/resources/mayhem/page/servers.js
+#: htdocs/luci-static/resources/mayhem/page/settings.js
+msgid "Multiplexing"
+msgstr ""
+
+#: htdocs/luci-static/resources/mayhem/page/mux.js
 msgid "Mux concurrency (TCP)"
 msgstr ""
 
-#: htdocs/luci-static/resources/mayhem/page/servers.js
+#: htdocs/luci-static/resources/mayhem/page/mux.js
 msgid "Mux for VLESS"
 msgstr ""
 
@@ -1143,6 +1155,10 @@ msgstr ""
 
 #: htdocs/luci-static/resources/mayhem/diag.js
 msgid "No generated configuration status"
+msgstr ""
+
+#: htdocs/luci-static/resources/mayhem/diag.js
+msgid "No log result"
 msgstr ""
 
 #: htdocs/luci-static/resources/mayhem/diag.js
@@ -1569,11 +1585,11 @@ msgstr ""
 msgid "Send device data"
 msgstr ""
 
-#: htdocs/luci-static/resources/mayhem/page/servers.js
+#: htdocs/luci-static/resources/mayhem/page/mux.js
 msgid "Send through Mux"
 msgstr ""
 
-#: htdocs/luci-static/resources/mayhem/page/servers.js
+#: htdocs/luci-static/resources/mayhem/page/mux.js
 msgid "Send without Mux"
 msgstr ""
 
@@ -1633,7 +1649,7 @@ msgstr ""
 msgid "Services"
 msgstr ""
 
-#: htdocs/luci-static/resources/mayhem/sheet.js
+#: htdocs/luci-static/resources/mayhem/page/settings.js
 msgid "Settings"
 msgstr ""
 
@@ -1645,7 +1661,7 @@ msgstr ""
 msgid "Settings restored; the subscriptions and server keys of this router are kept. Mayhem applies them now."
 msgstr ""
 
-#: htdocs/luci-static/resources/mayhem/page/servers.js
+#: htdocs/luci-static/resources/mayhem/page/mux.js
 msgid "Several connections share one connection to the server. Applies to every VLESS server; with XTLS Vision only UDP is multiplexed."
 msgstr ""
 
@@ -1957,10 +1973,6 @@ msgstr ""
 msgid "Through the active server; when that fails, direct."
 msgstr ""
 
-#: htdocs/luci-static/resources/mayhem/page/settings.js
-msgid "Tools"
-msgstr ""
-
 #: htdocs/luci-static/resources/mayhem/dash/conns.js
 msgid "Traffic"
 msgstr ""
@@ -2146,10 +2158,6 @@ msgid "Version"
 msgstr ""
 
 #: htdocs/luci-static/resources/mayhem/diag.js
-msgid "View logs"
-msgstr ""
-
-#: htdocs/luci-static/resources/mayhem/diag.js
 msgid "Warning"
 msgstr ""
 
@@ -2197,11 +2205,11 @@ msgstr ""
 msgid "Works, with warnings"
 msgstr ""
 
-#: htdocs/luci-static/resources/mayhem/page/servers.js
+#: htdocs/luci-static/resources/mayhem/page/mux.js
 msgid "XUDP UDP/443 policy"
 msgstr ""
 
-#: htdocs/luci-static/resources/mayhem/page/servers.js
+#: htdocs/luci-static/resources/mayhem/page/mux.js
 msgid "XUDP concurrency"
 msgstr ""
 

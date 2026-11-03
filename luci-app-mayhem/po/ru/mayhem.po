@@ -2408,3 +2408,19 @@ msgstr "Трафик идёт напрямую в обход VPN"
 
 msgid "VPN server answered, HTTP %s"
 msgstr "VPN-сервер ответил, HTTP %s"
+
+#: htdocs/luci-static/resources/mayhem/page/settings.js
+msgid "Main"
+msgstr "Основная"
+
+#: htdocs/luci-static/resources/mayhem/page/settings.js
+msgid "Multiplexing"
+msgstr "Мультиплексирование"
+
+#: htdocs/luci-static/resources/mayhem/diag.js
+msgid "No log result"
+msgstr "Не удалось получить журнал"
+
+#: htdocs/luci-static/resources/mayhem/sheet.js
+msgid "Dismiss"
+msgstr "Закрыть"

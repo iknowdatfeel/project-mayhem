@@ -888,18 +888,67 @@ function diag_local() {
 		if (health.sections[sn].down)
 			check(res, 'service', sn, 'fail', state.killswitch ? 'VPN failed; traffic waits for it' : 'VPN failed; traffic goes direct');
 
-	// Tunnels
+	// Include configured tunnels and tunnel nodes, not only standalone
+	// interface sections. A tunnel can exist before Mayhem generated state.
+	const tunnels = {};
+	const net = network_cursor();
+	const protos = [ 'amneziawg', 'wireguard', 'openvpn', 'openconnect', 'vpnc', 'l2tp', 'pptp' ];
+	net.foreach('network', 'interface', (i) => {
+		if (index(protos, i.proto) >= 0)
+			tunnels[i['.name']] = { proto: i.proto, disabled: i.disabled == '1', sections: [] };
+	});
 	for (let sn in keys(state.sections ?? {})) {
 		const s = state.sections[sn];
-
-		if (s.type != 'interface')
-			continue;
-
-		const t = tunnel_state(sn, s.device);
-		const age = t.handshake ? time() - t.handshake : null;
-
-		check(res, 'tunnels', `${sn} (${s.interface})`, t.state == 'up' ? 'ok' : ((t.state == 'down' || t.state == 'held') ? 'fail' : 'info'),
-			(t.state ?? 'unknown') + (age != null ? sprintf(', last handshake %d s ago', age) : ''));
+		if (s.type == 'interface' && s.interface) {
+			tunnels[s.interface] ??= { proto: s.tproto, sections: [] };
+			tunnels[s.interface].device = s.device;
+			push(tunnels[s.interface].sections, sn);
+		}
+		for (let n in s.nodes ?? []) {
+			if (!n.iface) continue;
+			tunnels[n.iface] ??= { proto: n.tproto, sections: [] };
+			tunnels[n.iface].device ??= n.device;
+		}
+	}
+	let interfaces = null;
+	if (length(keys(tunnels))) {
+		try {
+			interfaces = json(run('ubus call network.interface dump 2>/dev/null') ?? '')?.interface;
+		}
+		catch (e) {}
+		if (type(interfaces) != 'array') interfaces = null;
+	}
+	for (let iface in keys(tunnels)) {
+		const t = tunnels[iface];
+		const live = filter(interfaces ?? [], (i) => i.interface == iface)[0];
+		const device = live?.l3_device ?? live?.device ?? t.device ?? iface;
+		const details = [ t.proto ?? 'unknown', `interface: ${iface}`, `device: ${device}` ];
+		let status = 'info';
+		if (t.disabled) {
+			push(details, 'disabled in the network configuration');
+		}
+		else {
+			if (live) {
+				push(details, live.up ? 'interface is up' : 'interface is down');
+				if (!live.up) status = 'fail';
+			}
+			else {
+				push(details, interfaces != null ? 'interface is not present in netifd' : 'interface state is unavailable');
+				if (interfaces != null) status = 'fail';
+			}
+			for (let sn in t.sections) {
+				const current = trim(fs.readfile(`${RUN}/tunnel.${sn}`) ?? '');
+				if (current == '') continue;
+				push(details, `${sn}: ${current}`);
+				if (current == 'down' || current == 'held') status = 'fail';
+				else if (current == 'up' && status != 'fail') status = 'ok';
+			}
+			if (index([ 'wireguard', 'amneziawg' ], t.proto) >= 0) {
+				const hs = tunnel_state('', device).handshake;
+				push(details, hs ? sprintf('last handshake %d s ago', time() - hs) : 'no handshake recorded');
+			}
+		}
+		check(res, 'tunnels', c.get('mayhem', iface, 'label') || iface, status, join(', ', details));
 	}
 
 	// Data
@@ -3457,13 +3506,24 @@ const methods = {
 		call: function(req) {
 			const n = int(req.args?.lines ?? 300);
 			const pats = {
-				all: /mayhem|xray|dnsmasq/i,
-				mayhem: /mayhem/i,
-				xray: /xray/i,
-				dnsmasq: /dnsmasq/i
+				all: /^(mayhem|xray|xray-run|dnsmasq(-(dhcp|tftp|script|debug))?)$/i,
+				mayhem: /^mayhem$/i,
+				xray: /^(xray|xray-run)$/i,
+				dnsmasq: /^dnsmasq(-(dhcp|tftp|script|debug))?$/i
 			};
 			const re = pats[req.args?.component] ?? pats.all;
-			const out = filter(lines_of(run('logread 2>/dev/null')), (l) => match(l, re));
+			const p = fs.popen('logread 2>&1', 'r');
+			if (!p) return { error: 'cannot read the system log' };
+			const text = p.read('all');
+			const rc = p.close();
+			if (rc !== 0 || text == null) return { error: trim(text ?? '') || 'cannot read the system log' };
+			// logread: ctime (five fields), facility.priority, then tag[pid]:.
+			// Match only the emitting process, never names inside its message.
+			const out = filter(lines_of(text), (l) => {
+				const fields = split(trim(l), /[[:space:]]+/);
+				const tag = replace(fields[6] ?? '', /(\[[0-9]+\])?:$/, '');
+				return match(tag, re);
+			});
 
 			return { lines: slice(out, -(n > 0 && n <= 2000 ? n : 300)) };
 		}
