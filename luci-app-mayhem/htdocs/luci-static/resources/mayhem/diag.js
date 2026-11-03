@@ -49,7 +49,20 @@ function checkAgo(s) {
 }
 
 function checkDetail(d) {
+	const details = {
+		'no generated configuration status': _('No generated configuration status'),
+		'remote DNS failed; queries may use the provider fallback': _('Remote DNS failed; queries may use the provider fallback'),
+		'VPN failed; traffic waits for it': _('VPN failed; traffic waits for it'),
+		'VPN failed; traffic goes direct': _('VPN failed; traffic goes direct'),
+		'no active VPN server; the section may be using direct fallback': _('No active VPN server; the section may be using direct fallback'),
+		'VPN server did not answer': _('VPN server did not answer'),
+		'traffic waits for the VPN': _('Traffic waits for the VPN'),
+		'traffic uses direct fallback': _('Traffic uses direct fallback')
+	};
+	if (details[d]) return details[d];
 	let m;
+	if ((m = /^VPN server answered, HTTP ([0-9]+)$/.exec(d || '')))
+		return _('VPN server answered, HTTP %s').format(m[1]);
 
 	if ((m = /^(\d+) (categories|servers)(, updated (.+))?$/.exec(d || '')))
 		return (m[2] === 'categories' ? _('Categories: %d') : _('%d servers')).format(+m[1]) +
@@ -80,6 +93,7 @@ const NAMES = {
 	'Policy routing': _('Policy routing'),
 	'dnsmasq': 'Dnsmasq',
 	'Redirect to xray': _('Redirect to xray'),
+	'Remote DNS': _('Remote DNS'),
 	'Clock': _('Clock'),
 	'Watchdog': _('Watchdog'),
 	'Direct': _('Direct'),
@@ -141,22 +155,23 @@ return baseclass.extend({
 		this.done = {};
 		this.drawList();
 
-		return callDiagnose('local', '').then((r) => {
-			this.done.local = true;
+		const request = (part, target) => callDiagnose(part, target).then((r) => {
+			if (!r || r.error || !Array.isArray(r.checks) || !r.checks.length)
+				throw new Error((r && r.error) || _('No diagnostic result'));
 			this.add(r);
-
-			let p = callDiagnose('dns', '').then((d) => {
-				this.done.dns = true;
-				this.add(d);
-			});
-
-			// One request per target: each may take up to 10 seconds.
-			for (const t of (r.targets || []))
-				p = p.then(() => callDiagnose('exit', t.id)).then((d) => this.add(d));
-
-			return p;
+			return r;
 		}).catch((e) => {
-			this.add({ error: e.message });
+			this.add({ checks: [ { group: part === 'local' ? 'service' : part,
+				name: target || _('Diagnostics'), status: 'fail', detail: e.message } ] });
+			return {};
+		});
+
+		return request('local', '').then((r) => {
+			this.done.local = true;
+			let p = request('dns', '').then(() => { this.done.dns = true; this.drawList(); });
+			for (const t of (r.targets || []))
+				p = p.then(() => request('exit', t.id));
+			return p;
 		}).finally(() => {
 			this.running = false;
 			this.done = { local: true, dns: true, exit: true };
@@ -266,6 +281,10 @@ return baseclass.extend({
 		else if (count('warn')) {
 			state = 'warn';
 			desc = _('Works, with warnings');
+		}
+		else if (count('info')) {
+			state = 'idle';
+			desc = _('Some checks could not be confirmed');
 		}
 		else {
 			state = 'ok';
@@ -488,7 +507,6 @@ return baseclass.extend({
 		});
 
 		return [
-			mh.button({ icon: 'search', text: _('Diagnostics'), click: ui.createHandlerFn(this, 'diagnostics', true) }),
 			btn('restart', 'restart', 'cbi-button-apply', _('Restart Mayhem')),
 			d.running ? btn('stop', 'stop', 'cbi-button-remove', _('Stop Mayhem'))
 				: btn('start', 'play', 'cbi-button-save', _('Start Mayhem')),

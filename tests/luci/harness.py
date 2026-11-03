@@ -477,7 +477,7 @@ def main():
             pg.wait_for_timeout(300)
             n = len(imports)
             pg.fill('div[data-tab="geo"] textarea', key)
-            pg.click('div[data-tab="geo"] .cbi-button-add')
+            pg.click('.mh-sheet-foot .cbi-button-apply')
             pg.wait_for_timeout(1500)
             got = imports[n:]
             if not got or '[Interface]' not in (got[0].get('conf') or '') or got[0].get('label') != 'Test':
@@ -523,8 +523,13 @@ def main():
                 shot(pg, 'tunnel_obfs_faketcp')
                 close_modal(pg)
 
+        def settings_tool(pg, text):
+            pg.click('#mayhem-body .mh-navbtn >> nth=1')
+            pg.wait_for_selector('.mh-sheet-body [data-name="_tools"], .mh-sheet-body .mh-actions', timeout=15000)
+            pg.click('.mh-sheet-body button:has-text("%s")' % TRANSLATIONS.get(text, text))
+
         def run_diag(pg):
-            pg.click('#mayhem-body .mh-side button >> nth=-4')
+            settings_tool(pg, 'Diagnostics')
             pg.wait_for_selector('.modal .mh-drow', timeout=5000)
             pg.wait_for_timeout(500)
             pg.wait_for_function('!document.querySelector(".modal .mh-spin")', timeout=90000)
@@ -532,16 +537,20 @@ def main():
                 raise RuntimeError('no check results')
             shot(pg, 'dashboard_diag')
             close_modal(pg)
+            pg.click('.mh-sheet-close')
+            pg.wait_for_selector('.mh-sheet-overlay', state='detached', timeout=5000)
 
         def logs_modal(pg):
             # the logs open from the diagnostics dialog
-            pg.click('#mayhem-body .mh-side button >> nth=-4')
+            settings_tool(pg, 'Diagnostics')
             pg.wait_for_selector('.modal .mh-drow', timeout=5000)
             pg.click('.modal button:has-text("%s")' % TRANSLATIONS.get('View logs', 'View logs'))
             pg.wait_for_selector('.modal .mh-log', timeout=5000)
             pg.wait_for_timeout(500)
             shot(pg, 'dashboard_logs')
             close_modal(pg)
+            pg.click('.mh-sheet-close')
+            pg.wait_for_selector('.mh-sheet-overlay', state='detached', timeout=5000)
 
         def backup_modal(pg):
             # the backup is in the settings, next to the reset
@@ -563,7 +572,7 @@ def main():
             pg.evaluate('L.ui.changes.apply = function() { window.mhApplied = true; return Promise.resolve(); }')
             n = len(calls)
             w = len(uci_writes)
-            pg.click('[data-tab="geo"] .cbi-button-add')
+            pg.click('.mh-sheet-foot .cbi-button-apply')
             pg.wait_for_timeout(1500)
             if 'luci.mayhem.parse_link' not in calls[n:] or not pg.evaluate('window.mhApplied === true'):
                 raise RuntimeError('adding a key did not save and apply it: %s' % calls[n:])
@@ -637,16 +646,9 @@ def main():
             if not pg.query_selector('.mh-sheet table') or not pg.query_selector('[data-name="auto_update"]'):
                 raise RuntimeError('no component table or automatic update')
             shot(pg, 'components')
-            # tunnel protocols and obfuscators are installed from here
-            row = pg.locator('.mh-sheet table tr', has_text='phantun')
-            if not row.count():
-                raise RuntimeError('no fake TCP obfuscator on the components page')
-            n = len(installs)
-            row.locator('button').first.click()
-            pg.wait_for_timeout(800)
-            if 'faketcp' not in installs[n:]:
-                raise RuntimeError('the install button does not install phantun: %s' % installs[n:])
-            close_modal(pg)
+            text = pg.inner_text('.mh-sheet table')
+            if any(name in text for name in ('Phobos', 'Phantun', 'phantun', 'WireGuard')):
+                raise RuntimeError('removed components are still offered: %s' % text)
 
         def settings_tabs(pg):
             pg.click('[data-name="_reset"] button')
@@ -685,7 +687,7 @@ def main():
 
         def conns_modal(pg):
             # the connections of the fixture (run.sh): names, servers, counts
-            pg.click('#mayhem-body button:has-text("Active connections"), #mayhem-body button:has-text("Активные подключения")')
+            settings_tool(pg, 'Active connections')
             pg.wait_for_selector('#mh-conns table', timeout=8000)
             heads = pg.eval_on_selector_all('#mh-conns th', 'es => es.map(e => e.textContent)')
             if len(heads) != 6:
@@ -704,6 +706,8 @@ def main():
             shot(pg, 'connections')
             pg.evaluate("document.querySelector('.mh-conns-modal .right button').click()")
             pg.wait_for_timeout(300)
+            pg.click('.mh-sheet-close')
+            pg.wait_for_selector('.mh-sheet-overlay', state='detached', timeout=5000)
 
         def add_section(pg, no_subs=False):
             # the dialog of a new section opens, also on a router without
@@ -873,7 +877,7 @@ def main():
         def nav_pages(pg):
             # every page opens in the window from its button and closes again,
             # twice: a page opened again must find what LuCI loaded before
-            for i in list(range(4)) * 2:
+            for i in list(range(2)) * 2:
                 pg.click('#mayhem-body .mh-navbtn >> nth=%d' % i)
                 pg.wait_for_selector('.mh-sheet-body .cbi-map', timeout=15000)
                 if i == 0:

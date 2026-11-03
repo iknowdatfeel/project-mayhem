@@ -2360,3 +2360,51 @@ msgstr "Роутер не знает «%s» в регулярных выраже
 
 msgid "Downloaded directly: not through Xray"
 msgstr "Скачана напрямую, не через Xray"
+
+msgid "Connection list"
+msgstr "Список подключений"
+
+msgid "Tools"
+msgstr "Инструменты"
+
+msgid "Servers are added when you press Save & Apply."
+msgstr "Серверы добавятся после нажатия «Сохранить и применить»."
+
+msgid "No diagnostic result"
+msgstr "Не удалось получить результат диагностики"
+
+msgid "Some checks could not be confirmed"
+msgstr "Часть проверок не подтверждена"
+
+msgid "Local networks and VPN server addresses go direct. Server domains need dnsmasq-full for bypassing in the kernel."
+msgstr "Локальные сети и адреса VPN-серверов идут напрямую. Для обхода доменных адресов серверов в ядре нужен dnsmasq-full."
+
+msgid "Remote DNS"
+msgstr "Удалённый DNS"
+
+msgid "No generated configuration status"
+msgstr "Нет данных о сгенерированной конфигурации"
+
+msgid "Remote DNS failed; queries may use the provider fallback"
+msgstr "Удалённый DNS недоступен; запросы могут идти через резервный DNS провайдера"
+
+msgid "VPN failed; traffic waits for it"
+msgstr "VPN недоступен; трафик ожидает подключения"
+
+msgid "VPN failed; traffic goes direct"
+msgstr "VPN недоступен; трафик идёт напрямую"
+
+msgid "No active VPN server; the section may be using direct fallback"
+msgstr "Нет активного VPN-сервера; секция может использовать прямое подключение"
+
+msgid "VPN server did not answer"
+msgstr "VPN-сервер не ответил"
+
+msgid "Traffic waits for the VPN"
+msgstr "Трафик ожидает VPN"
+
+msgid "Traffic uses direct fallback"
+msgstr "Трафик идёт напрямую в обход VPN"
+
+msgid "VPN server answered, HTTP %s"
+msgstr "VPN-сервер ответил, HTTP %s"

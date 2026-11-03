@@ -125,10 +125,6 @@ msgstr ""
 msgid "Active server of the server list"
 msgstr ""
 
-#: htdocs/luci-static/resources/mayhem/page/servers.js
-msgid "Add"
-msgstr ""
-
 #: htdocs/luci-static/resources/view/mayhem/dashboard.js
 msgid "Add a server or a subscription with the \"Add connection\" button."
 msgstr ""
@@ -183,10 +179,6 @@ msgstr ""
 
 #: htdocs/luci-static/resources/mayhem/page/servers.js
 msgid "Address"
-msgstr ""
-
-#: htdocs/luci-static/resources/mayhem/page/sections.js
-msgid "Addresses of local networks (10.0.0.0/8, 192.168.0.0/16 and others) always go direct."
 msgstr ""
 
 #: htdocs/luci-static/resources/mayhem/page/sections.js
@@ -411,6 +403,10 @@ msgstr ""
 
 #: htdocs/luci-static/resources/mayhem/page/sections.js
 msgid "Connection"
+msgstr ""
+
+#: htdocs/luci-static/resources/view/mayhem/dashboard.js
+msgid "Connection list"
 msgstr ""
 
 #: htdocs/luci-static/resources/view/mayhem/dashboard.js
@@ -1025,6 +1021,10 @@ msgstr ""
 msgid "Local lists"
 msgstr ""
 
+#: htdocs/luci-static/resources/mayhem/page/sections.js
+msgid "Local networks and VPN server addresses go direct. Server domains need dnsmasq-full for bypassing in the kernel."
+msgstr ""
+
 #: htdocs/luci-static/resources/view/mayhem/dashboard.js
 msgid "Location"
 msgstr ""
@@ -1125,12 +1125,24 @@ msgstr ""
 msgid "Nftables and routing"
 msgstr ""
 
+#: htdocs/luci-static/resources/mayhem/diag.js
+msgid "No active VPN server; the section may be using direct fallback"
+msgstr ""
+
 #: htdocs/luci-static/resources/view/mayhem/dashboard.js
 msgid "No answer"
 msgstr ""
 
 #: htdocs/luci-static/resources/mayhem/dash/conns.js
 msgid "No connections yet."
+msgstr ""
+
+#: htdocs/luci-static/resources/mayhem/diag.js
+msgid "No diagnostic result"
+msgstr ""
+
+#: htdocs/luci-static/resources/mayhem/diag.js
+msgid "No generated configuration status"
 msgstr ""
 
 #: htdocs/luci-static/resources/mayhem/diag.js
@@ -1285,10 +1297,6 @@ msgstr ""
 msgid "Only to route chosen sites into this tunnel; to use it for all traffic, choose it on the dashboard instead."
 msgstr ""
 
-#: htdocs/luci-static/resources/mayhem/page/servers.js
-msgid "Open a .conf file…"
-msgstr ""
-
 #: htdocs/luci-static/resources/mayhem/dash/conns.js
 msgid "Open connections"
 msgstr ""
@@ -1345,16 +1353,8 @@ msgstr ""
 msgid "Phantun (wg-phantun)"
 msgstr ""
 
-#: htdocs/luci-static/resources/mayhem/page/components.js
-msgid "Phantun obfuscator (wg-phantun)"
-msgstr ""
-
 #: htdocs/luci-static/resources/mayhem/tunnels.js
 msgid "Phobos (wg-obfuscator)"
-msgstr ""
-
-#: htdocs/luci-static/resources/mayhem/page/components.js
-msgid "Phobos obfuscator (wg-obfuscator)"
 msgstr ""
 
 #: htdocs/luci-static/resources/view/mayhem/dashboard.js
@@ -1417,8 +1417,12 @@ msgstr ""
 msgid "Refresh every 5 seconds"
 msgstr ""
 
-#: htdocs/luci-static/resources/view/mayhem/dashboard.js
-msgid "Refresh the dashboard"
+#: htdocs/luci-static/resources/mayhem/diag.js
+msgid "Remote DNS"
+msgstr ""
+
+#: htdocs/luci-static/resources/mayhem/diag.js
+msgid "Remote DNS failed; queries may use the provider fallback"
 msgstr ""
 
 #: htdocs/luci-static/resources/mayhem/page/sections.js
@@ -1606,11 +1610,11 @@ msgid "Servers and rules on the page update by themselves when it is done."
 msgstr ""
 
 #: htdocs/luci-static/resources/mayhem/page/servers.js
-msgid "Servers deleted from the list on the dashboard do not come back when the subscription is updated. This brings them back."
+msgid "Servers are added when you press Save & Apply."
 msgstr ""
 
 #: htdocs/luci-static/resources/mayhem/page/servers.js
-msgid "Servers go into the server list on the dashboard and are applied at once."
+msgid "Servers deleted from the list on the dashboard do not come back when the subscription is updated. This brings them back."
 msgstr ""
 
 #: htdocs/luci-static/resources/mayhem/page/servers.js
@@ -1659,6 +1663,10 @@ msgstr ""
 
 #: htdocs/luci-static/resources/mayhem/page/servers.js
 msgid "Skipped: %s"
+msgstr ""
+
+#: htdocs/luci-static/resources/mayhem/diag.js
+msgid "Some checks could not be confirmed"
 msgstr ""
 
 #: htdocs/luci-static/resources/mayhem/page/sections.js
@@ -1949,6 +1957,10 @@ msgstr ""
 msgid "Through the active server; when that fails, direct."
 msgstr ""
 
+#: htdocs/luci-static/resources/mayhem/page/settings.js
+msgid "Tools"
+msgstr ""
+
 #: htdocs/luci-static/resources/mayhem/dash/conns.js
 msgid "Traffic"
 msgstr ""
@@ -1965,6 +1977,14 @@ msgstr ""
 msgid "Traffic that matches no rule goes through the active server. When this is off, it goes direct."
 msgstr ""
 
+#: htdocs/luci-static/resources/mayhem/diag.js
+msgid "Traffic uses direct fallback"
+msgstr ""
+
+#: htdocs/luci-static/resources/mayhem/diag.js
+msgid "Traffic waits for the VPN"
+msgstr ""
+
 #: htdocs/luci-static/resources/mayhem/page/sections.js
 msgid "Tunnel"
 msgstr ""
@@ -1975,10 +1995,6 @@ msgstr ""
 
 #: htdocs/luci-static/resources/mayhem/tunnels.js
 msgid "Tunnel %s is a server again."
-msgstr ""
-
-#: htdocs/luci-static/resources/mayhem/page/servers.js
-msgid "Tunnel %s is added to the server list: it shows on the dashboard in a few seconds, when the router has applied it."
 msgstr ""
 
 #: htdocs/luci-static/resources/mayhem/tunnels.js
@@ -2107,6 +2123,22 @@ msgstr ""
 
 #: htdocs/luci-static/resources/mayhem/page/sections.js
 msgid "User subnets"
+msgstr ""
+
+#: htdocs/luci-static/resources/mayhem/diag.js
+msgid "VPN failed; traffic goes direct"
+msgstr ""
+
+#: htdocs/luci-static/resources/mayhem/diag.js
+msgid "VPN failed; traffic waits for it"
+msgstr ""
+
+#: htdocs/luci-static/resources/mayhem/diag.js
+msgid "VPN server answered, HTTP %s"
+msgstr ""
+
+#: htdocs/luci-static/resources/mayhem/diag.js
+msgid "VPN server did not answer"
 msgstr ""
 
 #: htdocs/luci-static/resources/mayhem/diag.js

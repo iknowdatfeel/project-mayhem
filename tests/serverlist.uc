@@ -40,7 +40,7 @@ c.commit('mayhem');
 mkdir(run);
 writefile(`${run}/nodes.json`, sprintf('%J', { sections: { pool: { type: 'proxy', mode: 'fallback', balancer: 'bal-pool',
 	chain: [ 'n-pool-1', 'n-pool-2' ], items: [ { sub: 'mysub', rule: 'auto' } ], nodes: [
-	{ tag: 'n-pool-1', name: 'A', source: 'mysub' },
+	{ tag: 'n-pool-1', name: 'A', orig: 'Provider A', source: 'mysub', link: 'ss://YWVzLTI1Ni1nY206cHc@1.2.3.4:8388#A' },
 	{ tag: 'n-pool-2', name: 'B', source: 'mysub' },
 	{ tag: 'n-pool-3', name: 'K1', source: 'link' } ] } } }));
 
@@ -69,5 +69,14 @@ const st = json(readfile(`${run}/nodes.json`));
 expect('nodes.json: the list automatic with the server pinned',
 	st.sections.pool.mode == 'auto' && st.sections.pool.override == 'n-pool-3' && st.sections.pool.selected == null);
 expect('overrides: the choice for the next start', readfile(`${run}/overrides`) == 'bal-pool n-pool-3\n');
+
+const old = st.sections.pool.nodes[0].link;
+const custom = sprintf('%J', { tag: 'Edited A', protocol: 'shadowsocks', settings: { address: 'edited.example', port: 443, method: 'aes-128-gcm', password: 'fixture' } });
+r = call('server_edit', { section: 'pool', tag: 'n-pool-1', old: old, link: custom });
+c = cursor();
+const saved = c.get('mayhem', 'mysub', 'server_override');
+expect('subscription server edit is saved by provider name', r.ok && json(saved[0]).name == 'Provider A' && json(saved[0]).link == custom);
+expect('edit name keeps spaces intact', index(c.get('mayhem', 'mysub', 'alias') ?? [], 'Provider A\tEdited A') >= 0);
+expect('stale editor is refused', call('server_edit', { section: 'pool', tag: 'n-pool-1', old: 'stale', link: custom }).error != null);
 
 exit(fails ? 1 : 0);

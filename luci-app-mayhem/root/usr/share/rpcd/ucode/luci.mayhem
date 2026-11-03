@@ -7,7 +7,7 @@
 
 import * as fs from 'fs';
 import { parse_link, outbound_host, outbound_port, refused_by_xray } from 'mayhem.links';
-import { list_key, entries, dnsmasq_nftset } from 'mayhem.rules';
+import { list_key, entries, as_list, dnsmasq_nftset } from 'mayhem.rules';
 import { parse_conf, is_amnezia, uci_sections, to_conf } from 'mayhem.awg';
 import * as C from 'mayhem.const';
 import { tcp_ping } from 'mayhem.ping';
@@ -111,13 +111,15 @@ function apply_bg(cmd) {
 	system(`(f=${RUN}/applying.$$; : > "$f"; ${cmd}; rm -f "$f") >/dev/null 2>&1 </dev/null &`);
 }
 
-// A new way of choosing: the generator rebuilds the chains (xray keeps
-// running, live.uc moves the balancers), and the chain is moved along at
-// once instead of on the scheduler's next run, up to 20 s later.
+// An explicit choice changes the restart key and capture generation. The
+// generator rebuilds chains; fallback then applies their current choice.
+function reconnect_epoch(c) {
+	c.set('mayhem', 'settings', 'reconnect_epoch', `${(int(c.get('mayhem', 'settings', 'reconnect_epoch')) || 0) + 1}`);
+}
+
 function reload_choice() {
 	const lib = getenv('MAYHEM_LIB_DIR') ?? '/usr/share/mayhem';
-
-	apply_bg(`/etc/init.d/mayhem reload; ucode ${q(lib + '/fallback.uc')}`);
+	apply_bg(`/etc/init.d/mayhem reload && ucode ${q(lib + '/fallback.uc')}`);
 }
 
 function applying() {
@@ -772,7 +774,8 @@ function diag_local() {
 	const enabled = c.get('mayhem', 'settings', 'enabled') == '1';
 	const pid = xray_pid();
 	const active = pid != null && fs.access(`${RUN}/active`) == true;
-	const st = read_json(`${RUN}/status.json`) ?? {};
+	const generated = read_json(`${RUN}/status.json`);
+	const st = generated ?? {};
 	const state = read_json(`${RUN}/nodes.json`) ?? { sections: {} };
 
 	// Service
@@ -806,7 +809,9 @@ function diag_local() {
 	for (let w in st.warnings ?? [])
 		check(res, 'config', 'Warning', 'warn', w);
 
-	if (!length(st.errors ?? []) && !length(st.warnings ?? []))
+	if (!generated)
+		check(res, 'config', 'Configuration', 'warn', 'no generated configuration status');
+	else if (!length(st.errors ?? []) && !length(st.warnings ?? []))
 		check(res, 'config', 'Configuration', 'ok', 'no errors or warnings');
 
 	// xray
@@ -875,6 +880,13 @@ function diag_local() {
 		check(res, 'dns', 'Queries through xray', state.dns.split ? 'ok' : 'info',
 			state.dns.split ? sprintf('only the names of the rules (%d), the rest goes to the provider directly', state.dns.names ?? 0)
 				: sprintf('all of them: dnsmasq cannot match %s', state.dns.why ?? '?'));
+
+	const health = read_json(`${RUN}/health.json`) ?? {};
+	if (health.dns?.down || fs.access(`${RUN}/dns.degraded`))
+		check(res, 'dns', 'Remote DNS', 'fail', 'remote DNS failed; queries may use the provider fallback');
+	for (let sn in keys(health.sections ?? {}))
+		if (health.sections[sn].down)
+			check(res, 'service', sn, 'fail', state.killswitch ? 'VPN failed; traffic waits for it' : 'VPN failed; traffic goes direct');
 
 	// Tunnels
 	for (let sn in keys(state.sections ?? {})) {
@@ -1145,9 +1157,41 @@ function diag_exit(target) {
 	if (v.error)
 		return { checks: [ { group: 'exit', name: target, status: 'fail', detail: v.error } ] };
 
+	const requested = state.sections?.[target];
+	const section = requested?.pool ? state.sections?.pool : requested;
+	if (section?.type == 'proxy') {
+		let tag = section.override ?? section.selected;
+		if (!tag && length(section.nodes ?? []) == 1)
+			tag = section.nodes[0].tag;
+		if (!tag && section.balancer) {
+			let part = null, selected = null, override = null;
+			for (let l in lines_of(run(`${XRAY} api bi --server=127.0.0.1:${C.API_PORT} ${q(section.balancer)} 2>/dev/null`))) {
+				const m = match(l, /^[ \t]+[0-9]+[ \t]+([^ \t]+)/);
+				if (index(l, 'Override') >= 0) part = 'o';
+				else if (index(l, 'Selects') >= 0) part = 's';
+				else if (m && part == 'o') override ??= m[1];
+				else if (m && part == 's') selected ??= m[1];
+			}
+			tag = override ?? selected;
+		}
+		const node = filter(section.nodes ?? [], (n) => n.tag == tag)[0];
+		if (!node)
+			check(res, 'exit', `${target}: VPN server`, 'fail', 'no active VPN server; the section may be using direct fallback');
+		else {
+			const probe_url = state.probe_url ?? C.DEFAULT_PROBE_URL;
+			const proxy = `socks5h://${tag}:${C.HELPER_PASS}@127.0.0.1:${C.HELPER_PORT}`;
+			const result = trim(run(`curl -s -o /dev/null -m 10 -x ${q(proxy)} -w '%{http_code}' ${q(probe_url)} 2>/dev/null`) ?? '');
+			const ok = match(result, /^[1-5][0-9][0-9]$/) != null;
+			check(res, 'exit', `${target}: ${node.name}`, ok ? 'ok' : 'fail', ok ? `VPN server answered, HTTP ${result}` : 'VPN server did not answer');
+		}
+		const health = read_json(`${RUN}/health.json`);
+		if (health?.sections?.[requested?.pool ? 'pool' : target]?.down)
+			check(res, 'exit', target, 'fail', state.killswitch ? 'traffic waits for the VPN' : 'traffic uses direct fallback');
+	}
+
 	// Directly means with the provider's DNS too: with FakeDNS the router's own
 	// lookups get fake addresses that lead into xray.
-	const via = target == 'direct' ? resolve_direct(url) : v.via;
+	const via = target == 'direct' ? `--noproxy '*' ${resolve_direct(url)}` : v.via;
 	const out = trim(run(`curl -s -m 10 ${via} -w ' %{http_code} %{time_total}' ${q(url)} 2>/dev/null`) ?? '');
 	const m = match(out, /^([0-9a-fA-F:.]+) ([0-9]+) ([0-9.]+)$/);
 
@@ -2281,7 +2325,16 @@ function dashboard(pid, state, out) {
 			}
 		}
 
+		let has_connections = length(filter(sections, (s) => length(s.nodes ?? []) || s.type == 'interface')) > 0;
+		for (let kind in [ 'subscription', 'tunnel', 'pool', 'section' ])
+			c.foreach('mayhem', kind, (s) => {
+				if (kind == 'subscription' || kind == 'tunnel' || length(entries(s.link)) ||
+				    length(entries(s.iface_node)) || s.outbound_json || s.type == 'interface')
+					has_connections = true;
+			});
+
 		return {
+			has_connections: has_connections,
 			time: time(),
 			version: mayhem_version(),
 			enabled: c.get('mayhem', 'settings', 'enabled') == '1',
@@ -2364,6 +2417,8 @@ const methods = {
 				if (!node)
 					return { error: 'unknown server' };
 
+				const used = pool?.mode == 'fallback' && length(filter(pool.items ?? [], (i) => i.sub == sn)) > 0;
+				if (used) reconnect_epoch(c);
 				c.set('mayhem', sn, 'select', 'manual');
 				c.set('mayhem', sn, 'selected', node.name);
 
@@ -2381,7 +2436,7 @@ const methods = {
 					p.subs[sn] = { mode: 'manual', selected: tag };
 				});
 
-				if (pool.mode == 'fallback' && length(filter(pool.items ?? [], (i) => i.sub == sn)))
+				if (used)
 					reload_choice();
 
 				return { ok: true };
@@ -2400,7 +2455,7 @@ const methods = {
 
 			// The server list: a server chosen by hand, from a chain as well,
 			// makes the list "chosen by hand" (a pinned server of its
-			// automatic choice: the same balancer and checks, no restart).
+			// automatic choice: the same balancer and checks).
 			const to_manual = sn == 'pool' && s.mode == 'fallback' && tag != '';
 
 			if (s.mode == 'fallback' && !to_manual)
@@ -2442,7 +2497,9 @@ const methods = {
 				else
 					c.delete('mayhem', ut, 'override');
 
-				c.commit('mayhem');
+				reconnect_epoch(c);
+				if (!c.commit('mayhem'))
+					return { error: 'the configuration could not be saved' };
 				apply(s);
 				runstate.update(RUN, (st) => {
 					const x = st.sections?.[sn];
@@ -2458,15 +2515,8 @@ const methods = {
 
 				health_now(sn);
 
-				// A tunnel of the main section takes the rest of the traffic in
-				// the kernel: choosing it, or leaving it, changes the kernel rules.
-				// The reload puts them in place; xray keeps running.
-				// Otherwise nothing restarts: new connections go through the new
-				// server at once, open ones finish on the old one.
-				if (to_manual)
-					reload_choice();
-				else if (sn == state.default_section && state.mode == 'global' && (node?.iface || s.kernel))
-					apply_bg('/etc/init.d/mayhem reload');
+				// Rebuild the kernel path and close the old Xray connections.
+				reload_choice();
 
 				return { ok: true };
 			};
@@ -3621,7 +3671,7 @@ const methods = {
 	// A server key (or JSON server) of the server list or of a section is
 	// replaced by an edited one. A new name carries the choices along.
 	server_edit: {
-		args: { section: '', old: '', link: '' },
+		args: { section: '', old: '', link: '', tag: '' },
 		call: function(req) {
 			const sec = req.args?.section || 'pool';
 			let link = trim(req.args?.link ?? '');
@@ -3655,6 +3705,49 @@ const methods = {
 
 			if (why)
 				return { error: `xray does not accept this server: ${why}` };
+
+			if (req.args?.tag) {
+				const found = find_node(read_json(`${RUN}/nodes.json`), req.args.tag);
+				if (!found || found.section != sec)
+					return { error: 'unknown server' };
+
+				const n = found.node;
+				if (c.get('mayhem', n.source) == 'subscription') {
+					if (n.link != req.args.old)
+						return { error: 'the server changed; open the editor again' };
+
+					const orig = n.orig ?? n.name;
+					const list = filter(as_list(c.get('mayhem', n.source, 'server_override')), (v) => {
+						try { return json(v).name != orig; } catch (e) { return true; }
+					});
+					push(list, sprintf('%J', { name: orig, link: link }));
+					c.set('mayhem', n.source, 'server_override', list);
+
+					if (parsed.name != '' && parsed.name != n.name) {
+						if (length(parsed.name) > 64 || match(parsed.name, /[\t\n\r]/))
+							return { error: 'the name must have 1 to 64 characters on one line' };
+						const aliases = filter(as_list(c.get('mayhem', n.source, 'alias')), (a) => substr(a, 0, length(orig) + 1) != `${orig}\t`);
+						push(aliases, `${orig}\t${parsed.name}`);
+						c.set('mayhem', n.source, 'alias', aliases);
+						for (let kind in [ 'pool', 'section', 'subscription' ])
+							c.foreach('mayhem', kind, (p) => {
+								const sid = p['.name'];
+								if (kind == 'subscription' ? sid != n.source : (kind == 'section' && index(entries(p.subscription), n.source) < 0)) return;
+								const to = kind == 'subscription' ? orig : parsed.name;
+								for (let k in [ 'selected', 'override' ])
+									if (c.get('mayhem', sid, k) == n.name)
+										c.set('mayhem', sid, k, to);
+								if (p.chain != null)
+									c.set('mayhem', sid, 'chain', map(as_list(p.chain), (v) =>
+										v == `${n.source}\t${n.name}` ? `${n.source}\t${orig}` : v == n.name ? to : v));
+							});
+					}
+					if (!c.commit('mayhem'))
+						return { error: 'the configuration could not be saved' };
+					apply_bg('/etc/init.d/mayhem reload');
+					return { ok: true, name: parsed.name };
+				}
+			}
 
 			const links = c.get('mayhem', sec, 'link') ?? [];
 			const all = type(links) == 'array' ? links : [ links ];
@@ -4084,7 +4177,7 @@ const methods = {
 	// and fallback, whose items may also be "@<subscription>" (the server the
 	// subscription's rule picks) and "<subscription>\t<name>". A subscription
 	// gets its rule: auto, manual (selected: a server name) or fallback.
-	// Nothing restarts: the same balancer and observatory serve every mode.
+	// Explicit mode changes close old connections after rebuilding the choice.
 	set_select: {
 		args: { section: '', mode: '', chain: [], selected: '', rules: {} },
 		call: function(req) {
@@ -4145,6 +4238,10 @@ const methods = {
 			if (mode != 'auto' || kind == 'subscription')
 				c.delete('mayhem', sn, 'override');
 
+			const state = read_json(`${RUN}/nodes.json`);
+			const used = kind != 'subscription' || (state?.sections?.pool?.mode == 'fallback' &&
+				length(filter(state.sections.pool.items ?? [], (i) => i.sub == sn)) > 0);
+			if (used) reconnect_epoch(c);
 			if (!c.commit('mayhem'))
 				return { error: 'the configuration could not be saved' };
 

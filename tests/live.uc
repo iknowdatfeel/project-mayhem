@@ -82,4 +82,37 @@ const one = build(model('global', [ `${A}#NL` ]));
 expect('one server: routed through a balancer', length(filter(one.xray.routing.rules, (r) => r.balancerTag == 'bal-main')) > 0);
 expect('one server: replaced by another without a restart', key(one) == key(build(model('global', [ `${B}#DE` ]))));
 
+// VPN endpoints bypass before blocking/section rules, with real DNS answers.
+const ep = build(model('global', [ `${A}#NL`, `${E}#IP` ]));
+const ip_rule = filter(ep.xray.routing.rules, (r) => index(r.ip ?? [], '1.2.3.4') >= 0)[0];
+expect('server IP bypasses through direct', ip_rule?.outboundTag == 'direct');
+expect('server names populate the endpoint set', index(ep.dnsmasq, 'nftset=/nl1.provider.example/4#inet#mayhem#endpoint_d4') >= 0);
+expect('server names use real DNS', index(ep.dnsmasq, 'server=/nl1.provider.example/77.88.8.8') >= 0);
+expect('kernel endpoint bypass precedes blocking', index(ep.nft, 'ip daddr @endpoint4 return') < index(ep.nft, 'ip daddr @block4'));
+const off = model('global', [ `${E}#IP` ]);
+off.settings.exclude_local = '0';
+expect('endpoint bypass follows the local-network option', !length(filter(build(off).xray.routing.rules, (r) => index(r.ip ?? [], '1.2.3.4') >= 0)));
+
+const next_choice = model('global', [ `${A}#NL` ]);
+next_choice.runtime.flow_path = one.state.flow_path;
+next_choice.settings.reconnect_epoch = '1';
+const reset = build(next_choice);
+expect('an explicit choice invalidates old kernel and proxy flows', reset.state.flow_path.generation != one.state.flow_path.generation);
+expect('an explicit choice restarts Xray', key(reset) != key(one));
+next_choice.runtime.flow_path = reset.state.flow_path;
+expect('a routine reload keeps the flow generation', build(next_choice).state.flow_path.generation == reset.state.flow_path.generation);
+
+// Local edits keep the provider identity and survive a fresh provider response.
+const sub = model('global', []);
+sub.sections[0].subscription = [ 'mysub' ];
+sub.subscriptions = { mysub: { nodes: [ { name: 'Provider NL', link: `${A}#Original` } ] } };
+sub.aliases = { mysub: { 'Provider NL': 'My edited server' } };
+sub.server_overrides = { mysub: { 'Provider NL': sprintf('%J', { tag: 'My edited server', protocol: 'shadowsocks',
+	settings: { address: 'edited.example', port: 443, method: 'aes-128-gcm', password: 'fixture' } }) } };
+let edited = build(sub).state.sections.main.nodes[0];
+expect('subscription edit applies endpoint and keeps identity', edited.address == 'edited.example' && edited.orig == 'Provider NL' && edited.name == 'My edited server');
+sub.subscriptions.mysub.nodes[0].link = `${B}#Provider-update`;
+edited = build(sub).state.sections.main.nodes[0];
+expect('provider update keeps the local edit', edited.address == 'edited.example' && edited.link == sub.server_overrides.mysub['Provider NL']);
+
 exit(fails ? 1 : 0);

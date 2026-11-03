@@ -6,6 +6,8 @@
 'require ui';
 'require mayhem.common as mh';
 'require mayhem.diag as diag';
+'require mayhem.sheet as sheet';
+'require mayhem.dash.conns as conns';
 
 // Settings: logging, memory, watchdog, server checks and the reset to defaults.
 
@@ -47,6 +49,14 @@ return baseclass.extend({
 
 		s = m.section(form.NamedSection, 'settings', 'settings');
 		s.addremove = false;
+
+		o = s.option(form.DummyValue, '_tools', _('Tools'));
+		o.render = () => E('div', { 'class': 'mh-actions' }, [
+			mh.button({ icon: 'search', text: _('Diagnostics'), click: () => diag.diagnostics(true) }),
+			mh.button({ icon: 'package', text: _('Component updates'), click: () => sheet.show('components') }),
+			mh.button({ icon: 'route', text: _('Routing'), click: () => sheet.show('sections') }),
+			mh.button({ icon: 'activity', text: _('Active connections'), click: () => conns.open() })
+		]);
 
 		o = s.option(form.ListValue, 'log_level', _('Log level'));
 		[ 'debug', 'info', 'warning', 'error', 'none' ].forEach((l) => o.value(l));

@@ -184,6 +184,18 @@ return baseclass.extend({
 		]);
 	},
 
+	handleSaveApply(ev, mode) {
+		const text = this.addInput ? this.addInput.value.trim() : '';
+		return (text ? this.addKeys(text) : Promise.resolve()).then(() => {
+			return this.handleSave(ev).then(() => {
+				if (this.addInput) this.addInput.value = '';
+				return ui.changes.apply(mode == '0');
+			});
+		}).catch((e) => {
+			ui.addNotification(null, E('p', e.message || String(e)), 'error');
+		});
+	},
+
 	// Saves and applies the staged UCI changes like the button at the bottom.
 	apply() {
 		return this.handleSaveApply(null, '0');
@@ -210,9 +222,7 @@ return baseclass.extend({
 
 		say(_('Unpacking the key…'), '');
 
-		return next(0, []).then((names) => sheet.reload().then(() =>
-			ui.addNotification(null, E('p', _('Tunnel %s is added to the server list: it shows on the dashboard in a few seconds, when the router has applied it.').format(names.join(', '))), 'info')
-		)).catch((e) => say(e.message, 'mh-fail'));
+		return next(0, []);
 	},
 
 	addKeys(text, say) {
@@ -224,16 +234,14 @@ return baseclass.extend({
 		const lines = text.split('\n').map((l) => l.trim()).filter((l) => l && l.charAt(0) !== '#');
 
 		if (!lines.length) {
-			say(_('Paste a server key first.'), 'mh-fail');
-			return Promise.resolve();
+			return Promise.reject(new Error(_('Paste a server key first.')));
 		}
 
 		const keys = lines.filter((l) => vpnkey.isKey(l));
 
 		if (keys.length) {
 			if (keys.length !== lines.length) {
-				say(_('Add vpn:// keys and other keys separately.'), 'mh-fail');
-				return Promise.resolve();
+				return Promise.reject(new Error(_('Add vpn:// keys and other keys separately.')));
 			}
 
 			return this.addTunnels(keys.map((k) => ({ key: k })), say);
@@ -242,17 +250,18 @@ return baseclass.extend({
 		const bad = lines.filter((l) => !LINK_RE.test(l));
 
 		if (bad.length) {
-			say(_('Not a server key: %s').format(bad[0].slice(0, 60)), 'mh-fail');
-			return Promise.resolve();
+			return Promise.reject(new Error(_('Not a server key: %s').format(bad[0].slice(0, 60))));
 		}
 
 		return callParse(lines).then((r) => {
 			const res = r.results || [];
-			const errors = res.map((x, i) => x.ok ? null : '%s: %s'.format(x.name || lines[i].slice(0, 40), x.error || '?')).filter((x) => x);
+			const errors = lines.map((line, i) => {
+				const x = res[i] || {};
+				return x.ok ? null : '%s: %s'.format(x.name || line.slice(0, 40), x.error || '?');
+			}).filter((x) => x);
 
 			if (errors.length) {
-				say(_('These keys cannot be added:') + ' ' + errors.join('; '), 'mh-fail');
-				return;
+				throw new Error(_('These keys cannot be added:') + ' ' + errors.join('; '));
 			}
 
 			ensurePool();
@@ -260,8 +269,6 @@ return baseclass.extend({
 			const have = linksOf('pool');
 
 			uci.set('mayhem', 'pool', 'link', have.concat(lines.filter((l) => have.indexOf(l) < 0)));
-
-			return this.apply();
 		});
 	},
 
@@ -329,18 +336,7 @@ return baseclass.extend({
 			'class': 'cbi-input-textarea', 'rows': 4,
 			'placeholder': 'vless://…\nss://…\nvpn://…'
 		});
-		const msg = E('div', { 'class': 'mh-small', 'style': 'margin-top:.5em' });
-		// A WireGuard/AmneziaWG .conf file: its text goes into the box.
-		const file = E('input', { 'type': 'file', 'accept': '.conf,.txt', 'style': 'display:none', 'change': (ev) => {
-			const f = ev.target.files[0];
-
-			if (f)
-				f.text().then((t) => { text.value = t.trim(); });
-		} });
-		const say = (m, cls) => {
-			msg.className = 'mh-small ' + (cls || 'mh-muted');
-			msg.textContent = m;
-		};
+		this.addInput = text;
 
 		const rows = this.keys.map((k) => {
 			const i = k.info || {};
@@ -377,19 +373,7 @@ return baseclass.extend({
 			E('div', { 'class': 'cbi-section-descr' },
 				_('Paste a server key: vless://, vmess://, trojan://, ss://, hysteria2://, socks://, http(s)://, wireguard://, or an AmneziaVPN key (vpn://) or a WireGuard/AmneziaWG config. Several keys go one per line.')),
 			text,
-			E('div', { 'class': 'mh-add-row' }, [
-				E('button', {
-					'class': 'btn cbi-button cbi-button-add',
-					'click': ui.createHandlerFn(this, () => this.addKeys(text.value, say))
-				}, _('Add')),
-				E('button', {
-					'class': 'btn cbi-button',
-					'click': (ev) => { ev.preventDefault(); file.click(); }
-				}, _('Open a .conf file…')),
-				file
-			]),
-			msg,
-			E('p', { 'class': 'mh-muted mh-small' }, _('Servers go into the server list on the dashboard and are applied at once.')),
+			E('p', { 'class': 'mh-muted mh-small' }, _('Servers are added when you press Save & Apply.')),
 			rows.length ? E('table', { 'class': 'table mh-keys mh-rtable' }, [
 				E('tr', { 'class': 'tr table-titles' }, [
 					E('th', { 'class': 'th' }, _('Server name')), E('th', { 'class': 'th' }, _('Protocol')), E('th', { 'class': 'th' }, _('Address')),
