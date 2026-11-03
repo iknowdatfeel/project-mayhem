@@ -93,9 +93,11 @@ return baseclass.extend({
 			[ 'logs', _('Logs'), () => diag.logContent(), () => diag.startLogs(), () => diag.stopLogs() ],
 			[ 'main', _('Advanced'), () => this.renderMain() ]
 		];
-		const icons = { routing: 'route', mux: 'zap', components: 'package', connections: 'activity',
+		const icons = { routing: 'route', dns: 'network', geo: 'globe', mux: 'zap', components: 'package', connections: 'activity',
 			diagnostics: 'search', logs: 'logs', main: 'settings' };
 		const bar = E('div', { 'class': 'mh-settings-tabs', 'role': 'tablist', 'aria-label': _('Settings') });
+		const rows = [0, 1].map(() => E('div', { 'class': 'mh-settings-tabrow', 'role': 'presentation' }));
+		rows.forEach((row) => bar.appendChild(row));
 		let active = null;
 		const activate = (tab) => {
 			if (active === tab)
@@ -141,13 +143,12 @@ return baseclass.extend({
 					tabs[next].button.focus();
 					activate(tabs[next]);
 				}
-			}, [ tab[0] === 'dns' || tab[0] === 'geo'
-				? E('span', { 'class': 'mh-icon', 'aria-hidden': 'true' }, tab[0] === 'dns' ? '📡' : '🌍')
-				: mh.icon(icons[tab[0]], true), E('span', tab[1]) ]);
-			bar.appendChild(tab.button);
+			}, [ mh.icon(icons[tab[0]], true), E('span', tab[1]) ]);
+			rows[i < 5 ? 0 : 1].appendChild(tab.button);
 		});
 		root.appendChild(E('style', `
-.mh-settings-tabs { display:grid; grid-template-columns:repeat(5, max-content); overflow-x:auto; gap:4px; border-bottom:1px solid var(--border-color-low, #ddd); margin-bottom:16px; }
+.mh-settings-tabs { display:flex; flex-direction:column; overflow-x:auto; gap:4px; border-bottom:1px solid var(--border-color-low, #ddd); margin-bottom:16px; }
+.mh-settings-tabrow { display:flex; justify-content:space-between; min-width:max-content; gap:4px; }
 .mh-settings-tabs [role=tab] { display:inline-flex; flex-shrink:0; white-space:nowrap; align-items:center; gap:6px; background:none; color:inherit; border:0; border-bottom:3px solid transparent; padding:9px 12px; cursor:pointer; }
 .mh-settings-tabs [aria-selected=true] { border-bottom-color:var(--primary-color-high, #37c); font-weight:bold; }
 .mh-settings > [role=tabpanel][hidden] { display:none; }

@@ -706,8 +706,20 @@ def main():
                 raise RuntimeError('DNS or geo data are still inside routing')
             if pg.get_by_role('button', name=TRANSLATIONS.get('Back', 'Back'), exact=True).count():
                 raise RuntimeError('settings still have a Back button')
-            if pg.locator('.mh-settings-tabs .mh-icon').count() != len(expected):
+            if pg.locator('.mh-settings-tabs svg.mh-icon').count() != len(expected):
                 raise RuntimeError('a settings tab has no icon')
+            spacing = pg.eval_on_selector_all('.mh-settings-tabrow', """rows => rows.map(row => {
+                const buttons = Array.from(row.querySelectorAll('[role=tab]'));
+                const end = buttons[buttons.length - 1].getBoundingClientRect().right;
+                return { right: row.getBoundingClientRect().right - end,
+                    extra: buttons.map(b => {
+                        const icon = b.querySelector('svg').getBoundingClientRect();
+                        const text = b.querySelector('span').getBoundingClientRect();
+                        return b.getBoundingClientRect().width - icon.width - text.width;
+                    }) };
+            })""")
+            if any(abs(row['right']) > 2 or any(extra > 40 for extra in row['extra']) for row in spacing):
+                raise RuntimeError('settings tabs have excess empty space: %s' % spacing)
             pg.click('#mh-settings-tab-main')
             pg.wait_for_selector('#mh-settings-main [data-name="memlimit"] input', timeout=10000)
             mem = '#mh-settings-main [data-name="memlimit"] input'
