@@ -253,10 +253,6 @@ msgstr ""
 msgid "B"
 msgstr ""
 
-#: htdocs/luci-static/resources/mayhem/diag.js
-msgid "Back"
-msgstr ""
-
 #: htdocs/luci-static/resources/view/mayhem/dashboard.js
 msgid "Back to automatic"
 msgstr ""

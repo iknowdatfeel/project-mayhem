@@ -25,7 +25,7 @@ const CSS = `
 .mh-sheet-overlay { position:fixed; inset:0; z-index:850; background:rgba(0,0,0,.55); display:flex; align-items:flex-start; justify-content:center; overflow:hidden; }
 .mh-sheet { box-sizing:border-box; width:min(1100px, calc(100% - 32px)); max-height:calc(100% - 48px); margin-top:24px; display:flex; flex-direction:column; background:var(--background-color-high, #fff); border:1px solid var(--border-color-low, #ddd); border-radius:6px; box-shadow:0 8px 32px rgba(0,0,0,.35); }
 .mh-sheet-head { display:flex; align-items:center; gap:10px; padding:12px 16px; border-bottom:1px solid var(--border-color-low, #ddd); }
-.mh-modal-back { margin-bottom:10px; text-align:left; }
+.mh-modal-close { margin-bottom:10px; text-align:right; }
 .mh-sheet-head h3 { margin:0; padding:0; flex:1; font-size:120%; border:0; }
 .mh-sheet-close { border:0; background:none; color:inherit; cursor:pointer; font-size:20px; line-height:1; padding:4px 8px; opacity:.6; }
 .mh-sheet-close:hover { opacity:1; }
@@ -140,28 +140,23 @@ function close() {
 		o.onclose();
 }
 
-let modalNavigationInstalled = false;
+let modalCloseInstalled = false;
 
-function installModalNavigation() {
-	if (modalNavigationInstalled) return;
-	modalNavigationInstalled = true;
+function installModalClose() {
+	if (modalCloseInstalled) return;
+	modalCloseInstalled = true;
 	const showModal = ui.showModal;
-	// Forms manage their own modal stack. Reuse their dismissal handler
-	// so Back also restores the form state and its parent dialog correctly.
 	ui.showModal = function() {
 		const modal = showModal.apply(this, arguments);
 		if (!open && !document.getElementById('mayhem-body')) return modal;
-		const backbar = modal.querySelector('.mh-modal-back');
-		if (backbar) modal.insertBefore(backbar, modal.firstChild);
-		else {
-			const buttons = Array.from(modal.querySelectorAll('button'));
-			const back = buttons.find((b) => b.textContent.trim() === _('Back')) ||
-				buttons.reverse().find((b) => [ _('Cancel'), _('Close'), _('Dismiss') ].indexOf(b.textContent.trim()) >= 0);
-			if (!back) return modal;
-			modal.insertBefore(E('div', { 'class': 'mh-modal-back' }, E('button', {
-				'class': 'btn', 'type': 'button', 'click': () => back.click()
-			}, _('Back'))), modal.firstChild);
-		}
+		const buttons = Array.from(modal.querySelectorAll('button'));
+		if (buttons.some((b) => b.textContent.trim() === _('Close') || b.title === _('Close')))
+			return modal;
+		// Reuse LuCI's dismissal handler to unwind nested form dialogs.
+		const dismiss = buttons.reverse().find((b) => [ _('Cancel'), _('Dismiss') ].indexOf(b.textContent.trim()) >= 0);
+		modal.insertBefore(E('div', { 'class': 'mh-modal-close' }, E('button', {
+			'class': 'btn', 'type': 'button', 'click': () => dismiss ? dismiss.click() : ui.hideModal()
+		}, _('Close'))), modal.firstChild);
 		return modal;
 	};
 }
@@ -257,7 +252,7 @@ return baseclass.extend({
 	},
 
 	style() {
-		installModalNavigation();
+		installModalClose();
 		return E('style', CSS);
 	},
 
