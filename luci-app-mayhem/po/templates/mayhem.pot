@@ -197,6 +197,10 @@ msgstr ""
 msgid "All devices"
 msgstr ""
 
+#: htdocs/luci-static/resources/mayhem/diag.js
+msgid "All levels"
+msgstr ""
+
 #: htdocs/luci-static/resources/view/mayhem/dashboard.js
 msgid "All traffic goes direct."
 msgstr ""
@@ -1029,10 +1033,6 @@ msgstr ""
 msgid "Location"
 msgstr ""
 
-#: htdocs/luci-static/resources/mayhem/diag.js
-msgid "Log level"
-msgstr ""
-
 #: htdocs/luci-static/resources/mayhem/page/settings.js
 msgid "Logs"
 msgstr ""
@@ -1083,6 +1083,10 @@ msgstr ""
 
 #: htdocs/luci-static/resources/mayhem/diag.js
 msgid "Messages of Mayhem, xray and dnsmasq from the system log. At the debug level xray logs every connection and DNS query: turn it back down when you are done."
+msgstr ""
+
+#: htdocs/luci-static/resources/mayhem/diag.js
+msgid "Minimum displayed level"
 msgstr ""
 
 #: htdocs/luci-static/resources/mayhem/page/sections.js
@@ -2219,6 +2223,10 @@ msgstr ""
 
 #: htdocs/luci-static/resources/view/mayhem/dashboard.js
 msgid "Xray is not installed: run \"mayhem xray-install\""
+msgstr ""
+
+#: htdocs/luci-static/resources/mayhem/diag.js
+msgid "Xray log level"
 msgstr ""
 
 #: htdocs/luci-static/resources/mayhem/page/settings.js

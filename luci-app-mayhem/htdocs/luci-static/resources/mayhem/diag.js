@@ -11,7 +11,7 @@
 const callDiagnose = rpc.declare({ object: 'luci.mayhem', method: 'diagnose', params: [ 'part', 'target' ], expect: { '': {} } });
 const callAction = rpc.declare({ object: 'luci.mayhem', method: 'action', params: [ 'name' ], expect: { '': {} } });
 const callSysinfo = rpc.declare({ object: 'luci.mayhem', method: 'sysinfo', expect: { '': {} } });
-const callLogs = rpc.declare({ object: 'luci.mayhem', method: 'logs', params: [ 'component', 'lines' ], expect: { '': {} } });
+const callLogs = rpc.declare({ object: 'luci.mayhem', method: 'logs', params: [ 'component', 'lines', 'level' ], expect: { '': {} } });
 const callLevel = rpc.declare({ object: 'luci.mayhem', method: 'set_log_level', params: [ 'level' ], expect: { '': {} } });
 const callExport = rpc.declare({ object: 'luci.mayhem', method: 'backup_export', params: [ 'connections' ], expect: { '': {} } });
 const callImport = rpc.declare({ object: 'luci.mayhem', method: 'backup_import', params: [ 'backup' ], expect: { '': {} } });
@@ -332,7 +332,7 @@ return baseclass.extend({
 
 	logContent() {
 		this.stopLogs();
-		let component = 'all', lines = 300, follow = true, timer = null, raw = '';
+		let component = 'all', level = 'all', lines = 300, follow = true, timer = null, raw = '';
 		let active = false, busy = false, revision = 0, pending = false, first = true;
 		const pre = E('pre', { 'class': 'mh-log' }, _('Loading…'));
 		const error = E('div', { 'class': 'mh-fail', 'role': 'status' });
@@ -354,7 +354,7 @@ return baseclass.extend({
 			busy = true;
 			pending = false;
 			const mine = revision;
-			return callLogs(component, lines).then((r) => {
+			return callLogs(component, lines, level).then((r) => {
 				if (!active || mine !== revision) return;
 				if (r.error || !Array.isArray(r.lines)) throw new Error(r.error || _('No log result'));
 				const atEnd = first || pre.scrollTop + pre.clientHeight >= pre.scrollHeight - 20;
@@ -398,6 +398,9 @@ return baseclass.extend({
 			E('div', { 'class': 'mh-log-tools' }, [
 				select([ [ 'all', _('Everything') ], [ 'mayhem', 'Mayhem' ], [ 'xray', 'Xray' ], [ 'dnsmasq', 'Dnsmasq' ] ], component,
 					(ev) => { component = ev.target.value; change(); }),
+				E('label', [ _('Minimum displayed level') + ': ',
+					select([ [ 'all', _('All levels') ], [ 'debug', 'debug' ], [ 'info', 'info' ], [ 'warning', 'warning' ], [ 'error', 'error' ] ], level,
+						(ev) => { level = ev.target.value; change(); }) ]),
 				select([ [ '100', _('100 lines') ], [ '300', _('300 lines') ], [ '1000', _('1000 lines') ] ], String(lines),
 					(ev) => { lines = +ev.target.value; change(); }),
 				E('label', [ E('input', { 'type': 'checkbox', 'checked': '', 'change': (ev) => {
@@ -406,7 +409,7 @@ return baseclass.extend({
 					if (follow) show();
 				} }), ' ', _('Refresh every 5 seconds') ]),
 				E('span', { 'class': 'mh-ip' }, [ E('span', { 'class': 'mh-small mh-muted' }, _('IP addresses')), mh.ipEye() ]),
-				E('span', { 'style': 'margin-left:auto' }, _('Log level') + ':'),
+				E('span', { 'style': 'margin-left:auto' }, _('Xray log level') + ':'),
 				select([ 'debug', 'info', 'warning', 'error', 'none' ].map((l) => [ l, l ]), uci.get('mayhem', 'settings', 'log_level') || 'warning', (ev) => {
 					const input = ev.target;
 					const previous = uci.get('mayhem', 'settings', 'log_level') || 'warning';
