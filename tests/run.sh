@@ -1084,7 +1084,7 @@ else
 fi
 
 # The cache of nft.conf and dnsmasq.conf: taken while the rules stay the same,
-# whatever the servers; built again when a rule changes; --warm fills the
+# rebuilt when VPN endpoint bypass sets change; --warm fills the
 # other choice of the server list (a tunnel or a proxy). What comes from the
 # cache is what a build makes.
 netcache() {
@@ -1109,19 +1109,20 @@ json.dump(m, open(out + "/nc-proxy.json", "w"))
 m["sections"][1]["ip"] = ["5.0.0.0/8", "6.0.0.0/8"]
 json.dump(m, open(out + "/nc-proxy-rule.json", "w"))
 PY
-for n in nc-awg nc-proxy nc-proxy-rule; do
+for n in nc-awg nc-awg-servers nc-proxy nc-proxy-rule; do
 	uc "$FILES/usr/share/mayhem/gen.uc" --model "$OUT/$n.json" --out "$OUT/fresh-$n" 2>/dev/null
 done
 c="$OUT/nc"
 r1="$(netcache "$OUT/nc-awg.json" "$c")"
 r2="$(netcache "$OUT/nc-awg.json" "$c")"
 r3="$(netcache "$OUT/nc-awg-servers.json" "$c")"
-if [ "$r1 $r2 $r3" = "false true true" ] && same_net "$c" "$OUT/fresh-nc-awg"; then
-	ok "net cache: taken again and with other servers, the same as a build"
+r3_again="$(netcache "$OUT/nc-awg-servers.json" "$c")"
+if [ "$r1 $r2 $r3 $r3_again" = "false true false true" ] && same_net "$c" "$OUT/fresh-nc-awg-servers"; then
+	ok "net cache: reused unchanged, rebuilt for new VPN endpoints, the same as a build"
 else
-	bad "net cache: built/cached $r1 $r2 $r3, or not the same as a build"
+	bad "net cache: built/cached $r1 $r2 $r3 $r3_again, or not the same as a build"
 fi
-MAYHEM_NET_CACHE=1 uc "$FILES/usr/share/mayhem/gen.uc" --model "$OUT/nc-awg.json" --out "$c" --warm 2>/dev/null
+MAYHEM_NET_CACHE=1 uc "$FILES/usr/share/mayhem/gen.uc" --model "$OUT/nc-awg-servers.json" --out "$c" --warm 2>/dev/null
 r4="$(netcache "$OUT/nc-proxy.json" "$c")"
 if [ "$r4" = true ] && same_net "$c" "$OUT/fresh-nc-proxy"; then
 	ok "net cache: --warm made the files for a proxy, the same as a build"

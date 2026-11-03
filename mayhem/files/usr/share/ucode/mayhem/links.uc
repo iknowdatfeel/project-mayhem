@@ -786,11 +786,15 @@ export function refused_by_xray(ob) {
 	const s = ob?.settings ?? {};
 
 	if (ob?.protocol == 'vless') {
-		// The current core requires TLS when its flat Address is absent too.
-		if (s.encryption != null && s.encryption != '' && s.encryption != 'none')
+		// VLessOutboundConfig.Build normalizes the legacy vnext user before
+		// validating transport security (infra/conf/vless.go).
+		const flat = type(s.address) == 'string';
+		const address = flat ? s.address : s.vnext?.[0]?.address;
+		const encryption = flat ? s.encryption : s.vnext?.[0]?.users?.[0]?.encryption;
+		if (encryption != null && encryption != '' && encryption != 'none')
 			return null;
 
-		return type(s.address) == 'string' && private_address(s.address) ? null :
+		return type(address) == 'string' && private_address(address) ? null :
 			'VLESS without TLS, Reality or encryption to a public address, xray refuses to start with it';
 	}
 
