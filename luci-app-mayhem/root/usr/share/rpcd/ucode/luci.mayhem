@@ -3093,7 +3093,7 @@ const methods = {
 		args: { what: '', version: '' },
 		call: function(req) {
 			const ver = match(req.args?.version ?? '', /^[0-9][0-9A-Za-z.-]*$/) ? req.args.version : '';
-			const cmds = { awg: 'awg-install', protos: 'tunnel-protos', dnsmasq: 'dnsmasq-full', xray: `xray-install ${ver}`, mayhem: 'self-update', wg: 'wg-install',
+			const cmds = { awg: 'awg-install', 'awg-remove': 'awg-remove', protos: 'tunnel-protos', dnsmasq: 'dnsmasq-full', xray: `xray-install ${ver}`, mayhem: 'self-update', wg: 'wg-install',
 				phobos: 'obfs-install phobos', faketcp: 'obfs-install faketcp' };
 			const cmd = cmds[req.args?.what];
 

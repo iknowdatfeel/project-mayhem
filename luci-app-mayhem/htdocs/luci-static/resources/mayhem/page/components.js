@@ -64,7 +64,8 @@ return baseclass.extend({
 			const pkg = (name, has, what) => row(name,
 				has ? E('span', { 'class': 'mh-ok' }, _('Installed')) : E('span', { 'class': 'mh-muted' }, _('Not installed')),
 				E('span', { 'class': 'mh-muted' }, _('When needed')),
-				(has || checking) ? '' : E('button', { 'class': 'btn cbi-button-action', 'click': ui.createHandlerFn(tunnels, 'install', what) }, _('Install')));
+				checking ? '' : E('button', { 'class': has ? 'btn cbi-button-negative' : 'btn cbi-button-action',
+					'click': ui.createHandlerFn(tunnels, 'install', has ? 'awg-remove' : what) }, has ? _('Remove') : _('Install')));
 			const data = (what) => E('button', {
 				'class': 'btn cbi-button',
 				'click': ui.createHandlerFn(this, () => callDataUpdate(what, '').then((r) => {

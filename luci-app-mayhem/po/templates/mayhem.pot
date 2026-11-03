@@ -2320,3 +2320,9 @@ msgstr ""
 #: htdocs/luci-static/resources/mayhem/dash/chain.js
 msgid "whole subscription"
 msgstr ""
+
+msgid "Removing AmneziaWG"
+msgstr ""
+
+msgid "Removal failed, see the log above."
+msgstr ""
