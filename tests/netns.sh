@@ -422,8 +422,8 @@ if start_mayhem "$WORK/global.json"; then
 	expect "excluded domain resolved by the router -> kernel direct, past xray" 192.168.1.2 $(site gosuslugi.test)
 	expect "address of another site -> proxy" 45.0.0.3 $(site anything.test)
 
-	# Every query comes from a new port, like dnsmasq's: each is a DNS session
-	# in xray that has to go away soon after its answer, not after 5 minutes.
+	# Internal DNS now uses Xray's default idle policy. Its sessions must
+	# outlive the short 4-second policy that Mayhem used to force.
 	dns_sessions() {
 		ip netns exec router curl -s '127.0.0.1:12781/debug/pprof/goroutine?debug=1' |
 			awk '/^[0-9]+ @/ { n = $1 } /proxy\/dns\.\(\*outboundConn\)\.Read/ { s += n } END { print s + 0 }'
@@ -431,15 +431,12 @@ if start_mayhem "$WORK/global.json"; then
 	i=0
 	while [ "$i" -lt 40 ]; do dns router 127.0.0.1 12753 "q$i.test" >/dev/null; i=$((i + 1)); done
 	open="$(dns_sessions)"
-	waited=0
-	while [ "$waited" -lt 30 ] && [ "$(dns_sessions)" -gt 5 ]; do sleep 5; waited=$((waited + 5)); done
+	sleep 10
 	left="$(dns_sessions)"
-	if [ "$open" -lt 30 ]; then
-		bad "DNS sessions are not counted: $open open after 40 queries"
-	elif [ "$left" -le 5 ]; then
-		ok "DNS sessions close after their answer ($open -> $left in $waited s)"
+	if [ "$open" -ge 30 ] && [ "$left" -ge 30 ]; then
+		ok "DNS sessions keep the core idle policy ($open -> $left after 10 s)"
 	else
-		bad "DNS sessions pile up: $left of $open still open $waited s after 40 queries"
+		bad "DNS sessions do not keep the core idle policy: $open -> $left"
 	fi
 fi
 stop_mayhem
@@ -550,19 +547,22 @@ reload_live() {
 }
 
 select_node() {
-	# $1 section, $2 tag: a server picked on the dashboard. Picking one by hand
-	# restarts xray under the same rules; this waits for the new one.
-	local old new i=0
+	# The namespace harness has no procd. Run its reload/start lifecycle
+	# explicitly when the choice changes xray.key, as procd does on OpenWrt.
+	local out old
 	old="$(proc_in router xray)"
-	rpc select_node "{\"section\":\"$1\",\"tag\":\"$2\"}"
-	[ -n "$2" ] || return 0
-	while [ "$i" -lt 40 ]; do
-		new="$(proc_in router xray)"
-		[ -n "$new" ] && [ "$new" != "$old" ] && outbounds >/dev/null 2>&1 && break
-		sleep 0.5
-		i=$((i + 1))
-	done
-	sleep 1
+	out="$(rpc select_node "{\"section\":\"$1\",\"tag\":\"$2\"}")"
+	case "$out" in *'"ok": true'*) ;; *) printf '%s\n' "$out"; return 1 ;; esac
+	reload_live || return 1
+	if ! cmp -s "$MAYHEM_RUN_DIR/xray.key" "$MAYHEM_RUN_DIR/running.xray.key"; then
+		stop_mayhem
+		start_mayhem uci || return 1
+	fi
+	if [ -n "$old" ] && [ "$(proc_in router xray)" = "$old" ]; then
+		bad "an explicit server choice did not restart xray"
+		return 1
+	fi
+	printf '%s\n' "$out"
 }
 
 outbounds() {
@@ -1044,23 +1044,22 @@ if start_mayhem uci; then
 		else
 			expect "server A picked: the rest goes through it" 45.0.0.3 http://45.0.0.7:8080/
 
-			# Server B by hand: nothing restarts. New connections go through B,
-			# the open one finishes on A, the rules stay.
+			# Server B by hand: the old connection closes and new traffic uses B.
 			xpid="$(proc_in router xray)"
 			ip netns exec client curl -s -m 20 -o /dev/null -w '%{size_download}' http://45.0.0.7:8080/slow > "$WORK/slow2.out" 2>/dev/null &
 			cpid=$!
 			sleep 1.5
 			tag="$(tr '{' '\n' < "$MAYHEM_RUN_DIR/nodes.json" | sed -n 's/.*"tag": "\(n-pool-[^"]*\)", "name": "B".*/\1/p' | head -n 1)"
-			rpc select_node "{\"section\":\"pool\",\"tag\":\"$tag\"}" >/dev/null
-			kept=1
-			for i in 1 2 3 4 5 6; do
-				ip netns exec router nft list table inet mayhem >/dev/null 2>&1 || kept=0
-				sleep 0.5
-			done
-			wait "$cpid"
-			if [ "$(cat "$WORK/slow2.out" 2>/dev/null)" = 10240 ]; then ok "server B by hand: the open connection through A finishes"; else bad "server B by hand: the download through A broke: $(cat "$WORK/slow2.out" 2>/dev/null)"; fi
-			if [ "$kept" = 1 ] && [ -f "$MAYHEM_RUN_DIR/active" ]; then ok "server B by hand: the interception stays"; else bad "server B by hand: the interception was removed"; fi
-			if [ "$(proc_in router xray)" = "$xpid" ]; then ok "server B by hand: xray keeps running"; else bad "server B by hand: xray was restarted"; fi
+			select_node pool "$tag" >/dev/null
+			wait "$cpid"; crc=$?
+			bytes="$(cat "$WORK/slow2.out" 2>/dev/null)"
+			if [ "$crc" != 0 ] && [ "${bytes:-0}" -lt 10240 ]; then
+				ok "server B by hand: the open connection through A is closed"
+			else
+				bad "server B by hand: the old connection survived ($bytes bytes, curl $crc)"
+			fi
+			if [ -f "$MAYHEM_RUN_DIR/active" ]; then ok "server B by hand: interception is active again"; else bad "server B by hand: interception is inactive"; fi
+			if [ "$(proc_in router xray)" != "$xpid" ]; then ok "server B by hand: xray restarted"; else bad "server B by hand: xray did not restart"; fi
 			expect "server B by hand: new connections go through it" 45.0.0.8 http://45.0.0.7:8080/
 		fi
 	fi
