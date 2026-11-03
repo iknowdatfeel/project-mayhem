@@ -767,6 +767,23 @@ else
 	bad "rpcd backend compiles: $out"
 fi
 
+# System logs: process tags, line limit, empty log and logread failure.
+mkdir -p "$OUT/log-bin"
+cat > "$OUT/log-bin/logread" <<'SH'
+#!/bin/sh
+if [ -f "$MAYHEM_TEST_LOG.fail" ]; then
+	echo 'logread unavailable' >&2
+	exit 1
+fi
+cat "$MAYHEM_TEST_LOG"
+SH
+chmod +x "$OUT/log-bin/logread"
+if out="$(PATH="$OUT/log-bin:$PATH" MAYHEM_TEST_LOG="$OUT/messages" uc "$ROOT/tests/logs.uc" "$ROOT/luci-app-mayhem/root/usr/share/rpcd/ucode/luci.mayhem" 2>&1)"; then
+	ok "system logs: emitters, limits, empty result and errors"
+else
+	bad "system logs: $out"
+fi
+
 # Tunnel import into the server list and renaming the interface.
 mkdir -p "$OUT/tun-uci" "$OUT/tun-proto"
 cp "$ROOT/tests/luci/uci/network" "$ROOT/tests/luci/uci/firewall" "$ROOT/tests/uci/mayhem" "$OUT/tun-uci/"

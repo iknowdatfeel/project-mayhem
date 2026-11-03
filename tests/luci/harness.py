@@ -523,32 +523,38 @@ def main():
                 shot(pg, 'tunnel_obfs_faketcp')
                 close_modal(pg)
 
-        def settings_tool(pg, text):
+        def settings_tool(pg, tab):
             pg.click('#mayhem-body .mh-navbtn >> nth=1')
-            pg.wait_for_selector('.mh-sheet-body [data-name="_tools"], .mh-sheet-body .mh-actions', timeout=15000)
-            pg.click('.mh-sheet-body button:has-text("%s")' % TRANSLATIONS.get(text, text))
+            pg.wait_for_selector('.mh-settings-tabs', timeout=15000)
+            pg.click('#mh-settings-tab-' + tab)
 
         def run_diag(pg):
-            settings_tool(pg, 'Diagnostics')
-            pg.wait_for_selector('.modal .mh-drow', timeout=5000)
-            pg.wait_for_timeout(500)
-            pg.wait_for_function('!document.querySelector(".modal .mh-spin")', timeout=90000)
-            if not pg.query_selector('.modal .mh-drow-items .mh-item'):
+            settings_tool(pg, 'diagnostics')
+            pg.wait_for_selector('#mh-settings-diagnostics .mh-drow', timeout=5000)
+            pg.wait_for_function("!document.querySelector('#mh-settings-diagnostics .mh-busy')", timeout=90000)
+            if not pg.query_selector('#mh-settings-diagnostics .mh-drow-items .mh-item'):
                 raise RuntimeError('no check results')
+            tunnels = pg.locator('#mh-settings-diagnostics [data-group="tunnels"]')
+            if tunnels.count() != 1 or 'awg0' not in tunnels.inner_text() or not tunnels.locator('.mh-item').count():
+                raise RuntimeError('configured tunnel has no diagnostic details')
+            if pg.locator('#mh-settings-diagnostics button').filter(has_text=TRANSLATIONS.get('View logs', 'View logs')).count():
+                raise RuntimeError('logs are still nested in diagnostics')
             shot(pg, 'dashboard_diag')
-            close_modal(pg)
+            pg.click('#mh-settings-diagnostics button:has-text("%s")' % TRANSLATIONS.get('Copy report', 'Copy report'))
+            pg.wait_for_selector('.modal .mh-modal-back button', timeout=5000)
+            pg.click('.modal .mh-modal-back button')
+            pg.wait_for_function("!document.body.classList.contains('modal-overlay-active')")
+            pg.wait_for_selector('#mh-settings-diagnostics', state='visible')
             pg.click('.mh-sheet-close')
             pg.wait_for_selector('.mh-sheet-overlay', state='detached', timeout=5000)
 
-        def logs_modal(pg):
-            # the logs open from the diagnostics dialog
-            settings_tool(pg, 'Diagnostics')
-            pg.wait_for_selector('.modal .mh-drow', timeout=5000)
-            pg.click('.modal button:has-text("%s")' % TRANSLATIONS.get('View logs', 'View logs'))
-            pg.wait_for_selector('.modal .mh-log', timeout=5000)
-            pg.wait_for_timeout(500)
+        def logs_tab(pg):
+            settings_tool(pg, 'logs')
+            pg.wait_for_selector('#mh-settings-logs .mh-log', timeout=5000)
+            pg.wait_for_function("!document.querySelector('#mh-settings-logs .mh-log').textContent.includes(%s)" % json.dumps(TRANSLATIONS.get('Loading…', 'Loading…')), timeout=10000)
+            if pg.evaluate("document.body.classList.contains('modal-overlay-active')"):
+                raise RuntimeError('logs opened in a modal instead of a tab')
             shot(pg, 'dashboard_logs')
-            close_modal(pg)
             pg.click('.mh-sheet-close')
             pg.wait_for_selector('.mh-sheet-overlay', state='detached', timeout=5000)
 
@@ -583,9 +589,8 @@ def main():
             pg.wait_for_timeout(300)
             shot(pg, 'servers_subscriptions')
             open_modals(pg, '[data-tab="subscription"]')
-            pg.click('.cbi-tabmenu [data-tab="settings"] a')
-            pg.wait_for_timeout(300)
-            shot(pg, 'servers_advanced')
+            if pg.query_selector('[data-name="mux"]'):
+                raise RuntimeError('multiplexing is still in the server list')
 
         def geo_tab(pg):
             pg.click('.cbi-tabmenu [data-tab="geo"] a')
@@ -651,10 +656,33 @@ def main():
                 raise RuntimeError('removed components are still offered: %s' % text)
 
         def settings_tabs(pg):
+            ids = pg.eval_on_selector_all('.mh-settings-tabs [role="tab"]', 'es => es.map(e => e.id)')
+            expected = ['main', 'routing', 'mux', 'components', 'connections', 'diagnostics', 'logs']
+            if ids != ['mh-settings-tab-' + name for name in expected]:
+                raise RuntimeError('settings tabs have the wrong order: %s' % ids)
+            if pg.query_selector('.mh-sheet-head .mh-modal-back'):
+                raise RuntimeError('top-level settings have a Back button')
+            mem = '#mh-settings-main [data-name="memlimit"] input'
+            original = pg.input_value(mem)
+            pg.fill(mem, '128')
+            pg.click('#mh-settings-tab-mux')
+            pg.wait_for_selector('#mh-settings-mux [data-name="mux"]', timeout=10000)
+            pg.click('#mh-settings-tab-routing')
+            pg.wait_for_selector('#mh-settings-routing .cbi-map', timeout=15000)
+            pg.click('#mh-settings-routing [data-tab="settings"] .cbi-button-edit >> nth=0')
+            pg.wait_for_selector('.modal .mh-modal-back button', timeout=5000)
+            pg.click('.modal .mh-modal-back button')
+            pg.wait_for_function("!document.body.classList.contains('modal-overlay-active')")
+            pg.wait_for_selector('#mh-settings-routing', state='visible')
+            pg.click('#mh-settings-tab-main')
+            if pg.input_value(mem) != '128':
+                raise RuntimeError('switching settings tabs lost an unsaved value')
+            pg.fill(mem, original)
             pg.click('[data-name="_reset"] button')
             pg.wait_for_selector('.modal input[type="checkbox"]', timeout=5000)
             shot(pg, 'settings_reset')
-            close_modal(pg)
+            pg.click('.modal .mh-modal-back button')
+            pg.wait_for_function("!document.body.classList.contains('modal-overlay-active')")
 
         def dashboard_buttons(pg):
             if not pg.query_selector('#mayhem-body .mh-tile'):
@@ -687,7 +715,7 @@ def main():
 
         def conns_modal(pg):
             # the connections of the fixture (run.sh): names, servers, counts
-            settings_tool(pg, 'Active connections')
+            settings_tool(pg, 'connections')
             pg.wait_for_selector('#mh-conns table', timeout=8000)
             heads = pg.eval_on_selector_all('#mh-conns th', 'es => es.map(e => e.textContent)')
             if len(heads) != 6:
@@ -704,8 +732,6 @@ def main():
             if not count.startswith('TCP: ') or 'UDP: ' not in count or not count.rstrip().endswith('1'):
                 raise RuntimeError('no TCP and UDP counts: %r' % count)
             shot(pg, 'connections')
-            pg.evaluate("document.querySelector('.mh-conns-modal .right button').click()")
-            pg.wait_for_timeout(300)
             pg.click('.mh-sheet-close')
             pg.wait_for_selector('.mh-sheet-overlay', state='detached', timeout=5000)
 
@@ -891,7 +917,7 @@ def main():
                 raise RuntimeError('the address keeps a page after closing: %s' % pg.url)
 
         pages = [
-            ('mayhem/dashboard', [('buttons', dashboard_buttons), ('active connections', conns_modal), ('logs dialog', logs_modal), ('run diagnostics', run_diag),
+            ('mayhem/dashboard', [('buttons', dashboard_buttons), ('active connections', conns_modal), ('logs tab', logs_tab), ('run diagnostics', run_diag),
                                   ('edit a server', edit_server), ('delete a server', delete_server), ('choose how', choose_mode), ('chain of the list', list_chain),
                                   ('delete a tunnel', delete_tunnel), ('services', services_badge), ('pages in a window', nav_pages)]),
             ('mayhem/dashboard#sections', [('sections tab', lambda pg: shot(pg, 'routing_sections')), ('main section', main_section),

@@ -212,11 +212,14 @@ return baseclass.extend({
 	copy() {
 		const area = E('textarea', { 'style': 'width:100%;height:20em;font-family:monospace', 'readonly': '' }, this.report());
 
+		const inDialog = document.body.classList.contains('modal-overlay-active');
+		const back = () => inDialog ? this.diagnostics(false) : ui.hideModal();
+
 		ui.showModal(_('Diagnostics report'), [
+			E('div', { 'class': 'mh-modal-back' }, E('button', { 'class': 'btn', 'click': back }, _('Back'))),
 			E('p', _('Copy the report and attach it to a question or a bug report. It holds no keys or passwords, but it does show your external addresses.')),
 			area,
 			E('div', { 'class': 'right' }, [
-				E('button', { 'class': 'btn', 'click': ui.createHandlerFn(this, 'diagnostics', false) }, _('Back')), ' ',
 				E('button', { 'class': 'btn', 'click': ui.hideModal }, _('Close'))
 			])
 		]);
@@ -226,20 +229,12 @@ return baseclass.extend({
 
 	// --- diagnostics dialog ---------------------------------------------------------
 
-	// Opens the dialog; a new run starts unless `fresh` is false.
-	diagnostics(fresh) {
+	// The same content is used in the Settings tab and the dashboard dialog.
+	diagnosticContent() {
 		const s = this.sys;
-		const versions = [ 'Mayhem ' + (s.mayhem || '?'), 'xray ' + (s.xray || '?') ];
-
-		if (s.openwrt)
-			versions.push(s.openwrt);
-
-		if (s.model)
-			versions.push(s.model);
-
+		const versions = [ 'Mayhem ' + (s.mayhem || '?'), 'xray ' + (s.xray || '?'), s.openwrt, s.model ].filter(Boolean);
 		this.list = E('div');
-
-		ui.showModal(_('Diagnostics'), [
+		return E('div', [
 			E('div', { 'class': 'mh-small mh-muted mh-note' }, [
 				E('span', _('Checks every part of the traffic path. External addresses are requested through each section, so you can see where the traffic really leaves.')),
 				mh.ipEye()
@@ -248,15 +243,17 @@ return baseclass.extend({
 			E('div', { 'class': 'mh-small mh-muted', 'style': 'margin-top:8px' }, versions.join(' · ')),
 			E('div', { 'class': 'right', 'style': 'margin-top:8px' }, [
 				E('button', { 'class': 'btn cbi-button-action', 'click': ui.createHandlerFn(this, 'run') }, _('Run again')), ' ',
-				E('button', { 'class': 'btn', 'click': ui.createHandlerFn(this, 'copy') }, _('Copy report')), ' ',
-				E('button', { 'class': 'btn', 'click': ui.createHandlerFn(this, 'logs') }, _('View logs')), ' ',
-				E('button', { 'class': 'btn', 'click': ui.hideModal }, _('Close'))
+				E('button', { 'class': 'btn', 'click': ui.createHandlerFn(this, 'copy') }, _('Copy report'))
 			])
-		], 'mh-diag-modal');
+		]);
+	},
 
+	diagnostics(fresh) {
+		ui.showModal(_('Diagnostics'), [ this.diagnosticContent(),
+			E('div', { 'class': 'right' }, E('button', { 'class': 'btn', 'click': ui.hideModal }, _('Close')))
+		], 'mh-diag-modal');
 		if (fresh !== false || !this.checks.length)
 			return this.run();
-
 		this.drawList();
 	},
 
@@ -314,96 +311,121 @@ return baseclass.extend({
 		// is the same.
 		const before = {};
 
-		this.list.querySelectorAll('details').forEach((d, i) => { before[i] = [ d.dataset.state, d.open ]; });
+		this.list.querySelectorAll('details').forEach((d) => { before[d.dataset.group] = [ d.dataset.state, d.open ]; });
 
-		this.list.replaceChildren(...GROUPS.map((g, i) => {
+		this.list.replaceChildren(...GROUPS.filter((g) => g[0] !== 'tunnels' || this.checks.some((c) => c.group === 'tunnels')).map((g) => {
 			const el = this.group(g[0], g[1], g[2]);
 
-			if (before[i] && before[i][0] === el.dataset.state)
-				el.open = before[i][1];
+			el.dataset.group = g[0];
+			if (before[g[0]] && before[g[0]][0] === el.dataset.state)
+				el.open = before[g[0]][1];
 
 			return el;
 		}));
 	},
 
-	// --- logs dialog -------------------------------------------------------------
+	// --- logs tab ---------------------------------------------------------------
 
-	logs() {
+	stopLogs() {
+		if (this.logView) this.logView.stop();
+	},
+
+	startLogs() {
+		if (this.logView) this.logView.start();
+	},
+
+	logContent() {
+		this.stopLogs();
 		let component = 'all', lines = 300, follow = true, timer = null, raw = '';
+		let active = false, busy = false, revision = 0, pending = false, first = true;
 		const pre = E('pre', { 'class': 'mh-log' }, _('Loading…'));
-
-		// IP addresses are masked by default; the eye shows them.
+		const error = E('div', { 'class': 'mh-fail', 'role': 'status' });
 		const onIp = () => {
-			if (!document.contains(pre))
-				return document.removeEventListener('mh-ip-change', onIp);
-
-			if (raw)
-				pre.textContent = mh.ipText(raw);
+			const atEnd = pre.scrollTop + pre.clientHeight >= pre.scrollHeight - 20;
+			const scroll = pre.scrollTop;
+			pre.textContent = mh.ipText(raw || _('No messages yet.'));
+			pre.scrollTop = atEnd ? pre.scrollHeight : scroll;
 		};
-
-		document.addEventListener('mh-ip-change', onIp);
-
-		// One request at a time; a failed refresh waits for the next one.
-		let busy = false;
+		const schedule = () => {
+			window.clearTimeout(timer);
+			if (active && follow) timer = window.setTimeout(show, 5000);
+		};
 		const show = () => {
-			if (busy)
-				return Promise.resolve();
-
+			window.clearTimeout(timer);
+			if (!active) return Promise.resolve();
+			if (busy) { pending = true; return Promise.resolve(); }
+			if (document.hidden) { schedule(); return Promise.resolve(); }
 			busy = true;
-
+			pending = false;
+			const mine = revision;
 			return callLogs(component, lines).then((r) => {
-				const atEnd = pre.scrollTop + pre.clientHeight >= pre.scrollHeight - 20;
-
-				raw = (r.lines || []).join('\n') || _('No messages yet.');
-				pre.textContent = mh.ipText(raw);
-
-				if (atEnd)
-					pre.scrollTop = pre.scrollHeight;
-			}).catch(() => {}).finally(() => { busy = false; });
+				if (!active || mine !== revision) return;
+				if (r.error || !Array.isArray(r.lines)) throw new Error(r.error || _('No log result'));
+				const atEnd = first || pre.scrollTop + pre.clientHeight >= pre.scrollHeight - 20;
+				const scroll = pre.scrollTop;
+				raw = r.lines.join('\n');
+				onIp();
+				error.textContent = '';
+				pre.scrollTop = atEnd ? pre.scrollHeight : scroll;
+				first = false;
+			}).catch((e) => {
+				if (!active || mine !== revision) return;
+				error.textContent = e.message || String(e);
+				if (first) pre.textContent = '';
+			}).finally(() => {
+				busy = false;
+				if (active && pending) show();
+				else schedule();
+			});
 		};
-
+		const change = () => { revision++; first = true; pre.textContent = _('Loading…'); raw = ''; show(); };
 		const select = (opts, value, change) => E('select', { 'class': 'cbi-input-select', 'change': change },
 			opts.map((o) => E('option', { 'value': o[0], 'selected': o[0] === value ? '' : null }, o[1])));
-
-		const close = () => {
-			window.clearInterval(timer);
-			ui.hideModal();
+		this.logView = {
+			start: () => {
+				if (active) return;
+				active = true;
+				if (!first) onIp();
+				document.addEventListener('mh-ip-change', onIp);
+				show();
+			},
+			stop: () => {
+				active = false;
+				revision++;
+				pending = false;
+				window.clearTimeout(timer);
+				document.removeEventListener('mh-ip-change', onIp);
+			}
 		};
-
-		return uci.load('mayhem').then(() => {
-			const level = uci.get('mayhem', 'settings', 'log_level') || 'warning';
-
-			ui.showModal(_('Logs'), [
-				E('div', { 'class': 'mh-small mh-muted' }, _('Messages of Mayhem, xray and dnsmasq from the system log. At the debug level xray logs every connection and DNS query: turn it back down when you are done.')),
-				E('div', { 'class': 'mh-log-tools' }, [
-					select([ [ 'all', _('Everything') ], [ 'mayhem', 'Mayhem' ], [ 'xray', 'Xray' ], [ 'dnsmasq', 'Dnsmasq' ] ], component,
-						(ev) => { component = ev.target.value; show(); }),
-					select([ [ '100', _('100 lines') ], [ '300', _('300 lines') ], [ '1000', _('1000 lines') ] ], String(lines),
-						(ev) => { lines = +ev.target.value; show(); }),
-					E('label', [ E('input', { 'type': 'checkbox', 'checked': '', 'change': (ev) => follow = ev.target.checked }),
-						' ', _('Refresh every 5 seconds') ]),
-					E('span', { 'class': 'mh-ip' }, [ E('span', { 'class': 'mh-small mh-muted' }, _('IP addresses')), mh.ipEye() ]),
-					E('span', { 'style': 'margin-left:auto' }, _('Log level') + ':'),
-					select([ 'debug', 'info', 'warning', 'error', 'none' ].map((l) => [ l, l ]), level, (ev) => callLevel(ev.target.value).then((r) => {
-						if (r.error)
-							ui.addNotification(null, E('p', r.error), 'error');
-					}))
-				]),
-				pre,
-				E('div', { 'class': 'right' }, E('button', { 'class': 'btn', 'click': close }, _('Close')))
-			], 'mh-logs-modal');
-
-			show().then(() => { pre.scrollTop = pre.scrollHeight; });
-
-			// Stops by itself once the dialog is gone, however it was closed.
-			timer = window.setInterval(() => {
-				if (!document.contains(pre))
-					return window.clearInterval(timer);
-
-				if (follow && !document.hidden)
-					show();
-			}, 5000);
-		});
+		return E('div', [
+			E('div', { 'class': 'mh-small mh-muted' }, _('Messages of Mayhem, xray and dnsmasq from the system log. At the debug level xray logs every connection and DNS query: turn it back down when you are done.')),
+			E('div', { 'class': 'mh-log-tools' }, [
+				select([ [ 'all', _('Everything') ], [ 'mayhem', 'Mayhem' ], [ 'xray', 'Xray' ], [ 'dnsmasq', 'Dnsmasq' ] ], component,
+					(ev) => { component = ev.target.value; change(); }),
+				select([ [ '100', _('100 lines') ], [ '300', _('300 lines') ], [ '1000', _('1000 lines') ] ], String(lines),
+					(ev) => { lines = +ev.target.value; change(); }),
+				E('label', [ E('input', { 'type': 'checkbox', 'checked': '', 'change': (ev) => {
+					follow = ev.target.checked;
+					window.clearTimeout(timer);
+					if (follow) show();
+				} }), ' ', _('Refresh every 5 seconds') ]),
+				E('span', { 'class': 'mh-ip' }, [ E('span', { 'class': 'mh-small mh-muted' }, _('IP addresses')), mh.ipEye() ]),
+				E('span', { 'style': 'margin-left:auto' }, _('Log level') + ':'),
+				select([ 'debug', 'info', 'warning', 'error', 'none' ].map((l) => [ l, l ]), uci.get('mayhem', 'settings', 'log_level') || 'warning', (ev) => {
+					const input = ev.target;
+					const previous = uci.get('mayhem', 'settings', 'log_level') || 'warning';
+					input.disabled = true;
+					return callLevel(input.value).then((r) => {
+						if (r.error) throw new Error(r.error);
+						uci.set('mayhem', 'settings', 'log_level', input.value);
+					}).catch((e) => {
+						input.value = previous;
+						ui.addNotification(null, E('p', e.message || String(e)), 'error');
+					}).finally(() => { input.disabled = false; });
+				})
+			]),
+			error, pre
+		]);
 	},
 
 	// --- backup ----------------------------------------------------------------------

@@ -12,9 +12,10 @@
 const callConns = rpc.declare({ object: 'luci.mayhem', method: 'connections', params: [ 'stop', 'device' ], expect: { '': {} } });
 
 return baseclass.extend({
-	open() {
+	content() {
+		this.stop();
 		this.conns = null;
-		this.connsOpen = true;
+		this.connsOpen = false;
 		this.connPaused = false;
 		this.connDev = '';
 		this.connBase = null;
@@ -36,17 +37,27 @@ return baseclass.extend({
 		const clear = E('button', { 'class': 'btn', 'click': () => this.clear(),
 			'title': _('Shows only connections opened from now on, and the traffic from now on') }, _('Clear'));
 
-		ui.showModal(_('Active connections'), [
+		return E('div', [
 			E('p', { 'class': 'mh-muted mh-small' },
 				_('Every connection of the network that is open now, grouped by device, address and route. A site name is known when its address came in a DNS answer through Xray; otherwise the address is shown.')),
 			E('div', { 'class': 'mh-conns-bar' }, [ devs, pause, clear,
 				E('span', { 'id': 'mh-conns-count', 'class': 'mh-small' }),
 				E('span', { 'id': 'mh-conns-note', 'class': 'mh-muted mh-small' }) ]),
-			body,
+			body
+		]);
+	},
+
+	start() {
+		this.connsOpen = true;
+		if (!this.connPaused) this.fetch();
+		else this.draw();
+	},
+
+	open() {
+		ui.showModal(_('Active connections'), [ this.content(),
 			E('div', { 'class': 'right' }, E('button', { 'class': 'btn', 'click': () => this.close() }, _('Close')))
 		], 'mh-conns-modal');
-
-		this.fetch();
+		this.start();
 	},
 
 	// One request now; the next one in 3 s unless paused or closed.
@@ -107,12 +118,15 @@ return baseclass.extend({
 		return [ c.network, c.ip, c.host, c.port, x.kind, x.server || '' ].join('|');
 	},
 
-	close() {
+	stop() {
 		this.connsOpen = false;
 		this.connSeq = (this.connSeq || 0) + 1;
 		window.clearTimeout(this.connsTimer);
+	},
+
+	close() {
+		this.stop();
 		ui.hideModal();
-		callConns(true).catch(() => {});
 	},
 
 	// Where a connection goes, in a word: the server (or tunnel) by its name.

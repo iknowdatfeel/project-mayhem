@@ -6,7 +6,10 @@
 'require ui';
 'require mayhem.common as mh';
 'require mayhem.diag as diag';
-'require mayhem.sheet as sheet';
+'require dom';
+'require mayhem.page.sections as routing';
+'require mayhem.page.mux as mux';
+'require mayhem.page.components as components';
 'require mayhem.dash.conns as conns';
 
 // Settings: logging, memory, watchdog, server checks and the reset to defaults.
@@ -43,24 +46,117 @@ return baseclass.extend({
 		return uci.load('mayhem');
 	},
 
-	render(data) {
+	unload() {
+		if (this.stopTab)
+			this.stopTab();
+		this.stopTab = null;
+		this.root = null;
+	},
+
+	// Validate every opened tab before saving their shared UCI cache.
+	handleSave() {
+		const maps = Array.from(this.root.querySelectorAll('.cbi-map')).map((node) => dom.findClassInstance(node));
+		maps.forEach((map) => map.checkDepends());
+		return maps.reduce((p, map) => p.then(() => map.parse()), Promise.resolve())
+			.then(() => uci.save())
+			.then(() => Promise.all(maps.map((map) => map.load().then(() => map.reset()))))
+			.catch((e) => {
+				ui.addNotification(null, E('p', e.message || String(e)), 'error');
+				throw e;
+			});
+	},
+
+	handleSaveApply(ev, mode) {
+		return this.handleSave().then(() => ui.changes.apply(mode == '0'));
+	},
+
+	handleReset() {
+		return Array.from(this.root.querySelectorAll('.cbi-map')).reduce(
+			(p, node) => p.then(() => dom.callClassMethod(node, 'reset')), Promise.resolve());
+	},
+
+	render() {
+		this.unload();
+		const root = this.root = E('div', { 'class': 'mh-settings' });
+		let diagnosed = false;
+		const tabs = [
+			[ 'main', _('Main'), () => this.renderMain() ],
+			[ 'routing', _('Routing'), () => routing.load().then((data) => routing.render(data)) ],
+			[ 'mux', _('Multiplexing'), () => mux.load().then(() => mux.render()) ],
+			[ 'components', _('Component updates'), () => components.load().then((data) => components.render(data)) ],
+			[ 'connections', _('Active connections'), () => conns.content(), () => conns.start(), () => conns.stop() ],
+			[ 'diagnostics', _('Diagnostics'), () => diag.diagnosticContent(), () => {
+				if (!diagnosed) { diagnosed = true; diag.run(); }
+				else diag.drawList();
+			} ],
+			[ 'logs', _('Logs'), () => diag.logContent(), () => diag.startLogs(), () => diag.stopLogs() ]
+		];
+		const bar = E('div', { 'class': 'mh-settings-tabs', 'role': 'tablist', 'aria-label': _('Settings') });
+		let active = null;
+		const activate = (tab) => {
+			if (active === tab)
+				return tab.loading || Promise.resolve();
+			if (this.stopTab) this.stopTab();
+			this.stopTab = null;
+			active = tab;
+			tabs.forEach((t) => {
+				const selected = t === tab;
+				t.button.setAttribute('aria-selected', String(selected));
+				t.button.tabIndex = selected ? 0 : -1;
+				t.pane.hidden = !selected;
+			});
+			if (!tab.loading) {
+				tab.pane.replaceChildren(E('p', { 'class': 'spinning' }, _('Loading…')));
+				tab.loading = Promise.resolve().then(tab[2]).then((node) => {
+					tab.pane.replaceChildren(node);
+				}).catch((e) => {
+					tab.loading = null;
+					tab.pane.replaceChildren(E('p', { 'class': 'mh-fail' }, String(e.message || e)));
+					throw e;
+				});
+			}
+			return tab.loading.then(() => {
+				if (active !== tab || this.root !== root || !tab[3]) return;
+				this.stopTab = tab[4] || null;
+				tab[3]();
+			}).catch(() => {});
+		};
+		tabs.forEach((tab, i) => {
+			tab.pane = E('div', { 'id': 'mh-settings-' + tab[0], 'role': 'tabpanel',
+				'aria-labelledby': 'mh-settings-tab-' + tab[0], 'hidden': '' });
+			tab.button = E('button', { 'id': 'mh-settings-tab-' + tab[0], 'type': 'button', 'role': 'tab',
+				'aria-controls': tab.pane.id, 'aria-selected': 'false', 'tabindex': '-1',
+				'click': () => activate(tab), 'keydown': (ev) => {
+					let next;
+					if (ev.key === 'ArrowRight') next = (i + 1) % tabs.length;
+					else if (ev.key === 'ArrowLeft') next = (i + tabs.length - 1) % tabs.length;
+					else if (ev.key === 'Home') next = 0;
+					else if (ev.key === 'End') next = tabs.length - 1;
+					else return;
+					ev.preventDefault();
+					tabs[next].button.focus();
+					activate(tabs[next]);
+				}
+			}, tab[1]);
+			bar.appendChild(tab.button);
+		});
+		root.appendChild(E('style', `
+.mh-settings-tabs { display:flex; flex-wrap:wrap; gap:4px; border-bottom:1px solid var(--border-color-low, #ddd); margin-bottom:16px; }
+.mh-settings-tabs [role=tab] { background:none; color:inherit; border:0; border-bottom:3px solid transparent; padding:9px 12px; cursor:pointer; }
+.mh-settings-tabs [aria-selected=true] { border-bottom-color:var(--primary-color-high, #37c); font-weight:bold; }
+.mh-settings > [role=tabpanel][hidden] { display:none; }
+`));
+		root.appendChild(bar);
+		tabs.forEach((tab) => root.appendChild(tab.pane));
+		return activate(tabs[0]).then(() => root);
+	},
+
+	renderMain() {
 		const m = new form.Map('mayhem');
 		let s, o;
 
 		s = m.section(form.NamedSection, 'settings', 'settings');
 		s.addremove = false;
-
-		o = s.option(form.DummyValue, '_tools', _('Tools'));
-		o.render = () => E('div', { 'class': 'mh-actions', 'style': 'width:auto;display:flex;flex-wrap:wrap;gap:8px;margin-bottom:12px' }, [
-			mh.button({ icon: 'search', text: _('Diagnostics'), click: () => diag.diagnostics(true) }),
-			mh.button({ icon: 'package', text: _('Component updates'), click: () => sheet.show('components') }),
-			mh.button({ icon: 'route', text: _('Routing'), click: () => sheet.show('sections') }),
-			mh.button({ icon: 'activity', text: _('Active connections'), click: () => conns.open() })
-		]);
-
-		o = s.option(form.ListValue, 'log_level', _('Log level'));
-		[ 'debug', 'info', 'warning', 'error', 'none' ].forEach((l) => o.value(l));
-		o.default = 'warning';
 
 		o = s.option(form.Value, 'memlimit', _('Xray memory limit (GOMEMLIMIT), MiB'),
 			_('A soft limit: Xray frees memory more often when it gets close. Empty: a quarter of the router memory.'));
