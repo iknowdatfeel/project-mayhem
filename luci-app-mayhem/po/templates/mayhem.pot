@@ -25,10 +25,6 @@ msgstr ""
 msgid "%d servers"
 msgstr ""
 
-#: htdocs/luci-static/resources/mayhem/page/settings.js
-msgid "%d%% of memory"
-msgstr ""
-
 #: htdocs/luci-static/resources/view/mayhem/dashboard.js
 msgid "%s MB/s"
 msgstr ""
@@ -103,10 +99,6 @@ msgstr ""
 
 #: htdocs/luci-static/resources/mayhem/page/sections.js
 msgid "A single Xray outbound object. Its tag is replaced automatically."
-msgstr ""
-
-#: htdocs/luci-static/resources/mayhem/page/settings.js
-msgid "A soft limit: Xray frees memory more often when it gets close. Empty: a quarter of the router memory."
 msgstr ""
 
 #: htdocs/luci-static/resources/mayhem/tunnels.js
@@ -241,10 +233,6 @@ msgstr ""
 msgid "As text"
 msgstr ""
 
-#: htdocs/luci-static/resources/mayhem/page/settings.js
-msgid "Auto"
-msgstr ""
-
 #: htdocs/luci-static/resources/mayhem/page/components.js
 msgid "Automatically"
 msgstr ""
@@ -271,10 +259,6 @@ msgstr ""
 
 #: htdocs/luci-static/resources/mayhem/diag.js
 msgid "Backup"
-msgstr ""
-
-#: htdocs/luci-static/resources/mayhem/page/settings.js
-msgid "Backup…"
 msgstr ""
 
 #: htdocs/luci-static/resources/mayhem/page/sections.js
@@ -501,10 +485,6 @@ msgstr ""
 msgid "Diagnostics report"
 msgstr ""
 
-#: htdocs/luci-static/resources/mayhem/page/settings.js
-msgid "Diagnostics request it directly and through every section; it must answer with the IP address as plain text."
-msgstr ""
-
 #: htdocs/luci-static/resources/mayhem/dash/conns.js
 msgid "Direct"
 msgstr ""
@@ -645,28 +625,12 @@ msgstr ""
 msgid "Error"
 msgstr ""
 
-#: htdocs/luci-static/resources/mayhem/page/settings.js
-msgid "Every 10 minutes"
-msgstr ""
-
 #: htdocs/luci-static/resources/mayhem/page/sections.js
 msgid "Every 12 hours"
 msgstr ""
 
 #: htdocs/luci-static/resources/mayhem/page/sections.js
 msgid "Every 3 days"
-msgstr ""
-
-#: htdocs/luci-static/resources/mayhem/page/settings.js
-msgid "Every 3 minutes"
-msgstr ""
-
-#: htdocs/luci-static/resources/mayhem/page/settings.js
-msgid "Every 30 minutes"
-msgstr ""
-
-#: htdocs/luci-static/resources/mayhem/page/settings.js
-msgid "Every 5 minutes"
 msgstr ""
 
 #: htdocs/luci-static/resources/mayhem/page/sections.js
@@ -677,16 +641,8 @@ msgstr ""
 msgid "Every connection of the network that is open now, grouped by device, address and route. A site name is known when its address came in a DNS answer through Xray; otherwise the address is shown."
 msgstr ""
 
-#: htdocs/luci-static/resources/mayhem/page/settings.js
-msgid "Every minute"
-msgstr ""
-
 #: htdocs/luci-static/resources/mayhem/page/components.js
 msgid "Every night"
-msgstr ""
-
-#: htdocs/luci-static/resources/mayhem/page/settings.js
-msgid "Every setting of Mayhem goes back to how it was after installation: sections, rules, DNS, geo sources. Xray restarts."
 msgstr ""
 
 #: htdocs/luci-static/resources/mayhem/tunnels.js
@@ -733,16 +689,8 @@ msgstr ""
 msgid "Export"
 msgstr ""
 
-#: htdocs/luci-static/resources/mayhem/page/settings.js
-msgid "Export every setting of Mayhem to a file or restore them from one."
-msgstr ""
-
 #: htdocs/luci-static/resources/view/mayhem/dashboard.js
 msgid "External IP"
-msgstr ""
-
-#: htdocs/luci-static/resources/mayhem/page/settings.js
-msgid "External IP check URL"
 msgstr ""
 
 #: htdocs/luci-static/resources/mayhem/diag.js
@@ -965,10 +913,6 @@ msgstr ""
 msgid "KB"
 msgstr ""
 
-#: htdocs/luci-static/resources/mayhem/page/settings.js
-msgid "Keep subscriptions, server keys and HWID"
-msgstr ""
-
 #: htdocs/luci-static/resources/mayhem/page/sections.js
 msgid "Kernel"
 msgstr ""
@@ -1037,10 +981,6 @@ msgstr ""
 msgid "Location"
 msgstr ""
 
-#: htdocs/luci-static/resources/mayhem/page/settings.js
-msgid "Logs"
-msgstr ""
-
 #: htdocs/luci-static/resources/mayhem/common.js
 msgid "MB"
 msgstr ""
@@ -1099,10 +1039,6 @@ msgstr ""
 
 #: htdocs/luci-static/resources/mayhem/page/sections.js
 msgid "Mixed proxy user"
-msgstr ""
-
-#: htdocs/luci-static/resources/mayhem/page/settings.js
-msgid "Multiplexing"
 msgstr ""
 
 #: htdocs/luci-static/resources/mayhem/page/mux.js
@@ -1497,14 +1433,6 @@ msgstr ""
 msgid "Rename the server"
 msgstr ""
 
-#: htdocs/luci-static/resources/mayhem/page/settings.js
-msgid "Reset settings"
-msgstr ""
-
-#: htdocs/luci-static/resources/mayhem/page/settings.js
-msgid "Reset settings…"
-msgstr ""
-
 #: htdocs/luci-static/resources/mayhem/diag.js
 msgid "Restart Mayhem"
 msgstr ""
@@ -1513,16 +1441,8 @@ msgstr ""
 msgid "Restarting the network"
 msgstr ""
 
-#: htdocs/luci-static/resources/mayhem/page/settings.js
-msgid "Restarts Xray when it holds too much memory for 3 minutes in a row, and dnsmasq when it is gone."
-msgstr ""
-
 #: htdocs/luci-static/resources/mayhem/diag.js
 msgid "Restore"
-msgstr ""
-
-#: htdocs/luci-static/resources/mayhem/page/settings.js
-msgid "Restore defaults"
 msgstr ""
 
 #: htdocs/luci-static/resources/mayhem/page/servers.js
@@ -1657,7 +1577,7 @@ msgstr ""
 msgid "Services"
 msgstr ""
 
-#: htdocs/luci-static/resources/mayhem/page/settings.js
+#: htdocs/luci-static/resources/mayhem/sheet.js
 msgid "Settings"
 msgstr ""
 
@@ -1771,10 +1691,6 @@ msgstr ""
 
 #: htdocs/luci-static/resources/mayhem/page/sections.js
 msgid "The active server of the server list is the one chosen on the dashboard. A separate server is for domains that need a server of their own."
-msgstr ""
-
-#: htdocs/luci-static/resources/mayhem/page/settings.js
-msgid "The automatic server choice and the URL test request it through each server."
 msgstr ""
 
 #: htdocs/luci-static/resources/mayhem/dash/chain.js
@@ -1915,10 +1831,6 @@ msgstr ""
 
 #: htdocs/luci-static/resources/view/mayhem/dashboard.js
 msgid "The server key is deleted."
-msgstr ""
-
-#: htdocs/luci-static/resources/mayhem/page/settings.js
-msgid "The settings are reset. The page reloads in a few seconds."
 msgstr ""
 
 #: htdocs/luci-static/resources/mayhem/page/servers.js
@@ -2069,14 +1981,6 @@ msgstr ""
 msgid "URL test"
 msgstr ""
 
-#: htdocs/luci-static/resources/mayhem/page/settings.js
-msgid "URLTest URL"
-msgstr ""
-
-#: htdocs/luci-static/resources/mayhem/page/settings.js
-msgid "URLTest interval"
-msgstr ""
-
 #: htdocs/luci-static/resources/mayhem/page/components.js
 msgid "Unknown"
 msgstr ""
@@ -2173,20 +2077,12 @@ msgstr ""
 msgid "Watchdog"
 msgstr ""
 
-#: htdocs/luci-static/resources/mayhem/page/settings.js
-msgid "Watchdog memory threshold"
-msgstr ""
-
 #: htdocs/luci-static/resources/mayhem/page/components.js
 msgid "When needed"
 msgstr ""
 
 #: htdocs/luci-static/resources/mayhem/diag.js
 msgid "With connections: subscriptions, server keys and HWID"
-msgstr ""
-
-#: htdocs/luci-static/resources/mayhem/page/settings.js
-msgid "With many servers the checks are spread out: at least two seconds per server, so 150 servers are checked every 5 minutes."
 msgstr ""
 
 #: htdocs/luci-static/resources/mayhem/page/sections.js
@@ -2231,10 +2127,6 @@ msgstr ""
 
 #: htdocs/luci-static/resources/view/mayhem/dashboard.js
 msgid "Xray is not installed: run \"mayhem xray-install\""
-msgstr ""
-
-#: htdocs/luci-static/resources/mayhem/page/settings.js
-msgid "Xray memory limit (GOMEMLIMIT), MiB"
 msgstr ""
 
 #: htdocs/luci-static/resources/mayhem/page/sections.js
