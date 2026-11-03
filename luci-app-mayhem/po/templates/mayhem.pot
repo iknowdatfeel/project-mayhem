@@ -505,10 +505,6 @@ msgstr ""
 msgid "Discard changes"
 msgstr ""
 
-#: htdocs/luci-static/resources/mayhem/sheet.js
-msgid "Dismiss"
-msgstr ""
-
 #: htdocs/luci-static/resources/mayhem/page/sections.js
 msgid "DoQ (QUIC, direct)"
 msgstr ""

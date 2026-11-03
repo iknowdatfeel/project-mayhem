@@ -24,6 +24,7 @@ const PAGES = {
 const CSS = `
 .mh-sheet-overlay { position:fixed; inset:0; z-index:850; background:rgba(0,0,0,.55); display:flex; align-items:flex-start; justify-content:center; overflow:hidden; }
 .mh-sheet { box-sizing:border-box; width:min(1100px, calc(100% - 32px)); max-height:calc(100% - 48px); margin-top:24px; display:flex; flex-direction:column; background:var(--background-color-high, #fff); border:1px solid var(--border-color-low, #ddd); border-radius:6px; box-shadow:0 8px 32px rgba(0,0,0,.35); }
+.mh-sheet--settings { width:min(1600px, calc(100vw - 24px)); }
 .mh-sheet-head { display:flex; align-items:center; gap:10px; padding:12px 16px; border-bottom:1px solid var(--border-color-low, #ddd); }
 .mh-modal-close { margin-bottom:10px; text-align:right; }
 .mh-sheet-head h3 { margin:0; padding:0; flex:1; font-size:120%; border:0; }
@@ -140,29 +141,6 @@ function close() {
 		o.onclose();
 }
 
-let modalCloseInstalled = false;
-
-function installModalClose() {
-	if (modalCloseInstalled) return;
-	modalCloseInstalled = true;
-	const showModal = ui.showModal;
-	ui.showModal = function() {
-		const modal = showModal.apply(this, arguments);
-		if (!open && !document.getElementById('mayhem-body')) return modal;
-		if (modal.querySelector('[data-mh-no-back]')) return modal;
-		const buttons = Array.from(modal.querySelectorAll('button'));
-		if (buttons.some((b) => [ _('Back'), _('Close') ].indexOf(b.textContent.trim()) >= 0 || b.title === _('Close')))
-			return modal;
-		// Existing cancellation/dismissal already closes the dialog.
-		const dismiss = buttons.find((b) => [ _('Cancel'), _('Dismiss') ].indexOf(b.textContent.trim()) >= 0);
-		if (dismiss) return modal;
-		modal.insertBefore(E('div', { 'class': 'mh-modal-close' }, E('button', {
-			'class': 'btn', 'type': 'button', 'click': ui.hideModal
-		}, _('Back'))), modal.firstChild);
-		return modal;
-	};
-}
-
 function show(name, onclose) {
 	if (!PAGES[name])
 		return Promise.resolve();
@@ -174,7 +152,7 @@ function show(name, onclose) {
 	const body = E('div', { 'class': 'mh-sheet-body' }, E('p', { 'class': 'spinning' }, _('Loading…')));
 	const notes = E('div', { 'class': 'mh-sheet-notes' });
 	const foot = E('div', { 'class': 'mh-sheet-foot' });
-	const overlay = E('div', { 'class': 'mh-sheet-overlay' }, E('div', { 'class': 'mh-sheet', 'role': 'dialog', 'aria-label': PAGES[name] }, [
+	const overlay = E('div', { 'class': 'mh-sheet-overlay' }, E('div', { 'class': 'mh-sheet' + (name === 'settings' ? ' mh-sheet--settings' : ''), 'role': 'dialog', 'aria-label': PAGES[name] }, [
 		E('div', { 'class': 'mh-sheet-head' }, [
 			E('h3', PAGES[name]),
 			E('button', { 'class': 'mh-sheet-close', 'title': _('Close'), 'click': close }, '✕')
@@ -254,7 +232,6 @@ return baseclass.extend({
 	},
 
 	style() {
-		installModalClose();
 		return E('style', CSS);
 	},
 

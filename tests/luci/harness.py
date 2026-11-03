@@ -698,8 +698,8 @@ def main():
                 raise RuntimeError('settings tabs have the wrong order: %s' % ids)
             rows = pg.eval_on_selector_all('.mh-settings-tabs [role="tab"]',
                 'es => es.map(e => Math.round(e.getBoundingClientRect().top))')
-            if len(set(rows)) != 2 or len(set(rows[:7])) != 1 or len(set(rows[7:])) != 1:
-                raise RuntimeError('settings tabs are not in two rows of five and four: %s' % rows)
+            if len(set(rows)) != 1:
+                raise RuntimeError('settings tabs are not in one row: %s' % rows)
             if pg.locator('#mh-settings-routing .cbi-tabmenu').count():
                 raise RuntimeError('routing still has nested tabs')
             if pg.locator('#mh-settings-routing [data-name="remote"], #mh-settings-routing [data-name="_sources"]').count():
