@@ -216,7 +216,7 @@ return baseclass.extend({
 			E('p', _('Copy the report and attach it to a question or a bug report. It holds no keys or passwords, but it does show your external addresses.')),
 			area,
 			E('div', { 'class': 'right' }, [
-				E('button', { 'class': 'btn', 'click': ui.hideModal }, _('Close'))
+				E('button', { 'class': 'btn', 'click': ui.hideModal }, _('Back'))
 			])
 		]);
 
@@ -246,7 +246,7 @@ return baseclass.extend({
 
 	diagnostics(fresh) {
 		ui.showModal(_('Diagnostics'), [ this.diagnosticContent(),
-			E('div', { 'class': 'right' }, E('button', { 'class': 'btn', 'click': ui.hideModal }, _('Close')))
+			E('div', { 'class': 'right' }, E('button', { 'class': 'btn', 'click': ui.hideModal }, _('Back')))
 		], 'mh-diag-modal');
 		if (fresh !== false || !this.checks.length)
 			return this.run();
@@ -513,7 +513,7 @@ return baseclass.extend({
 				mh.button({ icon: 'upload', text: _('Choose a file…'), click: () => file.click() }),
 				found
 			]),
-			E('div', { 'class': 'right' }, E('button', { 'class': 'btn', 'click': ui.hideModal }, _('Close')))
+			E('div', { 'class': 'right' }, E('button', { 'class': 'btn', 'click': ui.hideModal }, _('Back')))
 		]);
 	},
 
