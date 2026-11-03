@@ -362,6 +362,17 @@ def main():
                 pg.screenshot(path=os.path.join(os.environ['SHOTS'], name + '.png'), full_page=True)
 
         def close_modal(pg):
+            # Shared by the menu/submenu scenarios: never inject a second
+            # way to dismiss a dialog that already has a native button.
+            labels = [TRANSLATIONS.get(k, k) for k in ('Back', 'Close', 'Cancel', 'Dismiss')]
+            duplicate = pg.evaluate("""labels => {
+                const modal = document.querySelector('#modal_overlay .modal');
+                return !!(modal && modal.querySelector('.mh-modal-close') &&
+                    Array.from(modal.querySelectorAll('button')).filter(b =>
+                        labels.includes(b.textContent.trim()) || labels.includes(b.title)).length > 1);
+            }""", labels)
+            if duplicate:
+                raise RuntimeError('injected Back duplicates a native dialog dismissal button')
             pg.evaluate('L.ui.hideModal()')
             pg.wait_for_timeout(300)
 
@@ -681,8 +692,10 @@ def main():
             pg.click('#mh-settings-tab-routing')
             pg.wait_for_selector('#mh-settings-routing .cbi-map', timeout=15000)
             pg.click('#mh-settings-routing [data-tab="settings"] .cbi-button-edit >> nth=0')
-            pg.locator('.modal').get_by_role('button', name=TRANSLATIONS.get('Back', 'Back'), exact=True).wait_for(state='visible', timeout=5000)
-            pg.locator('.modal').get_by_role('button', name=TRANSLATIONS.get('Back', 'Back'), exact=True).click()
+            pg.locator('.modal').get_by_role('button', name=TRANSLATIONS.get('Dismiss', 'Dismiss'), exact=True).wait_for(state='visible', timeout=5000)
+            if pg.locator('.modal .mh-modal-close').count():
+                raise RuntimeError('an extra Back button duplicates form dismissal')
+            pg.locator('.modal').get_by_role('button', name=TRANSLATIONS.get('Dismiss', 'Dismiss'), exact=True).click()
             pg.wait_for_function("!document.body.classList.contains('modal-overlay-active')")
             pg.wait_for_selector('#mh-settings-routing', state='visible')
             pg.click('#mh-settings-tab-main')
@@ -692,7 +705,9 @@ def main():
             pg.click('[data-name="_reset"] button')
             pg.wait_for_selector('.modal input[type="checkbox"]', timeout=5000)
             shot(pg, 'settings_reset')
-            pg.locator('.modal').get_by_role('button', name=TRANSLATIONS.get('Back', 'Back'), exact=True).click()
+            if pg.locator('.modal .mh-modal-close').count():
+                raise RuntimeError('an extra Back button duplicates Cancel')
+            pg.locator('.modal').get_by_role('button', name=TRANSLATIONS.get('Cancel', 'Cancel'), exact=True).click()
             pg.wait_for_function("!document.body.classList.contains('modal-overlay-active')")
 
         def dashboard_buttons(pg):
