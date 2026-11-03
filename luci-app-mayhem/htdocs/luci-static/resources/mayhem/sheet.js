@@ -149,6 +149,7 @@ function installModalClose() {
 	ui.showModal = function() {
 		const modal = showModal.apply(this, arguments);
 		if (!open && !document.getElementById('mayhem-body')) return modal;
+		if (modal.querySelector('[data-mh-no-back]')) return modal;
 		const buttons = Array.from(modal.querySelectorAll('button'));
 		if (buttons.some((b) => [ _('Back'), _('Close') ].indexOf(b.textContent.trim()) >= 0 || b.title === _('Close')))
 			return modal;

@@ -394,7 +394,7 @@ def main():
             pg.reload()
             pg.wait_for_selector('.mh-sheet-body .cbi-map', timeout=15000)
             pg.wait_for_timeout(500)
-            pg.query_selector_all('[data-tab="settings"] .cbi-section-table-row .cbi-button-edit')[0].click()
+            pg.query_selector_all('#mh-settings-routing .cbi-section-table-row .cbi-button-edit')[0].click()
             pg.wait_for_selector('.modal [data-name="_text"] textarea', timeout=5000)
             area = pg.query_selector('.modal [data-name="_text"] textarea')
             if not area or 'youtube.test' not in area.input_value():
@@ -428,7 +428,7 @@ def main():
             pg.reload()
             pg.wait_for_selector('.mh-sheet-body .cbi-map', timeout=15000)
             pg.wait_for_timeout(500)
-            pg.query_selector_all('[data-tab="settings"] .cbi-section-table-row .cbi-button-edit')[0].click()
+            pg.query_selector_all('#mh-settings-routing .cbi-section-table-row .cbi-button-edit')[0].click()
             pg.wait_for_selector('.modal [data-name="devices"]', state='visible', timeout=5000)
             shot(pg, 'section_who_dns_empty')
             pg.evaluate("""() => {
@@ -450,8 +450,8 @@ def main():
             if got.get('devices') != ['aa:bb:cc:dd:ee:01', '192.168.1.50'] or got.get('dns') != ['tcp://9.9.9.9', 'tcp://9.9.9.10']:
                 raise RuntimeError('devices and section DNS were saved as %s' % got)
             # a direct section has bypass ports
-            for i in range(len(pg.query_selector_all('[data-tab="settings"] .cbi-section-table-row .cbi-button-edit'))):
-                pg.query_selector_all('[data-tab="settings"] .cbi-section-table-row .cbi-button-edit')[i].click()
+            for i in range(len(pg.query_selector_all('#mh-settings-routing .cbi-section-table-row .cbi-button-edit'))):
+                pg.query_selector_all('#mh-settings-routing .cbi-section-table-row .cbi-button-edit')[i].click()
                 pg.wait_for_selector('.modal select[id$=".type"]', timeout=5000)
                 if pg.eval_on_selector('.modal select[id$=".type"]', 'e => e.value') == 'exclusion':
                     if not pg.is_visible('.modal [data-name="ports"]'):
@@ -471,7 +471,7 @@ def main():
 
         def type_tunnel(pg):
             # switch the first section to a tunnel to render its options
-            pg.query_selector_all('[data-tab="settings"] .cbi-section-table-row .cbi-button-edit')[0].click()
+            pg.query_selector_all('#mh-settings-routing .cbi-section-table-row .cbi-button-edit')[0].click()
             pg.wait_for_selector('.modal', timeout=5000)
             pg.select_option('.modal select[id$=".type"]', 'interface')
             pg.wait_for_timeout(300)
@@ -625,21 +625,22 @@ def main():
                 raise RuntimeError('multiplexing is still in the server list')
 
         def geo_tab(pg):
-            pg.click('.cbi-tabmenu [data-tab="geo"] a')
+            pg.click('#mh-settings-tab-geo')
+            pg.wait_for_selector('#mh-settings-geo .cbi-map', timeout=15000)
             pg.wait_for_timeout(300)
             shot(pg, 'routing_geo')
-            open_modals(pg, '[data-tab="geo"]')
-            pg.click('.cbi-tabmenu [data-tab="settings"] a')
+            open_modals(pg, '#mh-settings-geo')
+            pg.click('#mh-settings-tab-routing')
 
         def dns_tab(pg):
-            pg.click('.cbi-tabmenu [data-tab="dns"] a')
-            pg.wait_for_selector('[data-tab="dns"] [data-name="remote"]', state='visible', timeout=5000)
+            pg.click('#mh-settings-tab-dns')
+            pg.wait_for_selector('#mh-settings-dns [data-name="remote"]', state='visible', timeout=5000)
             shot(pg, 'routing_dns')
             # the domestic DNS has no protocol to choose: plain UDP, the
             # resolvers in the order of the list, the one dragged up first
-            if pg.query_selector('[data-tab="dns"] select[id$="._domestic_type"]'):
+            if pg.query_selector('#mh-settings-dns select[id$="._domestic_type"]'):
                 raise RuntimeError('the domestic DNS still offers a protocol')
-            dyn = '[data-tab="dns"] [data-name="domestic"] .cbi-dynlist'
+            dyn = '#mh-settings-dns [data-name="domestic"] .cbi-dynlist'
             pg.evaluate("""(sel) => L.dom.findClassInstance(document.querySelector(sel)).setValue(['google', 'quad9'])""", dyn)
             items = dyn + ' > .item'
             if len(pg.query_selector_all(items)) != 2:
@@ -671,12 +672,15 @@ def main():
             got = [a.get('values', {}).get('domestic') for m, a in uci_writes[n:] if m == 'set' and a.get('section') == 'dns']
             if ['9.9.9.9', '8.8.8.8'] not in got:
                 raise RuntimeError('domestic DNS saved as %s' % uci_writes[n:])
+            pg.click('#mh-settings-tab-routing')
 
         def upload_modal(pg):
-            pg.click('.cbi-tabmenu [data-tab="geo"] a')
-            pg.click('[data-tab="geo"] [data-name="_upload_geo"] button')
+            pg.click('#mh-settings-tab-geo')
+            pg.wait_for_selector('#mh-settings-geo .cbi-map', timeout=15000)
+            pg.click('#mh-settings-geo [data-name="_upload_geo"] button')
             pg.wait_for_selector('.modal input', timeout=5000)
             close_modal(pg)
+            pg.click('#mh-settings-tab-routing')
 
         def components_page(pg):
             pg.wait_for_timeout(1500)
@@ -689,9 +693,17 @@ def main():
 
         def settings_tabs(pg):
             ids = pg.eval_on_selector_all('.mh-settings-tabs [role="tab"]', 'es => es.map(e => e.id)')
-            expected = ['routing', 'mux', 'components', 'connections', 'diagnostics', 'logs', 'main']
+            expected = ['routing', 'dns', 'geo', 'mux', 'connections', 'components', 'diagnostics', 'logs', 'main']
             if ids != ['mh-settings-tab-' + name for name in expected]:
                 raise RuntimeError('settings tabs have the wrong order: %s' % ids)
+            rows = pg.eval_on_selector_all('.mh-settings-tabs [role="tab"]',
+                'es => es.map(e => Math.round(e.getBoundingClientRect().top))')
+            if len(set(rows)) != 2 or len(set(rows[:5])) != 1 or len(set(rows[5:])) != 1:
+                raise RuntimeError('settings tabs are not in two rows of five and four: %s' % rows)
+            if pg.locator('#mh-settings-routing .cbi-tabmenu').count():
+                raise RuntimeError('routing still has nested tabs')
+            if pg.locator('#mh-settings-routing [data-name="remote"], #mh-settings-routing [data-name="_sources"]').count():
+                raise RuntimeError('DNS or geo data are still inside routing')
             if pg.get_by_role('button', name=TRANSLATIONS.get('Back', 'Back'), exact=True).count():
                 raise RuntimeError('settings still have a Back button')
             if pg.locator('.mh-settings-tabs .mh-icon').count() != len(expected):
@@ -707,7 +719,7 @@ def main():
             pg.wait_for_selector('#mh-settings-mux [data-name="mux"]', timeout=10000)
             pg.click('#mh-settings-tab-routing')
             pg.wait_for_selector('#mh-settings-routing .cbi-map', timeout=15000)
-            pg.click('#mh-settings-routing [data-tab="settings"] .cbi-button-edit >> nth=0')
+            pg.click('#mh-settings-routing .cbi-button-edit >> nth=0')
             pg.locator('.modal').get_by_role('button', name=TRANSLATIONS.get('Dismiss', 'Dismiss'), exact=True).wait_for(state='visible', timeout=5000)
             if pg.locator('.modal .mh-modal-close').count():
                 raise RuntimeError('an extra Back button duplicates form dismissal')
@@ -785,11 +797,11 @@ def main():
                 pg.reload()
                 pg.wait_for_selector('.mh-sheet-body .cbi-map', timeout=15000)
                 pg.wait_for_timeout(500)
-                pg.click('.cbi-tabmenu li[data-tab="settings"] a')  # earlier actions leave another tab open
-                inp = pg.locator('[data-tab="settings"] .cbi-section-create input[type=text]').first
+                pg.click('#mh-settings-tab-routing')  # earlier actions leave another tab open
+                inp = pg.locator('#mh-settings-routing .cbi-section-create input[type=text]').first
                 inp.click()
                 inp.press_sequentially('newsec')
-                pg.locator('[data-tab="settings"] .cbi-section-create .cbi-button-add').first.click()
+                pg.locator('#mh-settings-routing .cbi-section-create .cbi-button-add').first.click()
                 pg.wait_for_selector('.modal', timeout=5000)
                 pg.wait_for_timeout(500)
                 n = len(uci_writes)
@@ -962,8 +974,8 @@ def main():
             ('mayhem/dashboard', [('buttons', dashboard_buttons), ('active connections', conns_modal), ('logs tab', logs_tab), ('run diagnostics', run_diag),
                                   ('edit a server', edit_server), ('delete a server', delete_server), ('choose how', choose_mode), ('chain of the list', list_chain),
                                   ('delete a tunnel', delete_tunnel), ('services', services_badge), ('pages in a window', nav_pages)]),
-            ('mayhem/dashboard#sections', [('sections tab', lambda pg: shot(pg, 'routing_sections')), ('main section', main_section),
-                                 ('edit sections', lambda pg: open_modals(pg, '[data-tab="settings"]')), ('domains as text', section_text), ('who and DNS of a section', section_who_dns),
+            ('mayhem/dashboard#settings', [('sections tab', lambda pg: shot(pg, 'routing_sections')), ('main section', main_section),
+                                 ('edit sections', lambda pg: open_modals(pg, '#mh-settings-routing')), ('domains as text', section_text), ('who and DNS of a section', section_who_dns),
                                  ('tunnel options', type_tunnel), ('DNS tab', dns_tab), ('edit geo sources', geo_tab), ('upload dialog', upload_modal),
                                  ('add a section', add_section), ('add a section without subscriptions', lambda pg: add_section(pg, True))]),
             ('mayhem/dashboard#servers', [('server list tabs', servers_tabs), ('import dialog', import_modal), ('vpn key as a server', add_vpn_key)]),

@@ -63,7 +63,8 @@ return baseclass.extend({
 				return;
 			}
 
-			const log = E('pre', { 'style': 'max-height:20em;overflow:auto;white-space:pre-wrap' }, _('Starting…'));
+			const log = E('pre', { 'style': 'max-height:20em;overflow:auto;white-space:pre-wrap',
+				'data-mh-no-back': what === 'mayhem' ? '' : null }, _('Starting…'));
 
 			ui.showModal(TITLES[what] || _('Installation'), [
 				E('p', _('This takes a minute. Do not close the page.')), log
