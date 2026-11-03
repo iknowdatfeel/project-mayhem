@@ -53,19 +53,11 @@ const CSS = `
 .mh-del:hover { color:var(--error-color-medium, red); }
 .mh-head { display:flex; align-items:center; justify-content:space-between; gap:10px; flex-wrap:wrap; }
 .mh-head .mh-grow { flex:1 1 auto; }
-.mh-layout { display:grid; grid-template-columns:minmax(0, 1fr) 240px; grid-template-areas:"servers side"; gap:10px; align-items:start; }
-.mh-a-side { grid-area:side; min-width:0; align-content:start; }
-.mh-a-servers { grid-area:servers; min-width:0; }
-.mh-a-conn, .mh-a-sys { min-width:0; }
-.mh-widget-row { display:flex; flex-direction:column; gap:1px; margin-top:6px; min-width:0; }
-.mh-widget-row > span:last-child { display:-webkit-box; -webkit-box-orient:vertical; -webkit-line-clamp:2; overflow:hidden; overflow-wrap:anywhere; line-height:1.4; }
-@media (max-width: 900px) {
- .mh-layout { grid-template-columns:minmax(0, 1fr); grid-template-areas:"controls" "servers" "conn" "sys"; }
- .mh-a-side { display:contents; }
- .mh-a-side > .mh-side { grid-area:controls; }
- .mh-a-conn { grid-area:conn; }
- .mh-a-sys { grid-area:sys; }
-}
+.mh-layout { display:grid; grid-template-columns:1fr 1fr 240px; grid-template-rows:auto 1fr; grid-template-areas:"conn sys side" "servers servers side"; grid-gap:10px; align-items:start; }
+.mh-a-conn { grid-area:conn; align-self:stretch; min-width:0; } .mh-a-sys { grid-area:sys; align-self:stretch; min-width:0; } .mh-a-side { grid-area:side; } .mh-a-servers { grid-area:servers; }
+@media (max-width: 900px) { .mh-layout { grid-template-columns:1fr; grid-template-rows:none; grid-template-areas:"conn" "sys" "side" "servers"; } }
+.mh-widget-row { white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+.mh-widget-row.mh-wrap { white-space:normal; }
 .mh-whead { display:flex; justify-content:space-between; align-items:baseline; gap:8px; }
 .mh-split { display:grid; grid-template-columns:1fr 240px; grid-column-gap:12px; align-items:start; }
 @media (max-width: 700px) { .mh-split { grid-template-columns:1fr; grid-row-gap:10px; } }
@@ -1158,17 +1150,18 @@ return view.extend({
 				])
 			].concat(tunnels.map((t) => this.renderTunnel(t, d.time)))));
 
-		// The sidebar holds the controls, connection and system cards.
-		// Narrow screens put the server list between controls and details.
+		// The connection and the system on top, the servers under them, the
+		// column of buttons at the side all the way down.
 		const [ conn, sys ] = this.renderWidgets(d);
 		const side = this.renderSide(d);
 
 		conn.classList.add('mh-a-conn');
 		sys.classList.add('mh-a-sys');
+		side.classList.add('mh-a-side');
 
 		return [ this.renderTop(d), this.renderAlert(d), E('div', { 'class': 'mh-layout' }, [
-			E('div', { 'class': 'mh-stack mh-a-servers' }, boxes),
-			E('aside', { 'class': 'mh-stack mh-a-side' }, [ side, conn, sys ])
+			conn, sys, side,
+			E('div', { 'class': 'mh-stack mh-a-servers' }, boxes)
 		]) ];
 	},
 

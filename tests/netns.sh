@@ -313,9 +313,13 @@ while True:
     data, addr = s.recvfrom(512)
     qid = struct.unpack('>H', data[:2])[0]
     i = 12
-    while data[i]: i += data[i] + 1
+    labels = []
+    while data[i]:
+        labels.append(data[i+1:i+1+data[i]])
+        i += data[i] + 1
     qtype = struct.unpack('>H', data[i+1:i+3])[0]
-    ans = b'\xc0\x0c' + struct.pack('>HHIH', 1, 1, 60, 4) + socket.inet_aton(answer) if qtype == 1 else b''
+    reply_ip = '45.0.0.7' if b'.'.join(labels).endswith(b'shared-direct.test') else answer
+    ans = b'\xc0\x0c' + struct.pack('>HHIH', 1, 1, 60, 4) + socket.inet_aton(reply_ip) if qtype == 1 else b''
     s.sendto(struct.pack('>HHHHHH', qid, 0x8180, 1, 1 if ans else 0, 0, 0) + data[12:i+5] + ans, addr)
 PY
 
@@ -1117,6 +1121,52 @@ for ks in 0 1; do
 			# shellcheck disable=SC2016 # expanded by the inner shell
 			ip netns exec router sh -c '. "$MAYHEM_LIB_DIR/lib.sh"; mayhem_net_down; mayhem_dns_servers isp'
 		fi
+	fi
+	server_up
+	stop_mayhem
+done
+
+# Direct remains available while KillSwitch protects the other traffic,
+# including fresh DNS lookups after the Xray process has exited.
+for mode in global lists; do
+	cat > "$WORK/directks.json" <<EOF
+{
+  "settings": { "mode": "$mode", "killswitch": "1", "default_section": "main", "interface": [ "br-lan" ], "ip_family": "ipv4_only" },
+  "dns": { "domestic": [ "45.0.0.2" ], "remote": [ "45.0.0.4" ], "hijack": "1" },
+  "sections": [
+    { ".name": "main", "type": "proxy", "link": "$SS_LINK", "domain": [ "shared-vpn.test", "keyword:proxy" ] },
+    { ".name": "direct", "type": "exclusion", "domain": [ "direct.test", "shared-direct.test", "full:exact-direct.test" ], "ip": [ "45.0.0.6" ] }
+  ],
+  "runtime": { "wan_dns": [ "45.0.0.2" ], "ipv6": false, "dnsmasq_nftset": true }
+}
+EOF
+	echo "== Direct with KillSwitch ($mode)"
+	if start_mayhem "$WORK/directks.json"; then
+		# Global DNS gives other sites real addresses; remember a known CDN
+		# address shared with Direct before Xray goes down.
+		if [ "$mode" = global ]; then
+			expect_dns "shared VPN address is known" client 192.168.1.1 53 shared-vpn.test 45.0.0.7
+			expect_dns "Direct shares the VPN address" client 192.168.1.1 53 shared-direct.test 45.0.0.7
+		fi
+		server_down
+		expect_dns "Direct DNS survives a failed VPN server" client 192.168.1.1 53 before.direct.test 45.0.0.2
+		expect "Direct TCP survives a failed VPN server" 192.168.1.2 $(site before.direct.test)
+		kill -9 "$(proc_in router xray)" 2>/dev/null
+		sleep 2
+		expect_dns "fresh Direct DNS survives stopped Xray" client 192.168.1.1 53 after.direct.test 45.0.0.2
+		expect_dns "exact Direct DNS survives stopped Xray" client 192.168.1.1 53 exact-direct.test 45.0.0.2
+		expect "Direct TCP survives stopped Xray" 192.168.1.2 $(site after.direct.test)
+		expect "Direct IP survives stopped Xray" 192.168.1.2 http://45.0.0.6:8080/
+		got="$(udp 1)"
+		if [ "$got" = 192.168.1.2 ]; then ok "Direct UDP survives stopped Xray"; else bad "Direct UDP with stopped Xray: $got"; fi
+		if [ "$mode" = global ]; then
+			expect "known shared IP stays blocked with stopped Xray" failed http://45.0.0.7:8080/
+		fi
+		got="$(dns client 192.168.1.1 53 sub.exact-direct.test)"
+		case "$got" in
+			none|timeout) ok "full Direct does not include subdomains" ;;
+			*) bad "full Direct included a subdomain: $got" ;;
+		esac
 	fi
 	server_up
 	stop_mayhem

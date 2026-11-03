@@ -154,8 +154,8 @@ mayhem_net_down() {
 	return 0
 }
 
-# Kill switch (settings.killswitch): nothing goes direct when the servers,
-# the remote DNS, a tunnel or xray itself fail; the traffic waits instead.
+# Kill switch (settings.killswitch): VPN traffic waits when its servers,
+# DNS, tunnel or Xray fail. Explicit Direct rules remain bypasses.
 mayhem_killswitch() {
 	grep -q '^MAYHEM_KILLSWITCH=1$' "$MAYHEM_RUN_DIR/env" 2>/dev/null
 }
