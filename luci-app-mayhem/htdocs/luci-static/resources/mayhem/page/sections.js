@@ -565,7 +565,7 @@ return baseclass.extend({
 		o.rmempty = false;
 
 		o = s.option(form.Flag, 'killswitch', _('KillSwitch'),
-			_('On: when the servers or the remote DNS do not answer, traffic waits for them and never goes direct; so does it while Xray restarts. Off: a section none of whose servers answers sends its traffic direct (with a fallback chain - only when every server of the chain is down), and names of the remote DNS go to the provider\'s DNS while it does not answer; everything comes back by itself when they answer again.'));
+			_('On: VPN traffic waits when its servers, DNS or Xray are unavailable. Direct sections bypass KillSwitch; their domain DNS uses domestic servers without Xray. Shared IPs and keyword/regexp rules may still need Xray. Off: a section none of whose servers answers sends its traffic direct (with a fallback chain - only when every server of the chain is down), and names of the remote DNS go to the provider\'s DNS while it does not answer; everything comes back by itself when they answer again.'));
 		o.rmempty = false;
 
 		o = s.option(form.DynamicList, 'bypass', _('Excluded source IP/MAC'),

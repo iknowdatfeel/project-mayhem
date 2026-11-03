@@ -1250,6 +1250,10 @@ msgid "Obfuscator server port"
 msgstr ""
 
 #: htdocs/luci-static/resources/mayhem/page/sections.js
+msgid "On: VPN traffic waits when its servers, DNS or Xray are unavailable. Direct sections bypass KillSwitch; their domain DNS uses domestic servers without Xray. Shared IPs and keyword/regexp rules may still need Xray. Off: a section none of whose servers answers sends its traffic direct (with a fallback chain - only when every server of the chain is down), and names of the remote DNS go to the provider's DNS while it does not answer; everything comes back by itself when they answer again."
+msgstr ""
+
+#: htdocs/luci-static/resources/mayhem/page/sections.js
 msgid "On: queries go through the active server, now %s. Off: they go direct, encrypted when the server is DoH."
 msgstr ""
 
@@ -1259,10 +1263,6 @@ msgstr ""
 
 #: htdocs/luci-static/resources/mayhem/page/sections.js
 msgid "On: the remote servers get the query together and the first good answer counts, so a server that does not answer slows nothing down. By lists or with FakeDNS the provider's DNS gets the names of proxied sites too. Off (fallback): the servers are asked one after another, the next one after 1 s without an answer."
-msgstr ""
-
-#: htdocs/luci-static/resources/mayhem/page/sections.js
-msgid "On: when the servers or the remote DNS do not answer, traffic waits for them and never goes direct; so does it while Xray restarts. Off: a section none of whose servers answers sends its traffic direct (with a fallback chain - only when every server of the chain is down), and names of the remote DNS go to the provider's DNS while it does not answer; everything comes back by itself when they answer again."
 msgstr ""
 
 #: htdocs/luci-static/resources/mayhem/page/sections.js

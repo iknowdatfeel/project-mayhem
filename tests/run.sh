@@ -105,6 +105,20 @@ else
 	bad "DNS servers in a row: $out"
 fi
 
+# Direct DNS and kernel routing stay available with KillSwitch and stopped Xray.
+mkdir -p "$OUT/directks"
+if ! out="$(uc "$ROOT/tests/directks.uc" "$OUT/directks" 2>&1)"; then
+	bad "Direct with KillSwitch: $out"
+else
+	for f in "$OUT/directks/"*.nft; do
+		if command -v nft >/dev/null 2>&1 && ! out="$(nft -c -f "$f" 2>&1)"; then bad "Direct with KillSwitch: nftables: $out"; fi
+	done
+	for f in "$OUT/directks/"*.json; do
+		if ! out="$("$XRAY" run -test -c "$f" 2>&1)"; then bad "Direct with KillSwitch: Xray: $out"; fi
+	done
+	ok "Direct with KillSwitch"
+fi
+
 # The router's own TCP through xray: marks, chain output, nftables syntax.
 if ! out="$(uc "$ROOT/tests/router.uc" "$OUT/router.nft" 2>&1)"; then
 	bad "router traffic through xray: $out"

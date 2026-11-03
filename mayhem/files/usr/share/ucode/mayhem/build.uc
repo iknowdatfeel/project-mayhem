@@ -430,9 +430,11 @@ function build_nft_text(S, v6, sets, tunnels, dns_redirect, fake_pool, kdef, cap
 
 	// Global mode: addresses of excluded domains and of all the others
 	// (dnsmasq fills them; the others expire, there are many).
-	if (sets.dir_domains && !kdef) {
-		push(s, '\tset dir_d4 {\n\t\ttype ipv4_addr\n\t}\n');
-		push(s, '\tset dir_d6 {\n\t\ttype ipv6_addr\n\t}\n');
+	if (sets.dir_domains) {
+		if (!kdef) {
+			push(s, '\tset dir_d4 {\n\t\ttype ipv4_addr\n\t}\n');
+			push(s, '\tset dir_d6 {\n\t\ttype ipv6_addr\n\t}\n');
+		}
 		push(s, `\tset oth_d4 {\n\t\ttype ipv4_addr\n\t\tflags timeout\n\t\ttimeout ${C.OTHER_ADDR_TTL}\n\t}\n`);
 		push(s, `\tset oth_d6 {\n\t\ttype ipv6_addr\n\t\tflags timeout\n\t\ttimeout ${C.OTHER_ADDR_TTL}\n\t}\n`);
 	}
@@ -536,8 +538,8 @@ function build_nft_text(S, v6, sets, tunnels, dns_redirect, fake_pool, kdef, cap
 
 		push(s, '\t\tip daddr @direct4 counter return\n');
 		push(s, '\t\tip6 daddr @direct6 counter return\n');
-		push(s, '\t\tip daddr @dir_d4 counter return\n');
-		push(s, '\t\tip6 daddr @dir_d6 counter return\n');
+		push(s, `\t\tip daddr @dir_d4 ${sets.dir_domains ? 'ip daddr != @oth_d4 ' : ''}counter return\n`);
+		push(s, `\t\tip6 daddr @dir_d6 ${sets.dir_domains ? 'ip6 daddr != @oth_d6 ' : ''}counter return\n`);
 
 		if (fake_pool)
 			push(s, `\t\tip daddr ${fake_pool} ${tp4}\n`);
@@ -668,6 +670,10 @@ function build_nft_text(S, v6, sets, tunnels, dns_redirect, fake_pool, kdef, cap
 			push(s, '\t\tth dport 53 return\n');
 			push(s, '\t\tip daddr @direct4 return\n');
 			push(s, '\t\tip6 daddr @direct6 return\n');
+			if (sets.dir_domains) {
+				push(s, '\t\tip daddr @dir_d4 ip daddr != @oth_d4 return\n');
+				push(s, '\t\tip6 daddr @dir_d6 ip6 daddr != @oth_d6 return\n');
+			}
 
 			if (length(sets.direct_ports ?? []))
 				push(s, `\t\tth dport { ${join(', ', sets.direct_ports)} } return\n`);
@@ -1218,6 +1224,44 @@ function kernel_domains(name, RL, model, warn, fallback) {
 	}
 
 	return out.items;
+}
+
+function domain_covered(seen, name) {
+	for (let p = name; p != null; p = match(p, /^[^.]+\.(.+)$/)?.[1])
+		if (seen[p]) return true;
+	return false;
+}
+
+// Direct DNS must keep working while Xray is down. Keep full: names separate:
+// dnsmasq's /name/ also matches subdomains, which need an explicit exception.
+function direct_dns_rules(routed, model, warn) {
+	const domains = uset(), exact = uset();
+	for (let r in routed) {
+		if (r.type != 'exclusion') continue;
+		let skipped = 0;
+		const take = (d) => {
+			const n = plain_name(d);
+			if (n == null) skipped++;
+			else (substr(d, 0, 5) == 'full:' ? exact : domains).add(lc(n));
+		};
+		for (let d in r.RL.domains)
+			if (substr(d, 0, 4) != 'ext:') take(d);
+		for (let g in r.RL.sites) {
+			const list = model.geo?.domains?.[g.key];
+			if (g.attr != '' || list == null || (g.count ?? 0) > KERNEL_DOMAINS_MAX) {
+				warn(`section "${r.name}": ${g.text} needs running Xray; its Direct DNS cannot bypass it`);
+				continue;
+			}
+			for (let d in list) take(d);
+		}
+		if (skipped)
+			warn(`section "${r.name}": ${skipped} keyword/regexp Direct rules need running Xray`);
+	}
+	if (length(domains.items) + length(exact.items) > KERNEL_DOMAINS_MAX) {
+		warn('too many Direct domains for dnsmasq; their DNS needs running Xray');
+		return { domains: [], exact: [] };
+	}
+	return { domains: domains.items, exact: filter(exact.items, (n) => !domain_covered(domains.seen, n)) };
 }
 
 
@@ -2153,9 +2197,19 @@ export function build(model) {
 	// another, and an address only in the first goes direct in the kernel,
 	// past xray (UDP included). An address an excluded site shares with
 	// another one (a CDN) still goes to xray, which tells them apart by name.
+	const direct_dns = is_true(S.killswitch ?? '0') ? direct_dns_rules(routed, model, warn) : { domains: [], exact: [] };
+	const direct_names = [ ...direct_dns.domains, ...direct_dns.exact ];
+	const direct_suffix = {}, direct_exact = {};
+	for (let n in direct_dns.domains) direct_suffix[n] = true;
+	for (let n in direct_dns.exact) direct_exact[n] = true;
+	const direct_match = (n) => direct_exact[n] || domain_covered(direct_suffix, n);
 	let gdir = null;
 
-	if (mode == 'global' && !kdef && R.dnsmasq_nftset !== false && !net_hit) {
+	if (length(direct_names) && R.dnsmasq_nftset === false)
+		warn('Direct domains need dnsmasq-full to bypass stopped Xray; their DNS still goes direct');
+	if (length(direct_names) && R.dnsmasq_nftset !== false)
+		gdir = direct_names;
+	else if (mode == 'global' && !kdef && R.dnsmasq_nftset !== false && !net_hit) {
 		const d = uset();
 
 		for (let r in routed)
@@ -2680,11 +2734,14 @@ export function build(model) {
 		capture_all ? null : { px4: px4.items, px6: v6 ? px6.items : [] }, path_generation);
 	const dnsmasq = net_hit ? net_hit.dnsmasq : `no-resolv\nservers-file=${C.DNS_SERVERS}\n` +
 		server_lines(endpoint_domains, `${plain.address}${plain.port ? `#${plain.port}` : ''}`) +
+		join('', map(domestic, (d) => server_lines(direct_names, `${d.address}${d.port ? `#${d.port}` : ''}`))) +
+		server_lines(map(direct_dns.exact, (n) => `*.${n}`), `127.0.0.1#${C.DNS_PORT}`) +
 		(R.dnsmasq_nftset !== false ? nftset_lines(endpoint_domains, 'endpoint_d4', 'endpoint_d6') : '') +
 		(nftset ? join('', map(tunnels, (t) => nftset_lines(t.domains, `tun_${t.name}_d4`, `tun_${t.name}_d6`))) : '') +
 		(kdef ? nftset_lines(kdef.blkd, 'blk_d4', 'blk_d6') + nftset_lines(kdef.dird, 'dir_d4', 'dir_d6') +
 			nftset_lines(kdef.pxd, 'px_d4', 'px_d6') : '') +
-		(gdir ? nftset_lines(gdir, 'dir_d4', 'dir_d6') +
+		(gdir ? (kdef ? '' : nftset_lines(gdir, 'dir_d4', 'dir_d6')) +
+			nftset_lines(map(direct_dns.exact, (n) => `*.${n}`), 'oth_d4', 'oth_d6') +
 			`nftset=/#/4#inet#${C.NFT_TABLE}#oth_d4,6#inet#${C.NFT_TABLE}#oth_d6\n` : '') +
 		join('', map(dns_block, local_lines));
 
@@ -2701,7 +2758,7 @@ export function build(model) {
 		// What dnsmasq asks while xray works: "@ISP@" stands for the
 		// provider's servers, which the service puts in when it switches.
 		dns_xray: split != null
-			? (upstream ?? '@ISP@\n') + server_lines(filter(split, (h) => index(endpoint_domains, h) < 0), `127.0.0.1#${C.DNS_PORT}`)
+			? (upstream ?? '@ISP@\n') + server_lines(filter(split, (h) => index(endpoint_domains, h) < 0 && !direct_match(h)), `127.0.0.1#${C.DNS_PORT}`)
 			: `server=127.0.0.1#${C.DNS_PORT}\n`,
 		dns_fallback: dns_fallback,
 		dnsmasq: dnsmasq,
