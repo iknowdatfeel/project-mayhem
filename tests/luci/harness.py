@@ -554,6 +554,17 @@ def main():
             pg.wait_for_function("!document.querySelector('#mh-settings-logs .mh-log').textContent.includes(%s)" % json.dumps(TRANSLATIONS.get('Loading…', 'Loading…')), timeout=10000)
             if pg.evaluate("document.body.classList.contains('modal-overlay-active')"):
                 raise RuntimeError('logs opened in a modal instead of a tab')
+            def severity_request(req):
+                if req.method != 'POST' or '/ubus/' not in req.url:
+                    return False
+                body = req.post_data_json
+                batch = body if isinstance(body, list) else [body]
+                return any(r.get('params', [None, None, None])[2] == 'logs' and r['params'][3].get('level') == 'warning' for r in batch)
+            n = len(calls)
+            with pg.expect_request(severity_request, timeout=10000):
+                pg.select_option('#mh-settings-logs .mh-log-tools label select', 'warning')
+            if 'luci.mayhem.set_log_level' in calls[n:]:
+                raise RuntimeError('display filter changed the Xray logging configuration')
             shot(pg, 'dashboard_logs')
             pg.click('.mh-sheet-close')
             pg.wait_for_selector('.mh-sheet-overlay', state='detached', timeout=5000)

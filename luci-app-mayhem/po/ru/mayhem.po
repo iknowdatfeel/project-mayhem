@@ -2424,3 +2424,12 @@ msgstr "Не удалось получить журнал"
 #: htdocs/luci-static/resources/mayhem/sheet.js
 msgid "Dismiss"
 msgstr "Закрыть"
+
+msgid "Minimum displayed level"
+msgstr "Минимальный уровень отображения"
+
+msgid "All levels"
+msgstr "Все уровни"
+
+msgid "Xray log level"
+msgstr "Уровень записи Xray"
