@@ -51,7 +51,7 @@ return baseclass.extend({
 		s.addremove = false;
 
 		o = s.option(form.DummyValue, '_tools', _('Tools'));
-		o.render = () => E('div', { 'class': 'mh-actions' }, [
+		o.render = () => E('div', { 'class': 'mh-actions', 'style': 'width:auto;display:flex;flex-wrap:wrap;gap:8px;margin-bottom:12px' }, [
 			mh.button({ icon: 'search', text: _('Diagnostics'), click: () => diag.diagnostics(true) }),
 			mh.button({ icon: 'package', text: _('Component updates'), click: () => sheet.show('components') }),
 			mh.button({ icon: 'route', text: _('Routing'), click: () => sheet.show('sections') }),
