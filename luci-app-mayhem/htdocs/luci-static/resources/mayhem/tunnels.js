@@ -86,6 +86,9 @@ return baseclass.extend({
 
 				poll.remove(check);
 				waits = 0;
+				// A closed progress window must not reopen over another menu.
+				if (!document.body.classList.contains('modal-overlay-active') || !log.closest('.modal'))
+					return;
 				ui.showModal(null, [
 					log,
 					E('p', inst.rc === '0' ? _('Done.') : inst.rc == null ? _('The installer stopped without a result, see the log above.')

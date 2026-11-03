@@ -212,11 +212,7 @@ return baseclass.extend({
 	copy() {
 		const area = E('textarea', { 'style': 'width:100%;height:20em;font-family:monospace', 'readonly': '' }, this.report());
 
-		const inDialog = document.body.classList.contains('modal-overlay-active');
-		const back = () => inDialog ? this.diagnostics(false) : ui.hideModal();
-
 		ui.showModal(_('Diagnostics report'), [
-			E('div', { 'class': 'mh-modal-back' }, E('button', { 'class': 'btn', 'click': back }, _('Back'))),
 			E('p', _('Copy the report and attach it to a question or a bug report. It holds no keys or passwords, but it does show your external addresses.')),
 			area,
 			E('div', { 'class': 'right' }, [

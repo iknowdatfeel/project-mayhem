@@ -541,8 +541,8 @@ def main():
                 raise RuntimeError('logs are still nested in diagnostics')
             shot(pg, 'dashboard_diag')
             pg.click('#mh-settings-diagnostics button:has-text("%s")' % TRANSLATIONS.get('Copy report', 'Copy report'))
-            pg.wait_for_selector('.modal .mh-modal-back button', timeout=5000)
-            pg.click('.modal .mh-modal-back button')
+            pg.get_by_role('button', name=TRANSLATIONS.get('Close', 'Close'), exact=True).wait_for(state='visible', timeout=5000)
+            pg.get_by_role('button', name=TRANSLATIONS.get('Close', 'Close'), exact=True).click()
             pg.wait_for_function("!document.body.classList.contains('modal-overlay-active')")
             pg.wait_for_selector('#mh-settings-diagnostics', state='visible')
             pg.click('.mh-sheet-close')
@@ -660,8 +660,8 @@ def main():
             expected = ['main', 'routing', 'mux', 'components', 'connections', 'diagnostics', 'logs']
             if ids != ['mh-settings-tab-' + name for name in expected]:
                 raise RuntimeError('settings tabs have the wrong order: %s' % ids)
-            if pg.query_selector('.mh-sheet-head .mh-modal-back'):
-                raise RuntimeError('top-level settings have a Back button')
+            if pg.get_by_role('button', name=TRANSLATIONS.get('Back', 'Back'), exact=True).count():
+                raise RuntimeError('settings still have a Back button')
             mem = '#mh-settings-main [data-name="memlimit"] input'
             original = pg.input_value(mem)
             pg.fill(mem, '128')
@@ -670,8 +670,8 @@ def main():
             pg.click('#mh-settings-tab-routing')
             pg.wait_for_selector('#mh-settings-routing .cbi-map', timeout=15000)
             pg.click('#mh-settings-routing [data-tab="settings"] .cbi-button-edit >> nth=0')
-            pg.wait_for_selector('.modal .mh-modal-back button', timeout=5000)
-            pg.click('.modal .mh-modal-back button')
+            pg.get_by_role('button', name=TRANSLATIONS.get('Close', 'Close'), exact=True).wait_for(state='visible', timeout=5000)
+            pg.get_by_role('button', name=TRANSLATIONS.get('Close', 'Close'), exact=True).click()
             pg.wait_for_function("!document.body.classList.contains('modal-overlay-active')")
             pg.wait_for_selector('#mh-settings-routing', state='visible')
             pg.click('#mh-settings-tab-main')
@@ -681,7 +681,7 @@ def main():
             pg.click('[data-name="_reset"] button')
             pg.wait_for_selector('.modal input[type="checkbox"]', timeout=5000)
             shot(pg, 'settings_reset')
-            pg.click('.modal .mh-modal-back button')
+            pg.get_by_role('button', name=TRANSLATIONS.get('Close', 'Close'), exact=True).click()
             pg.wait_for_function("!document.body.classList.contains('modal-overlay-active')")
 
         def dashboard_buttons(pg):
