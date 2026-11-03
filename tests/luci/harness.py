@@ -565,12 +565,16 @@ def main():
             pg.wait_for_function("!document.querySelector('#mh-settings-logs .mh-log').textContent.includes(%s)" % json.dumps(TRANSLATIONS.get('Loading…', 'Loading…')), timeout=10000)
             if pg.evaluate("document.body.classList.contains('modal-overlay-active')"):
                 raise RuntimeError('logs opened in a modal instead of a tab')
+            if pg.locator('#mh-settings-logs select').count() != 3:
+                raise RuntimeError('logs must have component, display level and line limit only')
+            if pg.locator('#mh-settings-logs option[value="none"]').count():
+                raise RuntimeError('Xray recording level is still mixed with the display filter')
             def severity_request(req):
                 if req.method != 'POST' or '/ubus/' not in req.url:
                     return False
                 body = req.post_data_json
                 batch = body if isinstance(body, list) else [body]
-                return any(r.get('params', [None, None, None])[2] == 'logs' and r['params'][3].get('level') == 'warning' for r in batch)
+                return any(r.get('method') == 'call' and len(r.get('params', [])) > 3 and r['params'][2] == 'logs' and r['params'][3].get('level') == 'warning' for r in batch)
             n = len(calls)
             with pg.expect_request(severity_request, timeout=10000):
                 pg.select_option('#mh-settings-logs .mh-log-tools label select', 'warning')
@@ -685,6 +689,8 @@ def main():
             if pg.get_by_role('button', name=TRANSLATIONS.get('Back', 'Back'), exact=True).count():
                 raise RuntimeError('settings still have a Back button')
             mem = '#mh-settings-main [data-name="memlimit"] input'
+            if pg.locator('#mh-settings-main [data-name="log_level"]').count():
+                raise RuntimeError('general settings still contain a logging-level field')
             original = pg.input_value(mem)
             pg.fill(mem, '128')
             pg.click('#mh-settings-tab-mux')

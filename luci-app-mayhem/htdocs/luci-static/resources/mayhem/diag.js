@@ -1,7 +1,6 @@
 'use strict';
 'require baseclass';
 'require rpc';
-'require uci';
 'require ui';
 'require mayhem.common as mh';
 
@@ -12,7 +11,6 @@ const callDiagnose = rpc.declare({ object: 'luci.mayhem', method: 'diagnose', pa
 const callAction = rpc.declare({ object: 'luci.mayhem', method: 'action', params: [ 'name' ], expect: { '': {} } });
 const callSysinfo = rpc.declare({ object: 'luci.mayhem', method: 'sysinfo', expect: { '': {} } });
 const callLogs = rpc.declare({ object: 'luci.mayhem', method: 'logs', params: [ 'component', 'lines', 'level' ], expect: { '': {} } });
-const callLevel = rpc.declare({ object: 'luci.mayhem', method: 'set_log_level', params: [ 'level' ], expect: { '': {} } });
 const callExport = rpc.declare({ object: 'luci.mayhem', method: 'backup_export', params: [ 'connections' ], expect: { '': {} } });
 const callImport = rpc.declare({ object: 'luci.mayhem', method: 'backup_import', params: [ 'backup' ], expect: { '': {} } });
 
@@ -408,20 +406,7 @@ return baseclass.extend({
 					window.clearTimeout(timer);
 					if (follow) show();
 				} }), ' ', _('Refresh every 5 seconds') ]),
-				E('span', { 'class': 'mh-ip' }, [ E('span', { 'class': 'mh-small mh-muted' }, _('IP addresses')), mh.ipEye() ]),
-				E('span', { 'style': 'margin-left:auto' }, _('Xray log level') + ':'),
-				select([ 'debug', 'info', 'warning', 'error', 'none' ].map((l) => [ l, l ]), uci.get('mayhem', 'settings', 'log_level') || 'warning', (ev) => {
-					const input = ev.target;
-					const previous = uci.get('mayhem', 'settings', 'log_level') || 'warning';
-					input.disabled = true;
-					return callLevel(input.value).then((r) => {
-						if (r.error) throw new Error(r.error);
-						uci.set('mayhem', 'settings', 'log_level', input.value);
-					}).catch((e) => {
-						input.value = previous;
-						ui.addNotification(null, E('p', e.message || String(e)), 'error');
-					}).finally(() => { input.disabled = false; });
-				})
+				E('span', { 'class': 'mh-ip' }, [ E('span', { 'class': 'mh-small mh-muted' }, _('IP addresses')), mh.ipEye() ])
 			]),
 			error, pre
 		]);
