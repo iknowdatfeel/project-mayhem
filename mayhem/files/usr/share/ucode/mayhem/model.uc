@@ -54,6 +54,15 @@ function command(cmd) {
 	return out;
 }
 
+function read_json(path) {
+	try {
+		return json(readfile(path) ?? '');
+	}
+	catch (e) {
+		return null;
+	}
+}
+
 // State of the network interfaces that tunnel sections use (netifd names).
 function ifaces(names) {
 	const out = {};
@@ -223,15 +232,6 @@ function runtime(sections) {
 		dnsmasq_servers: dnsmasq_servers(),
 		leases: leases()
 	};
-}
-
-function read_json(path) {
-	try {
-		return json(readfile(path) ?? '');
-	}
-	catch (e) {
-		return null;
-	}
 }
 
 // Geo sources in configuration order, with the index of their last download.
