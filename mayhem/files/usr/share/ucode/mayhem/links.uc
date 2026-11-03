@@ -722,13 +722,11 @@ export function outbound_udp(ob) {
 		ob?.streamSettings?.network == 'kcp';
 };
 
-// Addresses where Xray allows VLESS/Trojan without TLS (xray-core 26.9.30,
-// common/geodata/consts.go): private IPs, private domains and dotless names.
+// Xray 26.10.31 infra/conf/xray.go requiresTransportSecurity uses Go's
+// IsPrivate, IsLoopback and IsLinkLocalUnicast, not the geoip:private list.
 const PRIVATE_NETS = [
-	'0.0.0.0/8', '10.0.0.0/8', '100.64.0.0/10', '127.0.0.0/8', '169.254.0.0/16', '172.16.0.0/12',
-	'192.0.0.0/24', '192.0.2.0/24', '192.88.99.0/24', '192.168.0.0/16', '198.18.0.0/15',
-	'198.51.100.0/24', '203.0.113.0/24', '224.0.0.0/3',
-	'::/127', 'fc00::/7', 'fe80::/10', 'ff00::/8'
+	'10.0.0.0/8', '127.0.0.0/8', '169.254.0.0/16', '172.16.0.0/12', '192.168.0.0/16',
+	'::1/128', 'fc00::/7', 'fe80::/10'
 ];
 const PRIVATE_DOMAINS = [ 'lan', 'localdomain', 'example', 'invalid', 'localhost', 'test', 'local', 'home.arpa', 'internal' ];
 
@@ -757,8 +755,13 @@ function private_address(addr) {
 	const host = rtrim(lc(`${addr}`), '.');
 	const ip = iptoarr(host);
 
-	if (ip)
-		return length(filter(PRIVATE_NETS, (n) => in_net(ip, n))) > 0;
+	if (ip) {
+		// Go's IP.To4 also accepts IPv4-mapped IPv6 addresses.
+		const mapped = length(ip) == 16 && ip[10] == 255 && ip[11] == 255 &&
+			!length(filter(slice(ip, 0, 10), (b) => b != 0));
+		const bytes = mapped ? slice(ip, 12) : ip;
+		return length(filter(PRIVATE_NETS, (n) => in_net(bytes, n))) > 0;
+	}
 
 	if (match(host, /^[a-z]([a-z0-9-]{0,61}[a-z0-9])?$/))
 		return true;
@@ -783,11 +786,11 @@ export function refused_by_xray(ob) {
 	const s = ob?.settings ?? {};
 
 	if (ob?.protocol == 'vless') {
-		// Only the flat form is checked by xray; "vnext" servers pass.
-		if (type(s.address) != 'string' || (s.encryption != null && s.encryption != '' && s.encryption != 'none'))
+		// The current core requires TLS when its flat Address is absent too.
+		if (s.encryption != null && s.encryption != '' && s.encryption != 'none')
 			return null;
 
-		return private_address(s.address) ? null :
+		return type(s.address) == 'string' && private_address(s.address) ? null :
 			'VLESS without TLS, Reality or encryption to a public address, xray refuses to start with it';
 	}
 
