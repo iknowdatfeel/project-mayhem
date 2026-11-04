@@ -864,18 +864,6 @@ function diag_local() {
 
 	check(res, 'dns', 'dnsmasq', dnsmasq_pid != '' ? 'ok' : 'fail', dnsmasq_pid != '' ? 'running' : 'not running');
 
-	const conf_dirs = lines_of(run(`sh -c '. ${LIB}/lib.sh; mayhem_dnsmasq_dirs' 2>/dev/null`));
-	const has_conf = length(filter(conf_dirs, (d) => fs.access(`${d}/mayhem.conf`))) > 0;
-
-	// dnsmasq forwards to the native policy listener; Xray is an upstream.
-	const to_policy = index(fs.readfile(C.DNS_SERVERS) ?? '', `#${C.POLICY_DNS_PORT}`) >= 0;
-	const policy_listening = listening([ C.POLICY_DNS_PORT ]);
-	const policy_ready = index(policy_listening, C.POLICY_DNS_PORT) >= 0;
-
-	check(res, 'dns', 'DNS policy', has_conf && to_policy && policy_ready ? 'ok' : (active ? 'fail' : 'info'),
-		!has_conf ? 'dnsmasq does not use DNS policy' : !to_policy ? 'dnsmasq does not forward queries to DNS policy'
-			: !policy_ready ? 'DNS policy is not listening' : 'dnsmasq forwards queries to DNS policy');
-
 	// By lists, only the names of the rules go to xray when dnsmasq can match
 	// all of them.
 	if (state.mode == 'lists' && state.dns)
