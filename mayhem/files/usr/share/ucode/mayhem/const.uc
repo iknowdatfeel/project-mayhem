@@ -8,6 +8,9 @@ export const UCI_DIR = getenv('MAYHEM_UCI_DIR');
 
 export const TPROXY_PORT = 12701;
 export const DNS_PORT = 12753;
+export const POLICY_DNS_PORT = 12754;
+export const POLICY_DIRECT_MARK = 0x40000000;
+export const POLICY_PROXY_MARK = 0x80000000;
 export const API_PORT = 12780;
 export const METRICS_PORT = 12781;
 export const HELPER_PORT = 12782;

@@ -343,6 +343,10 @@ function geo_domains(sections, sources, all, split, both) {
 		if (!is_true(sec.enabled ?? '1'))
 			continue;
 
+		// The native policy engine reads trimmed GeoSite records itself.
+		if (sec.type == 'block' || sec.type == 'exclusion')
+			continue;
+
 		// Kernel tunnels need their categories spelled out for dnsmasq's
 		// nftset; other sections only small ones, for the names dnsmasq
 		// sends to xray (DNS_SPLIT_MAX).

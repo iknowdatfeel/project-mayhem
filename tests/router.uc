@@ -49,7 +49,7 @@ writefile(ARGV[0], r.nft);
 expect('global: xray sockets leave the chain output', index(out, sprintf('meta mark & 0x%x == 0x%x return', XRAY_OUT_MARK, XRAY_OUT_MARK)) >= 0, out);
 expect('global: only TCP of the router', index(out, 'meta l4proto != tcp return') >= 0, out);
 expect('global: replies to incoming connections left alone', index(out, 'ct direction reply return') >= 0, out);
-expect('global: exclusions stay direct', index(out, 'ip daddr @direct4 return') >= 0, out);
+expect('global: native Direct mark bypasses Xray', index(out, 'meta mark & 0x40000000 != 0 return') >= 0, out);
 expect('global: the rest is marked for xray', match(out, /meta nfproto ipv4 meta mark set meta mark \| 0x2000000/) != null, out);
 expect('global: the marked traffic is taken from lo', match(r.nft, /iifname "lo" meta mark & 0x2000000 == 0x2000000 meta nfproto ipv4 meta l4proto \{ tcp, udp \} tproxy/) != null, r.nft);
 expect('global: every xray outbound that dials is marked', length(marked(r)) == length(dialing(r)) && length(marked(r)) > 0,
@@ -61,7 +61,7 @@ const pre = (nft) => split(substr(nft, index(nft, 'chain prerouting {')), '\n\t}
 const REF = 'meta mark set meta mark | 0x8000000 counter return';
 const p = pre(r.nft);
 
-expect('blocked addresses refused', index(p, `ip daddr @block4 ${REF}`) >= 0, p);
+expect('blocked addresses exported to native policy', index(sprintf('%J', r.dns_policy.block_ip), '46.0.0.0/24') >= 0, p);
 expect('QUIC refused before xray, after the direct ones', index(p, `meta l4proto udp th dport 443 ${REF}`) > index(p, 'ip daddr @direct4 counter return') &&
 	index(p, `meta l4proto udp th dport 443 ${REF}`) < index(p, 'meta nfproto ipv4 meta l4proto { tcp, udp } meta mark set meta mark | 0x2000000'), p);
 expect('UDP refused with port unreachable', index(r.nft, 'meta l4proto udp counter reject with icmpx type port-unreachable') >= 0, r.nft);
@@ -72,17 +72,13 @@ out = output(r.nft);
 expect('lists: only what the rules send to a proxy', index(out, 'ip daddr @px4 meta mark set') >= 0 && match(out, /meta nfproto ipv4 meta mark set/) == null, out);
 
 r = build(model('global', false));
-expect('off: no xray marks', !length(marked(r)), null);
+expect('off: Xray transport sockets bypass native DNS policy', length(marked(r)) == length(dialing(r)), null);
 expect('off: no router rules', index(output(r.nft), 'ct direction reply') < 0, output(r.nft));
 
-// By lists, fake addresses: xray dialling one it does not know must not come
-// back to xray through the chain output, and is refused before that.
+// Native DNS uses real addresses. Proxy-domain addresses are marked by the
+// independent resolver and must be intercepted even outside static IP lists.
 r = build(model('lists', false));
-expect('lists, off: every xray outbound that dials is marked', length(marked(r)) == length(dialing(r)) && length(marked(r)) > 0,
-	sprintf('%J', map(r.xray.outbounds, (o) => [ o.tag, o.streamSettings?.sockopt?.mark ])));
-expect('lists, off: xray sockets leave the chain output', index(output(r.nft), sprintf('meta mark & 0x%x == 0x%x return', XRAY_OUT_MARK, XRAY_OUT_MARK)) >= 0, output(r.nft));
-expect('lists: an unknown fake address is refused',
-	length(filter(r.xray.routing.rules, (x) => x.outboundTag == 'block' && x.ip?.[0] == FAKEDNS_POOL && x.inboundTag?.[0] == 'tproxy-in')) == 1,
-	sprintf('%J', r.xray.routing.rules));
-
+expect('lists: transport sockets remain marked', length(marked(r)) == length(dialing(r)), null);
+expect('lists: proxy DNS marks reach Xray', index(r.nft, 'meta mark & 0x80000000 != 0') >= 0, r.nft);
+expect('lists: no artificial DNS addresses', !length(filter(r.xray.dns.servers, (s) => s.address == 'fakedns')), null);
 exit(fails ? 1 : 0);

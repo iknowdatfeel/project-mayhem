@@ -780,6 +780,13 @@ mayhem_dns_servers() {
 		mayhem_isp_dns > "$new"
 	fi
 
+	# The policy resolver sees both the selected upstream route and plain ISP
+	# resolvers. dnsmasq must not cache past a policy set's DNS lifetime.
+	mayhem_isp_dns > "$MAYHEM_RUN_DIR/dns-policy.isp.new"
+	mv -f "$MAYHEM_RUN_DIR/dns-policy.isp.new" "$MAYHEM_RUN_DIR/dns-policy.isp"
+	mv -f "$new" "$MAYHEM_RUN_DIR/dns-policy.upstreams"
+	echo "server=127.0.0.1#$MAYHEM_POLICY_DNS_PORT" > "$new"
+
 	# dnsmasq reads it again on SIGHUP as its own user, not root.
 	chmod 644 "$new"
 
@@ -803,8 +810,7 @@ mayhem_dns_up() {
 	mkdir -p "$(dirname "$MAYHEM_DNS_SERVERS")"
 
 	if [ ! -f "$MAYHEM_DNS_SERVERS" ] || [ ! -f "$MAYHEM_RUN_DIR/active" ]; then
-		mayhem_isp_dns > "$MAYHEM_DNS_SERVERS.tmp" && chmod 644 "$MAYHEM_DNS_SERVERS.tmp" &&
-			mv -f "$MAYHEM_DNS_SERVERS.tmp" "$MAYHEM_DNS_SERVERS"
+		mayhem_dns_servers isp
 	fi
 
 	for d in $(mayhem_dnsmasq_dirs); do

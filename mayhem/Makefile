@@ -62,7 +62,7 @@ endef
 define Package/mayhem/postrm
 #!/bin/sh
 [ -n "$${IPKG_INSTROOT}" ] && exit 0
-rm -f /usr/libexec/mayhem/xray /usr/libexec/mayhem/wg-obfuscator /usr/libexec/mayhem/phantun_client
+rm -f /usr/libexec/mayhem/xray /usr/libexec/mayhem/wg-obfuscator /usr/libexec/mayhem/phantun_client /usr/libexec/mayhem/dns-policy
 rm -rf /var/run/mayhem
 # TCP back to the firmware's default (BBR was Mayhem's)
 if [ -f /etc/sysctl.d/12-mayhem-bbr.conf ]; then

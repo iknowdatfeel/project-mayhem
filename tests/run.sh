@@ -86,7 +86,7 @@ fi
 
 # Block sections: spelled-out domains refused by dnsmasq, the rest in xray.
 if out="$(uc "$ROOT/tests/block.uc" 2>&1)"; then
-	ok "block sections in dnsmasq"
+	ok "block sections in native DNS policy"
 else
 	bad "block: $out"
 fi
@@ -547,7 +547,7 @@ fi
 # xray, everything else gets the tunnel's mark before xray.
 nft_rest() {
 	# $1 model dir: line numbers of the rules, "-" when missing
-	for re in '@blk_d4 meta mark set' '@direct4 counter return' '@dir_d4 counter return' '@px_d4 meta l4proto' \
+	for re in 'meta mark & 0x40000000 != 0 return' '@px_d4 meta l4proto' \
 		'meta nfproto ipv4 meta l4proto tcp th dport { 80, 443 } meta mark set meta mark & 0x[0-9a-f]* | 0x4000001 \(ct mark set ct mark & 0x[0-9a-f]* | 0x[0-9a-f]* \)\?counter return' \
 		'meta nfproto ipv4 meta l4proto { tcp, udp } meta mark set meta mark | 0x2000000 .*tproxy'; do
 		n="$(grep -n -- "$re" "$1/nft.conf" | head -n 1 | cut -d: -f1)"
@@ -555,17 +555,13 @@ nft_rest() {
 	done
 }
 set -- $(nft_rest "$OUT/tunrest")
-if [ "$#" != 6 ] || [ "$1" = - ] || [ "$2" = - ] || [ "$3" = - ] || [ "$4" = - ] || [ "$5" = - ] || [ "$6" = - ] || \
-   [ "$1" -gt "$2" ] || [ "$2" -gt "$3" ] || [ "$3" -gt "$4" ] || [ "$4" -gt "$5" ] || [ "$5" -gt "$6" ]; then
+if [ "$#" != 4 ] || [ "$1" = - ] || [ "$2" = - ] || [ "$3" = - ] || [ "$4" = - ] || \
+   [ "$1" -gt "$2" ] || [ "$2" -gt "$3" ] || [ "$3" -gt "$4" ]; then
 	bad "model tunrest: rules out of order (block, direct, exclusions, proxy, tunnel, xray): $*"
-elif ! grep -q 'nftset=/ru.test/yandex.test/.*#dir_d4' "$OUT/tunrest/dnsmasq.conf" || \
-     ! grep -q 'nftset=/instagram.com/.*#px_d4' "$OUT/tunrest/dnsmasq.conf" || \
-     ! grep -q '^local=/ads.test/$' "$OUT/tunrest/dnsmasq.conf"; then
-	bad "model tunrest: dnsmasq does not fill the sets: $(cat "$OUT/tunrest/dnsmasq.conf")"
-# dnsmasq answers a blocked name itself (local=) and never gets its address:
-# an nftset= line for it filled nothing and cost seconds with an ad category.
-elif grep -q 'nftset=.*/ads.test/' "$OUT/tunrest/dnsmasq.conf"; then
-	bad "model tunrest: a name dnsmasq refuses is in an nftset= line: $(cat "$OUT/tunrest/dnsmasq.conf")"
+elif ! grep -q 'ru.test' "$OUT/tunrest/dns-policy.json" || \
+     ! grep -q 'ads.test' "$OUT/tunrest/dns-policy.json" || \
+     ! grep -q 'nftset=/instagram.com/.*#px_d4' "$OUT/tunrest/dnsmasq.conf"; then
+	bad "model tunrest: native policy or proxy DNS sets are missing"
 elif grep -q 'meta nfproto ipv6 .*| 0x4000001' "$OUT/tunrest/nft.conf"; then
 	bad "model tunrest: IPv6 goes into a tunnel without IPv6"
 elif grep -q 'meta nfproto ipv4 meta mark set meta mark & 0x[0-9a-f]* | 0x4000001' "$OUT/tunrest/nft.conf" || \
@@ -576,13 +572,11 @@ elif ! grep -q 'meta l4proto udp th dport 443 meta mark set meta mark | 0x800000
 	bad "model tunrest: QUIC off must drop UDP 443 before the tunnel, and only then"
 elif ! grep -q 'meta nfproto ipv4 meta mark set meta mark & 0x[0-9a-f]* | 0x4000001 \(ct mark set ct mark & 0x[0-9a-f]* | 0x[0-9a-f]* \)\?counter return' "$OUT/tunrest-fake/nft.conf"; then
 	bad "model tunrest-fake: without torrents direct all the rest goes into the tunnel in the kernel"
-elif grep -q '#px_d4' "$OUT/tunrest-fake/dnsmasq.conf" || ! grep -q '198.18.0.0/15 meta l4proto' "$OUT/tunrest-fake/nft.conf" || \
-     ! uc -e "
+elif ! uc -e "
 	const x = json(require('fs').readfile('$OUT/tunrest-fake/xray.json'));
-	const f = filter(x.dns.servers, (s) => s.address == 'fakedns');
-	exit((length(f) == 1 && index(f[0].domains, 'domain:instagram.com') >= 0) ? 0 : 1);
+	exit(length(filter(x.dns.servers, (s) => s.address == 'fakedns')) == 0 ? 0 : 1);
 " 2>/dev/null; then
-	bad "model tunrest-fake: FakeDNS must answer only proxy domains, its pool goes to xray"
+	bad "native DNS policy must use real addresses with FakeDNS requested"
 elif grep -q 'px_4\|0x4000001.*counter return$' "$OUT/global/nft.conf" 2>/dev/null; then
 	bad "model global: the rest goes into a tunnel without a tunnel main section"
 else
@@ -607,7 +601,7 @@ fi
 # the watchdog keeps the choice (bal 0). Without dnsmasq-full it stays in xray.
 if ! grep -q 'meta nfproto ipv4 meta mark set meta mark & 0x[0-9a-f]* | 0x4000001 \(ct mark set ct mark & 0x[0-9a-f]* | 0x[0-9a-f]* \)\?counter return' "$OUT/pooltun/nft.conf" 2>/dev/null ||
    ! grep -q '^pool awg0 0x4000001 111 0 0$' "$OUT/pooltun/tunnels" 2>/dev/null ||
-   ! grep -q 'nftset=/ru.test/.*#dir_d4' "$OUT/pooltun/dnsmasq.conf" 2>/dev/null; then
+   ! grep -q 'ru.test' "$OUT/pooltun/dns-policy.json" 2>/dev/null; then
 	bad "model pooltun: the picked tunnel does not take the rest in the kernel: $(cat "$OUT/pooltun/tunnels" 2>/dev/null)"
 elif grep -q '0x4000001' "$OUT/pooltun-plain/nft.conf" 2>/dev/null || ! grep -q 'with dnsmasq-full it would go in the kernel' "$OUT/pooltun-plain/status.json"; then
 	bad "model pooltun-plain: without dnsmasq-full the tunnel must stay in xray, with a hint"
@@ -657,13 +651,13 @@ gdir() {
 JSON
 	mkdir -p "$OUT/gdir-$1"
 	uc "$FILES/usr/share/mayhem/gen.uc" --model "$OUT/gdir-$1.json" --out "$OUT/gdir-$1" 2>/dev/null || { echo fail; return; }
-	echo "$(grep -c '@dir_d4 ip daddr != @oth_d4 counter return' "$OUT/gdir-$1/nft.conf") $(grep -c 'nftset=/gosuslugi.test/4#inet#mayhem#dir_d4\|nftset=/#/4#inet#mayhem#oth_d4' "$OUT/gdir-$1/dnsmasq.conf")"
+	echo "$(grep -c 'gosuslugi.test' "$OUT/gdir-$1/dns-policy.json") $(grep -c 'nftset=/gosuslugi.test/4#inet#mayhem#dir_d4\|nftset=/#/4#inet#mayhem#oth_d4' "$OUT/gdir-$1/dnsmasq.conf")"
 }
 got="$(gdir fake 1 true) / $(gdir real 0 true) / $(gdir plain 1 false)"
-if [ "$got" = "1 2 / 1 2 / 0 0" ]; then
+if [ "$got" = "1 0 / 1 0 / 1 0" ]; then
 	ok "global mode: excluded domains go direct in the kernel with dnsmasq-full, FakeDNS or not"
 else
-	bad "global mode, excluded domains in the kernel: got $got, want 1 2 / 1 2 / 0 0"
+	bad "global mode, excluded domains in the kernel: got $got, want 1 0 / 1 0 / 1 0"
 fi
 
 # Firmware version, target and package arch for the AmneziaWG builds.
@@ -931,13 +925,11 @@ if ! uc -e "
 	exit((x.dns.enableParallelQuery === true && awg?.address == 'https://9.9.9.9/dns-query' && awg.queryStrategy == 'UseIPv4' &&
 		index(sv, awg) < index(sv, filter(sv, (q) => q.address == 'https://1.1.1.1/dns-query')[0]) &&
 		length(bank) == 2 && bank[0].address == 'quic+local://dns.adguard-dns.com' && bank[1].address == 'tcp://77.88.8.8' &&
-		length(filter(sv, (q) => q.tag == 'dns-sec-mix')) == 0 && length(r) == 2 && r[0].balancerTag == 'bal-awg' && r[1].outboundTag == 'direct') ? 0 : 1);
+		length(filter(sv, (q) => q.tag == 'dns-sec-mix')) == 1 && length(r) == 2 && r[0].balancerTag == 'bal-awg' && r[1].outboundTag == 'direct') ? 0 : 1);
 " 2>/dev/null; then
 	bad "section DNS: servers, order, tags or routing are wrong"
-elif ! grep -q 'bank.test' "$OUT/secdns/dns.xray"; then
-	bad "section DNS: dnsmasq does not send the direct section's names to xray"
-elif ! grep -q 'own DNS is not used' "$OUT/secdns/status.json"; then
-	bad "section DNS: no warning for a proxy section with FakeDNS"
+elif ! grep -q 'bank.test' "$OUT/secdns/dns-policy.json" || ! grep -q '127.0.0.1:12753' "$OUT/secdns/dns-policy.json"; then
+	bad "section DNS: native Direct does not retain its DNS-only Xray upstream"
 elif ! uc -e "exit(json(require('fs').readfile('$OUT/tunnels/xray.json')).dns.enableParallelQuery == null ? 0 : 1);" 2>/dev/null; then
 	bad "section DNS: servers are asked all at once without the option"
 else
@@ -1187,13 +1179,12 @@ mkdir -p "$OUT/dnsfb"
 sed -e 's/"keyword:tube",//' -e 's/"regexp:[^"]*"/"full:a1.test"/' -e 's/"settings": {/"settings": {\n    "killswitch": "1",/' "$ROOT/tests/models/tunnels.json" > "$OUT/dnsfb.json"
 if ! uc "$FILES/usr/share/mayhem/gen.uc" --model "$OUT/dnsfb.json" --out "$OUT/dnsfb" 2>"$OUT/dnsfb.log"; then
 	bad "dns fallback: generator failed: $(cat "$OUT/dnsfb.log")"
-elif ! grep -q '^@ISP@$' "$OUT/dnsfb/dns.fallback" || ! grep -q 'instagram.com' "$OUT/dnsfb/dns.fallback" || \
-     ! grep -q 'chatgpt.com' "$OUT/dnsfb/dns.fallback" || grep -q 'youtube.com\|down.test' "$OUT/dnsfb/dns.fallback" || \
+elif ! grep -q '^@ISP@$' "$OUT/dnsfb/dns.fallback" || grep -q 'instagram.com\|chatgpt.com\|youtube.com\|down.test' "$OUT/dnsfb/dns.fallback" || \
      ! grep -q 'youtube.com' "$OUT/dnsfb/dns.xray"; then
-	bad "dns fallback: $(tr '\n' '|' < "$OUT/dnsfb/dns.fallback") / $(tr '\n' '|' < "$OUT/dnsfb/dns.xray")"
+	bad "real-address DNS fallback routes are wrong"
 elif ! grep -q '^MAYHEM_KILLSWITCH=1$' "$OUT/dnsfb/env" || ! grep -q '"killswitch": *true' "$OUT/dnsfb/nodes.json"; then
 	bad "kill switch is not passed on (env, nodes.json)"
-elif [ -s "$OUT/lists/dns.fallback" ]; then
+elif ! grep -q "^@ISP@$" "$OUT/lists/dns.fallback"; then
 	bad "dns fallback without a remote DNS in use: $(cat "$OUT/lists/dns.fallback")"
 else
 	ok "dns fallback: provider for tunnel names, fake names stay with xray; kill switch passed on"
