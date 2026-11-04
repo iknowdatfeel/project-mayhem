@@ -425,6 +425,10 @@ msgstr ""
 msgid "DNS hijack (port 53)"
 msgstr ""
 
+#: htdocs/luci-static/resources/mayhem/diag.js
+msgid "DNS policy"
+msgstr ""
+
 #: htdocs/luci-static/resources/mayhem/page/sections.js
 msgid "DNS protocol"
 msgstr ""
@@ -1355,10 +1359,6 @@ msgstr ""
 
 #: htdocs/luci-static/resources/mayhem/page/sections.js
 msgid "Query strategy"
-msgstr ""
-
-#: htdocs/luci-static/resources/mayhem/diag.js
-msgid "Redirect to xray"
 msgstr ""
 
 #: htdocs/luci-static/resources/mayhem/diag.js
