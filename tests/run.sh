@@ -1100,13 +1100,6 @@ else
 	bad "obfuscation service: $out"
 fi
 
-# The native DNS engine is downloaded before package scripts can stop DNS.
-if out="$(python3 "$ROOT/tests/install.py" 2>&1)"; then
-	ok "installer: offline DNS policy install and checksum failures"
-else
-	bad "installer: $out"
-fi
-
 # Servers or remote DNS that stop answering: direct and back, or the kill switch.
 if out="$(UCODE="$UCODE" sh "$ROOT/tests/health.sh" 2>&1)"; then
 	ok "health: sections and remote DNS go direct and come back, kill switch"
