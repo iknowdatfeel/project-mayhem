@@ -391,7 +391,7 @@ elif ! grep -q '"ext:site.dat:youtube"' "$OUT/geo-run/xray.json" || ! grep -q '"
 	bad "config with geo categories: no ext: rules in the xray config"
 elif ! grep -q 'domain:listed.test' "$OUT/geo-run/xray.json"; then
 	bad "config with geo categories: the list file was not used"
-elif ! grep -q '45.0.0.6/32' "$OUT/geo-run/nft.conf"; then
+elif ! grep -q '45.0.0.6/32' "$OUT/geo-run/dns-policy.json"; then
 	bad "config with geo categories: geoip:ru is not in the kernel bypass"
 elif grep -q '"ext:ip.dat:ru"' "$OUT/geo-run/xray.json"; then
 	bad "config with geo categories: geoip:ru of a direct section is in xray as well (the kernel has it)"
@@ -958,13 +958,13 @@ else
 fi
 
 # Ports of a direct section: direct in the kernel and in xray, bad ones warned.
-if ! grep -q 'meta l4proto { tcp, udp } th dport { 4501, 5000-5100 } counter return' "$OUT/secdns/nft.conf"; then
+if ! grep -q '"direct_ports":.*4501.*5000-5100' "$OUT/secdns/dns-policy.json"; then
 	bad "direct ports: not in the kernel"
 elif ! uc -e "
 	const r = filter(json(require('fs').readfile('$OUT/secdns/xray.json')).routing.rules, (q) => q.port == '4501,5000-5100');
-	exit((length(r) == 1 && r[0].outboundTag == 'direct' && r[0].domain == null && r[0].ip == null) ? 0 : 1);
+	exit(length(r) == 0 ? 0 : 1);
 " 2>/dev/null; then
-	bad "direct ports: no xray rule"
+	bad "direct ports: native ports unexpectedly duplicated in Xray"
 elif ! grep -q '70000' "$OUT/secdns/status.json" || ! grep -q '9-3' "$OUT/secdns/status.json"; then
 	bad "direct ports: no warning for bad ports"
 else
