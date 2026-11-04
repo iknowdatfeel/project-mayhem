@@ -212,7 +212,6 @@ if (!res.ok) {
 
 // Compact: the file lives in RAM (tmpfs), with rule lists it can take
 // megabytes; `mayhem show-config` prints it readable.
-put('dns-policy.json', sprintf('%J\n', res.dns_policy));
 put('xray.json', sprintf('%J\n', res.xray));
 // procd restarts xray when this changes; new servers alone go in live.
 put('xray.key', sprintf('%J\n', res.key));

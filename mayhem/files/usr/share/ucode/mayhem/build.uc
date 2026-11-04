@@ -475,7 +475,6 @@ function build_nft_text(S, v6, sets, tunnels, dns_redirect, fake_pool, kdef, cap
 		push(s, `\t\tiifname "lo" meta mark & ${mark} == ${mark} ip daddr ${fake_pool} meta l4proto { tcp, udp } tproxy ip to 127.0.0.1:${C.TPROXY_PORT} counter accept\n`);
 
 	push(s, '\t\tiifname != @ifaces return\n');
-	push(s, `\t\tmeta mark & ${sprintf('0x%x', C.POLICY_DIRECT_MARK)} != 0 return\n`);
 
 	// A connection that took another path before the last change: no rule
 	// here may take it, the forward chain resets it.
@@ -510,14 +509,6 @@ function build_nft_text(S, v6, sets, tunnels, dns_redirect, fake_pool, kdef, cap
 		push(s, `\t\tip daddr @blk_d4 ${refuse}\n`);
 		push(s, `\t\tip6 daddr @blk_d6 ${refuse}\n`);
 	}
-
-	if (no_quic)
-		push(s, `\t\tmeta mark & ${sprintf('0x%x', C.POLICY_PROXY_MARK)} != 0 meta l4proto udp th dport 443 ${refuse}\n`);
-	// A domain explicitly assigned to an Xray path must not be stolen
-	// by a kernel tunnel merely because both names share a DNS address.
-	push(s, `\t\tmeta mark & ${sprintf('0x%x', C.POLICY_PROXY_MARK)} != 0 meta nfproto ipv4 meta l4proto { tcp, udp } meta mark set meta mark | ${mark} ${tag} tproxy ip to 127.0.0.1:${C.TPROXY_PORT} counter accept\n`);
-	if (v6)
-		push(s, `\t\tmeta mark & ${sprintf('0x%x', C.POLICY_PROXY_MARK)} != 0 meta nfproto ipv6 meta l4proto { tcp, udp } meta mark set meta mark | ${mark} ${tag} tproxy ip6 to [::1]:${C.TPROXY_PORT} counter accept\n`);
 
 	// Kernel tunnels go before everything else: the mark selects their
 	// routing table, and the packet never reaches xray.
@@ -624,7 +615,6 @@ function build_nft_text(S, v6, sets, tunnels, dns_redirect, fake_pool, kdef, cap
 			push(s, `\t\t${q}\n`);
 	}
 
-
 	if (cap) {
 		if (fake_pool)
 			push(s, `\t\tip daddr ${fake_pool} ${tp4}\n`);
@@ -666,7 +656,6 @@ function build_nft_text(S, v6, sets, tunnels, dns_redirect, fake_pool, kdef, cap
 		push(s, '\n\tchain output {\n');
 		push(s, '\t\ttype route hook output priority mangle; policy accept;\n');
 		push(s, `\t\tmeta mark & ${xm} == ${xm} return\n`);
-		push(s, `\t\tmeta mark & ${sprintf('0x%x', C.POLICY_DIRECT_MARK)} != 0 return\n`);
 
 		if (fake_pool)
 			push(s, `\t\tip daddr ${fake_pool} meta l4proto { tcp, udp } ${to_x}\n`);
@@ -689,7 +678,6 @@ function build_nft_text(S, v6, sets, tunnels, dns_redirect, fake_pool, kdef, cap
 			if (length(sets.direct_ports ?? []))
 				push(s, `\t\tth dport { ${join(', ', sets.direct_ports)} } return\n`);
 
-			push(s, `\t\tmeta mark & ${sprintf('0x%x', C.POLICY_PROXY_MARK)} != 0 ${to_x}\n`);
 			if (cap) {
 				push(s, `\t\tip daddr @px4 ${to_x}\n`);
 
@@ -1081,7 +1069,7 @@ function collect_rules(sec, model, warn, G) {
 		}
 
 		// A block section's category goes to dnsmasq, not into xray.
-		if (x.count > HEAVY && sec.type != 'block' && sec.type != 'exclusion')
+		if (x.count > HEAVY && (sec.type != 'block' || !is_true(model.dns?.hijack ?? '1') || x.count > KERNEL_DOMAINS_MAX))
 			warn(`section "${name}": ${text} has ${x.count} rules, xray may need a lot of memory for it`);
 
 		uniq_push(G.files, x.file);
@@ -1518,10 +1506,7 @@ export function build(model) {
 	// matched in the kernel. Everything else stays in the kernel: xray keeps
 	// no sessions (and no memory) for it.
 	const capture_all = mode == 'global';
-	// Native IP policy requires real DNS answers. The independent resolver
-	// marks addresses learned from Xray DNS for selective proxy interception.
-	const fake = false;
-	if (fakedns) warn('FakeDNS is disabled by native DNS policy: Block and Direct need real IP addresses');
+	const fake = fakedns || !capture_all;
 	const log_level = index(LOG_LEVELS, S.log_level) >= 0 ? S.log_level : 'warning';
 
 	// The first outbound takes traffic that no rule names and traffic routed
@@ -1539,7 +1524,6 @@ export function build(model) {
 
 	const proxy_domains = uset();
 	const block_domains = uset();
-	const dns_policy = { section_dns: {}, rules: [], block_ip: [], direct_ip: [], direct_ports: [] };
 	const dns_block = [];			// lists of names dnsmasq refuses itself (block sections)
 	const dns_redirect = is_true(D.hijack ?? '1');
 	const excl_domains = uset();
@@ -1570,7 +1554,7 @@ export function build(model) {
 	const local_inbounds = [];
 	const local_rules = [];
 	const local_ports = {};
-	const RESERVED_PORTS = [ C.TPROXY_PORT, C.DNS_PORT, C.POLICY_DNS_PORT, C.API_PORT, C.METRICS_PORT, C.HELPER_PORT ];
+	const RESERVED_PORTS = [ C.TPROXY_PORT, C.DNS_PORT, C.API_PORT, C.METRICS_PORT, C.HELPER_PORT ];
 
 	const add_local = (sec, target) => {
 		const sn = sec['.name'];
@@ -1882,33 +1866,63 @@ export function build(model) {
 			break;
 
 		case 'exclusion':
-		case 'block': {
-			const action = info.type == 'block' ? 'block' : 'direct';
-			if (length(own_dns)) {
-				// Preserve existing section-specific resolver protocols via the
-				// DNS-only Xray path; application traffic remains native.
-				push(sec_dns, { name: name, servers: own_dns, domains: domains, target: { outboundTag: 'direct' } });
-				dns_policy.section_dns[name] = [ `127.0.0.1:${C.DNS_PORT}` ];
+			target = { outboundTag: 'direct' };
+			state.sections[name] = { type: 'exclusion' };
+
+			excl_domains.add_all(domains);
+
+			sets.direct4.add_all(ips4);
+			sets.direct4.add_all(RL.geo4);
+			sets.direct6.add_all(ips6);
+			sets.direct6.add_all(RL.geo6);
+
+			// Ports: everything to them goes direct, whatever the address; the
+			// domains and addresses of the section go direct on any port.
+			const ports = [];
+
+			for (let v in entries(sec.ports)) {
+				const m = match(trim(v), /^([0-9]{1,5})(-([0-9]{1,5}))?$/);
+
+				if (!m || int(m[1]) < 1 || int(m[1]) > 65535 || (m[3] != null && (int(m[3]) <= int(m[1]) || int(m[3]) > 65535)))
+					warn(`section "${name}": "${v}" is not a port or a range of ports, skipped`);
+				else
+					uniq_push(ports, m[3] != null ? `${int(m[1])}-${int(m[3])}` : `${int(m[1])}`);
 			}
 
-			if (length(RL.geoip_xray)) {
-				fail(`section "${name}": DNS policy cannot apply reverse or unexpanded GeoIP rules in nftables`);
-				continue;
+			if (length(ports)) {
+				sets.direct_ports.add_all(ports);
+				push(section_rules, { port: join(',', ports), outboundTag: 'direct' });
 			}
-			push(dns_policy.rules, { section: name, action: action, domains: domains });
-			push(dns_policy[action == 'block' ? 'block_ip' : 'direct_ip'], ...ips4, ...ips6, ...RL.geo4, ...RL.geo6);
-			if (action == 'direct')
-				for (let port in entries(sec.ports)) {
-					const m = match(port, /^([0-9]{1,5})(-([0-9]{1,5}))?$/);
-					if (!m || int(m[1]) < 1 || int(m[1]) > 65535 || (m[3] != null && (int(m[3]) < int(m[1]) || int(m[3]) > 65535)))
-						warn(`section "${name}": invalid Direct port "${port}", skipped`);
-					else
-						push(dns_policy.direct_ports, port);
-				}
-			state.sections[name] = { type: info.type, dns_policy: true };
-			info.ok = true;
-			continue;
-		}
+			break;
+
+		case 'block':
+			target = { outboundTag: 'block' };
+			state.sections[name] = { type: 'block' };
+
+			// Spelled-out domains are refused by dnsmasq (DNS of the network
+			// redirected to it); xray keeps only what dnsmasq cannot match.
+			const bd = dns_redirect ? block_for_dnsmasq(RL, model) : null;
+
+			if (bd) {
+				push(dns_block, ...bd.lists);
+				rule_domains = bd.keep;
+				state.sections[name].dnsmasq = bd.count;
+				push(xray_dns, { name: name, RL: { ...RL, domains: bd.keep, sites: bd.sites }, type: info.type });
+				// dnsmasq answers these names itself and never gets an
+				// address for them: in nftset= lines they filled no set, and
+				// spelling out an ad category for them took most of a reload.
+				kernel_rl = { ...RL, domains: bd.keep, sites: bd.sites };
+			}
+			else
+				push(xray_dns, { name: name, RL: RL, type: info.type });
+
+			block_domains.add_all(rule_domains);
+
+			sets.block4.add_all(ips4);
+			sets.block4.add_all(RL.geo4);
+			sets.block6.add_all(ips6);
+			sets.block6.add_all(RL.geo6);
+			break;
 
 		case 'interface':
 			const iface = sec.interface;
@@ -1942,8 +1956,6 @@ export function build(model) {
 
 			const tline = { name: name, device: inf.device, mark: '-', table: '-', v6: tv6 };
 
-			if (!kernel)
-				push(dns_policy.rules, { section: name, action: 'proxy', domains: domains });
 			push(tun_all, tline);
 			push(xray_dns, { name: name, RL: RL, type: info.type, kernel: kernel });
 
@@ -2002,8 +2014,6 @@ export function build(model) {
 			continue;
 		}
 
-		if (info.type == 'proxy')
-			push(dns_policy.rules, { section: name, action: 'proxy', domains: domains });
 		add_dns(target);
 
 		const list = info.type == 'block' ? block_rules : section_rules;
@@ -2182,11 +2192,33 @@ export function build(model) {
 		};
 	}
 
-	// Block and Direct are handled by the independent DNS policy service.
-	const direct_dns = { domains: [], exact: [] };
-	const direct_names = [];
-	const direct_match = (n) => false;
-	const gdir = null;
+	// Global mode with the rest through xray: dnsmasq puts the addresses of
+	// excluded domains into one set and those of every other domain into
+	// another, and an address only in the first goes direct in the kernel,
+	// past xray (UDP included). An address an excluded site shares with
+	// another one (a CDN) still goes to xray, which tells them apart by name.
+	const direct_dns = is_true(S.killswitch ?? '0') ? direct_dns_rules(routed, model, warn) : { domains: [], exact: [] };
+	const direct_names = [ ...direct_dns.domains, ...direct_dns.exact ];
+	const direct_suffix = {}, direct_exact = {};
+	for (let n in direct_dns.domains) direct_suffix[n] = true;
+	for (let n in direct_dns.exact) direct_exact[n] = true;
+	const direct_match = (n) => direct_exact[n] || domain_covered(direct_suffix, n);
+	let gdir = null;
+
+	if (length(direct_names) && R.dnsmasq_nftset === false)
+		warn('Direct domains need dnsmasq-full to bypass stopped Xray; their DNS still goes direct');
+	if (length(direct_names) && R.dnsmasq_nftset !== false)
+		gdir = direct_names;
+	else if (mode == 'global' && !kdef && R.dnsmasq_nftset !== false && !net_hit) {
+		const d = uset();
+
+		for (let r in routed)
+			if (r.type == 'exclusion')
+				d.add_all(kernel_domains(r.name, r.RL, model, nwarn, 'they go direct through xray'));
+
+		if (length(d.items))
+			gdir = d.items;
+	}
 
 	// --- DNS ----------------------------------------------------------------
 
@@ -2538,8 +2570,8 @@ export function build(model) {
 	// chain output lets them out instead of back to xray. Without it a fake
 	// address xray does not know, dialled direct, came back to xray, which
 	// dialled it again, without end.
-	// All Xray transports bypass the independent DNS policy table.
-	for (let ob in outbounds)
+	if (is_true(S.router_traffic ?? '0') || fake)
+		for (let ob in outbounds)
 			if (ob.protocol != 'blackhole' && ob.protocol != 'loopback') {
 				ob.streamSettings ??= {};
 				ob.streamSettings.sockopt ??= {};
@@ -2717,14 +2749,6 @@ export function build(model) {
 		ok: !length(st.errors),
 		mode: mode,
 		xray: xray,
-		dns_policy: {
-			...dns_policy, listen: `127.0.0.1:${C.POLICY_DNS_PORT}`,
-			interfaces: length(entries(S.interface)) ? entries(S.interface) : [ 'br-lan' ],
-			exempt: [ ...(is_true(S.exclude_local ?? '1') ? C.LOCAL4 : C.LOCAL4_ALWAYS), ...(is_true(S.exclude_local ?? '1') ? C.LOCAL6 : C.LOCAL6_ALWAYS), ...endpoint4, ...endpoint6 ],
-			...bypass_sets(S, nwarn),
-			domestic: map(domestic, (d) => `${index(d.address, ':') >= 0 ? '[' + d.address + ']' : d.address}:${d.port ?? 53}`),
-			upstreams_file: `${C.RUN_DIR}/dns-policy.upstreams`, isp_file: `${C.RUN_DIR}/dns-policy.isp`
-		},
 		nft: nft,
 		// What gen.uc keeps for the next build (null: taken from it).
 		net: NC && !net_hit ? { slot: net_slot, key: net_key, nft: nft, dnsmasq: dnsmasq, warnings: net_warns } : null,

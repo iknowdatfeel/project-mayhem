@@ -108,7 +108,7 @@ const CSS = `
 .mh-item { display:grid; grid-template-columns:16px auto 1fr; grid-column-gap:8px; align-items:start; }
 .mh-item > b { white-space:nowrap; }
 .mh-item > div { word-break:break-word; }
-.mh-log { box-sizing:border-box; min-width:0; max-width:100%; height:60vh; overflow:auto; white-space:pre-wrap; overflow-wrap:anywhere; word-break:normal; font-size:12px; }
+.mh-log { height:60vh; overflow:auto; white-space:pre-wrap; font-size:12px; }
 .mh-log-tools { display:flex; flex-wrap:wrap; gap:8px; align-items:center; margin:8px 0; }
 .mh-log-tools select { width:auto; }
 .mh-backup { display:grid; grid-row-gap:6px; padding:8px 0 12px; border-bottom:1px solid var(--background-color-low, lightgray); }
@@ -236,7 +236,6 @@ return baseclass.extend({
 			this.list,
 			E('div', { 'class': 'mh-small mh-muted', 'style': 'margin-top:8px' }, versions.join(' · ')),
 			E('div', { 'class': 'right', 'style': 'margin-top:8px' }, [
-				E('button', { 'class': 'btn', 'click': ui.createHandlerFn(this, 'logs') }, _('Logs')), ' ',
 				E('button', { 'class': 'btn cbi-button-action', 'click': ui.createHandlerFn(this, 'run') }, _('Run again')), ' ',
 				E('button', { 'class': 'btn', 'click': ui.createHandlerFn(this, 'copy') }, _('Copy report'))
 			])
@@ -319,18 +318,7 @@ return baseclass.extend({
 		}));
 	},
 
-	// --- logs dialog ------------------------------------------------------------
-
-	logs() {
-		ui.showModal(_('Logs'), [
-			this.logContent(),
-			E('div', { 'class': 'right' }, E('button', { 'class': 'btn', 'click': () => {
-				this.stopLogs();
-				ui.hideModal();
-			} }, _('Back')))
-		], 'mh-logs-modal');
-		this.startLogs();
-	},
+	// --- logs tab ---------------------------------------------------------------
 
 	stopLogs() {
 		if (this.logView) this.logView.stop();
@@ -364,10 +352,6 @@ return baseclass.extend({
 		const show = () => {
 			window.clearTimeout(timer);
 			if (!active) return Promise.resolve();
-			if (!document.contains(pre)) {
-				this.stopLogs();
-				return Promise.resolve();
-			}
 			if (busy) { pending = true; return Promise.resolve(); }
 			if (document.hidden) { schedule(); return Promise.resolve(); }
 			busy = true;

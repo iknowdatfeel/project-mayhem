@@ -73,7 +73,7 @@ xray_ready() {
 		kill -0 "$xray_pid" 2>/dev/null || return 1
 
 		if mayhem_port_listening "$MAYHEM_TPROXY_PORT" && mayhem_port_listening "$MAYHEM_DNS_PORT" &&
-		   mayhem_port_listening "$MAYHEM_API_PORT" && mayhem_port_listening "$MAYHEM_POLICY_DNS_PORT"; then
+		   mayhem_port_listening "$MAYHEM_API_PORT"; then
 			return 0
 		fi
 

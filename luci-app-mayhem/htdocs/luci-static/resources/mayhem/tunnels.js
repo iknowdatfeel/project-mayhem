@@ -63,7 +63,7 @@ return baseclass.extend({
 				return;
 			}
 
-			const log = E('pre', { 'style': 'box-sizing:border-box;min-width:0;max-width:100%;max-height:20em;overflow:auto;white-space:pre-wrap;overflow-wrap:anywhere;word-break:normal',
+			const log = E('pre', { 'style': 'max-height:20em;overflow:auto;white-space:pre-wrap',
 				'data-mh-no-back': what === 'mayhem' ? '' : null }, _('Starting…'));
 
 			ui.showModal(TITLES[what] || _('Installation'), [

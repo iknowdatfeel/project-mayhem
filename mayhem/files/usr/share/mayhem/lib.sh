@@ -760,7 +760,7 @@ mayhem_dnsmasq_hup() {
 # the names of the rules, with "@ISP@" standing for the provider's servers
 # for everything else.
 mayhem_dns_servers() {
-	local f="$MAYHEM_DNS_SERVERS" new="$MAYHEM_DNS_SERVERS.new" upstream_changed=0
+	local f="$MAYHEM_DNS_SERVERS" new="$MAYHEM_DNS_SERVERS.new"
 
 	mkdir -p "$MAYHEM_RUN_DIR" "$(dirname "$MAYHEM_DNS_SERVERS")"
 
@@ -780,17 +780,6 @@ mayhem_dns_servers() {
 		mayhem_isp_dns > "$new"
 	fi
 
-	# The policy resolver sees both the selected upstream route and plain ISP
-	# resolvers. dnsmasq must not cache past a policy set's DNS lifetime.
-	mayhem_isp_dns > "$MAYHEM_RUN_DIR/dns-policy.isp.new"
-	cmp -s "$MAYHEM_RUN_DIR/dns-policy.isp.new" "$MAYHEM_RUN_DIR/dns-policy.isp" || upstream_changed=1
-	mv -f "$MAYHEM_RUN_DIR/dns-policy.isp.new" "$MAYHEM_RUN_DIR/dns-policy.isp"
-	# dnsmasq sees the same policy listener even when its upstream route changes.
-	# Cached ISP replies must not survive a switch to proxy DNS (or back).
-	cmp -s "$new" "$MAYHEM_RUN_DIR/dns-policy.upstreams" || upstream_changed=1
-	mv -f "$new" "$MAYHEM_RUN_DIR/dns-policy.upstreams"
-	echo "server=127.0.0.1#$MAYHEM_POLICY_DNS_PORT" > "$new"
-
 	# dnsmasq reads it again on SIGHUP as its own user, not root.
 	chmod 644 "$new"
 
@@ -798,7 +787,6 @@ mayhem_dns_servers() {
 		# One written by an older Mayhem may be root's only.
 		chmod 644 "$f"
 		rm -f "$new"
-		[ "$upstream_changed" = 0 ] || mayhem_dnsmasq_hup
 		return 0
 	fi
 
@@ -815,7 +803,8 @@ mayhem_dns_up() {
 	mkdir -p "$(dirname "$MAYHEM_DNS_SERVERS")"
 
 	if [ ! -f "$MAYHEM_DNS_SERVERS" ] || [ ! -f "$MAYHEM_RUN_DIR/active" ]; then
-		mayhem_dns_servers isp
+		mayhem_isp_dns > "$MAYHEM_DNS_SERVERS.tmp" && chmod 644 "$MAYHEM_DNS_SERVERS.tmp" &&
+			mv -f "$MAYHEM_DNS_SERVERS.tmp" "$MAYHEM_DNS_SERVERS"
 	fi
 
 	for d in $(mayhem_dnsmasq_dirs); do
@@ -830,13 +819,7 @@ mayhem_dns_up() {
 		changed=1
 	done
 
-	if [ "$changed" = 1 ]; then
-		"$MAYHEM_DNSMASQ_INIT" restart >/dev/null 2>&1
-	else
-		# A new/reloaded policy can classify names differently even when this
-		# include is unchanged. Make dnsmasq ask it again for cached answers.
-		mayhem_dnsmasq_hup
-	fi
+	[ "$changed" = 1 ] && "$MAYHEM_DNSMASQ_INIT" restart >/dev/null 2>&1
 
 	return 0
 }

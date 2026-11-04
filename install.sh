@@ -12,7 +12,6 @@ API="https://api.github.com/repos/$REPO/releases/latest"
 [ -n "${MAYHEM_TAG:-}" ] && API="https://api.github.com/repos/$REPO/releases/tags/$MAYHEM_TAG"
 TMP="/tmp/mayhem-install"
 TRIES=3
-DNS_POLICY_ARCHIVE=""
 
 msg()  { printf '\033[32;1m%s\033[0m\n' "$1"; }
 warn() { printf '\033[33;1m%s\033[0m\n' "$1"; }
@@ -156,40 +155,6 @@ check_digest() {
 # Fetch the native engine while the old installation can still resolve names.
 # Package upgrade scripts stop Mayhem; downloading afterwards depends on DNS
 # recovering before curl starts, and can strand an otherwise valid upgrade.
-download_dns_policy() {
-	local list="$1" arch asset url want sum
-
-	# Older releases have no native engine.
-	echo "$list" | grep -q 'mayhem-dns-.*\.zip"' || return 0
-	arch="$(. /etc/openwrt_release 2>/dev/null; echo "$DISTRIB_ARCH")"
-	[ -n "$arch" ] || arch="$(uname -m)"
-	case "$arch" in
-		aarch64*) asset=linux-arm64-v8a ;;
-		arm_cortex-a*) asset=linux-arm32-v7a ;;
-		arm_arm1176*|arm_mpcore*) asset=linux-arm32-v6 ;;
-		arm_*) asset=linux-arm32-v5 ;;
-		mipsel_*|mipsle*) asset=linux-mips32le ;;
-		mips64el_*) asset=linux-mips64le ;;
-		mips64_*) asset=linux-mips64 ;;
-		mips_*|mips) asset=linux-mips32 ;;
-		x86_64) asset=linux-64 ;;
-		i386_*|i686|i386) asset=linux-32 ;;
-		riscv64*) asset=linux-riscv64 ;;
-		*) die "Unsupported DNS policy architecture: $arch. Nothing was installed." ;;
-	esac
-	url="$(echo "$list" | grep -o "https://[^\"]*/mayhem-dns-$asset\.zip" | head -n 1)"
-	[ -n "$url" ] || die "No DNS policy engine for $arch in the release. Nothing was installed."
-	DNS_POLICY_ARCHIVE="$TMP/$(basename "$url")"
-	msg "Downloading DNS policy engine..."
-	if ! fetch "$url" "$DNS_POLICY_ARCHIVE" || ! fetch "$url.sha256" "$DNS_POLICY_ARCHIVE.sha256"; then
-		die "Could not download DNS policy engine. Nothing was installed."
-	fi
-	want="$(awk 'NR == 1 { print $1 }' "$DNS_POLICY_ARCHIVE.sha256")"
-	echo "$want" | grep -qx '[0-9a-f]\{64\}' || die "Invalid DNS policy checksum. Nothing was installed."
-	sum="$(sha256sum "$DNS_POLICY_ARCHIVE" | awk '{ print $1 }')"
-	[ "$sum" = "$want" ] || die "DNS policy checksum mismatch. Nothing was installed."
-}
-
 download_release() {
 	local list ext url file n
 
@@ -217,7 +182,6 @@ download_release() {
 	done
 
 	ls "$TMP"/mayhem[-_]*."$ext" >/dev/null 2>&1 || die "No $ext packages found in the release ${MAYHEM_TAG:-latest} of $REPO."
-	download_dns_policy "$list"
 }
 
 install_packages() {
@@ -275,13 +239,6 @@ main() {
 
 	msg "Installing xray..."
 	/usr/bin/mayhem xray-install || die "xray installation failed, run 'mayhem xray-install' later."
-
-	if grep -q '^MAYHEM_POLICY_DNS_PORT=' /usr/share/mayhem/const.sh; then
-		msg "Installing DNS policy engine..."
-		/usr/bin/mayhem dns-policy-install "$DNS_POLICY_ARCHIVE" || die "DNS policy engine installation failed, run 'mayhem dns-policy-install' later."
-	fi
-
-	rm -rf "$TMP"
 
 	# dnsmasq-full: the same dnsmasq with nftset, which tunnels in kernel mode
 	# need. Swapped with a rollback: if it does not install or start, the old

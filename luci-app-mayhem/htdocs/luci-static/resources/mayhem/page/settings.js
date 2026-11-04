@@ -151,6 +151,13 @@ return baseclass.extend({
           } else diag.drawList();
         },
       ],
+      [
+        "logs",
+        _("Logs"),
+        () => diag.logContent(),
+        () => diag.startLogs(),
+        () => diag.stopLogs(),
+      ],
       ["main", _("Advanced"), () => this.renderMain()],
     ];
     const icons = {
@@ -161,6 +168,7 @@ return baseclass.extend({
       components: "package",
       connections: "activity",
       diagnostics: "search",
+      logs: "logs",
       main: "settings",
     };
     const bar = E("div", {
@@ -246,18 +254,11 @@ return baseclass.extend({
       E(
         "style",
         `
-.mh-settings-tabs { display:flex; overflow-x:auto; gap:4px; border-bottom:1px solid var(--border-color-low, #ddd); margin-bottom:16px; }
+.mh-settings-tabs { display:flex; overflow:visible; gap:4px; border-bottom:1px solid var(--border-color-low, #ddd); margin-bottom:16px; }
 .mh-settings-tabrow { display:flex; flex-wrap:nowrap; justify-content:flex-start; gap:4px; }
 .mh-settings-tabs [role=tab] { display:inline-flex; flex-shrink:0; white-space:nowrap; align-items:center; gap:6px; background:none; color:inherit; border:0; border-bottom:3px solid transparent; padding:6px 6px; cursor:pointer; }
 .mh-settings-tabs [aria-selected=true] { border-bottom-color:var(--primary-color-high, #37c); font-weight:bold; }
-.mh-settings > [role=tabpanel] { contain:inline-size; }
 .mh-settings > [role=tabpanel][hidden] { display:none; }
-@media (max-width: 600px) {
-.mh-settings-tabs { overflow:visible; }
-.mh-settings-tabrow { flex-wrap:wrap; min-width:0; }
-.mh-settings-tabs [role=tab] { flex-shrink:1; min-width:0; max-width:100%; white-space:normal; text-align:left; }
-.mh-settings-tabs [role=tab] span { min-width:0; overflow-wrap:anywhere; }
-}
 `,
       ),
     );

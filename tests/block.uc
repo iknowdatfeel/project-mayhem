@@ -47,20 +47,27 @@ function expect(what, cond, res) {
 	}
 }
 
-// Block domains, including category references and patterns, belong to the
-// native DNS policy only. DNS refusal must not prevent learning their IPs.
-for (let mode in [ 'global', 'lists' ]) {
-	let r = build(model(mode, [ 'geosite:ads', 'domain:my.example', 'keyword:promo' ]));
-	const native = sprintf('%J', r.dns_policy);
-	expect(`${mode}: category exported to DNS policy`, index(native, 'ext:s.dat:ads') >= 0, r);
-	expect(`${mode}: plain domain exported to DNS policy`, index(native, 'domain:my.example') >= 0, r);
-	expect(`${mode}: keyword exported to DNS policy`, index(native, 'keyword:promo') >= 0, r);
-	expect(`${mode}: no category or keyword in Xray`, index(rules_text(r), 'ext:s.dat:ads') < 0 && index(rules_text(r), 'keyword:promo') < 0, r);
-	expect(`${mode}: DNS obtains real Block addresses`, index(r.dnsmasq, 'local=') < 0, r);
-	expect(`${mode}: no heavy Xray category warning`, !length(filter(r.status.warnings, (w) => index(w, 'a lot of memory') >= 0)), r);
-	r = build(model(mode, [ 'geosite:mixed' ]));
-	expect(`${mode}: mixed category stays native`, index(sprintf('%J', r.dns_policy), 'ext:s.dat:mixed') >= 0 && index(rules_text(r), 'ext:s.dat:mixed') < 0, r);
-	r = build(model(mode, [ 'geosite:ads' ], { hijack: '0' }));
-	expect(`${mode}: no silent Xray fallback without DNS hijack`, index(rules_text(r), 'ext:s.dat:ads') < 0, r);
-}
+// Global: the category and plain domains go to dnsmasq, a keyword stays in xray.
+let r = build(model('global', [ 'geosite:ads', 'domain:my.example', 'keyword:promo' ]));
+expect('global: category refused by dnsmasq', match(r.dnsmasq, /local=\/[^\n]*ads\.example/) && index(r.dnsmasq, 'track.example') >= 0, r);
+expect('global: plain domain refused by dnsmasq', index(r.dnsmasq, 'my.example') >= 0, r);
+expect('global: no category in xray', index(rules_text(r), 'ext:s.dat:ads') < 0, r);
+expect('global: keyword still in xray', index(rules_text(r), 'keyword:promo') >= 0, r);
+expect('global: no heavy-category warning', !length(filter(r.status.warnings, (w) => index(w, 'a lot of memory') >= 0)), r);
+
+// A category with keyword rules: spelled out for dnsmasq and kept in xray.
+r = build(model('global', [ 'geosite:mixed' ]));
+expect('mixed category: domains in dnsmasq', index(r.dnsmasq, 'm.example') >= 0, r);
+expect('mixed category: kept in xray', index(rules_text(r), 'ext:s.dat:mixed') >= 0, r);
+
+// DNS not redirected to dnsmasq: devices may ask other servers, xray blocks.
+r = build(model('global', [ 'geosite:ads' ], { hijack: '0' }));
+expect('no DNS redirect: nothing in dnsmasq', index(r.dnsmasq, 'local=') < 0, r);
+expect('no DNS redirect: category in xray', index(rules_text(r), 'ext:s.dat:ads') >= 0, r);
+
+// By lists: blocked names no longer make dnsmasq send every query to xray.
+r = build(model('lists', [ 'geosite:ads' ]));
+expect('lists: split DNS stays on with a big block category', r.state.dns?.split == true, r);
+expect('lists: blocked names are not sent to xray', index(r.dns_xray ?? '', 'ads.example') < 0, r);
+
 exit(fails ? 1 : 0);

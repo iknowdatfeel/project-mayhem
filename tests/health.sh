@@ -146,14 +146,14 @@ tick; tick
 # Remote DNS: two failed checks -> the provider's DNS; back when it answers.
 : > "$T/dns_dead"
 tick; tick
-if [ -f "$T/run/dns.degraded" ] && grep -q 12754 "$T/dnsmasq/mayhem.servers" && grep -q 'server=10.9.9.9' "$T/run/dns-policy.upstreams"; then
+if [ -f "$T/run/dns.degraded" ] && ! grep -q 12753 "$T/dnsmasq/mayhem.servers" && grep -q 'server=10.9.9.9' "$T/dnsmasq/mayhem.servers"; then
 	ok "remote DNS down: dnsmasq asks the provider"
 else
 	bad "dns down: $(cat "$T/dnsmasq/mayhem.servers" 2>/dev/null)"
 fi
 rm -f "$T/dns_dead"
 tick
-if [ ! -f "$T/run/dns.degraded" ] && grep -q 12754 "$T/dnsmasq/mayhem.servers" && grep -q 'server=/youtube.com/127.0.0.1#12753' "$T/run/dns-policy.upstreams"; then
+if [ ! -f "$T/run/dns.degraded" ] && grep -q 'server=/youtube.com/127.0.0.1#12753' "$T/dnsmasq/mayhem.servers"; then
 	ok "remote DNS back: dnsmasq asks xray again"
 else
 	bad "dns back: $(cat "$T/dnsmasq/mayhem.servers" 2>/dev/null)"
