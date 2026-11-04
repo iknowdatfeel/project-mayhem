@@ -181,8 +181,9 @@ download_dns_policy() {
 	[ -n "$url" ] || die "No DNS policy engine for $arch in the release. Nothing was installed."
 	DNS_POLICY_ARCHIVE="$TMP/$(basename "$url")"
 	msg "Downloading DNS policy engine..."
-	fetch "$url" "$DNS_POLICY_ARCHIVE" && fetch "$url.sha256" "$DNS_POLICY_ARCHIVE.sha256" ||
+	if ! fetch "$url" "$DNS_POLICY_ARCHIVE" || ! fetch "$url.sha256" "$DNS_POLICY_ARCHIVE.sha256"; then
 		die "Could not download DNS policy engine. Nothing was installed."
+	fi
 	want="$(awk 'NR == 1 { print $1 }' "$DNS_POLICY_ARCHIVE.sha256")"
 	echo "$want" | grep -qx '[0-9a-f]\{64\}' || die "Invalid DNS policy checksum. Nothing was installed."
 	sum="$(sha256sum "$DNS_POLICY_ARCHIVE" | awk '{ print $1 }')"
