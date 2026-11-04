@@ -54,6 +54,13 @@ func main() {
 		}
 		return
 	}
+	// Hold ownership through listener shutdown, worker draining and table
+	// cleanup. A replacement process must not install its table earlier.
+	lock, err := acquirePolicyLock(filepath.Join(filepath.Dir(*config), "dns-policy.lock"))
+	if err != nil {
+		log.Fatal(err)
+	}
+	defer lock.Close()
 	store := policy.NewStore(nft)
 	state := filepath.Join(filepath.Dir(*config), "dns-policy.bindings.json")
 	if err = store.Restore(state, matcher, time.Now()); err != nil {
@@ -63,7 +70,9 @@ func main() {
 	ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGTERM, syscall.SIGINT)
 	defer cancel()
 	status := filepath.Join(filepath.Dir(*config), "dns-policy.error")
+	gcDone := make(chan struct{})
 	go func() {
+		defer close(gcDone)
 		ticker := time.NewTicker(time.Second)
 		defer ticker.Stop()
 		for {
@@ -89,8 +98,21 @@ func main() {
 		os.WriteFile(status, []byte(err.Error()), 0600)
 		log.Fatal(err)
 	}
+	<-gcDone
 	cleanup, stop := context.WithTimeout(context.Background(), 2*time.Second)
 	defer stop()
 	_ = exec.CommandContext(cleanup, "nft", "delete", "table", "inet", "mayhem_policy").Run()
 
+}
+
+func acquirePolicyLock(path string) (*os.File, error) {
+	f, err := os.OpenFile(path, os.O_CREATE|os.O_RDWR, 0600)
+	if err != nil {
+		return nil, err
+	}
+	if err = syscall.Flock(int(f.Fd()), syscall.LOCK_EX); err != nil {
+		f.Close()
+		return nil, err
+	}
+	return f, nil
 }

@@ -62,7 +62,7 @@ const REF = 'meta mark set meta mark | 0x8000000 counter return';
 const p = pre(r.nft);
 
 expect('blocked addresses exported to native policy', index(sprintf('%J', r.dns_policy.block_ip), '46.0.0.0/24') >= 0, p);
-expect('QUIC refused before xray, after the direct ones', index(p, `meta l4proto udp th dport 443 ${REF}`) > index(p, 'ip daddr @direct4 counter return') &&
+expect('QUIC refused before xray, after the direct ones', index(p, `meta l4proto udp th dport 443 ${REF}`) > index(p, 'meta mark & 0x40000000 != 0 return') &&
 	index(p, `meta l4proto udp th dport 443 ${REF}`) < index(p, 'meta nfproto ipv4 meta l4proto { tcp, udp } meta mark set meta mark | 0x2000000'), p);
 expect('UDP refused with port unreachable', index(r.nft, 'meta l4proto udp counter reject with icmpx type port-unreachable') >= 0, r.nft);
 

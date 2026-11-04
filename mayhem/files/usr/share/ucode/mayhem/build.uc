@@ -511,6 +511,14 @@ function build_nft_text(S, v6, sets, tunnels, dns_redirect, fake_pool, kdef, cap
 		push(s, `\t\tip6 daddr @blk_d6 ${refuse}\n`);
 	}
 
+	if (no_quic)
+		push(s, `\t\tmeta mark & ${sprintf('0x%x', C.POLICY_PROXY_MARK)} != 0 meta l4proto udp th dport 443 ${refuse}\n`);
+	// A domain explicitly assigned to an Xray path must not be stolen
+	// by a kernel tunnel merely because both names share a DNS address.
+	push(s, `\t\tmeta mark & ${sprintf('0x%x', C.POLICY_PROXY_MARK)} != 0 meta nfproto ipv4 meta l4proto { tcp, udp } meta mark set meta mark | ${mark} ${tag} tproxy ip to 127.0.0.1:${C.TPROXY_PORT} counter accept\n`);
+	if (v6)
+		push(s, `\t\tmeta mark & ${sprintf('0x%x', C.POLICY_PROXY_MARK)} != 0 meta nfproto ipv6 meta l4proto { tcp, udp } meta mark set meta mark | ${mark} ${tag} tproxy ip6 to [::1]:${C.TPROXY_PORT} counter accept\n`);
+
 	// Kernel tunnels go before everything else: the mark selects their
 	// routing table, and the packet never reaches xray.
 	for (let t in tunnels) {
@@ -616,9 +624,6 @@ function build_nft_text(S, v6, sets, tunnels, dns_redirect, fake_pool, kdef, cap
 			push(s, `\t\t${q}\n`);
 	}
 
-	push(s, `\t\tmeta mark & ${sprintf('0x%x', C.POLICY_PROXY_MARK)} != 0 meta nfproto ipv4 ${tp4}\n`);
-	if (v6)
-		push(s, `\t\tmeta mark & ${sprintf('0x%x', C.POLICY_PROXY_MARK)} != 0 ${tp6}\n`);
 
 	if (cap) {
 		if (fake_pool)
@@ -1937,7 +1942,8 @@ export function build(model) {
 
 			const tline = { name: name, device: inf.device, mark: '-', table: '-', v6: tv6 };
 
-			push(dns_policy.rules, { section: name, action: 'proxy', domains: domains });
+			if (!kernel)
+				push(dns_policy.rules, { section: name, action: 'proxy', domains: domains });
 			push(tun_all, tline);
 			push(xray_dns, { name: name, RL: RL, type: info.type, kernel: kernel });
 
