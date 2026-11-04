@@ -981,6 +981,10 @@ msgstr ""
 msgid "Location"
 msgstr ""
 
+#: htdocs/luci-static/resources/mayhem/diag.js
+msgid "Logs"
+msgstr ""
+
 #: htdocs/luci-static/resources/mayhem/common.js
 msgid "MB"
 msgstr ""
