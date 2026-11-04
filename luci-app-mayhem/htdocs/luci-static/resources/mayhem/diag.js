@@ -236,6 +236,7 @@ return baseclass.extend({
 			this.list,
 			E('div', { 'class': 'mh-small mh-muted', 'style': 'margin-top:8px' }, versions.join(' · ')),
 			E('div', { 'class': 'right', 'style': 'margin-top:8px' }, [
+				E('button', { 'class': 'btn', 'click': ui.createHandlerFn(this, 'logs') }, _('Logs')), ' ',
 				E('button', { 'class': 'btn cbi-button-action', 'click': ui.createHandlerFn(this, 'run') }, _('Run again')), ' ',
 				E('button', { 'class': 'btn', 'click': ui.createHandlerFn(this, 'copy') }, _('Copy report'))
 			])
@@ -319,6 +320,21 @@ return baseclass.extend({
 	},
 
 	// --- logs tab ---------------------------------------------------------------
+
+	logs() {
+		ui.showModal(_('Logs'), [
+			this.logContent(),
+			E('div', { 'class': 'right' },
+				E('button', {
+					'class': 'btn',
+					'click': () => {
+						this.stopLogs();
+						ui.hideModal();
+					}
+				}, _('Back')))
+		]);
+		this.startLogs();
+	},
 
 	stopLogs() {
 		if (this.logView) this.logView.stop();

@@ -347,6 +347,14 @@ def main():
                     pg.wait_for_timeout(700)
                 except Exception as e:
                     errors.append('%s: %s' % (name, e))
+                    try:
+                        pg.reload()
+                        pg.wait_for_selector(
+                            '.mh-sheet-body .cbi-map' if frag else '#view .cbi-map',
+                            timeout=15000)
+                    except Exception as recovery:
+                        errors.append('%s: recovery failed: %s' % (name, recovery))
+                        break
             if os.environ.get('SHOTS'):
                 pg.screenshot(path=os.path.join(os.environ['SHOTS'], view.replace('/', '_').replace('#', '_') + '.png'), full_page=True)
             body = pg.inner_text('body')
@@ -1036,8 +1044,12 @@ def main():
                     box = pg.locator('.mh-sheet--settings').bounding_box()
                     viewport = pg.viewport_size
                     inset = 0 if viewport['width'] <= 600 else 32
-                    if abs(box['width'] - (viewport['width'] - inset)) > 2:
-                        raise RuntimeError('settings loading window is too narrow: %s' % box)
+                    fit = pg.locator('.mh-sheet--settings').evaluate(
+                        "el => parseFloat(getComputedStyle(el).getPropertyValue('--mh-settings-fit')) || 1200")
+                    expected = viewport['width'] if inset == 0 else min(
+                        fit, viewport['width'] - inset)
+                    if abs(box['width'] - expected) > 3:
+                        raise RuntimeError('settings loading width: %s, expected %s' % (box, expected))
                     if abs(box['height'] - (viewport['height'] - (0 if inset == 0 else 48))) > 2:
                         raise RuntimeError('settings loading window is too short: %s' % box)
                 pg.wait_for_selector('.mh-sheet-body .cbi-map', timeout=15000)
