@@ -425,10 +425,6 @@ msgstr ""
 msgid "DNS hijack (port 53)"
 msgstr ""
 
-#: htdocs/luci-static/resources/mayhem/diag.js
-msgid "DNS policy"
-msgstr ""
-
 #: htdocs/luci-static/resources/mayhem/page/sections.js
 msgid "DNS protocol"
 msgstr ""
@@ -551,10 +547,6 @@ msgstr ""
 
 #: htdocs/luci-static/resources/mayhem/diag.js
 msgid "Download the backup"
-msgstr ""
-
-#: htdocs/luci-static/resources/mayhem/page/sections.js
-msgid "Download the category list"
 msgstr ""
 
 #: htdocs/luci-static/resources/mayhem/page/servers.js
@@ -739,10 +731,6 @@ msgstr ""
 
 #: htdocs/luci-static/resources/mayhem/page/sections.js
 msgid "Geo data and lists are downloaded through the active server; when that fails, direct."
-msgstr ""
-
-#: htdocs/luci-static/resources/mayhem/page/sections.js
-msgid "Geo data is downloading in the background. Open this window again in a few minutes."
 msgstr ""
 
 #: htdocs/luci-static/resources/mayhem/page/sections.js
@@ -1679,10 +1667,6 @@ msgstr ""
 
 #: htdocs/luci-static/resources/mayhem/page/sections.js
 msgid "The DNS of the DNS tab"
-msgstr ""
-
-#: htdocs/luci-static/resources/mayhem/page/sections.js
-msgid "The GeoSite and GeoIP categories have not been downloaded yet."
 msgstr ""
 
 #: htdocs/luci-static/resources/mayhem/page/sections.js

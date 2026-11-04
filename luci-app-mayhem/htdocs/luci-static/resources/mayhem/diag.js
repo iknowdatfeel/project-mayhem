@@ -90,7 +90,6 @@ const NAMES = {
 	'nftables': 'Nftables',
 	'Policy routing': _('Policy routing'),
 	'dnsmasq': 'Dnsmasq',
-	'DNS policy': _('DNS policy'),
 	'Remote DNS': _('Remote DNS'),
 	'Clock': _('Clock'),
 	'Watchdog': _('Watchdog'),

@@ -556,6 +556,9 @@ def main():
             tunnels = pg.locator('#mh-settings-diagnostics [data-group="tunnels"]')
             if tunnels.count() != 1 or 'awg0' not in tunnels.inner_text() or not tunnels.locator('.mh-item').count():
                 raise RuntimeError('configured tunnel has no diagnostic details')
+            checks = call('luci.mayhem', 'diagnose', {'part': 'local'}).get('checks', [])
+            if any(x.get('name') == 'DNS policy' for x in checks):
+                raise RuntimeError('removed DNS Policy diagnostic is still present')
             if pg.locator('#mh-settings-diagnostics').get_by_role('button', name=TRANSLATIONS.get('Logs', 'Logs'), exact=True).count() != 1:
                 raise RuntimeError('Logs button is missing from Diagnostics')
             shot(pg, 'dashboard_diag')
@@ -734,6 +737,11 @@ def main():
                 'es => es.map(e => Math.round(e.getBoundingClientRect().top))')
             if len(set(rows)) != 1:
                 raise RuntimeError('settings tabs are not in one row: %s' % rows)
+            if pg.locator('#mh-settings-routing').get_by_role(
+                    'button', name=TRANSLATIONS.get(
+                        'Download the category list', 'Download the category list'),
+                    exact=True).count():
+                raise RuntimeError('obsolete Geo download banner in Routing')
             if pg.locator('#mh-settings-routing .cbi-tabmenu').count():
                 raise RuntimeError('routing still has nested tabs')
             if pg.locator('#mh-settings-routing [data-name="remote"], #mh-settings-routing [data-name="_sources"]').count():

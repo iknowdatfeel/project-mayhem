@@ -1203,23 +1203,6 @@ return baseclass.extend({
 		return m.render().then((node) => {
 			node.insertBefore(mh.style(), node.firstChild);
 
-			if (!noGeo || tab !== 'settings')
-				return node;
-
-			// Without a download there is no category list to pick from.
-			const pane = node;
-			const btn = E('button', {
-				'class': 'btn cbi-button-action',
-				'click': ui.createHandlerFn(this, () => callDataUpdate('geo', '').then((r) => {
-					ui.addNotification(null, E('p', r.busy ? _('An update is already running')
-						: _('Geo data is downloading in the background. Open this window again in a few minutes.')), 'info');
-				}))
-			}, _('Download the category list'));
-
-			pane.insertBefore(E('div', { 'class': 'cbi-section' }, [
-				E('p', _('The GeoSite and GeoIP categories have not been downloaded yet.')), btn
-			]), pane.firstChild);
-
 			return node;
 		});
 	}
