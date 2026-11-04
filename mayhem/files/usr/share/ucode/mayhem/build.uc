@@ -2700,7 +2700,7 @@ export function build(model) {
 		dir_domains: gdir != null
 	}, tunnels, dns_redirect, fake ? C.FAKEDNS_POOL : null, kdef,
 		capture_all ? null : { px4: px4.items, px6: v6 ? px6.items : [] }, path_generation);
-	const dnsmasq = net_hit ? net_hit.dnsmasq : `no-resolv\ncache-size=0\nservers-file=${C.DNS_SERVERS}\n` +
+	const dnsmasq = net_hit ? net_hit.dnsmasq : `no-resolv\nservers-file=${C.DNS_SERVERS}\n` +
 		server_lines(endpoint_domains, `${plain.address}${plain.port ? `#${plain.port}` : ''}`) +
 		join('', map(domestic, (d) => server_lines(direct_names, `${d.address}${d.port ? `#${d.port}` : ''}`))) +
 		server_lines(map(direct_dns.exact, (n) => `*.${n}`), `127.0.0.1#${C.DNS_PORT}`) +

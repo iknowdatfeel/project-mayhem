@@ -36,9 +36,10 @@ SERVFAIL rather than returning an address without enforcement.
 DNS state is in `/var/run/mayhem/dns-policy.bindings.json` (RAM, mode 0600).
 The DNS listener is loopback-only, UDP and TCP, on 12754. Upstream UDP responses
 with TC fall back to TCP. Downstream UDP responses exceeding 512 bytes use TC,
-so clients can retry over TCP. dnsmasq caching is disabled for this path; the
-resolver does not cache upstream replies. Zero-TTL replies retain TTL zero and
-use a five-second kernel admission window for the immediate connection.
+so clients can retry over TCP. dnsmasq retains its OpenWrt cache configuration;
+the resolver does not cache upstream replies. Cached answers retain the remaining
+DNS lifetime of the bindings already installed before the original reply.
+Zero-TTL replies retain TTL zero and use a five-second kernel admission window for the immediate connection.
 
 ## Configuration and lifecycle
 
@@ -60,7 +61,9 @@ An explicit Mayhem stop removes both the normal and policy tables.
 The architecture-independent Mayhem package remains ucode. The Go engine is
 built without CGO for the architectures already enumerated by `xray_asset`.
 `mayhem dns-policy-install` installs the matching release ZIP after checking its
-SHA-256 and that the binary starts. The release installer calls this command.
+SHA-256 and that the binary starts. The release installer downloads and verifies the engine before replacing
+packages, then calls this command with the local ZIP and its `.sha256` sidecar.
+This stage does not need DNS after package upgrade scripts stop Mayhem.
 Direct package installation must install this binary as well; validation will
 otherwise report the missing executable. Building a new engine does not publish
 or deploy it.

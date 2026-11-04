@@ -26,7 +26,7 @@ for (let mode in [ 'global', 'lists' ]) {
 		expect(`${what}: IPv4 and IPv6 exported`, index(policy, '5.0.0.0/8') >= 0 && index(policy, '2a00:1::/32') >= 0);
 		expect(`${what}: no Direct pattern in Xray`, index(sprintf('%J', r.xray.routing.rules), 'keyword:bank') < 0);
 		expect(`${what}: LAN Direct mark bypass`, index(r.nft, 'meta mark & 0x40000000 != 0 return') >= 0);
-		expect(`${what}: DNS cache does not outlive policy`, index(r.dnsmasq, 'cache-size=0') >= 0);
+		expect(`${what}: OpenWrt owns the DNS cache size`, index(r.dnsmasq, 'cache-size=') < 0);
 		writefile(`${ARGV[0]}/${mode}-${kernel}.nft`, r.nft);
 		writefile(`${ARGV[0]}/${mode}-${kernel}.json`, sprintf('%J', r.xray));
 		model.runtime.dnsmasq_nftset = false;

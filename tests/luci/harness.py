@@ -997,6 +997,16 @@ def main():
             # twice: a page opened again must find what LuCI loaded before
             for i in list(range(2)) * 2:
                 pg.click('#mayhem-body .mh-navbtn >> nth=%d' % i)
+                if i == 1:
+                    # Size must already be reserved while the page is loading.
+                    pg.wait_for_selector('.mh-sheet--settings')
+                    box = pg.locator('.mh-sheet--settings').bounding_box()
+                    viewport = pg.viewport_size
+                    inset = 0 if viewport['width'] <= 600 else 32
+                    if abs(box['width'] - (viewport['width'] - inset)) > 2:
+                        raise RuntimeError('settings loading window is too narrow: %s' % box)
+                    if abs(box['height'] - (viewport['height'] - (0 if inset == 0 else 48))) > 2:
+                        raise RuntimeError('settings loading window is too short: %s' % box)
                 pg.wait_for_selector('.mh-sheet-body .cbi-map', timeout=15000)
                 if i == 0:
                     shot(pg, 'dashboard_sheet')
