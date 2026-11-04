@@ -709,7 +709,7 @@ fi
 if command -v shellcheck >/dev/null 2>&1; then
 	if out="$(shellcheck -s sh -f gcc -e SC1091,SC2034,SC3043,SC2086,SC2046,SC2317,SC2329 \
 		"$FILES/usr/bin/mayhem" "$FILES/usr/libexec/mayhem/xray-run" "$FILES/usr/libexec/mayhem/scheduler" \
-		"$FILES/etc/uci-defaults/90-mayhem" "$ROOT/tests/netns.sh" "$ROOT/tests/build-ucode.sh" "$ROOT/tests/health.sh" "$ROOT/tests/tunsync.sh" "$ROOT/tests/nftkeep.sh" "$ROOT/tests/scheduler.sh" "$ROOT/tests/serverlist.sh" "$ROOT/tests/conns.sh" "$ROOT/tests/bbr.sh" \
+		"$FILES/etc/uci-defaults/90-mayhem" "$ROOT/tests/netns.sh" "$ROOT/tests/build-ucode.sh" "$ROOT/tests/health.sh" "$ROOT/tests/tunsync.sh" "$ROOT/tests/nftkeep.sh" "$ROOT/tests/scheduler.sh" "$ROOT/tests/serverlist.sh" "$ROOT/tests/conns.sh" "$ROOT/tests/bbr.sh" "$ROOT/tests/dnscache.sh" \
 		"$FILES/usr/share/mayhem/lib.sh" "$FILES/usr/share/mayhem/const.sh" "$ROOT/install.sh" 2>&1)"; then
 		ok "shellcheck"
 	else
@@ -1097,6 +1097,13 @@ if out="$(python3 "$ROOT/tests/install.py" 2>&1)"; then
 	ok "installer: offline DNS policy install and checksum failures"
 else
 	bad "installer: $out"
+fi
+
+# Native policy listener stays the same across route and policy changes.
+if out="$(sh "$ROOT/tests/dnscache.sh" 2>&1)"; then
+	ok "DNS cache: route transitions and policy reload invalidate cached replies"
+else
+	bad "DNS cache: $out"
 fi
 
 # Servers or remote DNS that stop answering: direct and back, or the kill switch.

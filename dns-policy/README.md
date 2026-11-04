@@ -39,6 +39,8 @@ with TC fall back to TCP. Downstream UDP responses exceeding 512 bytes use TC,
 so clients can retry over TCP. dnsmasq retains its OpenWrt cache configuration;
 the resolver does not cache upstream replies. Cached answers retain the remaining
 DNS lifetime of the bindings already installed before the original reply.
+Mayhem flushes the dnsmasq cache on policy reload and upstream-route changes,
+even when the loopback policy-listener address stays unchanged.
 Zero-TTL replies retain TTL zero and use a five-second kernel admission window for the immediate connection.
 
 ## Configuration and lifecycle
