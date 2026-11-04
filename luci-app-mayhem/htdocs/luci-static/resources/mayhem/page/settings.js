@@ -151,7 +151,6 @@ return baseclass.extend({
           } else diag.drawList();
         },
       ],
-      ["logs", _("Logs"), () => diag.logContent(), () => diag.startLogs(), () => diag.stopLogs()],
       ["main", _("Advanced"), () => this.renderMain()],
     ];
     const icons = {
@@ -162,7 +161,6 @@ return baseclass.extend({
       components: "package",
       connections: "activity",
       diagnostics: "search",
-      logs: "logs",
       main: "settings",
     };
     const bar = E("div", {
