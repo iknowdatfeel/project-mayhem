@@ -18,7 +18,6 @@ ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 FILES="$ROOT/mayhem/files"
 UCODE="${UCODE:-ucode}"
 XRAY="${XRAY:-xray}"
-DNS_POLICY="${DNS_POLICY:-/usr/libexec/mayhem/dns-policy}"
 WORK="$(mktemp -d)"
 fail=0
 
@@ -160,9 +159,6 @@ start_mayhem() {
 	else
 		uc "$FILES/usr/share/mayhem/gen.uc" --model "$1" --out "$MAYHEM_RUN_DIR" 2>/dev/null || { bad "generator"; return 1; }
 	fi
-	"$DNS_POLICY" -geo "$MAYHEM_GEO_DIR" -config "$MAYHEM_RUN_DIR/dns-policy.json" -check || { bad "native DNS policy config"; return 1; }
-	ip netns exec router "$DNS_POLICY" -geo "$MAYHEM_GEO_DIR" -config "$MAYHEM_RUN_DIR/dns-policy.json" > "$WORK/policy.log" 2>&1 &
-	echo "$!" > "$WORK/policy.pid"
 	# Like the init script: dnsmasq gets Mayhem's file (restarted only when it
 	# changed), then xray-run switches its servers to xray.
 	# shellcheck disable=SC2016 # expanded by the inner shell
@@ -183,13 +179,10 @@ start_mayhem() {
 
 stop_mayhem() {
 	local p
-	[ -f "$WORK/policy.pid" ] && kill -TERM "$(cat "$WORK/policy.pid")" 2>/dev/null
-
 	for p in $(ip netns pids router); do
 		[ "$(cat "/proc/$p/comm" 2>/dev/null)" = xray-run ] && kill -TERM "$p"
 	done
 	sleep 2
-	rm -f "$MAYHEM_RUN_DIR/dns-policy.bindings.json"
 }
 
 proc_in() {
@@ -325,8 +318,7 @@ while True:
         labels.append(data[i+1:i+1+data[i]])
         i += data[i] + 1
     qtype = struct.unpack('>H', data[i+1:i+3])[0]
-    qname = b'.'.join(labels)
-    reply_ip = '45.0.0.9' if qname == b'ads.test' else '45.0.0.7' if qname.endswith(b'shared-direct.test') else answer
+    reply_ip = '45.0.0.7' if b'.'.join(labels).endswith(b'shared-direct.test') else answer
     ans = b'\xc0\x0c' + struct.pack('>HHIH', 1, 1, 60, 4) + socket.inet_aton(reply_ip) if qtype == 1 else b''
     s.sendto(struct.pack('>HHHHHH', qid, 0x8180, 1, 1 if ans else 0, 0, 0) + data[12:i+5] + ans, addr)
 PY
@@ -391,9 +383,9 @@ if start_mayhem "$WORK/lists.json"; then
 	expect "other domain -> kernel direct" 192.168.1.2 $(site other.test)
 	expect "IP rule -> proxy" 45.0.0.3 http://45.0.0.7:8080/
 	expect "exclusion IP -> kernel direct" 192.168.1.2 http://45.0.0.6:8080/
-	expect_dns "proxy domain -> real remote address" router 127.0.0.1 12753 youtube.test 45.0.0.7
+	expect_fake "proxy domain -> fake address from xray" router 127.0.0.1 12753 youtube.test
 	expect_dns "other domain -> domestic DNS" router 127.0.0.1 12753 other.test 45.0.0.2
-	expect_dns "DNS to 1.2.3.4:53 is intercepted" client 1.2.3.4 53 youtube.test 45.0.0.7
+	expect_fake "DNS to 1.2.3.4:53 is intercepted" client 1.2.3.4 53 youtube.test
 	expect_dns "DNS to 8.8.8.8:53 is intercepted" client 8.8.8.8 53 vk.test 45.0.0.2
 
 	got="$(udp 1)"
@@ -427,7 +419,7 @@ EOF
 echo "== global mode"
 if start_mayhem "$WORK/global.json"; then
 	expect "no rule -> proxy" 45.0.0.3 http://45.0.0.2:8080/
-	expect "unobserved domain does not populate native Direct" 45.0.0.3 -H 'Host: gosuslugi.test' http://45.0.0.2:8080/
+	expect "exclusion domain -> xray direct" 45.0.0.1 -H 'Host: gosuslugi.test' http://45.0.0.2:8080/
 	expect "exclusion IP -> kernel direct" 192.168.1.2 http://45.0.0.6:8080/
 	expect_dns "exclusion domain -> domestic DNS" client 1.1.1.1 53 gosuslugi.test 45.0.0.2
 	expect_dns "other domain -> remote DNS" client 1.1.1.1 53 anything.test 45.0.0.7
@@ -469,13 +461,12 @@ EOF
 
 echo "== global mode with FakeDNS"
 if start_mayhem "$WORK/fakedns.json"; then
-	real="$(dns client 1.1.1.1 53 site.test)"
-	if [ "$real" = 45.0.0.7 ]; then
-		ok "native policy uses real addresses with FakeDNS requested"
-	else
-		bad "native policy DNS answer: $real"
-	fi
-	expect "real DNS address, excluded IP -> kernel direct" 192.168.1.2 --resolve "site.test:8080:$real" http://site.test:8080/
+	fake="$(dns client 1.1.1.1 53 site.test)"
+	case "$fake" in
+		198.1[89].*) ok "domain -> fake address $fake" ;;
+		*) bad "domain -> fake address: got $fake" ;;
+	esac
+	expect "fake address, excluded real IP -> xray direct" 45.0.0.1 --resolve "site.test:8080:$fake" http://site.test:8080/
 	expect "real excluded IP -> kernel direct" 192.168.1.2 http://45.0.0.7:8080/
 	expect "excluded domain -> kernel direct, past xray" 192.168.1.2 $(site excl.test)
 
@@ -736,10 +727,10 @@ if start_mayhem uci; then
 	write_uci "	option select 'auto'
 	list domain 'other.test'" direct
 	reload_live
-	if ! cmp -s "$MAYHEM_RUN_DIR/xray.key" "$MAYHEM_RUN_DIR/running.xray.key" && [ "$(proc_in router xray)" = "$pid" ]; then
-		ok "changed real-DNS selectors request a procd restart"
+	if cmp -s "$MAYHEM_RUN_DIR/xray.key" "$MAYHEM_RUN_DIR/running.xray.key" && [ "$(proc_in router xray)" = "$pid" ]; then
+		ok "a new domain rule needs no restart"
 	else
-		bad "changed DNS selectors did not request the required restart"
+		bad "a new domain rule would restart xray"
 	fi
 
 	# Other changes (here the domestic DNS) leave xray to procd: only the
@@ -846,7 +837,7 @@ if start_mayhem uci; then
 	expect "domain from a list URL -> proxy" 45.0.0.3 $(site listed.test)
 	expect "other domain -> kernel direct" 192.168.1.2 $(site other.test)
 	expect "geoip exclusion -> kernel direct" 192.168.1.2 http://45.0.0.6:8080/
-	expect_dns "geosite domain -> real remote address" router 127.0.0.1 12753 youtube.test 45.0.0.7
+	expect_fake "geosite domain -> fake address" router 127.0.0.1 12753 youtube.test
 fi
 stop_mayhem
 
@@ -1169,14 +1160,13 @@ EOF
 		got="$(udp 1)"
 		if [ "$got" = 192.168.1.2 ]; then ok "Direct UDP survives stopped Xray"; else bad "Direct UDP with stopped Xray: $got"; fi
 		if [ "$mode" = global ]; then
-			expect "shared Direct IP stays native with stopped Xray" 192.168.1.2 http://45.0.0.7:8080/
+			expect "known shared IP stays blocked with stopped Xray" failed http://45.0.0.7:8080/
 		fi
 		got="$(dns client 192.168.1.1 53 sub.exact-direct.test)"
-		if uc -e "const a = json(require('fs').readfile('$MAYHEM_RUN_DIR/dns-policy.bindings.json') ?? '[]'); exit(length(filter(a, (b) => b.Name == 'sub.exact-direct.test' && b.Action == 'direct')) == 0 ? 0 : 1);"; then
-			ok "full Direct does not classify subdomains as Direct"
-		else
-			bad "full Direct classified a subdomain as Direct: $got"
-		fi
+		case "$got" in
+			none|timeout) ok "full Direct does not include subdomains" ;;
+			*) bad "full Direct included a subdomain: $got" ;;
+		esac
 	fi
 	server_up
 	stop_mayhem

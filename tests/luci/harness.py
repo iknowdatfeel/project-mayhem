@@ -734,6 +734,39 @@ def main():
                 raise RuntimeError('settings still have a Back button')
             if pg.locator('.mh-settings-tabs svg.mh-icon').count() != len(expected):
                 raise RuntimeError('a settings tab has no icon')
+            layout = pg.evaluate("""() => {
+                const dialog = document.querySelector('.mh-sheet--settings');
+                const tabs = Array.from(document.querySelectorAll(
+                    '.mh-settings-tabrow [role=tab]'));
+                const first = tabs[0].getBoundingClientRect();
+                const last = tabs[tabs.length - 1].getBoundingClientRect();
+                const width = Math.ceil(last.right - first.left + 34);
+                return {
+                    actual: dialog.getBoundingClientRect().width,
+                    expected: Math.min(width, innerWidth - 32),
+                    fitted: dialog.style.getPropertyValue('--mh-settings-fit'),
+                    viewport: innerWidth
+                };
+            }""")
+            if layout['viewport'] > 600 and (
+                not layout['fitted'] or
+                abs(layout['actual'] - layout['expected']) > 3
+            ):
+                raise RuntimeError('settings width mismatch: %s' % layout)
+
+            for tab in ('routing', 'dns', 'geo'):
+                pg.click('#mh-settings-tab-' + tab)
+                pg.wait_for_selector(
+                    '#mh-settings-%s .cbi-map' % tab, timeout=15000)
+                titles = pg.locator(
+                    '#mh-settings-%s .cbi-map > .cbi-section > '
+                    '.cbi-section-title' % tab)
+                if any(titles.nth(i).is_visible()
+                       for i in range(titles.count())):
+                    raise RuntimeError('duplicate heading: ' + tab)
+
+            pg.click('#mh-settings-tab-routing')
+
             spacing = pg.eval_on_selector_all('.mh-settings-tabrow', """rows => rows.map(row => {
                 const buttons = Array.from(row.querySelectorAll('[role=tab]'));
                 return { gaps: buttons.slice(1).map((b, i) =>

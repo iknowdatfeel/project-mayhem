@@ -18,7 +18,6 @@ Usage: mayhem <command>
   geo-update [SOURCE]        download geo data now (all sources or one)
   lists-update               download rule lists now
   xray-install [VERSION]     download the official xray build (default $MAYHEM_XRAY_VERSION)
-  dns-policy-install [ZIP]   install the native DNS engine (local ZIP + .sha256, or download)
   self-update [TAG]          install the latest release of Mayhem (or TAG) with its own installer
   auto-update                self-update if a newer release is out and automatic
                              updates are on (the scheduler runs it nightly)
@@ -186,31 +185,6 @@ cmd_xray_install() {
 
 	/etc/init.d/mayhem running >/dev/null 2>&1 && /etc/init.d/mayhem restart
 	return 0
-}
-
-# The DNS policy engine is built per architecture; Mayhem's ucode package stays all.
-cmd_dns_install() {
-	local asset tag url tmp="/tmp/mayhem-dns-install" sum want new archive="$1"
-	if [ -z "$archive" ]; then
-		set -- $(xray_asset) || { echo "Unsupported DNS policy architecture" >&2; return 1; }
-		asset="$1"
-		tag="v$MAYHEM_VERSION"
-		url="https://github.com/${MAYHEM_REPO:-iknowdatfeel/project-mayhem}/releases/download/$tag/mayhem-dns-$asset.zip"
-		mkdir -p "$tmp" || return 1
-		archive="$tmp/engine.zip"
-		fetch "$url" "$archive" && fetch "$url.sha256" "$archive.sha256" || return 1
-	fi
-	want="$(awk 'NR == 1 { print $1 }' "$archive.sha256")"
-	echo "$want" | grep -qx '[0-9a-f]\{64\}' || { echo "Invalid DNS policy checksum" >&2; return 1; }
-	sum="$(sha256sum "$archive" | awk '{ print $1 }')"
-	[ "$sum" = "$want" ] || { echo "DNS policy checksum mismatch" >&2; return 1; }
-	new=/usr/libexec/mayhem/dns-policy.new
-	unzip -p "$archive" dns-policy > "$new" && [ -s "$new" ] || return 1
-	chmod 0755 "$new"
-	"$new" -version >/dev/null 2>&1 || { rm -f "$new"; echo "DNS policy engine does not run on this router" >&2; return 1; }
-	mv -f "$new" /usr/libexec/mayhem/dns-policy || return 1
-	[ "$archive" = "$tmp/engine.zip" ] && rm -rf "$tmp"
-	echo "Installed: $(/usr/libexec/mayhem/dns-policy -version)"
 }
 
 # --- packages ------------------------------------------------------------------
@@ -794,9 +768,6 @@ case "$1" in
 			rc=0
 		fi
 		exit "$rc"
-		;;
-	dns-policy-install)
-		cmd_dns_install "$2"
 		;;
 	xray-install)
 		cmd_xray_install "$2"

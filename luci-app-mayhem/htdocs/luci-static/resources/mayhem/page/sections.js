@@ -529,6 +529,7 @@ return baseclass.extend({
 
 		if (tab === 'settings') {
 			s = m.section(form.NamedSection, 'settings', 'settings', _('Routing'));
+			s.hidetitle = true;
 			s.addremove = false;
 
 			// A kernel tunnel as the main section takes the rest in the kernel.
@@ -1053,6 +1054,7 @@ return baseclass.extend({
 			s = m.section(form.NamedSection, 'dns', 'dns', _('DNS'),
 				_('Direct traffic is resolved by the domestic DNS. Domains of proxy sections get addresses from Xray itself and are resolved by the proxy server; the remote DNS serves tunnel sections and the rest of the traffic when everything goes through the proxy. The main server and its fallbacks share one type: UDP, TCP, DoH or DoQ (Xray has no DNS over TLS; DoQ always goes direct).'));
 			s.addremove = false;
+			s.hidetitle = true;
 
 			const lan = String(L.toArray(uci.get('network', 'lan', 'ipaddr'))[0] || '192.168.1.1').split('/')[0];
 
@@ -1102,6 +1104,7 @@ return baseclass.extend({
 			s = m.section(form.NamedSection, 'geo', 'geo', _('Geo data'),
 				_('Mayhem downloads the GeoSite and GeoIP files and reads them on the fly. Only the categories that sections use stay on the router, so a 70 MB file takes just a few hundred kilobytes of flash. New categories are downloaded within a minute after saving, the rest is updated every night.'));
 			s.addremove = false;
+			s.hidetitle = true;
 
 			o = s.option(form.ListValue, 'update_hour', _('Update hour'));
 			for (let h = 0; h < 24; h++)
