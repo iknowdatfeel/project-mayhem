@@ -549,7 +549,7 @@ nft_rest() {
 	# $1 model dir: line numbers of the rules, "-" when missing
 	for re in 'meta mark & 0x40000000 != 0 return' '@px_d4 meta l4proto' \
 		'meta nfproto ipv4 meta l4proto tcp th dport { 80, 443 } meta mark set meta mark & 0x[0-9a-f]* | 0x4000001 \(ct mark set ct mark & 0x[0-9a-f]* | 0x[0-9a-f]* \)\?counter return' \
-		'meta nfproto ipv4 meta l4proto { tcp, udp } meta mark set meta mark | 0x2000000 .*tproxy'; do
+		'^[[:space:]]*meta nfproto ipv4 meta l4proto { tcp, udp } meta mark set meta mark | 0x2000000 .*tproxy'; do
 		n="$(grep -n -- "$re" "$1/nft.conf" | head -n 1 | cut -d: -f1)"
 		printf '%s ' "${n:--}"
 	done
