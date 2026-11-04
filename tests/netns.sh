@@ -736,10 +736,10 @@ if start_mayhem uci; then
 	write_uci "	option select 'auto'
 	list domain 'other.test'" direct
 	reload_live
-	if cmp -s "$MAYHEM_RUN_DIR/xray.key" "$MAYHEM_RUN_DIR/running.xray.key" && [ "$(proc_in router xray)" = "$pid" ]; then
-		ok "a new domain rule needs no restart"
+	if ! cmp -s "$MAYHEM_RUN_DIR/xray.key" "$MAYHEM_RUN_DIR/running.xray.key" && [ "$(proc_in router xray)" = "$pid" ]; then
+		ok "changed real-DNS selectors request a procd restart"
 	else
-		bad "a new domain rule would restart xray"
+		bad "changed DNS selectors did not request the required restart"
 	fi
 
 	# Other changes (here the domestic DNS) leave xray to procd: only the
@@ -1172,10 +1172,11 @@ EOF
 			expect "shared Direct IP stays native with stopped Xray" 192.168.1.2 http://45.0.0.7:8080/
 		fi
 		got="$(dns client 192.168.1.1 53 sub.exact-direct.test)"
-		case "$got" in
-			none|timeout) ok "full Direct does not include subdomains" ;;
-			*) bad "full Direct included a subdomain: $got" ;;
-		esac
+		if uc -e "const a = json(require('fs').readfile('$MAYHEM_RUN_DIR/dns-policy.bindings.json') ?? '[]'); exit(length(filter(a, (b) => b.Name == 'sub.exact-direct.test' && b.Action == 'direct')) == 0 ? 0 : 1);"; then
+			ok "full Direct does not classify subdomains as Direct"
+		else
+			bad "full Direct classified a subdomain as Direct: $got"
+		fi
 	fi
 	server_up
 	stop_mayhem

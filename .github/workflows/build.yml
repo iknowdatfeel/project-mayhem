@@ -55,6 +55,7 @@ jobs:
       - uses: actions/setup-go@v5
         with:
           go-version-file: dns-policy/go.mod
+          cache: false
       - name: Test and build native DNS policy
         working-directory: dns-policy
         run: |
@@ -205,6 +206,7 @@ jobs:
       - uses: actions/setup-go@v5
         with:
           go-version-file: dns-policy/go.mod
+          cache: false
       - name: Build DNS policy engines
         working-directory: dns-policy
         run: |

@@ -37,6 +37,7 @@ mayhem_xray_running() {
 # DNS policy, xray and scheduler as independent procd instances.
 mayhem_instances() {
 	procd_open_instance dns_policy
+	procd_set_param term_timeout 20
 	procd_set_param command /usr/libexec/mayhem/dns-policy -config "$MAYHEM_RUN_DIR/dns-policy.running.json"
 	procd_set_param file "$MAYHEM_RUN_DIR/dns-policy.running.json"
 	procd_set_param respawn 3600 2 0
