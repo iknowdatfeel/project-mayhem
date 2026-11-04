@@ -548,8 +548,8 @@ def main():
             tunnels = pg.locator('#mh-settings-diagnostics [data-group="tunnels"]')
             if tunnels.count() != 1 or 'awg0' not in tunnels.inner_text() or not tunnels.locator('.mh-item').count():
                 raise RuntimeError('configured tunnel has no diagnostic details')
-            if pg.locator('#mh-settings-diagnostics button').filter(has_text=TRANSLATIONS.get('View logs', 'View logs')).count():
-                raise RuntimeError('logs are still nested in diagnostics')
+            if pg.locator('#mh-settings-diagnostics').get_by_role('button', name=TRANSLATIONS.get('Logs', 'Logs'), exact=True).count() != 1:
+                raise RuntimeError('Logs button is missing from Diagnostics')
             shot(pg, 'dashboard_diag')
             pg.click('#mh-settings-diagnostics button:has-text("%s")' % TRANSLATIONS.get('Copy report', 'Copy report'))
             pg.locator('.modal').get_by_role('button', name=TRANSLATIONS.get('Back', 'Back'), exact=True).wait_for(state='visible', timeout=5000)
@@ -559,34 +559,60 @@ def main():
             pg.click('.mh-sheet-close')
             pg.wait_for_selector('.mh-sheet-overlay', state='detached', timeout=5000)
 
-        def logs_tab(pg):
-            settings_tool(pg, 'logs')
-            pg.wait_for_selector('#mh-settings-logs .mh-log', timeout=5000)
-            pg.wait_for_function("!document.querySelector('#mh-settings-logs .mh-log').textContent.includes(%s)" % json.dumps(TRANSLATIONS.get('Loading…', 'Loading…')), timeout=10000)
-            if pg.evaluate("document.body.classList.contains('modal-overlay-active')"):
-                raise RuntimeError('logs opened in a modal instead of a tab')
-            if pg.locator('#mh-settings-logs select').count() != 3:
-                raise RuntimeError('logs must have component, display level and line limit only')
-            if pg.locator('#mh-settings-logs option[value="none"]').count():
-                raise RuntimeError('Xray recording level is still mixed with the display filter')
+        def logs_dialog(pg):
+            settings_tool(pg, 'diagnostics')
+            button = pg.locator('#mh-settings-diagnostics').get_by_role(
+                'button', name=TRANSLATIONS.get('Logs', 'Logs'), exact=True)
+
+            button.click()
+            pg.wait_for_selector('.modal .mh-log', timeout=5000)
+            pg.wait_for_function(
+                "!document.querySelector('.modal .mh-log').textContent.includes(%s)"
+                % json.dumps(TRANSLATIONS.get('Loading…', 'Loading…')),
+                timeout=10000)
+
+            if pg.locator('.modal select').count() != 3:
+                raise RuntimeError('logs must have exactly three filters')
+            if pg.locator('.modal option[value="none"]').count():
+                raise RuntimeError('Xray recording level mixed with display filter')
+
             def severity_request(req):
                 if req.method != 'POST' or '/ubus/' not in req.url:
                     return False
                 body = req.post_data_json
                 batch = body if isinstance(body, list) else [body]
-                return any(r.get('method') == 'call' and len(r.get('params', [])) > 3 and r['params'][2] == 'logs' and r['params'][3].get('level') == 'warning' for r in batch)
+                return any(
+                    r.get('method') == 'call'
+                    and len(r.get('params', [])) > 3
+                    and r['params'][2] == 'logs'
+                    and r['params'][3].get('level') == 'warning'
+                    for r in batch)
+
             n = len(calls)
             with pg.expect_request(severity_request, timeout=10000):
-                pg.select_option('#mh-settings-logs .mh-log-tools label select', 'warning')
+                pg.select_option('.modal .mh-log-tools label select', 'warning')
+
             if 'luci.mayhem.set_log_level' in calls[n:]:
-                raise RuntimeError('display filter changed the Xray logging configuration')
+                raise RuntimeError('display filter changed Xray logging')
+
             shot(pg, 'dashboard_logs')
-            pg.click('.mh-sheet-close')
-            pg.wait_for_selector('.mh-sheet-overlay', state='detached', timeout=5000)
+            back = lambda: pg.locator('.modal').get_by_role(
+                'button', name=TRANSLATIONS.get('Back', 'Back'), exact=True)
+
+            back().click()
+            pg.wait_for_function(
+                "!document.body.classList.contains('modal-overlay-active')")
+
             with pg.expect_request(severity_request, timeout=10000):
-                settings_tool(pg, 'logs')
-            if pg.input_value('#mh-settings-logs .mh-log-tools label select') != 'warning':
-                raise RuntimeError('the log display filter was not restored')
+                button.click()
+            pg.wait_for_selector('.modal .mh-log', timeout=5000)
+
+            if pg.input_value('.modal .mh-log-tools label select') != 'warning':
+                raise RuntimeError('saved log filter was not restored')
+
+            back().click()
+            pg.wait_for_function(
+                "!document.body.classList.contains('modal-overlay-active')")
             pg.click('.mh-sheet-close')
             pg.wait_for_selector('.mh-sheet-overlay', state='detached', timeout=5000)
 
@@ -693,7 +719,7 @@ def main():
 
         def settings_tabs(pg):
             ids = pg.eval_on_selector_all('.mh-settings-tabs [role="tab"]', 'es => es.map(e => e.id)')
-            expected = ['routing', 'dns', 'geo', 'mux', 'connections', 'components', 'diagnostics', 'logs', 'main']
+            expected = ['routing', 'dns', 'geo', 'mux', 'connections', 'components', 'diagnostics', 'main']
             if ids != ['mh-settings-tab-' + name for name in expected]:
                 raise RuntimeError('settings tabs have the wrong order: %s' % ids)
             rows = pg.eval_on_selector_all('.mh-settings-tabs [role="tab"]',
@@ -983,7 +1009,7 @@ def main():
                 raise RuntimeError('the address keeps a page after closing: %s' % pg.url)
 
         pages = [
-            ('mayhem/dashboard', [('buttons', dashboard_buttons), ('active connections', conns_modal), ('logs tab', logs_tab), ('run diagnostics', run_diag),
+            ('mayhem/dashboard', [('buttons', dashboard_buttons), ('active connections', conns_modal), ('logs dialog', logs_dialog), ('run diagnostics', run_diag),
                                   ('edit a server', edit_server), ('delete a server', delete_server), ('choose how', choose_mode), ('chain of the list', list_chain),
                                   ('delete a tunnel', delete_tunnel), ('services', services_badge), ('pages in a window', nav_pages)]),
             ('mayhem/dashboard#settings', [('sections tab', lambda pg: shot(pg, 'routing_sections')), ('main section', main_section),
