@@ -238,6 +238,11 @@ main() {
 	msg "Installing xray..."
 	/usr/bin/mayhem xray-install || die "xray installation failed, run 'mayhem xray-install' later."
 
+	if grep -q '^MAYHEM_POLICY_DNS_PORT=' /usr/share/mayhem/const.sh; then
+		msg "Installing DNS policy engine..."
+		/usr/bin/mayhem dns-policy-install || die "DNS policy engine installation failed, run 'mayhem dns-policy-install' later."
+	fi
+
 	# dnsmasq-full: the same dnsmasq with nftset, which tunnels in kernel mode
 	# need. Swapped with a rollback: if it does not install or start, the old
 	# dnsmasq comes back and everything works as before.

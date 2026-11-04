@@ -570,7 +570,8 @@ return view.extend({
 	renderAlert(d) {
 		const errors = ((d.status || {}).errors || []).slice();
 
-		if (!d.xray)
+		// Before the first connection, the empty list already explains setup.
+		if (!d.xray && d.has_connections !== false)
 			errors.push(_('Xray is not installed: run "mayhem xray-install"'));
 
 		if (d.xray_error && d.enabled)
@@ -589,8 +590,8 @@ return view.extend({
 		return E('div', { 'class': 'mh-box mh-box--fail mh-alert mh-fail' }, [
 			mh.icon('circle-x'),
 			E('div', [
-				E('b', _('Mayhem cannot work like this')),
-				E('ul', { 'class': 'mh-small' }, errors.map((m) => E('li', m)))
+				E('b', errors[0]),
+				errors.length > 1 ? E('ul', { 'class': 'mh-small' }, errors.slice(1).map((m) => E('li', m))) : ''
 			]),
 			E('a', { 'class': 'mh-small', 'href': '#', 'click': (ev) => { ev.preventDefault(); diag.diagnostics(true); } }, _('Diagnostics'))
 		]);

@@ -187,6 +187,27 @@ cmd_xray_install() {
 	return 0
 }
 
+# The DNS policy engine is built per architecture; Mayhem's ucode package stays all.
+cmd_dns_install() {
+	local asset ignored tag url tmp="/tmp/mayhem-dns-install" sum want new
+	set -- $(xray_asset) || { echo "Unsupported DNS policy architecture" >&2; return 1; }
+	asset="$1"
+	tag="v$MAYHEM_VERSION"
+	url="https://github.com/${MAYHEM_REPO:-iknowdatfeel/project-mayhem}/releases/download/$tag/mayhem-dns-$asset.zip"
+	mkdir -p "$tmp" || return 1
+	fetch "$url" "$tmp/engine.zip" && fetch "$url.sha256" "$tmp/engine.sha256" || return 1
+	want="$(awk 'NR == 1 { print $1 }' "$tmp/engine.sha256")"
+	echo "$want" | grep -qx '[0-9a-f]\{64\}' || { echo "Invalid DNS policy checksum" >&2; return 1; }
+	sum="$(sha256sum "$tmp/engine.zip" | awk '{ print $1 }')"
+	[ "$sum" = "$want" ] || { echo "DNS policy checksum mismatch" >&2; return 1; }
+	new=/usr/libexec/mayhem/dns-policy.new
+	unzip -p "$tmp/engine.zip" dns-policy > "$new" && [ -s "$new" ] || return 1
+	chmod 0755 "$new"
+	"$new" -version >/dev/null 2>&1 || { rm -f "$new"; echo "DNS policy engine does not run on this router" >&2; return 1; }
+	mv -f "$new" /usr/libexec/mayhem/dns-policy
+	rm -rf "$tmp"
+}
+
 # --- packages ------------------------------------------------------------------
 
 PM=opkg
@@ -768,6 +789,9 @@ case "$1" in
 			rc=0
 		fi
 		exit "$rc"
+		;;
+	dns-policy-install)
+		cmd_dns_install
 		;;
 	xray-install)
 		cmd_xray_install "$2"

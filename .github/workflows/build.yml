@@ -52,8 +52,16 @@ jobs:
             echo "::endgroup::"
           done
           [ -z "$failed" ] || { echo "unit tests failed with ucode:$failed"; exit 1; }
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: dns-policy/go.mod
+      - name: Test and build native DNS policy
+        working-directory: dns-policy
+        run: |
+          go test -race ./...
+          go build -o /tmp/mayhem-dns ./cmd/mayhem-dns
       - name: End-to-end test in network namespaces
-        run: sudo env GITHUB_ACTIONS="$GITHUB_ACTIONS" UCODE=ucode XRAY=/tmp/xray/xray tests/netns.sh
+        run: sudo env GITHUB_ACTIONS="$GITHUB_ACTIONS" UCODE=ucode XRAY=/tmp/xray/xray DNS_POLICY=/tmp/mayhem-dns tests/netns.sh
       - name: LuCI pages in a browser
         run: |
           pip install --break-system-packages playwright
@@ -189,9 +197,32 @@ jobs:
           name: packages-${{ matrix.release }}
           path: dist/*
 
+  dns-policy:
+    needs: test
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: dns-policy/go.mod
+      - name: Build DNS policy engines
+        working-directory: dns-policy
+        run: |
+          mkdir -p ../dns-dist
+          for target in linux-64:amd64 linux-32:386 linux-arm64-v8a:arm64 linux-arm32-v7a:arm:7 linux-arm32-v6:arm:6 linux-arm32-v5:arm:5 linux-mips32:mips linux-mips32le:mipsle linux-mips64:mips64 linux-mips64le:mips64le linux-riscv64:riscv64; do
+            IFS=: read -r asset arch arm <<< "$target"
+            CGO_ENABLED=0 GOOS=linux GOARCH="$arch" GOARM="${arm:-7}" GOMIPS=softfloat go build -trimpath -ldflags='-s -w' -o dns-policy ./cmd/mayhem-dns
+            zip -q "../dns-dist/mayhem-dns-$asset.zip" dns-policy
+            (cd ../dns-dist && sha256sum "mayhem-dns-$asset.zip" > "mayhem-dns-$asset.zip.sha256")
+          done
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dns-policy-engines
+          path: dns-dist/*
+
   release:
     if: startsWith(github.ref, 'refs/tags/v')
-    needs: build
+    needs: [build, dns-policy]
     runs-on: ubuntu-24.04
     permissions:
       contents: write
