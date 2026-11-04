@@ -977,6 +977,10 @@ msgstr ""
 msgid "Location"
 msgstr ""
 
+#: htdocs/luci-static/resources/mayhem/diag.js
+msgid "Logs"
+msgstr ""
+
 #: htdocs/luci-static/resources/mayhem/common.js
 msgid "MB"
 msgstr ""
@@ -995,10 +999,6 @@ msgstr ""
 
 #: htdocs/luci-static/resources/mayhem/page/components.js
 msgid "Mayhem auto-update"
-msgstr ""
-
-#: htdocs/luci-static/resources/view/mayhem/dashboard.js
-msgid "Mayhem cannot work like this"
 msgstr ""
 
 #: htdocs/luci-static/resources/mayhem/page/sections.js

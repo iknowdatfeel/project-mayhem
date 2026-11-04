@@ -470,7 +470,11 @@ EOF
 echo "== global mode with FakeDNS"
 if start_mayhem "$WORK/fakedns.json"; then
 	real="$(dns client 1.1.1.1 53 site.test)"
-	[ "$real" = 45.0.0.7 ] && ok "native policy uses real addresses with FakeDNS requested" || bad "native policy DNS answer: $real"
+	if [ "$real" = 45.0.0.7 ]; then
+		ok "native policy uses real addresses with FakeDNS requested"
+	else
+		bad "native policy DNS answer: $real"
+	fi
 	expect "real DNS address, excluded IP -> kernel direct" 192.168.1.2 --resolve "site.test:8080:$real" http://site.test:8080/
 	expect "real excluded IP -> kernel direct" 192.168.1.2 http://45.0.0.7:8080/
 	expect "excluded domain -> kernel direct, past xray" 192.168.1.2 $(site excl.test)
