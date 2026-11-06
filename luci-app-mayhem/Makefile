@@ -1,7 +1,7 @@
 include $(TOPDIR)/rules.mk
 
 PKG_NAME:=luci-app-mayhem
-PKG_VERSION:=$(if $(MAYHEM_VERSION),$(MAYHEM_VERSION),0.1.0)
+PKG_VERSION:=$(if $(MAYHEM_VERSION),$(subst -,.,$(subst -exp.,_pre,$(MAYHEM_VERSION))),0.1.0)
 PKG_RELEASE:=1
 # luci.mk takes the translation version from git history of po/, which the
 # SDK build does not see: without this luci-i18n-mayhem-ru is version 0 forever.

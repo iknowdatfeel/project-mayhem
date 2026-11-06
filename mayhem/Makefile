@@ -1,7 +1,7 @@
 include $(TOPDIR)/rules.mk
 
 PKG_NAME:=mayhem
-PKG_VERSION:=$(if $(MAYHEM_VERSION),$(MAYHEM_VERSION),0.1.0)
+PKG_VERSION:=$(if $(MAYHEM_VERSION),$(subst -,.,$(subst -exp.,_pre,$(MAYHEM_VERSION))),0.1.0)
 PKG_RELEASE:=1
 
 PKG_LICENSE:=MIT

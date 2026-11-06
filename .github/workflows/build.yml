@@ -73,7 +73,14 @@ jobs:
       - name: Version
         id: ver
         run: |
-          if [[ "$GITHUB_REF" == refs/tags/v* ]]; then v="${GITHUB_REF#refs/tags/v}"; else v="0.0.$GITHUB_RUN_NUMBER"; fi
+          if [[ "$GITHUB_REF" == refs/tags/v* ]]; then
+            v="${GITHUB_REF#refs/tags/v}"
+            # OpenWrt 25.12+ uses apk-tools which requires strict package version syntax:
+            # no hyphens in version, pre-release suffixes must use underscore (_alpha, _beta, _pre, _rc).
+            v="$(printf '%s\n' "$v" | sed -E 's/-exp\.?([0-9]+)/_pre\1/; s/-rc\.?([0-9]+)/_rc\1/; s/-beta\.?([0-9]+)/_beta\1/; s/-alpha\.?([0-9]+)/_alpha\1/; s/-/./g')"
+          else
+            v="0.0.$GITHUB_RUN_NUMBER"
+          fi
           echo "version=$v" >> "$GITHUB_OUTPUT"
 
       # The official SDK container comes from ghcr.io, next to the runners;
