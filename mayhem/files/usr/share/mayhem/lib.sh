@@ -80,11 +80,11 @@ mayhem_nft_kept() {
 				for (i = 1; i <= n; i++) {
 					m = split(e[i], w, " ")
 					if (w[1] != "") {
-						exp = ""
+						ex = ""
 						for (j = 2; j < m; j++)
 							if (w[j] == "expires" && w[j + 1] != "")
-								exp = " expires " w[j + 1]
-						a[++k] = w[1] exp
+								ex = " expires " w[j + 1]
+						a[++k] = w[1] ex
 					}
 				}
 				if (end)

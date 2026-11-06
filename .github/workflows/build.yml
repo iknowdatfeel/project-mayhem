@@ -72,26 +72,11 @@ jobs:
           npm install --prefix /tmp/acorn acorn@8
       - name: Unit tests
         run: |
-          pids=""
-          for rel in 24.10 25.12 master; do
-            (
-              if sudo env GITHUB_ACTIONS="$GITHUB_ACTIONS" UCODE="/opt/ucode-$rel/ucode" XRAY=/tmp/xray/xray \
-                JSMIN=/tmp/jsmin NODE_PATH=/tmp/acorn/node_modules tests/run.sh > "/tmp/unit-$rel.log" 2>&1; then
-                echo "ucode $rel: OK"
-              else
-                echo "ucode $rel: FAILED"
-                touch "/tmp/failed-$rel"
-              fi
-            ) &
-            pids="$pids $!"
-          done
-          for p in $pids; do wait "$p" || true; done
-          failed=""
           for rel in 24.10 25.12 master; do
             echo "::group::ucode $rel"
-            cat "/tmp/unit-$rel.log"
+            sudo env GITHUB_ACTIONS="$GITHUB_ACTIONS" UCODE="/opt/ucode-$rel/ucode" XRAY=/tmp/xray/xray \
+              JSMIN=/tmp/jsmin NODE_PATH=/tmp/acorn/node_modules tests/run.sh || failed="$failed $rel"
             echo "::endgroup::"
-            [ -f "/tmp/failed-$rel" ] && failed="$failed $rel"
           done
           [ -z "$failed" ] || { echo "unit tests failed with ucode:$failed"; exit 1; }
 
