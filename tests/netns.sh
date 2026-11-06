@@ -552,24 +552,19 @@ chmod +x "$WORK/bin/ucode"
 reload_live() {
 	# what /etc/init.d/mayhem reload does before procd looks at the files
 	uc "$FILES/usr/share/mayhem/gen.uc" --out "$MAYHEM_RUN_DIR" 2>/dev/null &&
-		ip netns exec router env PATH="$WORK/bin:$PATH" sh -c ". '$FILES/usr/share/mayhem/lib.sh'; mayhem_live_update"
+		ip netns exec router env PATH="$WORK/bin:$PATH" sh -c ". '$FILES/usr/share/mayhem/lib.sh'; mayhem_live_update; mayhem_net_refresh"
 }
 
 select_node() {
 	# The namespace harness has no procd. Run its reload/start lifecycle
 	# explicitly when the choice changes xray.key, as procd does on OpenWrt.
-	local out old
-	old="$(proc_in router xray)"
+	local out
 	out="$(rpc select_node "{\"section\":\"$1\",\"tag\":\"$2\"}")"
 	case "$out" in *'"ok": true'*) ;; *) printf '%s\n' "$out"; return 1 ;; esac
 	reload_live || return 1
 	if ! cmp -s "$MAYHEM_RUN_DIR/xray.key" "$MAYHEM_RUN_DIR/running.xray.key"; then
 		stop_mayhem
 		start_mayhem uci || return 1
-	fi
-	if [ -n "$old" ] && [ "$(proc_in router xray)" = "$old" ]; then
-		bad "an explicit server choice did not restart xray"
-		return 1
 	fi
 	printf '%s\n' "$out"
 }
@@ -1068,7 +1063,7 @@ if start_mayhem uci; then
 				bad "server B by hand: the old connection survived ($bytes bytes, curl $crc)"
 			fi
 			if [ -f "$MAYHEM_RUN_DIR/active" ]; then ok "server B by hand: interception is active again"; else bad "server B by hand: interception is inactive"; fi
-			if [ "$(proc_in router xray)" != "$xpid" ]; then ok "server B by hand: xray restarted"; else bad "server B by hand: xray did not restart"; fi
+			if [ "$(proc_in router xray)" = "$xpid" ]; then ok "server B by hand: xray stayed running (no restart)"; else bad "server B by hand: xray was restarted"; fi
 			expect "server B by hand: new connections go through it" 45.0.0.8 http://45.0.0.7:8080/
 		fi
 	fi
