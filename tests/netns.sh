@@ -1048,7 +1048,7 @@ if start_mayhem uci; then
 		else
 			expect "server A picked: the rest goes through it" 45.0.0.3 http://45.0.0.7:8080/
 
-			# Server B by hand: the old connection closes and new traffic uses B.
+			# Server B by hand: in-flight connection finishes on A, xray stays running, new traffic uses B.
 			xpid="$(proc_in router xray)"
 			ip netns exec client curl -s -m 20 -o /dev/null -w '%{size_download}' http://45.0.0.7:8080/slow > "$WORK/slow2.out" 2>/dev/null &
 			cpid=$!
@@ -1057,10 +1057,10 @@ if start_mayhem uci; then
 			select_node pool "$tag" >/dev/null
 			wait "$cpid"; crc=$?
 			bytes="$(cat "$WORK/slow2.out" 2>/dev/null)"
-			if [ "$crc" != 0 ] && [ "${bytes:-0}" -lt 10240 ]; then
-				ok "server B by hand: the open connection through A is closed"
+			if [ "$crc" = 0 ] && [ "${bytes:-0}" = 10240 ]; then
+				ok "server B by hand: in-flight connection finished"
 			else
-				bad "server B by hand: the old connection survived ($bytes bytes, curl $crc)"
+				bad "server B by hand: connection failed ($bytes bytes, curl $crc)"
 			fi
 			if [ -f "$MAYHEM_RUN_DIR/active" ]; then ok "server B by hand: interception is active again"; else bad "server B by hand: interception is inactive"; fi
 			if [ "$(proc_in router xray)" = "$xpid" ]; then ok "server B by hand: xray stayed running (no restart)"; else bad "server B by hand: xray was restarted"; fi
