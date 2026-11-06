@@ -61,7 +61,7 @@ export function tcp_ping(targets, timeout, v6, budget) {
 			continue;
 
 		if (ms_now() >= until) {
-			addr[h] = false;
+			addr[h] = 'timeout';
 			continue;
 		}
 
@@ -85,7 +85,9 @@ export function tcp_ping(targets, timeout, v6, budget) {
 	for (let t in targets) {
 		const a = addr[t.host];
 
-		if (!a || (a.family == socket.AF_INET6 && !v6))
+		if (a === 'timeout')
+			res[t.key] = { error: 'timeout' };
+		else if (!a || (a.family == socket.AF_INET6 && !v6))
 			res[t.key] = { error: 'no address' };
 		else if (!(t.port > 0 && t.port < 65536))
 			res[t.key] = { error: 'no port' };
