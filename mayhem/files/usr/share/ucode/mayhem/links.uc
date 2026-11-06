@@ -65,7 +65,7 @@ function parse_url(link) {
 
 	const u = {
 		scheme: lc(m[1]),
-		name: urldecode(m[4]) ?? '',
+		name: urldecode(m[4] != null ? replace(m[4], /\+/g, ' ') : null) ?? '',
 		user: null,
 		host: null,
 		port: null,
@@ -674,24 +674,22 @@ export function parse_link(link) {
 // Server host of an outbound (for resolving it with the domestic DNS).
 export function outbound_host(ob) {
 	const s = ob?.settings ?? {};
+	let h = null;
 
 	if (type(s.address) == 'string' && s.address != '')
-		return s.address;
-
-	if (length(s.vnext ?? []))
-		return s.vnext[0].address;
-
-	if (length(s.servers ?? []))
-		return s.servers[0].address;
-
-	if (length(s.peers ?? [])) {
+		h = s.address;
+	else if (length(s.vnext ?? []))
+		h = s.vnext[0].address;
+	else if (length(s.servers ?? []))
+		h = s.servers[0].address;
+	else if (length(s.peers ?? [])) {
 		const ep = s.peers[0].endpoint ?? '';
 		const m = match(ep, /^\[?([^\]]+?)\]?:[0-9]+$/);
 
-		return m ? m[1] : null;
+		h = m ? m[1] : null;
 	}
 
-	return null;
+	return h != null ? replace(replace(h, /^\[/, ''), /\]$/, '') : null;
 };
 
 // Server port of an outbound (for TCP ping).

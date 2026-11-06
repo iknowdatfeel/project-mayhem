@@ -51,6 +51,7 @@ export function tcp_ping(targets, timeout, v6, budget) {
 
 	const res = {};
 	const addr = {};
+	const until = ms_now() + (budget ?? 15000);
 
 	// One lookup per name; an IPv4 address first unless only IPv6 is there.
 	for (let t in targets) {
@@ -58,6 +59,11 @@ export function tcp_ping(targets, timeout, v6, budget) {
 
 		if (addr[h] != null)
 			continue;
+
+		if (ms_now() >= until) {
+			addr[h] = false;
+			continue;
+		}
 
 		if (is_ip4(h) || index(h, ':') >= 0) {
 			addr[h] = { family: index(h, ':') >= 0 ? socket.AF_INET6 : socket.AF_INET, address: h };
@@ -99,7 +105,6 @@ export function tcp_ping(targets, timeout, v6, budget) {
 	const busy = {};
 	// hosts that let a handshake time out
 	const silent = {};
-	const until = ms_now() + (budget ?? 15000);
 
 	const put = (c, r) => {
 		for (let key in same[c.key])

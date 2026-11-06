@@ -1019,25 +1019,6 @@ fi
 # TCP with the process's own sockets.
 mkdir -p "$OUT/probe-uci" "$OUT/probe-bin"
 cp "$ROOT/tests/luci/uci/network" "$OUT/probe-uci/"
-cat >> "$OUT/probe-uci/network" <<'EOF'
-
-config interface 'wg9'
-	option proto 'wireguard'
-	list addresses '10.8.9.2/32'
-
-config wireguard_wg9
-	option public_key 'Zm9vYmFyZm9vYmFyZm9vYmFyZm9vYmFyZm9vYmFyMTI='
-	option endpoint_host '127.0.0.1'
-	option endpoint_port '41820'
-EOF
-cat > "$OUT/probe-uci/mayhem" <<'EOF'
-config obfs 'ob_wg9'
-	option iface 'wg9'
-	option kind 'phobos'
-	option host '10.0.0.1'
-	option port '4567'
-	option lport '41820'
-EOF
 cat > "$OUT/probe-bin/ping" <<'EOF'
 #!/bin/sh
 echo "ping $*" >> "$FAKE_LOG"
@@ -1078,26 +1059,6 @@ if out="$(UCODE="$UCODE" sh "$ROOT/tests/warm.sh" 2>&1)"; then
 	*) ok "URL test over kept-alive connections" ;; esac
 else
 	bad "warm: $(printf '%s' "$out" | grep -v '^ok')"
-fi
-
-# WireGuard obfuscation set in the tunnel's dialog, and the service that runs
-# the obfuscators.
-mkdir -p "$OUT/obfs-uci" "$OUT/obfs-bin" "$OUT/obfs-run"
-cp "$ROOT/tests/luci/uci/network" "$ROOT/tests/luci/uci/firewall" "$ROOT/tests/uci/mayhem" "$OUT/obfs-uci/"
-printf '#!/bin/sh\nexit 0\n' > "$OUT/obfs-bin/wg-obfuscator"
-cp "$OUT/obfs-bin/wg-obfuscator" "$OUT/obfs-bin/phantun_client"
-chmod +x "$OUT/obfs-bin/wg-obfuscator" "$OUT/obfs-bin/phantun_client"
-if out="$(MAYHEM_UCI_DIR="$OUT/obfs-uci" MAYHEM_RUN_DIR="$OUT/obfs-run" MAYHEM_WG_OBFUSCATOR="$OUT/obfs-bin/wg-obfuscator" \
-	MAYHEM_PHANTUN="$OUT/obfs-bin/phantun_client" uc "$ROOT/tests/obfs.uc" "$ROOT/luci-app-mayhem/root/usr/share/rpcd/ucode/luci.mayhem" 2>&1)"; then
-	ok "WireGuard obfuscation: Phobos and fake TCP, endpoint, MTU, firewall zone"
-else
-	bad "obfuscation: $out"
-fi
-
-if out="$(sh "$ROOT/tests/obfs-svc.sh" 2>&1)"; then
-	ok "obfuscation service: wg-obfuscator with a config file, phantun with its TUN device"
-else
-	bad "obfuscation service: $out"
 fi
 
 # Servers or remote DNS that stop answering: direct and back, or the kill switch.

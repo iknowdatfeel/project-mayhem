@@ -446,11 +446,17 @@ function lists(sections) {
 		if (!is_true(sec.enabled ?? '1'))
 			continue;
 
-		for (let u in entries(sec.list_url))
-			out[u] ??= readfile(`${LISTS_DIR}/${list_key(u)}.lst`);
+		for (let u in entries(sec.list_url)) {
+			let t = readfile(`${LISTS_DIR}/${list_key(u)}.lst`);
+			if (t != null)
+				out[u] ??= replace(t, /^\xef\xbb\xbf/, '');
+		}
 
-		for (let f in entries(sec.list_file))
-			out[f] ??= readfile(f);
+		for (let f in entries(sec.list_file)) {
+			let t = readfile(f);
+			if (t != null)
+				out[f] ??= replace(t, /^\xef\xbb\xbf/, '');
+		}
 	}
 
 	return out;

@@ -424,7 +424,9 @@ export function dns_server(s) {
 export function split_list(text) {
 	const res = { domains: [], ips: [], bad: 0 };
 
-	for (let line in split(text ?? '', '\n')) {
+	text = replace(text ?? '', /^\xef\xbb\xbf/, '');
+
+	for (let line in split(text, '\n')) {
 		const h = index(line, '#');
 
 		if (h >= 0)

@@ -128,7 +128,7 @@ function link_lines(text) {
 
 // Body -> { nodes: [{ name, link } | { name, outbound }], skipped }
 function parse_body(body, format) {
-	body = trim(body ?? '');
+	body = trim(replace(body ?? '', /^\xef\xbb\xbf/, ''));
 
 	const res = { nodes: [], skipped: 0, format: null };
 
@@ -186,8 +186,10 @@ function parse_body(body, format) {
 	// count: comments and other text around the keys are not servers.
 	let lines = link_lines(body);
 
-	if (!length(lines))
-		lines = link_lines(b64(body) ?? '');
+	if (!length(lines)) {
+		const decoded = trim(replace(b64(body) ?? '', /^\xef\xbb\xbf/, ''));
+		lines = link_lines(decoded);
+	}
 
 	if (!length(lines)) {
 		if (match(body, /^(<!doctype|<html|<\?xml|<head|<body)/i))

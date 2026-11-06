@@ -2080,6 +2080,14 @@ msgid "Enter a name"
 msgstr "Введите название"
 
 #: htdocs/luci-static/resources/mayhem/page/servers.js
+msgid "Paste a link"
+msgstr "Вставьте ссылку"
+
+#: htdocs/luci-static/resources/mayhem/page/servers.js
+msgid "Paste a subscription link first."
+msgstr "Сначала вставьте ссылку на подписку."
+
+#: htdocs/luci-static/resources/mayhem/page/servers.js
 msgid "Remove servers by name"
 msgstr "Удалять серверы по названию"
 

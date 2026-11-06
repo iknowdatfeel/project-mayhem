@@ -111,21 +111,27 @@ return baseclass.extend({
     this.unload();
     const root = (this.root = E("div", { class: "mh-settings" }));
     let diagnosed = false;
+    let routingPromise = null;
+    const getRoutingData = () => {
+      if (!routingPromise)
+        routingPromise = routing.load();
+      return routingPromise;
+    };
     const tabs = [
       [
         "routing",
         _("Routing"),
-        () => routing.load().then((data) => routing.render(data, "settings")),
+        () => getRoutingData().then((data) => routing.render(data, "settings")),
       ],
       [
         "dns",
         _("DNS"),
-        () => routing.load().then((data) => routing.render(data, "dns")),
+        () => getRoutingData().then((data) => routing.render(data, "dns")),
       ],
       [
         "geo",
         _("Geo data"),
-        () => routing.load().then((data) => routing.render(data, "geo")),
+        () => getRoutingData().then((data) => routing.render(data, "geo")),
       ],
       ["mux", _("Multiplexing"), () => mux.load().then(() => mux.render())],
       [

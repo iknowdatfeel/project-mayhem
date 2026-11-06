@@ -505,6 +505,10 @@ function build_nft_text(S, v6, sets, tunnels, dns_redirect, fake_pool, kdef, cap
 	if (length(sets.direct_ports ?? []))
 		push(s, `\t\tmeta l4proto { tcp, udp } th dport { ${join(', ', sets.direct_ports)} } counter return\n`);
 
+	// DoT (port 853) blocked when DNS is hijacked, so Android Private DNS falls back to port 53.
+	if (dns_redirect)
+		push(s, `\t\tmeta l4proto { tcp, udp } th dport 853 ${refuse}\n`);
+
 	if (kdef) {
 		push(s, `\t\tip daddr @blk_d4 ${refuse}\n`);
 		push(s, `\t\tip6 daddr @blk_d6 ${refuse}\n`);
@@ -658,7 +662,7 @@ function build_nft_text(S, v6, sets, tunnels, dns_redirect, fake_pool, kdef, cap
 		push(s, `\t\tmeta mark & ${xm} == ${xm} return\n`);
 
 		if (fake_pool)
-			push(s, `\t\tip daddr ${fake_pool} meta l4proto { tcp, udp } ${to_x}\n`);
+			push(s, `\t\tip daddr ${fake_pool} meta l4proto { tcp, udp } ${to_x} return\n`);
 
 		if (router) {
 			push(s, '\t\tmeta l4proto != tcp return\n');
@@ -2682,9 +2686,6 @@ export function build(model) {
 	// DNS through the server in use), and the nightly catch-up
 	// (mayhem_dns_catchup) restarts xray with it at the update hour.
 	const key = copy(xray);
-	// A user choice closes all Xray connections once. Keeping the epoch in
-	// the restart key avoids a second restart on the next routine reload.
-	key.reconnect_epoch = int(S.reconnect_epoch) || 0;
 	// Xray v26.10.31 keeps XHTTP managers in globalDialerMap, keyed by
 	// MemoryStreamConfig pointers. Handler removal does not evict them.
 	// A transport change therefore requires a fresh process, not API swaps.

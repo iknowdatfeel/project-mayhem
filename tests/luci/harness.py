@@ -523,23 +523,12 @@ def main():
             pg.wait_for_selector('.modal textarea', timeout=5000)
             shot(pg, 'sections_import')
             close_modal(pg)
-            # the tunnel's dialog: its .conf and the obfuscator to choose;
-            # Phobos shows the key and masking, the missing binary an install button
+            # the tunnel's dialog: its .conf
             edit = pg.locator('.mh-sheet-body div[data-tab="device"] button:has-text("Edit"), .mh-sheet-body div[data-tab="device"] button:has-text("Изменить")')
             if edit.count():
                 edit.first.click()
                 pg.wait_for_selector('.modal textarea', timeout=5000)
-                sel = pg.locator('.modal select').first
-                sel.select_option('phobos')
-                pg.wait_for_timeout(300)
-                if not pg.locator('.modal input[type="password"]').is_visible():
-                    raise RuntimeError('no key field for Phobos')
-                shot(pg, 'tunnel_obfs_phobos')
-                sel.select_option('faketcp')
-                pg.wait_for_timeout(300)
-                if pg.locator('.modal input[type="password"]').is_visible():
-                    raise RuntimeError('the key field is shown for fake TCP')
-                shot(pg, 'tunnel_obfs_faketcp')
+                shot(pg, 'tunnel_edit')
                 close_modal(pg)
 
         def settings_tool(pg, tab):

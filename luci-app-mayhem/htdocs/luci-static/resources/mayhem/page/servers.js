@@ -23,6 +23,7 @@ const callParseOne = rpc.declare({ object: 'luci.mayhem', method: 'parse_link', 
 const callServerEdit = rpc.declare({ object: 'luci.mayhem', method: 'server_edit', params: [ 'section', 'old', 'link' ], expect: { '': {} } });
 const callServerRestore = rpc.declare({ object: 'luci.mayhem', method: 'server_restore', params: [ 'subscription', 'name' ], expect: { '': {} } });
 const callRenameSub = rpc.declare({ object: 'luci.mayhem', method: 'rename_subscription', params: [ 'name', 'new_name' ], expect: { '': {} } });
+const callSubUpdate = rpc.declare({ object: 'luci.mayhem', method: 'sub_update', params: [ 'name' ], expect: { '': {} } });
 
 // A key, or a server kept as Xray JSON on one line.
 const LINK_RE = /^((vless|vmess|trojan|ss|socks5?|https?|hysteria2|hy2|wireguard|wg):\/\/\S+|\{.*\}$)/i;
@@ -184,12 +185,67 @@ return baseclass.extend({
 		]);
 	},
 
+	addSubscriptionLink(link) {
+		let raw = (link || '').trim();
+		if (!raw)
+			return null;
+
+		if (!/^[a-zA-Z0-9_]+$/.test(raw) && !/^https?:\/\//i.test(raw) && (raw.indexOf('.') >= 0 || raw.indexOf('/') >= 0))
+			raw = 'https://' + raw;
+
+		let sid = '';
+		if (/^[a-zA-Z0-9_]+$/.test(raw)) {
+			sid = raw;
+		} else {
+			let host = '';
+			const m = raw.match(/:\/\/([^/:]+)/);
+			if (m) {
+				host = m[1].replace(/[^a-zA-Z0-9_]/g, '_').replace(/^_+|_+$/g, '');
+			} else {
+				const m2 = raw.match(/^([^/:]+)/);
+				if (m2)
+					host = m2[1].replace(/[^a-zA-Z0-9_]/g, '_').replace(/^_+|_+$/g, '');
+			}
+			let base = host ? ('sub_' + host) : 'sub';
+			base = base.substring(0, 24);
+			sid = base;
+			let idx = 1;
+			while (uci.get('mayhem', sid) || (this.map && this.map.data && this.map.data.get('mayhem', sid))) {
+				sid = `${base}_${idx++}`;
+			}
+		}
+
+		if (this.map && this.map.data) {
+			this.map.data.add('mayhem', 'subscription', sid);
+			this.map.data.set('mayhem', sid, 'enabled', '1');
+			if (/^https?:\/\//i.test(raw))
+				this.map.data.set('mayhem', sid, 'url', raw);
+		} else {
+			uci.add('mayhem', 'subscription', sid);
+			uci.set('mayhem', sid, 'enabled', '1');
+			if (/^https?:\/\//i.test(raw))
+				uci.set('mayhem', sid, 'url', raw);
+		}
+
+		return sid;
+	},
+
 	handleSaveApply(ev, mode) {
 		const text = this.addInput ? this.addInput.value.trim() : '';
+		const subInput = document.querySelector('.cbi-section-create-name');
+		const subText = subInput ? subInput.value.trim() : '';
+
+		if (subText) {
+			this.addSubscriptionLink(subText);
+			if (subInput) subInput.value = '';
+		}
+
 		return (text ? this.addKeys(text) : Promise.resolve()).then(() => {
 			return this.handleSave(ev).then(() => {
 				if (this.addInput) this.addInput.value = '';
 				return ui.changes.apply(mode == '0');
+			}).then(() => {
+				return callSubUpdate('').catch(() => {});
 			});
 		}).catch((e) => {
 			ui.addNotification(null, E('p', e.message || String(e)), 'error');
@@ -395,6 +451,8 @@ return baseclass.extend({
 		const m = new form.Map('mayhem');
 		let s, o;
 
+		this.map = m;
+
 		m.tabbed = true;
 
 		// --- servers by key (the tab shows no options of its own) ---
@@ -418,10 +476,29 @@ return baseclass.extend({
 			const el = form.GridSection.prototype.renderSectionAdd.call(this, extra_class);
 			const name = el.querySelector('.cbi-section-create-name');
 
-			if (name)
-				name.placeholder = _('Enter a name');
+			if (name) {
+				name.placeholder = (_('Paste a link') === 'Paste a link' && (document.documentElement.lang || '').startsWith('ru')) ? 'Вставьте ссылку' : _('Paste a link');
+				name.style.width = '100%';
+				name.style.maxWidth = '400px';
+			}
 
 			return el;
+		};
+		s.handleAdd = function(ev, name) {
+			name = (name || '').trim();
+			if (!name) {
+				const input = document.querySelector('.cbi-section-create-name');
+				name = input ? input.value.trim() : '';
+			}
+			if (!name) {
+				ui.addNotification(null, E('p', _('Paste a subscription link first.')), 'error');
+				return Promise.resolve();
+			}
+			const sid = self.addSubscriptionLink(name);
+			const input = document.querySelector('.cbi-section-create-name');
+			if (input)
+				input.value = '';
+			return this.renderMoreOptionsModal(sid);
 		};
 		// A rename button next to "Edit" (a subscription that is saved already).
 		s.renderRowActions = function(section_id) {

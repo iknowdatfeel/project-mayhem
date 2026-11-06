@@ -1,7 +1,7 @@
 #!/bin/sh
 # Project Mayhem installer / updater for OpenWrt 24.10 (opkg) and 25.12+ (apk).
 #
-#   sh <(wget -O - https://raw.githubusercontent.com/iknowdatfeel/project-mayhem/main/install.sh)
+#   wget -qO /tmp/mayhem-install.sh https://raw.githubusercontent.com/iknowdatfeel/project-mayhem/main/install.sh && sh /tmp/mayhem-install.sh && rm -f /tmp/mayhem-install.sh
 #
 # Set MAYHEM_REPO=owner/repo to install from a fork, MAYHEM_TAG=v1.2.3 to
 # install that release instead of the latest (an update run by Mayhem passes
@@ -51,7 +51,7 @@ pkg_installable() {
 }
 
 # Everything Mayhem needs, checked before anything is installed.
-DEPS="ucode ucode-mod-fs ucode-mod-uci ucode-mod-socket kmod-nft-tproxy ca-bundle unzip curl rpcd-mod-ucode luci-base"
+DEPS="ucode ucode-mod-fs ucode-mod-uci ucode-mod-ubus ucode-mod-socket kmod-nft-tproxy ca-bundle unzip curl rpcd-mod-ucode luci-base"
 
 check_deps() {
 	local p missing=""
