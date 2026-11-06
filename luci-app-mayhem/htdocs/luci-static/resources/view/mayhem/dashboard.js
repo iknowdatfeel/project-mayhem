@@ -498,7 +498,7 @@ return view.extend({
 				(note && typeof note === 'object') ? note : note ? E('span', { 'class': 'mh-muted mh-small' }, note) : '' ])
 		].concat(rows.map((r) => E('div', { 'class': 'mh-widget-row' + (r[4] ? ' mh-wrap' : ''), 'title': (typeof (r[3] || r[1]) === 'string') ? r[0] + ': ' + (r[3] || r[1]) : null }, [
 			E('span', { 'class': 'mh-muted' }, r[0] + ': '),
-			E('span', { 'class': r[2] || '' }, r[1])
+			E('span', Object.assign({ 'class': r[2] || '' }, r[5] ? { 'id': r[5] } : {}), r[1])
 		]))));
 	},
 
@@ -545,16 +545,16 @@ return view.extend({
 		const wait = '…';
 
 		if (!c) {
-			rows.push([ _('Ping time'), '—' ], [ _('External IP'), '—' ], [ _('Location'), '—' ]);
+			rows.push([ _('Ping time'), '—', '', null, false, 'mh-conn-ping' ], [ _('External IP'), '—' ], [ _('Location'), '—' ]);
 			return rows;
 		}
 
 		if (c.ms != null)
-			rows.push([ _('Ping time'), _('%d ms').format(c.ms), latencyClass(c.ms, c.method) ]);
+			rows.push([ _('Ping time'), _('%d ms').format(c.ms), latencyClass(c.ms, c.method), null, false, 'mh-conn-ping' ]);
 		else if (c.method === 'tcp' && c.pingError === 'UDP protocol')
-			rows.push([ _('Ping time'), 'N/A', 'mh-muted', c.pingError ]);
+			rows.push([ _('Ping time'), 'N/A', 'mh-muted', c.pingError, false, 'mh-conn-ping' ]);
 		else
-			rows.push([ _('Ping time'), c.busy ? wait : _('No answer'), c.busy ? 'mh-muted' : 'mh-fail', c.pingError ]);
+			rows.push([ _('Ping time'), c.busy ? wait : _('No answer'), c.busy ? 'mh-muted' : 'mh-fail', c.pingError, false, 'mh-conn-ping' ]);
 
 		const x = c.exit || {};
 
@@ -660,16 +660,45 @@ return view.extend({
 	},
 
 	updateLatency(tag) {
-		const el = document.querySelector(`[data-mh-lat="${tag}"]`);
-		if (!el)
-			return false;
-
+		const els = document.querySelectorAll(`[data-mh-lat="${tag}"]`);
 		const n = this.findNode(tag);
-		if (!n)
-			return false;
+		let updated = false;
 
-		el.replaceWith(this.latency(n));
-		return true;
+		if (n) {
+			els.forEach((el) => {
+				el.replaceWith(this.latency(n));
+				updated = true;
+			});
+		}
+
+		if (this.data && this.data.conn && this.data.conn.tag === tag) {
+			const connPing = document.getElementById('mh-conn-ping');
+			if (connPing) {
+				const p = checks.probes[tag];
+				const c = this.data.conn;
+				if (p) {
+					if (p.pending) {
+						connPing.className = 'mh-muted';
+						connPing.textContent = '…';
+					} else if (p.method === 'tcp' && p.value === 'UDP protocol') {
+						connPing.className = 'mh-muted';
+						connPing.textContent = 'N/A';
+					} else if (typeof p.value === 'string') {
+						connPing.className = 'mh-fail';
+						connPing.textContent = _('No answer');
+					} else if (p.value != null) {
+						connPing.className = latencyClass(p.value, p.method);
+						connPing.textContent = _('%d ms').format(p.value);
+					}
+				} else if (c && c.ms != null) {
+					connPing.className = latencyClass(c.ms, c.method);
+					connPing.textContent = _('%d ms').format(c.ms);
+				}
+				updated = true;
+			}
+		}
+
+		return updated;
 	},
 
 	findNode(tag) {

@@ -7,17 +7,27 @@ on:
   pull_request:
 
 jobs:
-  test:
+  test-unit:
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v5
       - name: Install test tools
         run: |
           sudo apt-get update
-          sudo apt-get install -y cmake libjson-c-dev nftables shellcheck unzip dnsmasq-base
-      # Routers run the ucode their OpenWrt release ships, which can be a year
-      # behind master: test with each of them, and with master to see what comes.
+          sudo apt-get install -y cmake libjson-c-dev nftables shellcheck unzip
+      - name: Cache ucode binaries
+        id: cache-ucode
+        uses: actions/cache@v4
+        with:
+          path: |
+            /opt/ucode-24.10
+            /opt/ucode-25.12
+            /opt/ucode-master
+            /usr/local/lib/libubox.so*
+            /usr/local/lib/libuci.so*
+          key: ucode-build-${{ runner.os }}-${{ hashFiles('tests/build-ucode.sh') }}-v1
       - name: Build ucode of OpenWrt 24.10, 25.12 and master
+        if: steps.cache-ucode.outputs.cache-hit != 'true'
         run: |
           git clone --depth 1 https://github.com/openwrt/libubox.git /tmp/libubox
           cmake -S /tmp/libubox -B /tmp/libubox/build -DBUILD_LUA=OFF -DBUILD_EXAMPLES=OFF
@@ -29,31 +39,158 @@ jobs:
           for rel in 24.10 25.12 master; do
             sudo sh tests/build-ucode.sh "$rel" "/opt/ucode-$rel"
           done
-          # Scripts under test call plain `ucode`: make it the oldest supported one.
+      - name: Setup ucode symlink
+        run: |
+          sudo ldconfig
           sudo ln -sf /opt/ucode-24.10/ucode /usr/local/bin/ucode
+      - name: Cache xray
+        id: cache-xray
+        uses: actions/cache@v4
+        with:
+          path: /tmp/xray
+          key: xray-${{ runner.os }}-${{ hashFiles('mayhem/files/usr/share/mayhem/const.sh') }}
       - name: Get xray
+        if: steps.cache-xray.outputs.cache-hit != 'true'
         run: |
           v=$(sed -n 's/^MAYHEM_XRAY_VERSION="\(.*\)"/\1/p' mayhem/files/usr/share/mayhem/const.sh)
           curl -fsSL -o /tmp/xray.zip "https://github.com/XTLS/Xray-core/releases/download/v$v/Xray-linux-64.zip"
           unzip -o /tmp/xray.zip xray -d /tmp/xray
-      # The package build minifies JS with LuCI's jsmin; acorn compares the result.
+      - name: Cache LuCI and jsmin
+        id: cache-luci
+        uses: actions/cache@v4
+        with:
+          path: |
+            /tmp/jsmin
+            /tmp/acorn
+          key: luci-jsmin-${{ runner.os }}-v1
       - name: Get LuCI and its jsmin
+        if: steps.cache-luci.outputs.cache-hit != 'true'
         run: |
           git clone --depth 1 --filter=blob:none --sparse -b openwrt-24.10 https://github.com/openwrt/luci.git /tmp/luci
-          git -C /tmp/luci sparse-checkout set modules/luci-base/htdocs modules/luci-base/src themes/luci-theme-bootstrap/htdocs
+          git -C /tmp/luci sparse-checkout set modules/luci-base/src
           gcc -O2 -o /tmp/jsmin /tmp/luci/modules/luci-base/src/jsmin.c
           npm install --prefix /tmp/acorn acorn@8
       - name: Unit tests
         run: |
+          pids=""
+          for rel in 24.10 25.12 master; do
+            (
+              if sudo env GITHUB_ACTIONS="$GITHUB_ACTIONS" UCODE="/opt/ucode-$rel/ucode" XRAY=/tmp/xray/xray \
+                JSMIN=/tmp/jsmin NODE_PATH=/tmp/acorn/node_modules tests/run.sh > "/tmp/unit-$rel.log" 2>&1; then
+                echo "ucode $rel: OK"
+              else
+                echo "ucode $rel: FAILED"
+                touch "/tmp/failed-$rel"
+              fi
+            ) &
+            pids="$pids $!"
+          done
+          for p in $pids; do wait "$p" || true; done
+          failed=""
           for rel in 24.10 25.12 master; do
             echo "::group::ucode $rel"
-            sudo env GITHUB_ACTIONS="$GITHUB_ACTIONS" UCODE="/opt/ucode-$rel/ucode" XRAY=/tmp/xray/xray \
-              JSMIN=/tmp/jsmin NODE_PATH=/tmp/acorn/node_modules tests/run.sh || failed="$failed $rel"
+            cat "/tmp/unit-$rel.log"
             echo "::endgroup::"
+            [ -f "/tmp/failed-$rel" ] && failed="$failed $rel"
           done
           [ -z "$failed" ] || { echo "unit tests failed with ucode:$failed"; exit 1; }
+
+  test-e2e:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v5
+      - name: Install test tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y cmake libjson-c-dev nftables unzip dnsmasq-base iproute2 wireguard-tools
+      - name: Cache ucode binaries
+        id: cache-ucode
+        uses: actions/cache@v4
+        with:
+          path: |
+            /opt/ucode-24.10
+            /usr/local/lib/libubox.so*
+            /usr/local/lib/libuci.so*
+          key: ucode-build-${{ runner.os }}-${{ hashFiles('tests/build-ucode.sh') }}-v1
+      - name: Build ucode of OpenWrt 24.10
+        if: steps.cache-ucode.outputs.cache-hit != 'true'
+        run: |
+          git clone --depth 1 https://github.com/openwrt/libubox.git /tmp/libubox
+          cmake -S /tmp/libubox -B /tmp/libubox/build -DBUILD_LUA=OFF -DBUILD_EXAMPLES=OFF
+          sudo cmake --build /tmp/libubox/build --target install -j4
+          git clone --depth 1 https://github.com/openwrt/uci.git /tmp/uci
+          cmake -S /tmp/uci -B /tmp/uci/build -DBUILD_LUA=OFF
+          sudo cmake --build /tmp/uci/build --target install -j4
+          sudo ldconfig
+          sudo sh tests/build-ucode.sh 24.10 /opt/ucode-24.10
+      - name: Setup ucode symlink
+        run: |
+          sudo ldconfig
+          sudo ln -sf /opt/ucode-24.10/ucode /usr/local/bin/ucode
+      - name: Cache xray
+        id: cache-xray
+        uses: actions/cache@v4
+        with:
+          path: /tmp/xray
+          key: xray-${{ runner.os }}-${{ hashFiles('mayhem/files/usr/share/mayhem/const.sh') }}
+      - name: Get xray
+        if: steps.cache-xray.outputs.cache-hit != 'true'
+        run: |
+          v=$(sed -n 's/^MAYHEM_XRAY_VERSION="\(.*\)"/\1/p' mayhem/files/usr/share/mayhem/const.sh)
+          curl -fsSL -o /tmp/xray.zip "https://github.com/XTLS/Xray-core/releases/download/v$v/Xray-linux-64.zip"
+          unzip -o /tmp/xray.zip xray -d /tmp/xray
       - name: End-to-end test in network namespaces
         run: sudo env GITHUB_ACTIONS="$GITHUB_ACTIONS" UCODE=ucode XRAY=/tmp/xray/xray tests/netns.sh
+
+  test-luci:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v5
+      - name: Install test tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y cmake libjson-c-dev unzip
+      - name: Cache ucode binaries
+        id: cache-ucode
+        uses: actions/cache@v4
+        with:
+          path: |
+            /opt/ucode-24.10
+            /usr/local/lib/libubox.so*
+            /usr/local/lib/libuci.so*
+          key: ucode-build-${{ runner.os }}-${{ hashFiles('tests/build-ucode.sh') }}-v1
+      - name: Build ucode of OpenWrt 24.10
+        if: steps.cache-ucode.outputs.cache-hit != 'true'
+        run: |
+          git clone --depth 1 https://github.com/openwrt/libubox.git /tmp/libubox
+          cmake -S /tmp/libubox -B /tmp/libubox/build -DBUILD_LUA=OFF -DBUILD_EXAMPLES=OFF
+          sudo cmake --build /tmp/libubox/build --target install -j4
+          git clone --depth 1 https://github.com/openwrt/uci.git /tmp/uci
+          cmake -S /tmp/uci -B /tmp/uci/build -DBUILD_LUA=OFF
+          sudo cmake --build /tmp/uci/build --target install -j4
+          sudo ldconfig
+          sudo sh tests/build-ucode.sh 24.10 /opt/ucode-24.10
+      - name: Setup ucode symlink
+        run: |
+          sudo ldconfig
+          sudo ln -sf /opt/ucode-24.10/ucode /usr/local/bin/ucode
+      - name: Cache LuCI source
+        id: cache-luci-src
+        uses: actions/cache@v4
+        with:
+          path: /tmp/luci
+          key: luci-src-${{ runner.os }}-openwrt-24.10
+      - name: Get LuCI
+        if: steps.cache-luci-src.outputs.cache-hit != 'true'
+        run: |
+          git clone --depth 1 --filter=blob:none --sparse -b openwrt-24.10 https://github.com/openwrt/luci.git /tmp/luci
+          git -C /tmp/luci sparse-checkout set modules/luci-base/htdocs modules/luci-base/src themes/luci-theme-bootstrap/htdocs
+      - name: Cache Playwright browsers
+        id: cache-playwright
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/ms-playwright
+          key: playwright-${{ runner.os }}-chromium
       - name: LuCI pages in a browser
         run: |
           pip install --break-system-packages playwright
@@ -61,7 +198,6 @@ jobs:
           UCODE=ucode sh tests/luci/run.sh /tmp/luci
 
   build:
-    needs: test
     runs-on: ubuntu-24.04
     strategy:
       fail-fast: false
@@ -83,8 +219,7 @@ jobs:
           fi
           echo "version=$v" >> "$GITHUB_OUTPUT"
 
-      # The official SDK container comes from ghcr.io, next to the runners;
-      # downloads.openwrt.org is the fallback (slow for runners at times).
+      # The official SDK container comes from ghcr.io, next to the runners.
       - name: OpenWrt SDK from its container
         id: box
         run: |
@@ -99,92 +234,37 @@ jobs:
             docker rm "$cid" >/dev/null
             rm -rf sdk
           fi
-          echo "::warning::no SDK in $img, downloading it from downloads.openwrt.org"
-          echo "from=mirror" >> "$GITHUB_OUTPUT"
+          echo "::error::cannot get OpenWrt SDK from $img"
+          exit 1
 
-      - name: Find the OpenWrt SDK
-        if: steps.box.outputs.from == 'mirror'
-        id: sdk
-        run: |
-          base="https://downloads.openwrt.org/releases/${{ matrix.release }}/targets/x86/64"
-          get() { curl -fsSL --connect-timeout 20 -m 120 --retry 5 --retry-all-errors "$1"; }
-          idx="$(get "$base/")"
-          sdk="$(printf '%s\n' "$idx" | grep -o 'openwrt-sdk-[^"]*\.tar\.\(xz\|zst\)' | awk 'NR == 1')"
-          [ -n "$sdk" ] || { echo "::error::no SDK at $base"; exit 1; }
-          sum="$(get "$base/sha256sums" | awk -v f="*$sdk" '$2 == f { print $1 }')" || sum=""
-          echo "name=$sdk" >> "$GITHUB_OUTPUT"
-          echo "url=$base/$sdk" >> "$GITHUB_OUTPUT"
-          echo "sha256=$sum" >> "$GITHUB_OUTPUT"
-
-      # The mirror crawls or stalls now and then (25 minutes for one SDK, or
-      # no end): after one good download the SDK comes from the Actions cache.
-      # Tag builds can use what a build of main saved.
-      - uses: actions/cache/restore@v4
-        if: steps.box.outputs.from == 'mirror'
-        id: cache
+      - name: Cache SDK prep
+        id: cache-sdk-prep
+        uses: actions/cache@v4
         with:
-          path: /tmp/sdk
-          key: sdk-${{ steps.sdk.outputs.name }}-${{ steps.sdk.outputs.sha256 }}
+          path: |
+            sdk/feeds
+            sdk/dl
+            sdk/staging_dir/host*
+            sdk/.config
+          key: openwrt-sdk-prep-${{ matrix.release }}-${{ hashFiles('**/Makefile') }}
 
-      - name: Download the OpenWrt SDK
-        if: steps.box.outputs.from == 'mirror' && steps.cache.outputs.cache-hit != 'true'
-        timeout-minutes: 45
-        run: |
-          mkdir -p /tmp/sdk
-          f="/tmp/sdk/${{ steps.sdk.outputs.name }}"
-          want="${{ steps.sdk.outputs.sha256 }}"
-          ok=0
-          # Under 30 KB/s for a minute counts as stalled: curl gives up and
-          # the next attempt resumes where it stopped. HTTP/1.1: the mirror
-          # drops long transfers (curl exit 92).
-          for i in $(seq 1 20); do
-            rc=0
-            curl -fsSL --http1.1 --connect-timeout 20 --speed-limit 30720 --speed-time 60 \
-              -C - -o "$f" "${{ steps.sdk.outputs.url }}" || rc=$?
-            if [ -n "$want" ]; then
-              if echo "$want  $f" | sha256sum -c --status 2>/dev/null; then ok=1; break; fi
-              # Whole but wrong, or refused to resume (HTTP error): from the start.
-              if [ "$rc" = 0 ] || [ "$rc" = 22 ]; then rm -f "$f"; fi
-            elif [ "$rc" = 0 ]; then
-              ok=1
-              break
-            fi
-            echo "attempt $i: curl exit $rc, trying again"
-            sleep 5
-          done
-          [ "$ok" = 1 ] || { echo "::error::the OpenWrt SDK did not download"; exit 1; }
-
-      # Saved right away, not at the end of the job: also when the build fails.
-      - uses: actions/cache/save@v4
-        if: steps.box.outputs.from == 'mirror' && steps.cache.outputs.cache-hit != 'true'
-        with:
-          path: /tmp/sdk
-          key: sdk-${{ steps.sdk.outputs.name }}-${{ steps.sdk.outputs.sha256 }}
-
-      - name: Unpack the OpenWrt SDK
-        if: steps.box.outputs.from == 'mirror'
-        run: |
-          f="/tmp/sdk/${{ steps.sdk.outputs.name }}"
-          mkdir sdk
-          case "$f" in
-            *.zst) tar --zstd -xf "$f" -C sdk --strip-components=1 ;;
-            *) tar -xf "$f" -C sdk --strip-components=1 ;;
-          esac
-
-      - name: Build
+      - name: Prepare feeds
+        if: steps.cache-sdk-prep.outputs.cache-hit != 'true'
         working-directory: sdk
         run: |
-          # Feeds from the GitHub mirrors of git.openwrt.org, like the
-          # official SDK action does.
           sed -e 's,https://git.openwrt.org/feed/,https://github.com/openwrt/,' \
             -e 's,https://git.openwrt.org/openwrt/,https://github.com/openwrt/,' \
             -e 's,https://git.openwrt.org/project/,https://github.com/openwrt/,' \
             feeds.conf.default > feeds.conf
           ./scripts/feeds update base luci
           ./scripts/feeds install luci-base
-          cp -r ../mayhem ../luci-app-mayhem package/
           echo 'CONFIG_LUCI_LANG_ru=y' >> .config
           make defconfig
+
+      - name: Build
+        working-directory: sdk
+        run: |
+          cp -r ../mayhem ../luci-app-mayhem package/
           make package/mayhem/compile package/luci-app-mayhem/compile -j"$(nproc)" V=s \
             MAYHEM_VERSION=${{ steps.ver.outputs.version }} MAYHEM_REPO=${{ github.repository }}
           mkdir -p ../dist
@@ -198,7 +278,7 @@ jobs:
 
   release:
     if: startsWith(github.ref, 'refs/tags/v')
-    needs: build
+    needs: [test-unit, test-e2e, test-luci, build]
     runs-on: ubuntu-24.04
     permissions:
       contents: write
