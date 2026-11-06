@@ -144,10 +144,9 @@ return baseclass.extend({
 				if (r.allowed)
 					ui.addNotification(null, E('p', _('This config lets only %s through the tunnel (AllowedIPs): other addresses sent into it are dropped. For sites and all traffic the peer needs AllowedIPs = 0.0.0.0/0, ::/0.').format(r.allowed.join(', ') || '—')), 'warning');
 
-				// Made for a local obfuscator (Endpoint = 127.0.0.1): the
-				// obfuscation and its server are set at once.
+				// Endpoint = 127.0.0.1: enter external server address in settings.
 				if (r.loopback) {
-					ui.addNotification(null, E('p', _('The endpoint of this config is 127.0.0.1: it was made for an obfuscator. Choose it below and enter the server address.')), 'warning');
+					ui.addNotification(null, E('p', _('The endpoint of this config is 127.0.0.1. Enter the external server address in the tunnel settings.')), 'warning');
 					return this.editDialog(r.interface, () => done ? done(r) : sheet.reload());
 				}
 

@@ -2480,3 +2480,15 @@ msgstr "itdog: YouTube"
 
 msgid "itdog: Discord"
 msgstr "itdog: Discord"
+
+msgid "uptime %s (reason: %s)"
+msgstr "время работы %s (причина: %s)"
+
+msgid "uptime %s"
+msgstr "время работы %s"
+
+msgid "freed %s KiB (%ss ago)"
+msgstr "освобождено %s КиБ (%s с назад)"
+
+msgid "The endpoint of this config is 127.0.0.1. Enter the external server address in the tunnel settings."
+msgstr "Endpoint этого конфига — 127.0.0.1. Укажите внешний адрес сервера в настройках туннеля."

@@ -652,18 +652,18 @@ function diag_local() {
 	check(res, 'xray', 'Version', ver != '' ? 'ok' : (fs.access(XRAY) ? 'info' : 'fail'),
 		ver != '' ? ver : (fs.access(XRAY) ? 'installed' : 'not installed: mayhem xray-install'));
 
-	const started = trim(fs.readfile(`${RUN}/xray.started`) ?? '');
-	if (started != '') {
-		const parts = split(started, /[ \t]+/);
-		const stime = int(parts[0]) || 0;
-		const swhy = parts[1] ?? '';
-		const uptime = stime > 0 ? (time() - stime) : 0;
-		const upstr = uptime >= 3600 ? sprintf('%dh %dm', int(uptime / 3600), int((uptime % 3600) / 60))
-			: (uptime >= 60 ? sprintf('%dm %ds', int(uptime / 60), uptime % 60) : sprintf('%ds', uptime));
-		check(res, 'xray', 'Last start', 'ok', sprintf('uptime %s%s', upstr, swhy != '' ? ` (reason: ${swhy})` : ''));
-	}
-
 	if (pid) {
+		const started = trim(fs.readfile(`${RUN}/xray.started`) ?? '');
+		if (started != '') {
+			const parts = split(started, /[ \t]+/);
+			const stime = int(parts[0]) || 0;
+			const swhy = parts[1] ?? '';
+			const uptime = stime > 0 ? (time() - stime) : 0;
+			const upstr = uptime >= 3600 ? sprintf('%dh %dm', int(uptime / 3600), int((uptime % 3600) / 60))
+				: (uptime >= 60 ? sprintf('%dm %ds', int(uptime / 60), uptime % 60) : sprintf('%ds', uptime));
+			check(res, 'xray', 'Last start', 'ok', sprintf('uptime %s%s', upstr, swhy != '' ? ` (reason: ${swhy})` : ''));
+		}
+
 		const rss = rss_kb(pid);
 		const limit = (st.memlimit_mib ?? 0) * 1024;
 
@@ -2225,19 +2225,22 @@ function dashboard(pid, state, out) {
 			});
 
 		let xray_started = null;
-		const xs = trim(fs.readfile(`${RUN}/xray.started`) ?? '');
-		if (xs != '') {
-			const p = split(xs, /[ \t]+/);
-			if (length(p))
-				xray_started = { time: int(p[0]) || 0, why: p[1] ?? '' };
-		}
-
 		let mem_trim = null;
-		const mt = trim(fs.readfile(`${RUN}/mem.trim`) ?? '');
-		if (mt != '') {
-			const p = split(mt, /[ \t]+/);
-			if (length(p))
-				mem_trim = { time: int(p[0]) || 0, freed_kb: int(p[1]) || 0 };
+
+		if (pid) {
+			const xs = trim(fs.readfile(`${RUN}/xray.started`) ?? '');
+			if (xs != '') {
+				const p = split(xs, /[ \t]+/);
+				if (length(p))
+					xray_started = { time: int(p[0]) || 0, why: p[1] ?? '' };
+			}
+
+			const mt = trim(fs.readfile(`${RUN}/mem.trim`) ?? '');
+			if (mt != '') {
+				const p = split(mt, /[ \t]+/);
+				if (length(p))
+					mem_trim = { time: int(p[0]) || 0, freed_kb: int(p[1]) || 0 };
+			}
 		}
 
 		return {
@@ -3356,6 +3359,7 @@ const methods = {
 		args: { component: 'all', lines: 300, level: 'all' },
 		call: function(req) {
 			const n = int(req.args?.lines ?? 300);
+			const limit = (n > 0 && n <= 2000) ? n : 300;
 			const level = req.args?.level ?? 'all';
 			const priorities = { emerg: 0, alert: 1, crit: 2, err: 3, error: 3, warn: 4, warning: 4, notice: 5, info: 6, debug: 7 };
 			if (index([ 'all', 'debug', 'info', 'warning', 'error' ], level) < 0)
@@ -3369,27 +3373,41 @@ const methods = {
 			const re = pats[req.args?.component] ?? pats.all;
 			const p = fs.popen('logread 2>&1', 'r');
 			if (!p) return { error: 'cannot read the system log' };
-			const text = p.read('all');
-			const rc = p.close();
-			if (rc !== 0 || text == null) return { error: trim(text ?? '') || 'cannot read the system log' };
-			// logread: ctime (five fields), facility.priority, then tag[pid]:.
-			// Match only the emitting process, never names inside its message.
-			const out = filter(lines_of(text), (l) => {
-				const fields = split(trim(l), /[[:space:]]+/);
-				const tag = replace(fields[6] ?? '', /(\[[0-9]+\])?:$/, '');
-				if (!match(tag, re)) return false;
-				if (level == 'all') return true;
-				let priority = priorities[split(fields[5] ?? '', '.')[1]];
-				if (match(tag, /^(xray|xray-run)$/i)) {
-					// Xray's own severity follows its Go logger timestamp.
-					// procd's stdout priority alone loses warning/error levels.
-					const own = match(join(' ', slice(fields, 7)), /^[0-9]{4}\/[0-9]{2}\/[0-9]{2} [0-9]{2}:[0-9]{2}:[0-9]{2}(\.[0-9]+)? \[(Debug|Info|Warning|Error)\]/i);
-					if (own) priority = priorities[lc(own[2])];
+			const out = [];
+			let l;
+			let raw_err = '';
+			while ((l = p.read('line')) != null && l != '') {
+				l = trim(l);
+				if (!l) continue;
+				if (!match(l, /(mayhem|xray|dnsmasq)/i)) {
+					if (length(raw_err) < 500)
+						raw_err = (raw_err ? raw_err + '\n' : '') + l;
+					continue;
 				}
-				return priority != null && priority <= priorities[level];
-			});
+				// logread: ctime (five fields), facility.priority, then tag[pid]:.
+				// Match only the emitting process, never names inside its message.
+				const fields = split(l, /[[:space:]]+/);
+				const tag = replace(fields[6] ?? '', /(\[[0-9]+\])?:$/, '');
+				if (!match(tag, re)) continue;
+				if (level != 'all') {
+					let priority = priorities[split(fields[5] ?? '', '.')[1]];
+					if (match(tag, /^(xray|xray-run)$/i)) {
+						// Xray's own severity follows its Go logger timestamp.
+						// procd's stdout priority alone loses warning/error levels.
+						const own = match(join(' ', slice(fields, 7)), /^[0-9]{4}\/[0-9]{2}\/[0-9]{2} [0-9]{2}:[0-9]{2}:[0-9]{2}(\.[0-9]+)? \[(Debug|Info|Warning|Error)\]/i);
+						if (own) priority = priorities[lc(own[2])];
+					}
+					if (priority == null || priority > priorities[level]) continue;
+				}
 
-			return { lines: slice(out, -(n > 0 && n <= 2000 ? n : 300)) };
+				push(out, l);
+				if (length(out) > limit * 2)
+					splice(out, 0, length(out) - limit);
+			}
+			const rc = p.close();
+			if (rc !== 0) return { error: raw_err || 'cannot read the system log' };
+
+			return { lines: slice(out, -limit) };
 		}
 	},
 

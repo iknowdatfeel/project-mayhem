@@ -23,7 +23,6 @@ const callParseOne = rpc.declare({ object: 'luci.mayhem', method: 'parse_link', 
 const callServerEdit = rpc.declare({ object: 'luci.mayhem', method: 'server_edit', params: [ 'section', 'old', 'link' ], expect: { '': {} } });
 const callServerRestore = rpc.declare({ object: 'luci.mayhem', method: 'server_restore', params: [ 'subscription', 'name' ], expect: { '': {} } });
 const callRenameSub = rpc.declare({ object: 'luci.mayhem', method: 'rename_subscription', params: [ 'name', 'new_name' ], expect: { '': {} } });
-const callSubUpdate = rpc.declare({ object: 'luci.mayhem', method: 'sub_update', params: [ 'name' ], expect: { '': {} } });
 
 // A key, or a server kept as Xray JSON on one line.
 const LINK_RE = /^((vless|vmess|trojan|ss|socks5?|https?|hysteria2|hy2|wireguard|wg):\/\/\S+|\{.*\}$)/i;
@@ -193,9 +192,9 @@ return baseclass.extend({
 		if (!/^[a-zA-Z0-9_]+$/.test(raw) && !/^https?:\/\//i.test(raw) && (raw.indexOf('.') >= 0 || raw.indexOf('/') >= 0))
 			raw = 'https://' + raw;
 
-		let sid = '';
-		if (/^[a-zA-Z0-9_]+$/.test(raw)) {
-			sid = raw;
+		let base = 'sub';
+		if (/^[a-zA-Z_][a-zA-Z0-9_]*$/.test(raw)) {
+			base = raw;
 		} else {
 			let host = '';
 			const m = raw.match(/:\/\/([^/:]+)/);
@@ -206,13 +205,15 @@ return baseclass.extend({
 				if (m2)
 					host = m2[1].replace(/[^a-zA-Z0-9_]/g, '_').replace(/^_+|_+$/g, '');
 			}
-			let base = host ? ('sub_' + host) : 'sub';
-			base = base.substring(0, 24);
-			sid = base;
-			let idx = 1;
-			while (uci.get('mayhem', sid) || (this.map && this.map.data && this.map.data.get('mayhem', sid))) {
-				sid = `${base}_${idx++}`;
-			}
+			base = host ? ('sub_' + host) : 'sub';
+		}
+		base = base.substring(0, 24);
+
+		const reserved = { main: 1, settings: 1, dns: 1, pool: 1, routing: 1 };
+		let sid = base;
+		let idx = 1;
+		while (reserved[sid] || uci.get('mayhem', sid) || (this.map && this.map.data && this.map.data.get('mayhem', sid))) {
+			sid = `${base}_${idx++}`;
 		}
 
 		if (this.map && this.map.data) {
@@ -244,8 +245,6 @@ return baseclass.extend({
 			return this.handleSave(ev).then(() => {
 				if (this.addInput) this.addInput.value = '';
 				return ui.changes.apply(mode == '0');
-			}).then(() => {
-				return callSubUpdate('').catch(() => {});
 			});
 		}).catch((e) => {
 			ui.addNotification(null, E('p', e.message || String(e)), 'error');
@@ -472,16 +471,34 @@ return baseclass.extend({
 		s.nodescriptions = true;
 		s.addbtntitle = _('Add subscription');
 		s.modaltitle = (section_id) => _('Subscription') + ' » ' + section_id;
+		s.addSubscriptionLink = function(link) {
+			return self.addSubscriptionLink(link);
+		};
 		s.renderSectionAdd = function(extra_class) {
-			const el = form.GridSection.prototype.renderSectionAdd.call(this, extra_class);
-			const name = el.querySelector('.cbi-section-create-name');
-
-			if (name) {
-				name.placeholder = (_('Paste a link') === 'Paste a link' && (document.documentElement.lang || '').startsWith('ru')) ? 'Вставьте ссылку' : _('Paste a link');
-				name.style.width = '100%';
-				name.style.maxWidth = '400px';
-			}
-
+			const el = E('div', { 'class': 'cbi-section-create ' + (extra_class || '') }, [
+				E('div', {}, [
+					E('input', {
+						'type': 'text',
+						'class': 'cbi-section-create-name',
+						'placeholder': _('Paste a link'),
+						'style': 'width:100%; max-width:400px',
+						'keydown': ui.createHandlerFn(this, function(ev) {
+							if (ev.key === 'Enter') {
+								ev.preventDefault();
+								const input = ev.currentTarget;
+								return this.handleAdd(ev, input.value);
+							}
+						})
+					})
+				]),
+				E('button', {
+					'class': 'cbi-button cbi-button-add',
+					'click': ui.createHandlerFn(this, function(ev) {
+						const input = ev.currentTarget.parentNode.querySelector('.cbi-section-create-name');
+						return this.handleAdd(ev, input ? input.value : '');
+					})
+				}, [ _('Add subscription') ])
+			]);
 			return el;
 		};
 		s.handleAdd = function(ev, name) {

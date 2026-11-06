@@ -1662,7 +1662,7 @@ msgid "The domestic DNS is plain UDP: enter an IP address, or choose a provider 
 msgstr ""
 
 #: htdocs/luci-static/resources/mayhem/tunnels.js
-msgid "The endpoint of this config is 127.0.0.1: it was made for an obfuscator. Choose it below and enter the server address."
+msgid "The endpoint of this config is 127.0.0.1. Enter the external server address in the tunnel settings."
 msgstr ""
 
 #: htdocs/luci-static/resources/mayhem/page/sections.js
@@ -2105,6 +2105,10 @@ msgstr ""
 msgid "fastest"
 msgstr ""
 
+#: htdocs/luci-static/resources/mayhem/diag.js
+msgid "freed %s KiB (%ss ago)"
+msgstr ""
+
 #: htdocs/luci-static/resources/mayhem/dash/conns.js
 msgid "hidden: %d"
 msgstr ""
@@ -2151,6 +2155,14 @@ msgstr ""
 
 #: htdocs/luci-static/resources/mayhem/diag.js
 msgid "updated %s"
+msgstr ""
+
+#: htdocs/luci-static/resources/mayhem/diag.js
+msgid "uptime %s"
+msgstr ""
+
+#: htdocs/luci-static/resources/mayhem/diag.js
+msgid "uptime %s (reason: %s)"
 msgstr ""
 
 #: htdocs/luci-static/resources/mayhem/dash/chain.js

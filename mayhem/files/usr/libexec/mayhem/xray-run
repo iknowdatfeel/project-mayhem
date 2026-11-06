@@ -149,7 +149,9 @@ done
 # How it ended, for the reason of the next start.
 [ "$stopping" = 0 ] && [ "$ready" = 1 ] && echo "$(date +%s) $rc" > "$MAYHEM_RUN_DIR/xray.exit"
 
-rm -f "$MAYHEM_RUN_DIR/active" "$MAYHEM_RUN_DIR/xray.pid" "$MAYHEM_RUN_DIR/xray-run.pid" "$MAYHEM_RUN_DIR/watchdog.mem" "$MAYHEM_RUN_DIR/watchdog.hang"
+rm -f "$MAYHEM_RUN_DIR/active" "$MAYHEM_RUN_DIR/xray.pid" "$MAYHEM_RUN_DIR/xray-run.pid" \
+      "$MAYHEM_RUN_DIR/xray.started" "$MAYHEM_RUN_DIR/mem.trim" \
+      "$MAYHEM_RUN_DIR/watchdog.mem" "$MAYHEM_RUN_DIR/watchdog.hang"
 
 # Kill switch: the interception stays and the traffic waits for the next
 # xray (procd starts it again), also when this one never listened while the

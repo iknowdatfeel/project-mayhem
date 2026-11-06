@@ -78,9 +78,14 @@ mayhem_nft_kept() {
 				end = sub(/\}.*/, "")
 				n = split($0, e, ",")
 				for (i = 1; i <= n; i++) {
-					split(e[i], w, " ")
-					if (w[1] != "")
-						a[++k] = (w[2] == "expires" && w[3] != "") ? (w[1] " expires " w[3]) : w[1]
+					m = split(e[i], w, " ")
+					if (w[1] != "") {
+						exp = ""
+						for (j = 2; j < m; j++)
+							if (w[j] == "expires" && w[j + 1] != "")
+								exp = " expires " w[j + 1]
+						a[++k] = w[1] exp
+					}
 				}
 				if (end)
 					on = 0
@@ -460,7 +465,16 @@ mayhem_conn_fold() {
 	size="$(wc -c < "$f" 2>/dev/null)"
 	[ "${size:-0}" -gt 0 ] || return 0
 
-	mkdir "$lock" 2>/dev/null || return 0
+	if ! mkdir "$lock" 2>/dev/null; then
+		local lpid
+		lpid="$(cat "$lock/pid" 2>/dev/null)"
+		if [ -n "$lpid" ] && kill -0 "$lpid" 2>/dev/null; then
+			return 0
+		fi
+		rm -rf "$lock" 2>/dev/null
+		mkdir "$lock" 2>/dev/null || return 0
+	fi
+	echo "$$" > "$lock/pid"
 
 	{ [ -f "$m" ] && cat "$m"; head -c "$size" "$f"; } | awk -v max="${MAYHEM_CONN_NAMES:-3000}" '
 		function put(kind, key, line) {
@@ -517,7 +531,7 @@ mayhem_conn_fold() {
 	# What xray wrote meanwhile stays.
 	tail -c +"$((size + 1))" "$f" > "$f.t" 2>/dev/null && cat "$f.t" > "$f"
 	rm -f "$f.t"
-	rmdir "$lock" 2>/dev/null || true
+	rm -rf "$lock" 2>/dev/null || true
 	return 0
 }
 
@@ -895,14 +909,20 @@ mayhem_subs_new() {
 	[ -s "$MAYHEM_RUN_DIR/subs.new" ] || return 0
 
 	(
+		local def_sec="" conf_nodes="${MAYHEM_CONF_DIR:-$MAYHEM_RUN_DIR}/nodes.json" i=0 f rc
+		if [ -f "$conf_nodes" ]; then
+			def_sec="$(jsonfilter -i "$conf_nodes" -e '@.default_section' 2>/dev/null)"
+			[ -z "$def_sec" ] && def_sec="$(grep -o '"default_section": *"[A-Za-z0-9_]*"' "$conf_nodes" 2>/dev/null | head -n 1 | sed 's/.*"\([A-Za-z0-9_]*\)"$/\1/')"
+		fi
+		if [ -n "$def_sec" ] && [ -x "$MAYHEM_XRAY_BIN" ]; then
+			while [ ! -f "$MAYHEM_RUN_DIR/active" ] && [ "$i" -lt 15 ]; do
+				sleep 1
+				i=$((i + 1))
+			done
+		fi
+
 		f="$MAYHEM_RUN_DIR/applying.sub"
 		: > "$f"
-		# procd restarts xray after the reload, when it has to.
-		i=0
-		while [ -f "$MAYHEM_RUN_DIR/xray.pid" ] && [ ! -f "$MAYHEM_RUN_DIR/active" ] && [ "$i" -lt 10 ]; do
-			sleep 1
-			i=$((i + 1))
-		done
 		ucode "$MAYHEM_SUB" update --new >/dev/null 2>&1
 		rc=$?
 		rm -f "$f"
