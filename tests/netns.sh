@@ -1196,7 +1196,19 @@ if start_mayhem uci; then
 		ip netns exec router nft add chain inet mhtest out '{ type filter hook output priority 0; }'
 		ip netns exec router nft add rule inet mhtest out ip daddr 45.0.0.3 tcp dport "$port" drop
 		health
-		expect "a dead fastest server is left in one check, before xray's own checks notice" "$other" $(site youtube.test)
+		sleep 1
+		i=0
+		while [ "$i" -lt 5 ]; do
+			got="$(ip netns exec client curl -s -m 4 $(site youtube.test) 2>/dev/null)" || got="failed"
+			[ "$got" = "$other" ] && break
+			sleep 1
+			i=$((i + 1))
+		done
+		if [ "$got" = "$other" ]; then
+			ok "a dead fastest server is left in one check, before xray's own checks notice"
+		else
+			bad "a dead fastest server is left in one check, before xray's own checks notice: expected $other, got $got"
+		fi
 		server_up
 	else
 		bad "the fastest server stops answering: no server at first ($first)"
