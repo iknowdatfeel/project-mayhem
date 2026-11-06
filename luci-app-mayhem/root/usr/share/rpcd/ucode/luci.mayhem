@@ -3367,12 +3367,11 @@ const methods = {
 				dnsmasq: /^dnsmasq(-(dhcp|tftp|script|debug))?$/i
 			};
 			const re = pats[req.args?.component] ?? pats.all;
-			const limit = (n > 0 && n <= 2000) ? n * 2 : 1000;
-			const p = fs.popen(`logread 2>&1 | awk '{ tag=$7; sub(/(\\[[0-9]+\\])?:$/, "", tag); if (tag ~ /^(mayhem|xray|xray-run|dnsmasq)/) print }' | tail -n ${limit}`, 'r');
+			const p = fs.popen('logread 2>&1', 'r');
 			if (!p) return { error: 'cannot read the system log' };
 			const text = p.read('all');
 			const rc = p.close();
-			if (rc !== 0 && text == null) return { error: trim(text ?? '') || 'cannot read the system log' };
+			if (rc !== 0 || text == null) return { error: trim(text ?? '') || 'cannot read the system log' };
 			// logread: ctime (five fields), facility.priority, then tag[pid]:.
 			// Match only the emitting process, never names inside its message.
 			const out = filter(lines_of(text), (l) => {

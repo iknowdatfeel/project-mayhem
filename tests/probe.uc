@@ -49,7 +49,7 @@ expect(`icmp: bad address ${res['n-bad']}`, res['n-bad']?.error == 'no address')
 expect(`icmp: unknown server ${res['n-none']}`, res['n-none']?.error == 'unknown server');
 // the endpoint 203.0.113.10 does not answer: the tunnel is pinged through itself
 expect(`icmp: tunnel through itself ${res['awg0']}`, res['awg0']?.ms == 40);
-expect(`icmp: one ping per address, ${length(pings)}: ${pings}`, length(pings) == 5 && !match(join(' ', pings), /127\.0\.0\.1/));
+expect(`icmp: one ping per address, ${length(pings)}: ${pings}`, length(pings) == 6 && !match(join(' ', pings), /127\.0\.0\.1/));
 expect('icmp: the tunnel ping goes through its interface', length(filter(pings, (l) => match(l, /-I awg0 .*1\.1\.1\.1/))) == 1);
 // three dead addresses wait 2 s each: at once that is about 2 s, one after
 // another 6 s; the tunnel fallback adds one more wave

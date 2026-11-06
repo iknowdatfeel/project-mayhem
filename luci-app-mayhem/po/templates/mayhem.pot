@@ -37,10 +37,6 @@ msgstr ""
 msgid "%s is an address: it goes into the field below"
 msgstr ""
 
-#: htdocs/luci-static/resources/mayhem/tunnels.js
-msgid "%s is not installed on the router."
-msgstr ""
-
 #: htdocs/luci-static/resources/view/mayhem/dashboard.js
 msgid "%s of %s"
 msgstr ""
@@ -103,10 +99,6 @@ msgstr ""
 
 #: htdocs/luci-static/resources/mayhem/tunnels.js
 msgid "A tunnel is a network interface: AmneziaWG, WireGuard, OpenVPN or another one. A tunnel section sends its traffic into it, and a proxy section can use it as one of its servers."
-msgstr ""
-
-#: htdocs/luci-static/resources/mayhem/tunnels.js
-msgid "AUTO and STUN dress the packets as STUN; NONE leaves them as they are."
 msgstr ""
 
 #: htdocs/luci-static/resources/mayhem/dash/conns.js
@@ -207,6 +199,18 @@ msgstr ""
 
 #: htdocs/luci-static/resources/mayhem/page/components.js
 msgid "An update is already running"
+msgstr ""
+
+#: htdocs/luci-static/resources/mayhem/page/sections.js
+msgid "AntiFilter: All-you-need (IP)"
+msgstr ""
+
+#: htdocs/luci-static/resources/mayhem/page/sections.js
+msgid "AntiFilter: Community domains"
+msgstr ""
+
+#: htdocs/luci-static/resources/mayhem/page/sections.js
+msgid "AntiFilter: Community list (IP)"
 msgstr ""
 
 #: htdocs/luci-static/resources/mayhem/page/servers.js
@@ -589,10 +593,6 @@ msgstr ""
 msgid "Empty: the HWID of the router, %s."
 msgstr ""
 
-#: htdocs/luci-static/resources/mayhem/tunnels.js
-msgid "Empty: the endpoint of the .conf."
-msgstr ""
-
 #: htdocs/luci-static/resources/mayhem/page/sections.js
 msgid "Empty: the whole network. Other devices go on to the sections below, as if this one did not exist. Xray tells devices by their address: a device given by MAC needs a lease (best a static one, under DHCP and DNS → Static leases)."
 msgstr ""
@@ -603,22 +603,6 @@ msgstr ""
 
 #: htdocs/luci-static/resources/mayhem/page/sections.js
 msgid "Enabled"
-msgstr ""
-
-#: htdocs/luci-static/resources/mayhem/page/servers.js
-msgid "Enter a name"
-msgstr ""
-
-#: htdocs/luci-static/resources/mayhem/page/servers.js
-msgid "Paste a link"
-msgstr ""
-
-#: htdocs/luci-static/resources/mayhem/page/servers.js
-msgid "Paste a subscription link first."
-msgstr ""
-
-#: htdocs/luci-static/resources/mayhem/tunnels.js
-msgid "Enter the obfuscator server address: the endpoint of this config is the router itself"
 msgstr ""
 
 #: htdocs/luci-static/resources/mayhem/diag.js
@@ -715,6 +699,10 @@ msgstr ""
 
 #: htdocs/luci-static/resources/mayhem/page/sections.js
 msgid "Files on the router in the same format, for example /etc/mayhem/my.lst."
+msgstr ""
+
+#: htdocs/luci-static/resources/mayhem/dash/conns.js
+msgid "Filter…"
 msgstr ""
 
 #: htdocs/luci-static/resources/mayhem/tunnels.js
@@ -858,14 +846,6 @@ msgid "Installing dnsmasq-full"
 msgstr ""
 
 #: htdocs/luci-static/resources/mayhem/tunnels.js
-msgid "Installing phantun"
-msgstr ""
-
-#: htdocs/luci-static/resources/mayhem/tunnels.js
-msgid "Installing wg-obfuscator"
-msgstr ""
-
-#: htdocs/luci-static/resources/mayhem/tunnels.js
 msgid "Interface"
 msgstr ""
 
@@ -945,6 +925,10 @@ msgstr ""
 msgid "Last handshake %s"
 msgstr ""
 
+#: htdocs/luci-static/resources/mayhem/diag.js
+msgid "Last start"
+msgstr ""
+
 #: htdocs/luci-static/resources/mayhem/page/servers.js
 msgid "Latin letters, digits and _. Its servers, the chain of the server list and the chosen server go along."
 msgstr ""
@@ -989,10 +973,6 @@ msgstr ""
 msgid "Made %s, Mayhem %s."
 msgstr ""
 
-#: htdocs/luci-static/resources/mayhem/tunnels.js
-msgid "Masking"
-msgstr ""
-
 #: root/usr/share/luci/menu.d/luci-app-mayhem.json
 msgid "Mayhem"
 msgstr ""
@@ -1015,6 +995,10 @@ msgstr ""
 
 #: htdocs/luci-static/resources/mayhem/diag.js
 msgid "Memory"
+msgstr ""
+
+#: htdocs/luci-static/resources/mayhem/diag.js
+msgid "Memory trim"
 msgstr ""
 
 #: htdocs/luci-static/resources/view/mayhem/dashboard.js
@@ -1097,6 +1081,10 @@ msgstr ""
 msgid "No log result"
 msgstr ""
 
+#: htdocs/luci-static/resources/mayhem/dash/conns.js
+msgid "No matching connections."
+msgstr ""
+
 #: htdocs/luci-static/resources/mayhem/diag.js
 msgid "No messages yet."
 msgstr ""
@@ -1123,10 +1111,6 @@ msgstr ""
 
 #: htdocs/luci-static/resources/mayhem/tunnels.js
 msgid "No tunnels yet."
-msgstr ""
-
-#: htdocs/luci-static/resources/mayhem/tunnels.js
-msgid "None"
 msgstr ""
 
 #: htdocs/luci-static/resources/mayhem/page/sections.js
@@ -1179,26 +1163,6 @@ msgstr ""
 
 #: htdocs/luci-static/resources/mayhem/page/servers.js
 msgid "OS version"
-msgstr ""
-
-#: htdocs/luci-static/resources/mayhem/tunnels.js
-msgid "Obfuscation"
-msgstr ""
-
-#: htdocs/luci-static/resources/mayhem/tunnels.js
-msgid "Obfuscation key"
-msgstr ""
-
-#: htdocs/luci-static/resources/mayhem/tunnels.js
-msgid "Obfuscator"
-msgstr ""
-
-#: htdocs/luci-static/resources/mayhem/tunnels.js
-msgid "Obfuscator server address"
-msgstr ""
-
-#: htdocs/luci-static/resources/mayhem/tunnels.js
-msgid "Obfuscator server port"
 msgstr ""
 
 #: htdocs/luci-static/resources/mayhem/page/sections.js
@@ -1286,11 +1250,19 @@ msgid "Paste a WireGuard or AmneziaWG config (.conf) or an AmneziaVPN key (vpn:/
 msgstr ""
 
 #: htdocs/luci-static/resources/mayhem/page/servers.js
+msgid "Paste a link"
+msgstr ""
+
+#: htdocs/luci-static/resources/mayhem/page/servers.js
 msgid "Paste a server key first."
 msgstr ""
 
 #: htdocs/luci-static/resources/mayhem/page/servers.js
 msgid "Paste a server key: vless://, vmess://, trojan://, ss://, hysteria2://, socks://, http(s)://, wireguard://, or an AmneziaVPN key (vpn://) or a WireGuard/AmneziaWG config. Several keys go one per line."
+msgstr ""
+
+#: htdocs/luci-static/resources/mayhem/page/servers.js
+msgid "Paste a subscription link first."
 msgstr ""
 
 #: htdocs/luci-static/resources/mayhem/dash/conns.js
@@ -1299,14 +1271,6 @@ msgstr ""
 
 #: htdocs/luci-static/resources/mayhem/dash/conns.js
 msgid "Paused"
-msgstr ""
-
-#: htdocs/luci-static/resources/mayhem/tunnels.js
-msgid "Phantun (wg-phantun)"
-msgstr ""
-
-#: htdocs/luci-static/resources/mayhem/tunnels.js
-msgid "Phobos (wg-obfuscator)"
 msgstr ""
 
 #: htdocs/luci-static/resources/view/mayhem/dashboard.js
@@ -1698,10 +1662,6 @@ msgid "The domestic DNS is plain UDP: enter an IP address, or choose a provider 
 msgstr ""
 
 #: htdocs/luci-static/resources/mayhem/tunnels.js
-msgid "The endpoint of this config is 127.0.0.1, an obfuscator on the router: enter the address of the server here."
-msgstr ""
-
-#: htdocs/luci-static/resources/mayhem/tunnels.js
 msgid "The endpoint of this config is 127.0.0.1: it was made for an obfuscator. Choose it below and enter the server address."
 msgstr ""
 
@@ -1777,10 +1737,6 @@ msgstr ""
 msgid "The network interface, its firewall zone and every Mayhem setting that names it are renamed. The tunnel reconnects."
 msgstr ""
 
-#: htdocs/luci-static/resources/mayhem/tunnels.js
-msgid "The obfuscator server port is a number from 1 to 65535"
-msgstr ""
-
 #: htdocs/luci-static/resources/mayhem/page/sections.js
 msgid "The object has no \"protocol\""
 msgstr ""
@@ -1809,10 +1765,6 @@ msgstr ""
 msgid "The router's own TCP connections (package updates, downloads, scripts) follow the same rules as the network's. Its UDP (time, DNS, WireGuard and AmneziaWG tunnels) goes direct as before."
 msgstr ""
 
-#: htdocs/luci-static/resources/mayhem/tunnels.js
-msgid "The same key as in the server's wg-obfuscator."
-msgstr ""
-
 #: htdocs/luci-static/resources/mayhem/page/sections.js
 msgid "The section name may only contain letters, digits and _"
 msgstr ""
@@ -1827,10 +1779,6 @@ msgstr ""
 
 #: htdocs/luci-static/resources/mayhem/page/servers.js
 msgid "The subscription name may only contain letters, digits and _"
-msgstr ""
-
-#: htdocs/luci-static/resources/mayhem/tunnels.js
-msgid "The tunnel sends its UDP to the obfuscator on the router, which carries it to the server on this port; the server runs %s. The MTU of the tunnel goes down to leave room: 1380 with Phobos, 1428 with fake TCP."
 msgstr ""
 
 #: htdocs/luci-static/resources/mayhem/page/components.js
@@ -2161,6 +2109,18 @@ msgstr ""
 msgid "hidden: %d"
 msgstr ""
 
+#: htdocs/luci-static/resources/mayhem/page/sections.js
+msgid "itdog: Discord"
+msgstr ""
+
+#: htdocs/luci-static/resources/mayhem/page/sections.js
+msgid "itdog: Domains (Russia/services)"
+msgstr ""
+
+#: htdocs/luci-static/resources/mayhem/page/sections.js
+msgid "itdog: YouTube"
+msgstr ""
+
 #: htdocs/luci-static/resources/mayhem/dash/chain.js
 msgid "its chain: %s"
 msgstr ""
@@ -2185,24 +2145,12 @@ msgstr ""
 msgid "not servers of the list: they carry the traffic of their sections under Routing"
 msgstr ""
 
-#: htdocs/luci-static/resources/mayhem/tunnels.js
-msgid "phantun_server in front of WireGuard"
-msgstr ""
-
-#: htdocs/luci-static/resources/mayhem/tunnels.js
-msgid "the endpoint of the .conf"
-msgstr ""
-
 #: htdocs/luci-static/resources/view/mayhem/dashboard.js
 msgid "the fastest of all servers; click one to choose it by hand"
 msgstr ""
 
 #: htdocs/luci-static/resources/mayhem/diag.js
 msgid "updated %s"
-msgstr ""
-
-#: htdocs/luci-static/resources/mayhem/tunnels.js
-msgid "wg-obfuscator with the same key in front of WireGuard"
 msgstr ""
 
 #: htdocs/luci-static/resources/mayhem/dash/chain.js

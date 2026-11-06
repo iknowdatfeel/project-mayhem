@@ -2450,3 +2450,33 @@ msgstr "Не удалось удалить компоненты. Подробн�
 
 msgid "DNS policy"
 msgstr "Политика DNS"
+
+msgid "Filter…"
+msgstr "Фильтр…"
+
+msgid "No matching connections."
+msgstr "Нет подходящих подключений."
+
+msgid "Last start"
+msgstr "Последний запуск"
+
+msgid "Memory trim"
+msgstr "Очистка памяти"
+
+msgid "itdog: Domains (Russia/services)"
+msgstr "itdog: Домены (РФ/сервисы)"
+
+msgid "AntiFilter: Community domains"
+msgstr "AntiFilter: Домены сообщества"
+
+msgid "AntiFilter: All-you-need (IP)"
+msgstr "AntiFilter: All-you-need (IP)"
+
+msgid "AntiFilter: Community list (IP)"
+msgstr "AntiFilter: Список сообщества (IP)"
+
+msgid "itdog: YouTube"
+msgstr "itdog: YouTube"
+
+msgid "itdog: Discord"
+msgstr "itdog: Discord"
