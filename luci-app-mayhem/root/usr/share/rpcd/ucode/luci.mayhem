@@ -416,171 +416,8 @@ function proto_handlers() {
 	}
 }
 
-// --- WireGuard obfuscation ------------------------------------------------------
-// A tunnel's UDP goes to a local obfuscator, which carries it to the server:
-//   phobos   wg-obfuscator: the packets XORed with a key, optionally dressed as
-//            STUN; the server runs wg-obfuscator with the same key;
-//   faketcp  phantun: the packets as a TCP connection, for networks that cut
-//            or slow down UDP; the server runs phantun_server.
-// The peer's endpoint then is 127.0.0.1:<lport>. Mayhem keeps the real one in
-// "config obfs 'ob_<iface>'" (iface, kind, host, eport, port, lport, key,
-// masking, mtu) and shows it in the .conf. Fake TCP takes 12 bytes more than
-// UDP: the tunnel's MTU is 1428 at most then.
-const OBFS_BIN = {
-	phobos: getenv('MAYHEM_WG_OBFUSCATOR') ?? '/usr/libexec/mayhem/wg-obfuscator',
-	faketcp: getenv('MAYHEM_PHANTUN') ?? '/usr/libexec/mayhem/phantun_client'
-};
-const OBFS_MASKING = [ 'AUTO', 'STUN', 'NONE' ];
-const FT_MTU = 1428;
-// wg-obfuscator adds up to 28 bytes (STUN masking and padding) to each packet:
-// with WireGuard's usual 1420 a full packet no longer fits in 1500 and is cut
-// in two on the way, which networks with DPI often drop.
-const PH_MTU = 1380;
-const OBFS_PORT0 = 41820;
-
-function obfs_record(cm, iface) {
-	return cm.get('mayhem', `ob_${iface}`) == 'obfs' ? cm.get_all('mayhem', `ob_${iface}`) : null;
-}
-
-function obfs_first_peer(cn, proto, iface) {
-	let first = null;
-
-	cn.foreach('network', `${proto}_${iface}`, (p) => { first ??= p; });
-
-	return first;
-}
-
-// The firewall zone of the fake TCP devices (mhft*): out to the WAN, which
-// masquerades them like the LAN.
-function obfs_zone(cf) {
-	let found = false;
-
-	cf.foreach('firewall', 'zone', (z) => {
-		if (z.name == 'mayhem_ft')
-			found = true;
-	});
-
-	if (found)
-		return;
-
-	const zone = cf.add('firewall', 'zone');
-
-	cf.set('firewall', zone, 'name', 'mayhem_ft');
-	cf.set('firewall', zone, 'device', [ 'mhft+' ]);
-	cf.set('firewall', zone, 'input', 'REJECT');
-	cf.set('firewall', zone, 'output', 'ACCEPT');
-	cf.set('firewall', zone, 'forward', 'REJECT');
-
-	const fwd = cf.add('firewall', 'forwarding');
-
-	cf.set('firewall', fwd, 'src', 'mayhem_ft');
-	cf.set('firewall', fwd, 'dest', 'wan');
-}
-
-// A loopback address: the .conf of a tunnel made for a local obfuscator
-// (Phobos and others give "Endpoint = 127.0.0.1:13255") names it, not the
-// server.
 function loopback_host(h) {
 	return !!match(h ?? '', /^(127\.|::1$|\[::1\]$|localhost$)/);
-}
-
-// Sets the obfuscation of a tunnel: o = { kind: 'phobos'|'faketcp', port,
-// key, masking, host } or null for none. The obfuscator talks to o.host
-// (the server) when given, else to the peer's endpoint: the real one from the
-// .conf, or the record's while the endpoint is the local obfuscator. A
-// loopback address is never the server. Returns an error or null.
-function obfs_apply(cn, cm, cf, iface, proto, o) {
-	const rec = obfs_record(cm, iface);
-	const sid = `ob_${iface}`;
-	const peer = obfs_first_peer(cn, proto, iface);
-
-	if (!peer)
-		return 'the tunnel has no peer';
-
-	const local = loopback_host(peer.endpoint_host);
-	const given = o?.host ? trim(o.host) : null;
-	const host = given ?? ((local && rec && !loopback_host(rec.host)) ? rec.host : (local ? null : peer.endpoint_host));
-	// The WireGuard port of the server; a .conf for a local obfuscator has
-	// none, the obfuscator's port stands in.
-	const eport = !local ? (peer.endpoint_port ?? '51820') : (rec && !loopback_host(rec.host)) ? rec.eport : `${o?.port ?? rec?.eport ?? 51820}`;
-	const mtu_now = cn.get('network', iface, 'mtu');
-	// The tunnel's own MTU: from the record while fake TCP has set its own.
-	const mtu = (rec && rec.mtu != null) ? rec.mtu : (mtu_now ?? '-');
-
-	const restore = () => {
-		cn.set('network', peer['.name'], 'endpoint_host', host);
-		cn.set('network', peer['.name'], 'endpoint_port', `${eport}`);
-
-		if (mtu == '-')
-			cn.delete('network', iface, 'mtu');
-		else
-			cn.set('network', iface, 'mtu', mtu);
-	};
-
-	if (!o) {
-		if (rec) {
-			if (host)
-				restore();
-
-			cm.delete('mayhem', sid);
-		}
-
-		return null;
-	}
-
-	if (!OBFS_BIN[o.kind])
-		return 'unknown obfuscator';
-
-	if (!host || loopback_host(host))
-		return 'enter the address of the obfuscator server: the endpoint of this config is the obfuscator on the router (127.0.0.1)';
-
-	if (!match(host, /^[A-Za-z0-9.:_-]+$/))
-		return 'invalid obfuscator server address';
-
-	if (o.port < 1 || o.port > 65535)
-		return 'invalid obfuscator port';
-
-	if (o.kind == 'phobos' && !match(o.key ?? '', /^[!-~]{1,255}$/))
-		return 'the obfuscation key must have 1 to 255 visible characters, no spaces';
-
-	let lport = int(rec?.lport ?? 0);
-
-	if (!lport) {
-		const used = {};
-
-		cm.foreach('mayhem', 'obfs', (r) => { used[r.lport] = true; });
-
-		for (lport = OBFS_PORT0; used[`${lport}`]; lport++)
-			;
-	}
-
-	if (!rec)
-		cm.set('mayhem', sid, 'obfs');
-
-	cm.set('mayhem', sid, 'iface', iface);
-	cm.set('mayhem', sid, 'kind', o.kind);
-	cm.set('mayhem', sid, 'host', host);
-	cm.set('mayhem', sid, 'eport', `${eport}`);
-	cm.set('mayhem', sid, 'port', `${o.port}`);
-	cm.set('mayhem', sid, 'lport', `${lport}`);
-	cm.set('mayhem', sid, 'mtu', mtu);
-
-	if (o.kind == 'phobos') {
-		cm.set('mayhem', sid, 'key', o.key);
-		cm.set('mayhem', sid, 'masking', index(OBFS_MASKING, o.masking) >= 0 ? o.masking : 'AUTO');
-		cn.set('network', iface, 'mtu', `${(mtu != '-' && int(mtu) < PH_MTU) ? int(mtu) : PH_MTU}`);
-	}
-	else {
-		cm.delete('mayhem', sid, 'key');
-		cm.delete('mayhem', sid, 'masking');
-		cn.set('network', iface, 'mtu', `${(mtu != '-' && int(mtu) < FT_MTU) ? int(mtu) : FT_MTU}`);
-		obfs_zone(cf);
-	}
-
-	cn.set('network', peer['.name'], 'endpoint_host', '127.0.0.1');
-	cn.set('network', peer['.name'], 'endpoint_port', `${lport}`);
-
-	return null;
 }
 
 function network_cursor() {
@@ -714,13 +551,8 @@ function tunnel_endpoint(iface) {
 			ep ??= p.endpoint_host;
 		});
 
-	// An obfuscated tunnel sends to its obfuscator on 127.0.0.1, which would
-	// answer at once: the server is the one the obfuscator talks to.
-	if (ep == '127.0.0.1') {
-		const rec = obfs_record(uci_cursor(), iface);
-
-		ep = (rec?.host && !loopback_host(rec.host)) ? rec.host : null;
-	}
+	if (ep && loopback_host(ep))
+		ep = null;
 
 	return (ep && match(ep, /^[A-Za-z0-9.:_-]+$/)) ? ep : null;
 }
@@ -820,12 +652,32 @@ function diag_local() {
 	check(res, 'xray', 'Version', ver != '' ? 'ok' : (fs.access(XRAY) ? 'info' : 'fail'),
 		ver != '' ? ver : (fs.access(XRAY) ? 'installed' : 'not installed: mayhem xray-install'));
 
+	const started = trim(fs.readfile(`${RUN}/xray.started`) ?? '');
+	if (started != '') {
+		const parts = split(started, /[ \t]+/);
+		const stime = int(parts[0]) || 0;
+		const swhy = parts[1] ?? '';
+		const uptime = stime > 0 ? (time() - stime) : 0;
+		const upstr = uptime >= 3600 ? sprintf('%dh %dm', int(uptime / 3600), int((uptime % 3600) / 60))
+			: (uptime >= 60 ? sprintf('%dm %ds', int(uptime / 60), uptime % 60) : sprintf('%ds', uptime));
+		check(res, 'xray', 'Last start', 'ok', sprintf('uptime %s%s', upstr, swhy != '' ? ` (reason: ${swhy})` : ''));
+	}
+
 	if (pid) {
 		const rss = rss_kb(pid);
 		const limit = (st.memlimit_mib ?? 0) * 1024;
 
 		check(res, 'xray', 'Memory', (limit && rss > limit) ? 'warn' : 'ok',
 			sprintf('%d MiB in use, soft limit %d MiB', int((rss ?? 0) / 1024), st.memlimit_mib ?? 0));
+
+		const memtrim = trim(fs.readfile(`${RUN}/mem.trim`) ?? '');
+		if (memtrim != '') {
+			const mparts = split(memtrim, /[ \t]+/);
+			const mtime = int(mparts[0]) || 0;
+			const freed = int(mparts[1]) || 0;
+			const ago = mtime > 0 ? (time() - mtime) : 0;
+			check(res, 'xray', 'Memory trim', 'ok', sprintf('freed %d KiB (%ds ago)', freed, ago));
+		}
 
 		const want = [ C.TPROXY_PORT, C.DNS_PORT, C.API_PORT ];
 		const got = listening(want);
@@ -2372,6 +2224,22 @@ function dashboard(pid, state, out) {
 					has_connections = true;
 			});
 
+		let xray_started = null;
+		const xs = trim(fs.readfile(`${RUN}/xray.started`) ?? '');
+		if (xs != '') {
+			const p = split(xs, /[ \t]+/);
+			if (length(p))
+				xray_started = { time: int(p[0]) || 0, why: p[1] ?? '' };
+		}
+
+		let mem_trim = null;
+		const mt = trim(fs.readfile(`${RUN}/mem.trim`) ?? '');
+		if (mt != '') {
+			const p = split(mt, /[ \t]+/);
+			if (length(p))
+				mem_trim = { time: int(p[0]) || 0, freed_kb: int(p[1]) || 0 };
+		}
+
 		return {
 			has_connections: has_connections,
 			time: time(),
@@ -2382,6 +2250,8 @@ function dashboard(pid, state, out) {
 			applying: applying(),
 			active: pid != null && fs.access(`${RUN}/active`) == true,
 			xray: trim(fs.readfile(`${RUN}/xray.version`) ?? '') || null,
+			xray_started: xray_started,
+			mem_trim: mem_trim,
 			rss_kb: pid ? rss_kb(pid) : null,
 			rss_total_kb: pid ? rss_kb(pid, true) : null,
 			// what xray said when it would not start
@@ -3083,8 +2953,7 @@ const methods = {
 		args: { what: '', version: '' },
 		call: function(req) {
 			const ver = match(req.args?.version ?? '', /^[0-9][0-9A-Za-z.-]*$/) ? req.args.version : '';
-			const cmds = { awg: 'awg-install', 'awg-remove': 'awg-remove', protos: 'tunnel-protos', dnsmasq: 'dnsmasq-full', xray: `xray-install ${ver}`, mayhem: 'self-update', wg: 'wg-install',
-				phobos: 'obfs-install phobos', faketcp: 'obfs-install faketcp' };
+			const cmds = { awg: 'awg-install', 'awg-remove': 'awg-remove', protos: 'tunnel-protos', dnsmasq: 'dnsmasq-full', xray: `xray-install ${ver}`, mayhem: 'self-update', wg: 'wg-install' };
 			const cmd = cmds[req.args?.what];
 
 			if (!cmd)
@@ -3441,18 +3310,10 @@ const methods = {
 				c.delete('mayhem', from);
 			}
 
-			// The obfuscation of the tunnel goes along.
-			if (c.get('mayhem', `ob_${from}`) == 'obfs') {
-				c.set('mayhem', `ob_${to}`, 'obfs');
-				copy_opts('mayhem', `ob_${from}`, `ob_${to}`);
-				c.set('mayhem', `ob_${to}`, 'iface', to);
-				c.delete('mayhem', `ob_${from}`);
-			}
-
 			if (!commit_all(c, 'network', 'firewall', 'mayhem'))
 				return { error: 'the config could not be saved' };
 
-			apply_bg('/etc/init.d/mayhem-obfs restart; /etc/init.d/network reload; /etc/init.d/firewall reload; /etc/init.d/mayhem reload');
+			apply_bg('/etc/init.d/network reload; /etc/init.d/firewall reload; /etc/init.d/mayhem reload');
 
 			return { ok: true, interface: to };
 		}
@@ -3506,11 +3367,12 @@ const methods = {
 				dnsmasq: /^dnsmasq(-(dhcp|tftp|script|debug))?$/i
 			};
 			const re = pats[req.args?.component] ?? pats.all;
-			const p = fs.popen('logread 2>&1', 'r');
+			const limit = (n > 0 && n <= 2000) ? n * 2 : 1000;
+			const p = fs.popen(`logread 2>&1 | awk '{ tag=$7; sub(/(\\[[0-9]+\\])?:$/, "", tag); if (tag ~ /^(mayhem|xray|xray-run|dnsmasq)/) print }' | tail -n ${limit}`, 'r');
 			if (!p) return { error: 'cannot read the system log' };
 			const text = p.read('all');
 			const rc = p.close();
-			if (rc !== 0 || text == null) return { error: trim(text ?? '') || 'cannot read the system log' };
+			if (rc !== 0 && text == null) return { error: trim(text ?? '') || 'cannot read the system log' };
 			// logread: ctime (five fields), facility.priority, then tag[pid]:.
 			// Match only the emitting process, never names inside its message.
 			const out = filter(lines_of(text), (l) => {
@@ -3684,11 +3546,9 @@ const methods = {
 				xray: xray_installed(),
 				xray_pinned: match(fs.readfile(`${LIB}/const.sh`) ?? '', /MAYHEM_XRAY_VERSION="([^"]*)"/)?.[1],
 				install: install_running() ? 'running' : null,
-				// tunnel protocols and WireGuard obfuscators: installed or not
+				// tunnel protocols: installed or not
 				awg: has_awg(),
-				wireguard: has_wireguard(),
-				phobos: fs.access(OBFS_BIN.phobos, 'x') == true,
-				faketcp: fs.access(OBFS_BIN.faketcp, 'x') == true
+				wireguard: has_wireguard()
 			};
 
 			if (req.args?.check) {
@@ -3939,9 +3799,6 @@ const methods = {
 				if (c.get('mayhem', iface) == 'tunnel')
 					c.delete('mayhem', iface);
 
-				if (c.get('mayhem', `ob_${iface}`) == 'obfs')
-					c.delete('mayhem', `ob_${iface}`);
-
 				if (index(gone, c.get('mayhem', 'settings', 'default_section')) >= 0)
 					c.delete('mayhem', 'settings', 'default_section');
 			}
@@ -3950,7 +3807,7 @@ const methods = {
 				return { error: 'the config could not be saved' };
 
 			apply_bg(mode == 'full'
-				? `ifdown ${q(iface)}; /etc/init.d/mayhem-obfs restart; /etc/init.d/network reload; /etc/init.d/firewall reload; /etc/init.d/mayhem reload`
+				? `ifdown ${q(iface)}; /etc/init.d/network reload; /etc/init.d/firewall reload; /etc/init.d/mayhem reload`
 				: '/etc/init.d/mayhem reload');
 
 			return { ok: true };
@@ -4116,35 +3973,18 @@ const methods = {
 
 			c.foreach('network', `${proto}_${iface}`, (p) => push(peers, { ...p }));
 
-			// With an obfuscator the .conf shows the server and the MTU of the
-			// tunnel itself, not the local obfuscator.
-			const rec = obfs_record(uci_cursor(), iface);
-
-			if (rec && length(peers) && loopback_host(peers[0].endpoint_host) && !loopback_host(rec.host)) {
-				peers[0].endpoint_host = rec.host;
-				peers[0].endpoint_port = rec.eport;
-
-				if (rec.mtu == '-')
-					delete opts.mtu;
-				else if (rec.mtu)
-					opts.mtu = rec.mtu;
-			}
-
 			return {
 				ok: true, proto: proto, conf: to_conf(opts, peers),
-				obfs: rec ? { kind: rec.kind, port: int(rec.port), key: rec.key, masking: rec.masking, host: loopback_host(rec.host) ? null : rec.host } : null,
-				// the .conf points at a local obfuscator: the server's address is asked for
-				loopback: length(peers) > 0 && loopback_host(peers[0].endpoint_host),
-				installed: { phobos: fs.access(OBFS_BIN.phobos, 'x') == true, faketcp: fs.access(OBFS_BIN.faketcp, 'x') == true }
+				loopback: length(peers) > 0 && loopback_host(peers[0].endpoint_host)
 			};
 		}
 	},
 
 	// Saves an edited .conf over the tunnel: the interface keeps its name,
 	// protocol, firewall zone and Mayhem settings; its keys, addresses,
-	// obfuscation parameters and peers are replaced. The tunnel reconnects.
+	// parameters and peers are replaced. The tunnel reconnects.
 	tunnel_set: {
-		args: { iface: '', conf: '', obfs: '', obfs_port: 0, obfs_key: '', obfs_masking: '', obfs_host: '' },
+		args: { iface: '', conf: '' },
 		call: function(req) {
 			const iface = req.args?.iface ?? '';
 			const c = uci_open();
@@ -4198,37 +4038,10 @@ const methods = {
 					c.set('network', sid, k, p[k]);
 			}
 
-			// Obfuscation: no "obfs" keeps it as it was, "none" turns it off,
-			// "phobos" or "faketcp" turns it on with the port (and key).
-			const cm = uci_cursor();
-			const rec = obfs_record(cm, iface);
-			const kind = req.args?.obfs ?? '';
-			let o = null;
-
-			if (kind == '' && rec)
-				o = { kind: rec.kind, port: int(rec.port), key: rec.key, masking: rec.masking };
-			else if (kind != '' && kind != 'none')
-				o = { kind: kind, port: int(req.args?.obfs_port ?? 0), key: req.args?.obfs_key, masking: req.args?.obfs_masking,
-					host: length(req.args?.obfs_host ?? '') ? req.args.obfs_host : null };
-
-			if (o && OBFS_BIN[o.kind] && !fs.access(OBFS_BIN[o.kind], 'x'))
-				return { error: `${o.kind == 'phobos' ? 'wg-obfuscator' : 'phantun'} is not installed` };
-
-			// The .conf brings the tunnel's own MTU: the record learns it.
-			if (rec)
-				cm.set('mayhem', `ob_${iface}`, 'mtu', c.get('network', iface, 'mtu') ?? '-');
-
-			c.load('firewall');
-
-			const err = obfs_apply(c, cm, c, iface, proto, o);
-
-			if (err)
-				return { error: err };
-
-			if (!commit_all(c, 'network', 'firewall') || !cm.commit('mayhem'))
+			if (!commit_all(c, 'network'))
 				return { error: 'the config could not be saved' };
 
-			apply_bg(`/etc/init.d/mayhem-obfs restart; /etc/init.d/firewall reload; /etc/init.d/network reload; sleep 2; ifup ${iface}; /etc/init.d/mayhem reload`);
+			apply_bg(`/etc/init.d/network reload; sleep 2; ifup ${iface}; /etc/init.d/mayhem reload`);
 
 			return { ok: true };
 		}

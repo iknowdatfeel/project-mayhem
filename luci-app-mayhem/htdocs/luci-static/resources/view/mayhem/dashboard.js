@@ -257,8 +257,16 @@ return view.extend({
 		const focus = document.activeElement;
 
 		// An open drop-down list would close under the user's hand.
-		if (body && focus && focus.tagName === 'SELECT' && body.contains(focus))
+		if (body && focus && focus.tagName === 'SELECT' && body.contains(focus)) {
+			if (!focus._mh_blur_bound) {
+				focus._mh_blur_bound = true;
+				focus.addEventListener('blur', () => {
+					focus._mh_blur_bound = false;
+					this.redraw();
+				}, { once: true });
+			}
 			return;
+		}
 
 		if (body)
 			body.replaceChildren(...this.renderBody(this.data));
@@ -432,17 +440,36 @@ return view.extend({
 
 		// The badge opens the state of each service.
 		const services = () => {
-			const xray = !d.xray ? [ _('Not installed'), 'mh-fail' ]
-				: d.running ? [ _('Works'), 'mh-ok' ] : [ _('Does not work'), 'mh-fail' ];
+			let xrayText = _('Does not work');
+			let xrayClass = 'mh-fail';
+
+			if (!d.xray) {
+				xrayText = _('Not installed');
+			} else if (d.running) {
+				xrayText = _('Works');
+				xrayClass = 'mh-ok';
+				if (d.xray_started && d.xray_started.time) {
+					const uptime = Math.max(0, Math.floor((d.time || Date.now() / 1000) - d.xray_started.time));
+					const upstr = uptime >= 3600 ? Math.floor(uptime / 3600) + 'h ' + Math.floor((uptime % 3600) / 60) + 'm'
+						: (uptime >= 60 ? Math.floor(uptime / 60) + 'm ' + (uptime % 60) + 's' : uptime + 's');
+					xrayText += ' (' + upstr + (d.xray_started.why ? ', ' + d.xray_started.why : '') + ')';
+				}
+			}
+			const xray = [ xrayText, xrayClass ];
 			const row = (name, v) => E('div', { 'class': 'mh-svc-row' }, [
 				E('span', name), E('span', { 'class': v[1] }, v[0])
 			]);
 
-			return E('div', { 'class': 'mh-svc' }, [
+			const rows = [
 				row('Mayhem', [ st[1], st[0].replace('mh-pill--', 'mh-').replace('mh-off', 'mh-muted') ]),
 				row('Xray', xray),
 				row('Dnsmasq', d.dnsmasq ? [ _('Works'), 'mh-ok' ] : [ _('Does not work'), 'mh-fail' ])
-			]);
+			];
+
+			if (d.mem_trim && d.mem_trim.freed_kb)
+				rows.push(row(_('Memory trim'), [ d.mem_trim.freed_kb + ' KiB', 'mh-muted' ]));
+
+			return E('div', { 'class': 'mh-svc' }, rows);
 		};
 
 		return E('div', { 'class': 'mh-top' }, [
@@ -609,27 +636,48 @@ return view.extend({
 			const label = p.method === 'url' ? '' : p.method.toUpperCase() + ' ';
 
 			if (p.pending)
-				return E('span', { 'class': 'mh-muted', 'title': _('Checking…') }, label + '…');
+				return E('span', { 'class': 'mh-muted', 'data-mh-lat': n.tag, 'title': _('Checking…') }, label + '…');
 
 			if (p.method === 'tcp' && p.value === 'UDP protocol')
-				return E('span', { 'class': 'mh-muted', 'title': p.value }, label + 'N/A');
+				return E('span', { 'class': 'mh-muted', 'data-mh-lat': n.tag, 'title': p.value }, label + 'N/A');
 
 			if (typeof p.value === 'string')
-				return E('span', { 'class': 'mh-fail', 'title': p.value }, label + _('No answer'));
+				return E('span', { 'class': 'mh-fail', 'data-mh-lat': n.tag, 'title': p.value }, label + _('No answer'));
 
-			return E('span', { 'class': latencyClass(p.value, p.method) }, label + _('%d ms').format(p.value));
+			return E('span', { 'class': latencyClass(p.value, p.method), 'data-mh-lat': n.tag }, label + _('%d ms').format(p.value));
 		}
 
 		if (n.alive === false)
-			return E('span', { 'class': 'mh-fail' }, _('No answer'));
+			return E('span', { 'class': 'mh-fail', 'data-mh-lat': n.tag }, _('No answer'));
 
 		if (this.latencyPending(n))
-			return E('span', { 'class': 'mh-muted', 'title': _('Checking…') }, '…');
+			return E('span', { 'class': 'mh-muted', 'data-mh-lat': n.tag, 'title': _('Checking…') }, '…');
 
 		if (n.delay == null)
-			return E('span', { 'class': 'mh-muted' }, 'N/A');
+			return E('span', { 'class': 'mh-muted', 'data-mh-lat': n.tag }, 'N/A');
 
-		return E('span', { 'class': latencyClass(n.delay) }, _('%d ms').format(n.delay));
+		return E('span', { 'class': latencyClass(n.delay), 'data-mh-lat': n.tag }, _('%d ms').format(n.delay));
+	},
+
+	updateLatency(tag) {
+		const el = document.querySelector(`[data-mh-lat="${tag}"]`);
+		if (!el)
+			return false;
+
+		const n = this.findNode(tag);
+		if (!n)
+			return false;
+
+		el.replaceWith(this.latency(n));
+		return true;
+	},
+
+	findNode(tag) {
+		for (const s of (this.data?.sections || []))
+			for (const n of (s.nodes || []))
+				if (n.tag === tag)
+					return n;
+		return null;
 	},
 
 	latencyPending(n) {
@@ -1170,6 +1218,25 @@ return view.extend({
 		this.hideGone(d);
 		checks.bind(this);
 		chain.bind(this);
+
+		if (!this._services_bound) {
+			this._services_bound = true;
+			document.addEventListener('click', (ev) => {
+				if (this.showServices) {
+					const pill = document.querySelector('.mh-pill-wrap');
+					if (pill && !pill.contains(ev.target)) {
+						this.showServices = false;
+						this.redraw();
+					}
+				}
+			});
+			document.addEventListener('keydown', (ev) => {
+				if (ev.key === 'Escape' && this.showServices) {
+					this.showServices = false;
+					this.redraw();
+				}
+			});
+		}
 
 		if (checks.known(d.ping_method))
 			checks.method = d.ping_method;

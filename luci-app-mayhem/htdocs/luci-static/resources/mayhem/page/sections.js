@@ -870,6 +870,12 @@ return baseclass.extend({
 			o = ss.option(form.DynamicList, 'list_url', _('Remote lists'),
 				_('Text lists with one domain, rule or subnet per line, "#" for comments. They are downloaded and updated automatically.'));
 			o.modalonly = true;
+			o.value('https://raw.githubusercontent.com/itdoginfo/allow-domains/main/Russia/inside-raw.lst', _('itdog: Domains (Russia/services)'));
+			o.value('https://community.antifilter.download/list/domains.lst', _('AntiFilter: Community domains'));
+			o.value('https://antifilter.download/list/allyouneed.lst', _('AntiFilter: All-you-need (IP)'));
+			o.value('https://antifilter.download/list/community.lst', _('AntiFilter: Community list (IP)'));
+			o.value('https://raw.githubusercontent.com/itdoginfo/allow-domains/main/dist/services/youtube.lst', _('itdog: YouTube'));
+			o.value('https://raw.githubusercontent.com/itdoginfo/allow-domains/main/dist/services/discord.lst', _('itdog: Discord'));
 			o.validate = function(section_id, value) {
 				return (!value || /^https?:\/\/\S+$/.test(value)) ? true : _('Expected an http(s):// address');
 			};

@@ -80,7 +80,7 @@ mayhem_nft_kept() {
 				for (i = 1; i <= n; i++) {
 					split(e[i], w, " ")
 					if (w[1] != "")
-						a[++k] = w[1]
+						a[++k] = (w[2] == "expires" && w[3] != "") ? (w[1] " expires " w[3]) : w[1]
 				}
 				if (end)
 					on = 0
@@ -280,8 +280,10 @@ mayhem_tunnel_ok() {
 	[ "$age" -le 180 ] && return 0
 
 	# An idle tunnel does not handshake: send something through it and look again.
-	ping -c 1 -W 2 -I "$dev" 1.1.1.1 >/dev/null 2>&1
-	sleep 3
+	if ping -c 1 -W 2 -I "$dev" 1.1.1.1 >/dev/null 2>&1; then
+		return 0
+	fi
+	sleep 2
 	age="$(mayhem_handshake_age "$dev")"
 	[ -n "$age" ] && [ "$age" -le 180 ]
 }
@@ -452,10 +454,13 @@ mayhem_conn_log() {
 # costs a name.
 mayhem_conn_fold() {
 	local f="$MAYHEM_RUN_DIR/conn.log" m="$MAYHEM_RUN_DIR/conn.names" size
+	local lock="$MAYHEM_RUN_DIR/fold.lock"
 
 	[ -f "$f" ] && [ ! -L "$f" ] || return 0
 	size="$(wc -c < "$f" 2>/dev/null)"
 	[ "${size:-0}" -gt 0 ] || return 0
+
+	mkdir "$lock" 2>/dev/null || return 0
 
 	{ [ -f "$m" ] && cat "$m"; head -c "$size" "$f"; } | awk -v max="${MAYHEM_CONN_NAMES:-3000}" '
 		function put(kind, key, line) {
@@ -512,6 +517,7 @@ mayhem_conn_fold() {
 	# What xray wrote meanwhile stays.
 	tail -c +"$((size + 1))" "$f" > "$f.t" 2>/dev/null && cat "$f.t" > "$f"
 	rm -f "$f.t"
+	rmdir "$lock" 2>/dev/null || true
 	return 0
 }
 
@@ -520,7 +526,8 @@ mayhem_conn_fold() {
 # when the new xray is up (xray.started). Reasons: config:<parts>, servers,
 # geo, memory, hang, manual.
 mayhem_restart_why() {
-	mkdir -p "$MAYHEM_RUN_DIR"
+	mkdir -m 0700 -p "$MAYHEM_RUN_DIR"
+	chmod 0700 "$MAYHEM_RUN_DIR" 2>/dev/null || true
 	echo "$(date +%s) $1" > "$MAYHEM_RUN_DIR/restart.why"
 }
 
@@ -530,7 +537,7 @@ mayhem_restart_reason() {
 	local pid why
 
 	pid="$(cat "$MAYHEM_RUN_DIR/xray.pid" 2>/dev/null)"
-	[ -n "$pid" ] && kill -0 "$pid" 2>/dev/null || return 0
+	[ -n "$pid" ] && { [ ! -f "/proc/$pid/cmdline" ] || grep -q -F "xray" "/proc/$pid/cmdline" 2>/dev/null; } && kill -0 "$pid" 2>/dev/null || return 0
 
 	why="$(ucode "$MAYHEM_LIB_DIR/why.uc" 2>/dev/null)"
 
@@ -602,14 +609,14 @@ mayhem_mem_trim() {
 # (and past the kill switch). Without xray-run, xray itself is stopped and
 # procd starts it again.
 mayhem_xray_swap() {
-	local runner
+	local runner target="$1"
 
 	runner="$(cat "$MAYHEM_RUN_DIR/xray-run.pid" 2>/dev/null)"
 
-	if [ -n "$runner" ] && kill -0 "$runner" 2>/dev/null; then
+	if [ -n "$runner" ] && { [ ! -f "/proc/$runner/cmdline" ] || grep -q -F "xray-run" "/proc/$runner/cmdline" 2>/dev/null; } && kill -0 "$runner" 2>/dev/null; then
 		kill -HUP "$runner"
-	else
-		kill -TERM "$1"
+	elif [ -n "$target" ] && { [ ! -f "/proc/$target/cmdline" ] || grep -q -F "xray" "/proc/$target/cmdline" 2>/dev/null; }; then
+		kill -TERM "$target"
 	fi
 }
 
@@ -621,6 +628,9 @@ mayhem_watchdog() {
 	pid="$(cat "$MAYHEM_RUN_DIR/xray.pid" 2>/dev/null)"
 
 	if [ -n "$pid" ] && [ -d "/proc/$pid" ]; then
+		if [ -f "/proc/$pid/cmdline" ] && ! grep -q -F "xray" "/proc/$pid/cmdline" 2>/dev/null; then
+			return 0
+		fi
 		# RssAnon: the memory xray took. VmRSS also counts ~20 MB of its own
 		# code read from flash, which the kernel drops and reads again.
 		rss="$(awk '/^RssAnon:/ { print $2 }' "/proc/$pid/status" 2>/dev/null)"
@@ -679,7 +689,7 @@ mayhem_watchdog() {
 					mayhem_xray_swap "$pid"
 					sleep 5
 					# A stopped or wedged process may ignore TERM.
-					kill -0 "$pid" 2>/dev/null && kill -KILL "$pid"
+					[ -n "$pid" ] && { [ ! -f "/proc/$pid/cmdline" ] || grep -q -F "xray" "/proc/$pid/cmdline" 2>/dev/null; } && kill -0 "$pid" 2>/dev/null && kill -KILL "$pid"
 				fi
 			fi
 		fi
@@ -762,7 +772,9 @@ mayhem_dnsmasq_hup() {
 mayhem_dns_servers() {
 	local f="$MAYHEM_DNS_SERVERS" new="$MAYHEM_DNS_SERVERS.new"
 
-	mkdir -p "$MAYHEM_RUN_DIR" "$(dirname "$MAYHEM_DNS_SERVERS")"
+	mkdir -m 0700 -p "$MAYHEM_RUN_DIR"
+	chmod 0700 "$MAYHEM_RUN_DIR" 2>/dev/null || true
+	mkdir -p "$(dirname "$MAYHEM_DNS_SERVERS")"
 
 	local src="$MAYHEM_RUN_DIR/dns.xray"
 
@@ -827,7 +839,8 @@ mayhem_dns_up() {
 mayhem_dns_down() {
 	local d changed=0
 
-	for d in $(mayhem_dnsmasq_dirs) /tmp/dnsmasq.d; do
+	for d in $(mayhem_dnsmasq_dirs) /tmp/dnsmasq.d /tmp/dnsmasq.*.d; do
+		[ -d "$d" ] || continue
 		if [ -f "$d/$MAYHEM_DNSMASQ_FILE" ]; then
 			rm -f "$d/$MAYHEM_DNSMASQ_FILE"
 			changed=1
@@ -848,7 +861,8 @@ mayhem_dns_down() {
 mayhem_lock() {
 	local d="$MAYHEM_RUN_DIR/$1.lock" i=0 pid
 
-	mkdir -p "$MAYHEM_RUN_DIR"
+	mkdir -m 0700 -p "$MAYHEM_RUN_DIR"
+	chmod 0700 "$MAYHEM_RUN_DIR" 2>/dev/null || true
 
 	while ! mkdir "$d" 2>/dev/null; do
 		pid="$(cat "$d/pid" 2>/dev/null)"
@@ -884,9 +898,8 @@ mayhem_subs_new() {
 		f="$MAYHEM_RUN_DIR/applying.sub"
 		: > "$f"
 		# procd restarts xray after the reload, when it has to.
-		sleep 3
 		i=0
-		while [ ! -f "$MAYHEM_RUN_DIR/active" ] && [ "$i" -lt 60 ]; do
+		while [ -f "$MAYHEM_RUN_DIR/xray.pid" ] && [ ! -f "$MAYHEM_RUN_DIR/active" ] && [ "$i" -lt 10 ]; do
 			sleep 1
 			i=$((i + 1))
 		done

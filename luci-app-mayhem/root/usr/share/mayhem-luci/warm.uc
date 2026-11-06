@@ -378,8 +378,14 @@ function write_out() {
 
 function xray_running() {
 	const pid = trim(fs.readfile(`${RUN}/xray.pid`) ?? '');
+	if (!match(pid, /^[0-9]+$/))
+		return false;
 
-	return pid != '' && fs.access(`/proc/${pid}`);
+	const cmd = fs.readfile(`/proc/${pid}/cmdline`);
+	if (cmd)
+		return index(cmd, 'xray') >= 0 || index(cmd, 'fake_socks') >= 0;
+
+	return fs.access(`/proc/${pid}`);
 }
 
 let last_check = 0;

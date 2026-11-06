@@ -32,14 +32,16 @@ function compiled() {
 	const file = `${CACHE}/plugin.${sig}.ucc`;
 
 	if (!fs.access(file)) {
-		const tmp = `${file}.${split(fs.readfile('/proc/self/stat') ?? '', ' ')[0]}`;
-		const lib = replace(MODULES, /\/[^\/]*$/, '/*.uc');
-
 		fs.mkdir(CACHE, 0700);
+
+		const pid = split(fs.readfile('/proc/self/stat') ?? '', ' ')[0] || int(clock(true)[1]);
+		const tmp = `${file}.${pid}.${int(clock(true)[1])}`;
+		const lib = replace(MODULES, /\/[^\/]*$/, '/*.uc');
 
 		// the ones of older sources
 		for (let f in fs.glob(`${CACHE}/plugin.*.ucc`) ?? [])
-			fs.unlink(f);
+			if (f != file)
+				fs.unlink(f);
 
 		if (system(`${q(ucode)} -L ${q(lib)} -c -o ${q(tmp)} ${q(PLUGIN)} >/dev/null 2>&1`) != 0 || !fs.rename(tmp, file)) {
 			fs.unlink(tmp);

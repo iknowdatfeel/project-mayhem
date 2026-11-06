@@ -485,9 +485,16 @@ function fetch_list(cfg, url) {
 			if (f)
 				f.close();
 
-			if (match(ltrim(head), /^(<!doctype|<html|<\?xml|<head|<body)/i)) {
+			const clean_head = replace(ltrim(head), /^\xef\xbb\xbf/, '');
+			if (match(clean_head, /^(<!doctype|<html|<\?xml|<head|<body)/i)) {
 				fs.unlink(tmp);
 				die('the address returns a web page, not a list');
+			}
+
+			if (substr(head, 0, 3) == "\xef\xbb\xbf") {
+				const full = fs.readfile(tmp);
+				if (full != null)
+					fs.writefile(tmp, replace(full, /^\xef\xbb\xbf/, ''));
 			}
 
 			return { file: tmp, via: proxy ? 'xray' : 'direct' };

@@ -29,8 +29,7 @@ fs.writefile(`${run}/nodes.json`, sprintf('%J', { sections: {
 		{ tag: 'n-dead2', address: '10.0.0.3', port: 443 },
 		{ tag: 'n-dead3', address: '10.0.0.4', port: 443 },
 		{ tag: 'n-bad', address: '10.0.0.1;reboot', port: 443 },
-		{ tag: 'awg0', iface: 'awg0' },
-		{ tag: 'wg9', iface: 'wg9' }
+		{ tag: 'awg0', iface: 'awg0' }
 	] }
 } }));
 
@@ -38,7 +37,7 @@ fs.writefile(`${run}/nodes.json`, sprintf('%J', { sections: {
 fs.writefile(log, '');
 
 const t0 = clock(true);
-let r = call('probe_icmp', { tags: [ 'n-a', 'n-a2', 'n-dead1', 'n-dead2', 'n-dead3', 'n-bad', 'awg0', 'wg9', 'n-none' ] });
+let r = call('probe_icmp', { tags: [ 'n-a', 'n-a2', 'n-dead1', 'n-dead2', 'n-dead3', 'n-bad', 'awg0', 'n-none' ] });
 const took = clock(true)[0] - t0[0];
 const res = r.results ?? {};
 const pings = filter(split(fs.readfile(log) ?? '', '\n'), (l) => match(l, /^ping /));
@@ -50,9 +49,7 @@ expect(`icmp: bad address ${res['n-bad']}`, res['n-bad']?.error == 'no address')
 expect(`icmp: unknown server ${res['n-none']}`, res['n-none']?.error == 'unknown server');
 // the endpoint 203.0.113.10 does not answer: the tunnel is pinged through itself
 expect(`icmp: tunnel through itself ${res['awg0']}`, res['awg0']?.ms == 40);
-// the obfuscated tunnel pings its server (10.0.0.1), not 127.0.0.1
-expect(`icmp: obfuscated tunnel ${res['wg9']}`, res['wg9']?.ms == 12);
-expect(`icmp: one ping per address, ${length(pings)}: ${pings}`, length(pings) == 6 && !match(join(' ', pings), /127\.0\.0\.1/));
+expect(`icmp: one ping per address, ${length(pings)}: ${pings}`, length(pings) == 5 && !match(join(' ', pings), /127\.0\.0\.1/));
 expect('icmp: the tunnel ping goes through its interface', length(filter(pings, (l) => match(l, /-I awg0 .*1\.1\.1\.1/))) == 1);
 // three dead addresses wait 2 s each: at once that is about 2 s, one after
 // another 6 s; the tunnel fallback adds one more wave

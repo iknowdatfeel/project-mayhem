@@ -15,7 +15,8 @@ USE_PROCD=1
 start_service() {
 	local f rc
 
-	mkdir -p "$MAYHEM_RUN_DIR"
+	mkdir -m 0700 -p "$MAYHEM_RUN_DIR"
+	chmod 0700 "$MAYHEM_RUN_DIR" 2>/dev/null || true
 	f="$MAYHEM_RUN_DIR/applying.$$"
 	: > "$f"
 	mayhem_lock start
@@ -31,7 +32,7 @@ mayhem_xray_running() {
 	local pid
 
 	pid="$(cat "$MAYHEM_RUN_DIR/xray.pid" 2>/dev/null)"
-	[ -n "$pid" ] && kill -0 "$pid" 2>/dev/null && [ -f "$MAYHEM_RUN_DIR/running.xray.json" ]
+	[ -n "$pid" ] && { [ ! -f "/proc/$pid/cmdline" ] || grep -q -F "xray" "/proc/$pid/cmdline" 2>/dev/null; } && kill -0 "$pid" 2>/dev/null && [ -f "$MAYHEM_RUN_DIR/running.xray.json" ]
 }
 
 # xray and the scheduler as procd instances.
@@ -61,8 +62,8 @@ mayhem_start() {
 	config_get_bool enabled settings enabled 0
 
 	if [ "$enabled" != 1 ]; then
-		mayhem_net_down
 		mayhem_dns_down
+		mayhem_net_down
 		return 0
 	fi
 
@@ -75,7 +76,8 @@ mayhem_start() {
 	conflicts="$(mayhem_conflicts)"
 	if [ -n "$conflicts" ]; then
 		mayhem_log "not starting: another traffic interceptor is running ($conflicts)" err
-		mkdir -p "$MAYHEM_RUN_DIR"
+		mkdir -m 0700 -p "$MAYHEM_RUN_DIR"
+		chmod 0700 "$MAYHEM_RUN_DIR" 2>/dev/null || true
 		printf '{"ok":false,"errors":["another traffic interceptor is running: %s"]}\n' \
 			"$conflicts" > "$MAYHEM_RUN_DIR/status.json"
 		mayhem_restart_failed
@@ -124,8 +126,6 @@ mayhem_start() {
 }
 
 stop_service() {
-	mayhem_net_down
-
 	# A restart keeps Mayhem's file in dnsmasq's conf-dir: dnsmasq restarted
 	# without it here and with it again on start, and with an ad list each
 	# restart reads tens of thousands of names (seconds on a router). The
@@ -136,6 +136,8 @@ stop_service() {
 	else
 		mayhem_dns_down
 	fi
+
+	mayhem_net_down
 
 	# Nothing is redirected from here on, also before xray-run sees it go.
 	rm -f "$MAYHEM_RUN_DIR/health.json" "$MAYHEM_RUN_DIR/dns.degraded" "$MAYHEM_RUN_DIR/active"
