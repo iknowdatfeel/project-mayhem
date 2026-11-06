@@ -526,7 +526,7 @@ mayhem_conn_fold() {
 # when the new xray is up (xray.started). Reasons: config:<parts>, servers,
 # geo, memory, hang, manual.
 mayhem_restart_why() {
-	mkdir -m 0700 -p "$MAYHEM_RUN_DIR"
+	mkdir -p "$MAYHEM_RUN_DIR"
 	chmod 0700 "$MAYHEM_RUN_DIR" 2>/dev/null || true
 	echo "$(date +%s) $1" > "$MAYHEM_RUN_DIR/restart.why"
 }
@@ -772,7 +772,7 @@ mayhem_dnsmasq_hup() {
 mayhem_dns_servers() {
 	local f="$MAYHEM_DNS_SERVERS" new="$MAYHEM_DNS_SERVERS.new"
 
-	mkdir -m 0700 -p "$MAYHEM_RUN_DIR"
+	mkdir -p "$MAYHEM_RUN_DIR"
 	chmod 0700 "$MAYHEM_RUN_DIR" 2>/dev/null || true
 	mkdir -p "$(dirname "$MAYHEM_DNS_SERVERS")"
 
@@ -861,7 +861,7 @@ mayhem_dns_down() {
 mayhem_lock() {
 	local d="$MAYHEM_RUN_DIR/$1.lock" i=0 pid
 
-	mkdir -m 0700 -p "$MAYHEM_RUN_DIR"
+	mkdir -p "$MAYHEM_RUN_DIR"
 	chmod 0700 "$MAYHEM_RUN_DIR" 2>/dev/null || true
 
 	while ! mkdir "$d" 2>/dev/null; do
