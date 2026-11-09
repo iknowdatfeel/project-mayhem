@@ -202,7 +202,7 @@ hold() {
 	# The kill switch while Mayhem is off. $1: the kill switch (1/0), $2: what
 	# to run with lib.sh; procd does not run Mayhem (init-stub).
 	# shellcheck disable=SC2016 # expanded by the inner shell
-	ip netns exec router env MAYHEM_KS="$1" MAYHEM_INIT="$WORK/init-stub" sh -c '. "$MAYHEM_LIB_DIR/lib.sh"; '"$2"
+	ip netns exec router env MAYHEM_KS="$1" MAYHEM_KS_HOLD="${HOLD_OPT:-$1}" MAYHEM_INIT="$WORK/init-stub" sh -c '. "$MAYHEM_LIB_DIR/lib.sh"; '"$2"
 }
 
 # --- network ------------------------------------------------------------------
@@ -1266,6 +1266,14 @@ EOF
 		expect "hold: stopped again, waits" failed "$vpn"
 		hold 0 mayhem_hold_sync
 		expect "hold: kill switch off, the traffic goes direct" 192.168.1.2 "$vpn"
+
+		# The kill switch on, its hold option off: a stop is as before.
+		if start_mayhem "$WORK/hold.json"; then
+			HOLD_OPT=0 hold 1 mayhem_service_stop
+			echo 'MAYHEM_KILLSWITCH=0' >> "$MAYHEM_RUN_DIR/env"
+			stop_mayhem
+			expect "hold: option off, a stop sends the traffic direct" 192.168.1.2 "$vpn"
+		fi
 		if ip netns exec router nft list table inet mayhem >/dev/null 2>&1 || [ -d "$MAYHEM_HOLD_DIR" ] || [ -f "$MAYHEM_RUN_DIR/held" ]; then
 			bad "hold: kill switch off, but rules, the copy or the mark stayed"
 		else

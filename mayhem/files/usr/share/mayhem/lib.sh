@@ -227,7 +227,8 @@ mayhem_killswitch() {
 }
 
 # --- kill switch while Mayhem does not run ---------------------------------------
-# With the kill switch on, the traffic Mayhem sends through a proxy or a
+# With the kill switch and its option "hold while Mayhem is off" on
+# (settings.killswitch_hold), the traffic Mayhem sends through a proxy or a
 # tunnel also waits while Mayhem itself is stopped or turned off, and from
 # the boot of the router on: Mayhem's rules stay with nothing behind them
 # (what would go to xray is refused, a tunnel section's traffic goes
@@ -237,10 +238,12 @@ mayhem_killswitch() {
 # off`). The rules for a boot are kept on flash (MAYHEM_HOLD_DIR), written
 # only when they change.
 
-# Is the kill switch on in the configuration (the user's word now, not the
-# last generated one)?
-mayhem_ks_on() {
-	[ "${MAYHEM_KS:-$(uci -q get mayhem.settings.killswitch)}" = 1 ]
+# Does the kill switch hold the traffic while Mayhem is off? Its own option
+# (settings.killswitch_hold), only with the kill switch on - the user's word
+# now, not the last generated one.
+mayhem_hold_on() {
+	[ "${MAYHEM_KS:-$(uci -q get mayhem.settings.killswitch)}" = 1 ] &&
+		[ "${MAYHEM_KS_HOLD:-$(uci -q get mayhem.settings.killswitch_hold)}" = 1 ]
 }
 
 # Is Mayhem running (procd has its instances, or xray-run is alive)?
@@ -261,7 +264,7 @@ mayhem_hold_save() {
 
 	[ -n "$d" ] || return 1
 
-	if ! mayhem_ks_on; then
+	if ! mayhem_hold_on; then
 		rm -rf "$d"
 		return 0
 	fi
@@ -368,7 +371,7 @@ mayhem_hold_release() {
 # it, everything as it is without Mayhem. A restart without the kill switch
 # keeps Mayhem's file in dnsmasq (see stop_service).
 mayhem_service_stop() {
-	if mayhem_ks_on && mayhem_hold_save && mayhem_hold_up; then
+	if mayhem_hold_on && mayhem_hold_save && mayhem_hold_up; then
 		mayhem_log "stopped; the kill switch holds the traffic of proxies and tunnels until Mayhem starts or the kill switch is turned off"
 	else
 		if [ "${MAYHEM_RESTART:-0}" = 1 ]; then
@@ -394,7 +397,7 @@ mayhem_hold_sync() {
 
 	if mayhem_running; then
 		:
-	elif mayhem_ks_on; then
+	elif mayhem_hold_on; then
 		mayhem_hold_up ||
 			mayhem_log "kill switch: no rules to hold the traffic with yet, Mayhem has not run with the kill switch on" warn
 	elif [ -f "$MAYHEM_RUN_DIR/held" ] || [ -d "$MAYHEM_HOLD_DIR" ]; then

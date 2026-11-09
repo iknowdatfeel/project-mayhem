@@ -12,8 +12,9 @@ Usage: mayhem <command>
   start | stop | restart     control the service
   enable | disable           turn routing on/off (saved in /etc/config/mayhem)
   status                     service state as JSON
-  killswitch on|off|status   the kill switch: with it on, the traffic of proxies
-                             and tunnels waits also while Mayhem is off (from the
+  killswitch on|off|status   the kill switch
+  killswitch hold on|off     with the kill switch on: the traffic of proxies and
+                             tunnels waits also while Mayhem is off (from the
                              boot on), until Mayhem starts or it is turned off
   check                      validate the configuration without applying it
   show-config                print the generated xray config
@@ -610,9 +611,16 @@ cmd_dnsmasq_full() {
 # applies it; on Mayhem that is off the hold goes up or ends at once (a
 # commit here does not reach the triggers of the services).
 cmd_killswitch() {
+	local opt=killswitch val
+
+	case "$1" in
+		hold) opt=killswitch_hold; shift ;;
+	esac
+
 	case "$1" in
 		on|off)
-			uci set mayhem.settings.killswitch="$([ "$1" = on ] && echo 1 || echo 0)"
+			val="$([ "$1" = on ] && echo 1 || echo 0)"
+			uci set "mayhem.settings.$opt=$val"
 			uci commit mayhem
 
 			if mayhem_running; then
@@ -623,18 +631,20 @@ cmd_killswitch() {
 			cmd_killswitch status
 			;;
 		status|"")
-			if ! mayhem_ks_on; then
+			if [ "$(uci -q get mayhem.settings.killswitch)" != 1 ]; then
 				echo "off"
+			elif ! mayhem_hold_on; then
+				echo "on; the traffic is not held while Mayhem is off (mayhem killswitch hold on)"
 			elif mayhem_running; then
-				echo "on: Mayhem runs"
+				echo "on, held while Mayhem is off: Mayhem runs"
 			elif [ -f "$MAYHEM_RUN_DIR/held" ]; then
-				echo "on: Mayhem is off, the traffic of proxies and tunnels is held"
+				echo "on, held while Mayhem is off: the traffic of proxies and tunnels is held"
 			else
-				echo "on: Mayhem is off and has not run with the kill switch yet, nothing is held"
+				echo "on, held while Mayhem is off: Mayhem has not run with it yet, nothing is held"
 			fi
 			;;
 		*)
-			echo "usage: mayhem killswitch on|off|status" >&2
+			echo "usage: mayhem killswitch [hold] on|off, mayhem killswitch status" >&2
 			return 1
 			;;
 	esac

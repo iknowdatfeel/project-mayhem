@@ -65,14 +65,14 @@ mayhem_start() {
 	# waits (from the rules of the last start, kept on flash), also after a
 	# boot; without it everything is as it is without Mayhem.
 	if [ "$enabled" != 1 ]; then
-		if mayhem_ks_on && mayhem_hold_up; then
+		if mayhem_hold_on && mayhem_hold_up; then
 			return 0
 		fi
 
 		mayhem_dns_down
 		mayhem_net_down
 		rm -f "$MAYHEM_RUN_DIR/held"
-		mayhem_ks_on || mayhem_hold_save
+		mayhem_hold_on || mayhem_hold_save
 		return 0
 	fi
 
