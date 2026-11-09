@@ -718,7 +718,7 @@ function build_nft(S, v6, sets, tunnels, dns_redirect, fake_pool, kdef, cap, pat
 	return with_hostsets(build_nft_text(S, v6, sets, tunnels, dns_redirect, fake_pool, kdef, cap, path_generation));
 }
 
-function apply_generation(text, gen_num) {
+export function apply_generation(text, gen_num) {
 	const gen = sprintf('0x%x', gen_num << C.CT_GEN_SHIFT);
 	const gmask = sprintf('0x%x', C.CT_GEN_MASK);
 	const cmask = sprintf('0x%x', 0xffffffff & ~C.CT_GEN_MASK);
