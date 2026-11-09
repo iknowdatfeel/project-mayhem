@@ -149,6 +149,56 @@ mayhem_net_refresh() {
 	return 0
 }
 
+# A server chosen by hand without a restart: the path generation of
+# nodes.json goes into the running rules, so connections of the old one are
+# reset (chain stale) and devices reconnect through the new server at once.
+# Only the chain prerouting carries the generation: it is swapped in one
+# transaction, the sets keep what dnsmasq put in them. The files follow only
+# once the kernel has it. Run under mayhem_lock start (no reload meanwhile).
+mayhem_net_generation() {
+	local run="$MAYHEM_RUN_DIR" gen hex f tx="$MAYHEM_RUN_DIR/nft.gen.$$"
+
+	[ -f "$run/active" ] && [ -f "$run/running.nft.conf" ] || return 1
+	gen="$(sed -n 's/.*"generation": *\([1-3]\).*/\1/p' "$run/nodes.json" 2>/dev/null | head -n 1)"
+	[ -n "$gen" ] || return 1
+	hex="$(printf '0x%x' $((gen << 28)))"
+
+	for f in running.nft.conf nft.conf; do
+		[ -f "$run/$f" ] || continue
+		sed -e "s/ct mark & 0x30000000 != 0x[0-9a-fA-F]*/ct mark \\& 0x30000000 != $hex/g" \
+			-e "s/ct mark set ct mark & 0xcfffffff | 0x[0-9a-fA-F]*/ct mark set ct mark \\& 0xcfffffff | $hex/g" \
+			"$run/$f" > "$tx.$f" || { rm -f "$tx".*; return 1; }
+	done
+
+	# Nothing to do: the kernel has it already.
+	if cmp -s "$tx.running.nft.conf" "$run/running.nft.conf"; then
+		rm -f "$tx".*
+		return 0
+	fi
+
+	{
+		echo "flush chain inet $MAYHEM_NFT_TABLE prerouting"
+		echo "table inet $MAYHEM_NFT_TABLE {"
+		awk '/^\tchain prerouting \{$/ { on = 1 } on { print } on && /^\t\}$/ { exit }' "$tx.running.nft.conf"
+		echo "}"
+	} > "$tx"
+
+	# IPv6 lines only where IPv6 is intercepted (mayhem_net_up).
+	mayhem_ip_rule_has 6 || sed -i '/meta nfproto ipv6/d' "$tx"
+
+	if ! grep -q 'chain prerouting' "$tx" || ! nft -f "$tx" 2>/dev/null; then
+		rm -f "$tx" "$tx".*
+		return 1
+	fi
+
+	for f in running.nft.conf nft.conf; do
+		[ -f "$tx.$f" ] && mv -f "$tx.$f" "$run/$f"
+	done
+
+	rm -f "$tx"
+	return 0
+}
+
 mayhem_net_down() {
 	local mark="$MAYHEM_FWMARK/$MAYHEM_FWMARK"
 	local i

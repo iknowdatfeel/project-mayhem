@@ -118,9 +118,11 @@ function reconnect_epoch(c) {
 	c.set('mayhem', 'settings', 'reconnect_epoch', `${(int(c.get('mayhem', 'settings', 'reconnect_epoch')) || 0) + 1}`);
 }
 
+const INIT = getenv('MAYHEM_INIT') ?? '/etc/init.d/mayhem';
+
 function reload_choice() {
 	const lib = getenv('MAYHEM_LIB_DIR') ?? '/usr/share/mayhem';
-	apply_bg(`/etc/init.d/mayhem reload && ucode ${q(lib + '/fallback.uc')}`);
+	apply_bg(`${INIT} reload && ucode ${q(lib + '/fallback.uc')}`);
 }
 
 function applying() {
@@ -246,6 +248,42 @@ function metrics(text) {
 	const j = text != null ? M.parse(text) : M.vars(2000);
 
 	return { stats: j?.stats?.outbound ?? {}, observatory: j?.observatory ?? {} };
+}
+
+// The servers of a section that an item of a fallback chain names: a
+// server by name (a tunnel also by its interface), "<subscription>\t<name>"
+// for a server of a subscription, "@<subscription>" for all of its servers.
+function chain_item_nodes(sinfo, item) {
+	const nodes = sinfo?.nodes ?? [];
+	const sub = match(item, /^@(.+)$/);
+	const tab = index(item, '\t');
+
+	if (sub)
+		return filter(nodes, (n) => n.source == sub[1]);
+
+	if (tab > 0)
+		return filter(nodes, (n) => n.source == substr(item, 0, tab) && (n.name == substr(item, tab + 1) || n.orig == substr(item, tab + 1)));
+
+	return filter(nodes, (n) => n.name == item || (n.iface != null && n.iface == item) || (n.orig != null && n.orig == item));
+}
+
+// The tag of the server a new chain starts with: the first that answered
+// the URL test of the dashboard or xray's own checks, in the chain's order;
+// else the first server of the chain. null when the chain names none.
+function chain_first(sinfo, chain) {
+	const warm = read_json(`${RUN}/warm.json`)?.results ?? {};
+	const obs = metrics()?.observatory ?? {};
+	let first = null;
+
+	for (let item in chain)
+		for (let n in chain_item_nodes(sinfo, item)) {
+			if (warm[n.tag]?.ms != null || obs[n.tag]?.alive == true)
+				return n.tag;
+
+			first ??= n.tag;
+		}
+
+	return first;
 }
 
 function os_release() {
@@ -2529,19 +2567,13 @@ const methods = {
 					if (dns_changed)
 						system(`sh -c ${q(`. ${LIB}/lib.sh; mayhem_dns_servers xray`)} >/dev/null 2>&1`);
 
-					if (next_gen != null) {
-						const gen = sprintf('0x%x', next_gen << C.CT_GEN_SHIFT);
-						const gmask = sprintf('0x%x', C.CT_GEN_MASK);
-						const cmask = sprintf('0x%x', 0xffffffff & ~C.CT_GEN_MASK);
-						for (let f in [ 'running.nft.conf', 'nft.conf' ]) {
-							let text = fs.readfile(`${RUN}/${f}`);
-							if (text) {
-								text = replace(text, /ct mark & 0x30000000 != 0x[0-9a-fA-F]+/g, `ct mark & ${gmask} != ${gen}`);
-								text = replace(text, /ct mark set ct mark & 0xcfffffff \| 0x[0-9a-fA-F]+/g, `ct mark set ct mark & ${cmask} | ${gen}`);
-								fs.writefile(`${RUN}/${f}`, text);
-							}
-						}
-					}
+					// The new generation into the running rules, apart (it waits
+					// for a reload that runs): connections through the old
+					// server are reset and reconnect through the new one. If
+					// the rules cannot be swapped in place, a reload does it.
+					if (next_gen != null)
+						system(`sh -c ${q(`. ${LIB}/lib.sh; mayhem_lock start; if mayhem_net_generation; then mayhem_unlock start; ` +
+							`else mayhem_unlock start; ${INIT} reload; fi`)} >/dev/null 2>&1 </dev/null &`);
 
 					return { ok: true, fast: true };
 				}
@@ -4261,42 +4293,22 @@ const methods = {
 
 			fs.unlink(`${RUN}/fallback.fails`);
 
-			let fast_fb = false;
+			// The chain itself comes with the reload below (the generator
+			// builds it, fallback.uc moves it along). Meanwhile the balancer
+			// is pointed at once at the first item of the new chain that
+			// answers, so the choice shows at once.
 			if (mode == 'fallback' && xray_pid() && fs.access(`${RUN}/active`)) {
 				const sinfo = state?.sections?.[sn];
-				const bal = sinfo?.balancer;
-				if (bal && length(chain)) {
-					const warm = read_json(`${RUN}/warm.json`)?.results ?? {};
-					const obs = metrics()?.observatory ?? {};
-					let best_tag = null;
-					for (let item in chain) {
-						const sub_match = match(item, /^@(.+)$/);
-						for (let n in sinfo.nodes ?? []) {
-							if (n.name == item || (sub_match && n.source == sub_match[1])) {
-								if (warm[n.tag]?.ms != null || obs[n.tag]?.alive == true) {
-									best_tag = n.tag;
-									break;
-								}
-							}
-						}
-						if (best_tag)
-							break;
-					}
-					best_tag ??= sinfo.nodes?.[0]?.tag;
-					if (best_tag) {
-						system(`${XRAY} api bo --server=127.0.0.1:${C.API_PORT} -b ${q(bal)} ${q(best_tag)} >/dev/null 2>&1 &`);
-						system(`ucode ${q(LIB + '/fallback.uc')} >/dev/null 2>&1 &`);
-						fast_fb = true;
-					}
-				}
-			}
+				const first = chain_first(sinfo, chain);
 
-			if (fast_fb) {
-				const h = read_json(`${RUN}/health.json`) ?? {};
-				h.sections ??= {};
-				h.sections[sn] = { down: false, fails: 0, picked: time() };
-				write_json(`${RUN}/health.json`, h);
-				return { ok: true, fast: true };
+				if (sinfo?.balancer && first) {
+					system(`${XRAY} api bo --server=127.0.0.1:${C.API_PORT} -b ${q(sinfo.balancer)} ${q(first)} >/dev/null 2>&1 &`);
+
+					const h = read_json(`${RUN}/health.json`) ?? {};
+					h.sections ??= {};
+					h.sections[sn] = { down: false, fails: 0, picked: time() };
+					write_json(`${RUN}/health.json`, h);
+				}
 			}
 
 			reload_choice();

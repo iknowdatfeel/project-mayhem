@@ -716,7 +716,7 @@ if command -v shellcheck >/dev/null 2>&1; then
 	if out="$(shellcheck -s sh -f gcc -e SC1091,SC2034,SC3043,SC2086,SC2046,SC2317,SC2329 \
 		"$FILES/usr/bin/mayhem" "$FILES/usr/libexec/mayhem/xray-run" "$FILES/usr/libexec/mayhem/scheduler" \
 		"$FILES/etc/uci-defaults/90-mayhem" "$ROOT/tests/netns.sh" "$ROOT/tests/build-ucode.sh" "$ROOT/tests/health.sh" "$ROOT/tests/tunsync.sh" "$ROOT/tests/nftkeep.sh" "$ROOT/tests/scheduler.sh" "$ROOT/tests/serverlist.sh" "$ROOT/tests/conns.sh" "$ROOT/tests/bbr.sh" \
-		"$ROOT/tests/inodes.sh" "$ROOT/tests/applying.sh" "$ROOT/tests/prerelease.sh" "$ROOT/tests/fast_switch.sh" "$ROOT/tests/metrics.sh" \
+		"$ROOT/tests/inodes.sh" "$ROOT/tests/applying.sh" "$ROOT/tests/prerelease.sh" "$ROOT/tests/select.sh" "$ROOT/tests/metrics.sh" "$ROOT/tests/netgen.sh" \
 		"$FILES/usr/share/mayhem/lib.sh" "$FILES/usr/share/mayhem/const.sh" "$ROOT/install.sh" 2>&1)"; then
 		ok "shellcheck"
 	else
@@ -724,7 +724,7 @@ if command -v shellcheck >/dev/null 2>&1; then
 	fi
 fi
 
-for sh_file in "$ROOT/tests/inodes.sh" "$ROOT/tests/applying.sh" "$ROOT/tests/prerelease.sh" "$ROOT/tests/fast_switch.sh"; do
+for sh_file in "$ROOT/tests/inodes.sh" "$ROOT/tests/applying.sh" "$ROOT/tests/prerelease.sh" "$ROOT/tests/select.sh"; do
 	if sh -n "$sh_file" 2>/dev/null; then
 		ok "syntax $(basename "$sh_file")"
 	else
@@ -915,11 +915,13 @@ else
 	bad "prerelease: $(printf '%s' "$out" | grep -v '^ok')"
 fi
 
-# Fast server switching: Fast-Path without full reload and generation update
-if out="$(UCODE="$UCODE" sh "$ROOT/tests/fast_switch.sh" 2>&1)"; then
-	ok "fast server switching"
+# A server chosen on the dashboard and a fallback chain, through the real
+# rpcd methods: in place for proxies (the new path generation goes into the
+# rules), a reload for tunnels and chains.
+if out="$(UCODE="$UCODE" sh "$ROOT/tests/select.sh" 2>&1)"; then
+	ok "server choice on the dashboard: in place or with a reload, chains"
 else
-	bad "fast switch: $(printf '%s' "$out" | grep -v '^ok')"
+	bad "server choice: $out"
 fi
 
 # Backup and restore of the config, with and without subscriptions and keys.
@@ -1185,6 +1187,14 @@ if out="$(sh "$ROOT/tests/nftkeep.sh" 2>&1)"; then
 	ok "reload: addresses dnsmasq put into the sets stay ($(printf '%s' "$out" | tail -n 1))"
 else
 	bad "nft sets kept: $(printf '%s' "$out" | grep -v '^ok')"
+fi
+
+# A server chosen by hand: the new path generation goes into the running rules.
+if out="$(UCODE="$UCODE" sh "$ROOT/tests/netgen.sh" 2>&1)"; then
+	case "$out" in skipped:*) printf 'skip %s\n' "path generation in place: ${out#skipped: }" ;;
+	*) ok "path generation in place: old connections reset, sets kept" ;; esac
+else
+	bad "path generation: $(printf '%s' "$out" | grep -v '^ok')"
 fi
 
 # What dnsmasq asks while the remote DNS is down: names with fake addresses
