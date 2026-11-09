@@ -42,6 +42,7 @@ fi
 
 # 2. Test atomic file copying without hard links
 if command -v "$UCODE" >/dev/null 2>&1; then
+	# shellcheck disable=SC2016
 	"$UCODE" -e '
 		import * as fs from "fs";
 		const run = getenv("MAYHEM_RUN_DIR");
