@@ -637,10 +637,6 @@ msgstr ""
 msgid "Everything"
 msgstr ""
 
-#: htdocs/luci-static/resources/view/mayhem/dashboard.js
-msgid "Everything except exclusions waits until Mayhem starts or KillSwitch is turned off. Exclusions and blocking work."
-msgstr ""
-
 #: htdocs/luci-static/resources/mayhem/page/sections.js
 msgid "Excluded source IP/MAC"
 msgstr ""
@@ -938,6 +934,10 @@ msgid "Last start"
 msgstr ""
 
 #: htdocs/luci-static/resources/mayhem/page/servers.js
+msgid "Latin letters, digits and _."
+msgstr ""
+
+#: htdocs/luci-static/resources/mayhem/page/servers.js
 msgid "Latin letters, digits and _. Its servers, the chain of the server list and the chosen server go along."
 msgstr ""
 
@@ -998,10 +998,6 @@ msgid "Mayhem downloads the GeoSite and GeoIP files and reads them on the fly. O
 msgstr ""
 
 #: htdocs/luci-static/resources/view/mayhem/dashboard.js
-msgid "Mayhem is off, the KillSwitch holds the traffic"
-msgstr ""
-
-#: htdocs/luci-static/resources/view/mayhem/dashboard.js
 msgid "Mayhem is turned off"
 msgstr ""
 
@@ -1045,6 +1041,10 @@ msgstr ""
 msgid "Mux for VLESS"
 msgstr ""
 
+#: htdocs/luci-static/resources/mayhem/page/servers.js
+msgid "Name"
+msgstr ""
+
 #: htdocs/luci-static/resources/mayhem/page/sections.js
 msgid "Name exclusion (regexp)"
 msgstr ""
@@ -1075,6 +1075,10 @@ msgstr ""
 
 #: htdocs/luci-static/resources/view/mayhem/dashboard.js
 msgid "No answer"
+msgstr ""
+
+#: htdocs/luci-static/resources/view/mayhem/dashboard.js
+msgid "No connection through the proxy or tunnel, KillSwitch holds the traffic"
 msgstr ""
 
 #: htdocs/luci-static/resources/mayhem/dash/conns.js
@@ -1593,10 +1597,6 @@ msgstr ""
 msgid "Source name"
 msgstr ""
 
-#: htdocs/luci-static/resources/view/mayhem/dashboard.js
-msgid "Start"
-msgstr ""
-
 #: htdocs/luci-static/resources/mayhem/diag.js
 msgid "Start Mayhem"
 msgstr ""
@@ -1825,6 +1825,10 @@ msgstr ""
 msgid "This is an Amnezia subscription key (%s): it holds only access to the account, the tunnel config is issued to the AmneziaVPN app alone. In the app, open this subscription, export the AmneziaWG configuration file for the country you need and paste its text or pick the file here."
 msgstr ""
 
+#: htdocs/luci-static/resources/mayhem/page/servers.js
+msgid "This name is taken"
+msgstr ""
+
 #: htdocs/luci-static/resources/mayhem/dash/conns.js
 msgid "This router"
 msgstr ""
@@ -1858,7 +1862,7 @@ msgid "Traffic and DNS of these devices are left alone, in any mode: for a work 
 msgstr ""
 
 #: htdocs/luci-static/resources/view/mayhem/dashboard.js
-msgid "Traffic of proxy sections and tunnels waits until Mayhem starts or KillSwitch is turned off. The rest goes direct."
+msgid "Traffic that goes through VPN waits instead of going direct. Turn off KillSwitch to let it go direct until the connection is back."
 msgstr ""
 
 #: htdocs/luci-static/resources/mayhem/page/sections.js

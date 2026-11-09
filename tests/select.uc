@@ -139,4 +139,22 @@ pool = filter(d?.sections ?? [], (x) => x.name == 'pool')[0];
 
 expect('dashboard: a pin of another xray does not count', pool?.active == 'n-pool-a', pool?.active);
 
+// --- the dashboard reads the configuration again only when it changed ---------------
+d = call('dashboard', {});
+expect('dashboard: enabled as configured', d?.enabled == true, d?.enabled);
+{
+	const c = require('uci').cursor(getenv('MAYHEM_UCI_DIR'), getenv('MAYHEM_UCI_SAVE_DIR'));
+
+	c.load('mayhem');
+	c.set('mayhem', 'settings', 'enabled', '0');
+	c.commit('mayhem');
+}
+d = call('dashboard', {});
+expect('dashboard: a changed configuration is read again', d?.enabled == false, d?.enabled);
+
+// dnsmasq from its pid file: one of a process that is gone means not running
+fs.writefile(`${stub}/dnsmasq-pids/dnsmasq.cfg01411c.pid`, '999999\n');
+d = call('dashboard', {});
+expect('dashboard: dnsmasq of a stale pid file is not running', d?.dnsmasq == false, d?.dnsmasq);
+
 exit(fails ? 1 : 0);

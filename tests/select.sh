@@ -11,7 +11,7 @@ UCODE="${UCODE:-ucode}"
 T="$(mktemp -d)"
 trap 'rm -rf "$T"' EXIT
 
-mkdir -p "$T/run" "$T/uci" "$T/save" "$T/lib" "$T/bin"
+mkdir -p "$T/run" "$T/uci" "$T/save" "$T/lib" "$T/bin" "$T/dnsmasq-pids"
 
 cat > "$T/uci/mayhem" <<'EOF'
 config settings 'settings'
@@ -49,6 +49,6 @@ EOF
 chmod +x "$T/bin/xray" "$T/bin/init"
 
 exec env MAYHEM_RUN_DIR="$T/run" MAYHEM_UCI_DIR="$T/uci" MAYHEM_UCI_SAVE_DIR="$T/save" \
-	MAYHEM_XRAY_BIN="$T/bin/xray" MAYHEM_LIB_DIR="$T/lib" MAYHEM_INIT="$T/bin/init" MAYHEM_RPC_CHILD=1 STUB="$T" \
+	MAYHEM_XRAY_BIN="$T/bin/xray" MAYHEM_LIB_DIR="$T/lib" MAYHEM_INIT="$T/bin/init" MAYHEM_RPC_CHILD=1 STUB="$T" MAYHEM_DNSMASQ_PIDS="$T/dnsmasq-pids" \
 	"$UCODE" -L "$ROOT/mayhem/files/usr/share/ucode/*.uc" "$ROOT/tests/select.uc" \
 	"$ROOT/luci-app-mayhem/root/usr/share/rpcd/ucode/luci.mayhem"

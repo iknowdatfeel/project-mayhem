@@ -212,6 +212,23 @@ function uci_cursor() {
 	return c;
 }
 
+// The configuration as the dashboard reads it every poll: loaded again only
+// when the file or its uncommitted changes did (rpcd keeps this process),
+// with what the dashboard takes from all of it (has_connections) worked out
+// once. Read only: methods that change the configuration use uci_cursor().
+let uci_memo = null;
+
+function uci_cached() {
+	const save = getenv('MAYHEM_UCI_SAVE_DIR') ?? '/tmp/.uci';
+	const st = (f) => { const x = fs.stat(f); return x ? `${x.inode}.${x.mtime}.${x.size}` : '-'; };
+	const key = `${st(`${C.UCI_DIR ?? '/etc/config'}/mayhem`)}|${st(`${save}/mayhem`)}`;
+
+	if (uci_memo?.key != key)
+		uci_memo = { key: key, c: uci_cursor(), memo: {} };
+
+	return uci_memo;
+}
+
 // Commits the configs one after another; false when one could not be saved.
 function commit_all(c, ...configs) {
 	for (let cfg in configs)
@@ -364,7 +381,7 @@ function sub_file(name) {
 function subscriptions() {
 	const out = [];
 	const state = read_json(`${RUN}/subs-state.json`) ?? {};
-	const c = uci_cursor();
+	const c = uci_cached().c;
 
 	c.foreach('mayhem', 'subscription', (s) => {
 		const cache = sub_file(s['.name']);
@@ -457,6 +474,7 @@ function install_running() {
 
 const NETIFD_PROTO = getenv('MAYHEM_NETIFD_PROTO_DIR') ?? '/lib/netifd/proto';
 const SYS_NET = getenv('MAYHEM_SYS_NET') ?? '/sys/class/net';
+const DNSMASQ_PIDS = getenv('MAYHEM_DNSMASQ_PIDS') ?? '/var/run/dnsmasq';
 
 function has_awg() {
 	return fs.access(`${NETIFD_PROTO}/amneziawg.sh`) == true && (NETIFD_PROTO != '/lib/netifd/proto' || fs.access('/usr/bin/awg') == true);
@@ -2289,8 +2307,29 @@ function warm_state(now_all) {
 
 const MARK = '@@mayhem@@';
 
-function dashboard_cmd(pid, state) {
-	const parts = [ pid ? metrics_cmd() : 'true', `echo; echo ${MARK}dnsmasq; pidof dnsmasq 2>/dev/null` ];
+// Does dnsmasq run? From its pid files (OpenWrt's init writes one per
+// instance); null when there are none to tell by (pidof is asked then).
+function dnsmasq_running() {
+	const files = fs.glob(`${DNSMASQ_PIDS}/dnsmasq*.pid`) ?? [];
+
+	if (!length(files))
+		return null;
+
+	for (let f in files) {
+		const p = trim(fs.readfile(f) ?? '');
+
+		if (match(p, /^[0-9]+$/) && index(fs.readfile(`/proc/${p}/cmdline`) ?? '', 'dnsmasq') >= 0)
+			return true;
+	}
+
+	return false;
+}
+
+function dashboard_cmd(pid, state, dnsmasq) {
+	const parts = [ pid ? metrics_cmd() : 'true' ];
+
+	if (dnsmasq == null)
+		push(parts, `echo; echo ${MARK}dnsmasq; pidof dnsmasq 2>/dev/null`);
 
 	for (let sn in keys(state.sections ?? {})) {
 		const dev = state.sections[sn].device;
@@ -2322,7 +2361,8 @@ function dashboard_parts(text) {
 
 function dashboard(pid, state, out) {
 		const m = pid ? metrics(out.metrics) : { stats: {}, observatory: {} };
-		const c = uci_cursor();
+		const cfg = uci_cached();
+		const c = cfg.c;
 		const sections = [];
 		const totals = { proxy: { up: 0, down: 0 }, direct: { up: 0, down: 0 }, all: { up: 0, down: 0 } };
 		const kernel_tun = {};
@@ -2416,12 +2456,19 @@ function dashboard(pid, state, out) {
 		}
 
 		let has_connections = length(filter(sections, (s) => length(s.nodes ?? []) || s.type == 'interface')) > 0;
-		for (let kind in [ 'subscription', 'tunnel', 'pool', 'section' ])
-			c.foreach('mayhem', kind, (s) => {
-				if (kind == 'subscription' || kind == 'tunnel' || length(entries(s.link)) ||
-				    length(entries(s.iface_node)) || s.outbound_json || s.type == 'interface')
-					has_connections = true;
-			});
+
+		if (cfg.memo.has_connections == null) {
+			cfg.memo.has_connections = false;
+
+			for (let kind in [ 'subscription', 'tunnel', 'pool', 'section' ])
+				c.foreach('mayhem', kind, (s) => {
+					if (kind == 'subscription' || kind == 'tunnel' || length(entries(s.link)) ||
+					    length(entries(s.iface_node)) || s.outbound_json || s.type == 'interface')
+						cfg.memo.has_connections = true;
+				});
+		}
+
+		has_connections ||= cfg.memo.has_connections;
 
 		let xray_started = null;
 		let mem_trim = null;
@@ -2500,8 +2547,15 @@ const methods = {
 			const pid = xray_pid();
 			const state = read_json(`${RUN}/nodes.json`) ?? { sections: {} };
 
-			return deferred_sh(req, dashboard_cmd(pid, state), (out) => {
-				const d = dashboard(pid, state, dashboard_parts(out));
+			const dm = dnsmasq_running();
+
+			return deferred_sh(req, dashboard_cmd(pid, state, dm), (out) => {
+				const parts = dashboard_parts(out);
+
+				if (dm != null)
+					parts.dnsmasq = dm;
+
+				const d = dashboard(pid, state, parts);
 
 				if (req.args?.warm == true && pid && d.ping_method == 'url')
 					d.warm = warm_state(false);

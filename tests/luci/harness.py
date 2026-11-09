@@ -162,8 +162,16 @@ def ucode(script, *args):
 HIDE = {'subscription': False}
 
 
+# Subscriptions added (and deleted again) in this session, as rpcd keeps the
+# session's changes: a page that loads again after a save sees them.
+STAGED = {}
+
+
 def uci_get(config):
     values = ucode(os.path.join(os.path.dirname(__file__), 'uci_get.uc'), os.path.join(FIX, 'uci'), config)
+    if config == 'mayhem':
+        for name, sec in STAGED.items():
+            values[name] = dict(sec, **{'.index': 1000 + len(values)})
     if config == 'mayhem' and HIDE['subscription']:
         values = {k: v for k, v in values.items() if v.get('.type') != 'subscription'}
         for v in values.values():
@@ -206,6 +214,10 @@ def call(obj, method, args):
             return {'values': uci_get(args['config'])}
         if method in ('set', 'add', 'delete'):
             uci_writes.append((method, args))
+        if method == 'add' and args.get('config') == 'mayhem' and args.get('type') == 'subscription' and args.get('name'):
+            STAGED[args['name']] = dict(args.get('values') or {}, **{'.type': 'subscription', '.name': args['name'], '.anonymous': False})
+        if method == 'delete' and args.get('config') == 'mayhem' and not args.get('option') and not args.get('options'):
+            STAGED.pop(args.get('section'), None)
         if method == 'changes':
             return {'changes': {}}
         return {}
@@ -647,6 +659,29 @@ def main():
             pg.wait_for_timeout(300)
             shot(pg, 'servers_subscriptions')
             open_modals(pg, '[data-tab="subscription"]')
+            # a saved subscription is renamed with its pencil, not in its window
+            pg.query_selector_all('[data-tab="subscription"] .cbi-section-table-row .cbi-button-edit')[0].click()
+            pg.wait_for_selector('.modal', timeout=5000)
+            if pg.query_selector('.modal [data-name="_name"] input'):
+                raise RuntimeError('a saved subscription offers a name in its window')
+            close_modal(pg)
+            # a new one: its window has the name, which can be changed
+            pg.fill('.cbi-section-create-name', 'https://sub.example.org/abc')
+            pg.click('.cbi-section-create .cbi-button-add')
+            pg.wait_for_selector('.modal [data-name="_name"] input', timeout=5000)
+            name = pg.query_selector('.modal [data-name="_name"] input')
+            if not name.input_value().startswith('sub_'):
+                raise RuntimeError('a new subscription has no name to edit: %r' % name.input_value())
+            name.fill('mysub2')
+            w = len(uci_writes)
+            pg.click('.modal .cbi-button-positive')
+            pg.wait_for_timeout(1500)
+            added = [a for m, a in uci_writes[w:] if m == 'add' and a.get('type') == 'subscription']
+            gone = [a for m, a in uci_writes[w:] if m == 'delete' and str(a.get('section', '')).startswith('sub_')]
+            if not any(a.get('name') == 'mysub2' and 'sub.example.org' in str(a.get('values', {}).get('url')) for a in added):
+                raise RuntimeError('the name typed for a new subscription was not taken: %s' % uci_writes[w:])
+            if any(str(a.get('name', '')).startswith('sub_') for a in added) and not gone:
+                raise RuntimeError('the subscription stays under its old name too: %s' % uci_writes[w:])
             if pg.query_selector('[data-name="mux"]'):
                 raise RuntimeError('multiplexing is still in the server list')
 

@@ -24,7 +24,7 @@ const callServerLink = rpc.declare({ object: 'luci.mayhem', method: 'server_link
 // What changes at every poll without changing what the page shows but its
 // numbers: traffic, memory, the time. A poll with only these new updates the
 // widgets in place instead of building every tile again.
-const VOLATILE = { time: true, totals: true, traffic: true, rss_kb: true, rss_total_kb: true, mem_trim: true, handshake: true, warm: true };
+const VOLATILE = { time: true, totals: true, traffic: true, rss_kb: true, rss_total_kb: true, mem_trim: true, warm: true };
 
 function signature(d) {
 	return JSON.stringify(d, (k, v) => (VOLATILE[k] || ((k === 'up' || k === 'down') && typeof v === 'number')) ? undefined : v);
@@ -109,7 +109,6 @@ const CSS = `
 .mh-tile-foot > span:last-child { white-space:nowrap; }
 .mh-alert { display:grid; grid-template-columns:24px 1fr auto; grid-column-gap:10px; align-items:center; }
 .mh-alert ul { margin:4px 0 0; padding-left:18px; }
-.mh-alert-actions { display:flex; flex-wrap:wrap; gap:6px; justify-content:flex-end; }
 .mh-ghead .btn { padding:0 8px; line-height:22px; min-height:0; font-size:90%; }
 .mh-ghead > .btn:last-child { margin-left:auto; }
 .mh-ghead .mh-title { margin-right:4px; }
@@ -209,9 +208,8 @@ return view.extend({
 		}
 
 		// Only the numbers changed: the widgets in place (open lists, a
-		// selection, a hint under the pointer stay). Everything again at
-		// least every 30 s, for the times ("… ago").
-		const live = this.data && this.drawnSig === signature(d) && Date.now() - (this.drawnAt || 0) < 30000;
+		// selection, a hint under the pointer stay).
+		const live = this.data && this.drawnSig === signature(d);
 
 		this.data = d;
 
@@ -298,7 +296,6 @@ return view.extend({
 		if (body) {
 			body.replaceChildren(...this.renderBody(this.data));
 			this.drawnSig = signature(this.data);
-			this.drawnAt = Date.now();
 		}
 	},
 
@@ -656,6 +653,34 @@ return view.extend({
 
 	// Configuration errors stop xray: they stay in sight. Warnings are on the
 	// diagnostics page.
+	// KillSwitch is on, but the traffic has no way out: Mayhem is off and
+	// holds it, xray is down, a tunnel it waits for is down, or the main
+	// server does not answer the check. A yellow line with the way out.
+	killSwitchStuck(d) {
+		const main = mh.mainServer(d);
+		const p = main.node && checks.probes[main.node.tag];
+
+		return !!d.killswitch && !!(d.held || (d.enabled && !d.running) ||
+			(d.sections || []).some((s) => s.tunnel && s.tunnel.state === 'held') ||
+			(p && !p.pending && typeof p.value === 'string'));
+	},
+
+	renderKillSwitch(d) {
+		this.ksShown = this.killSwitchStuck(d);
+
+		if (!this.ksShown)
+			return '';
+
+		return E('div', { 'class': 'mh-box mh-box--warn mh-alert mh-warn' }, [
+			mh.icon('alert'),
+			E('div', [
+				E('b', _('No connection through the proxy or tunnel, KillSwitch holds the traffic')),
+				E('div', { 'class': 'mh-muted mh-small' }, _('Traffic that goes through VPN waits instead of going direct. Turn off KillSwitch to let it go direct until the connection is back.'))
+			]),
+			mh.button({ icon: 'x', cls: 'cbi-button-negative', text: _('Turn off KillSwitch'), click: ui.createHandlerFn(this, 'act', 'ks_off') })
+		]);
+	},
+
 	renderAlert(d) {
 		const errors = ((d.status || {}).errors || []).slice();
 
@@ -664,23 +689,6 @@ return view.extend({
 
 		if (d.xray_error && d.enabled)
 			errors.push(_('Xray does not start: %s').format(d.xray_error));
-
-		// Off, and the kill switch holds the traffic: nothing of proxies and
-		// tunnels goes anywhere until Mayhem starts or the switch is off.
-		if (d.held)
-			return E('div', { 'class': 'mh-box mh-box--fail mh-alert mh-fail' }, [
-				mh.icon('circle-x'),
-				E('div', [
-					E('b', _('Mayhem is off, the KillSwitch holds the traffic')),
-					E('div', { 'class': 'mh-muted mh-small' }, d.mode === 'global'
-						? _('Everything except exclusions waits until Mayhem starts or KillSwitch is turned off. Exclusions and blocking work.')
-						: _('Traffic of proxy sections and tunnels waits until Mayhem starts or KillSwitch is turned off. The rest goes direct.'))
-				]),
-				E('div', { 'class': 'mh-alert-actions' }, [
-					mh.button({ icon: 'play', cls: 'cbi-button-positive', text: d.enabled ? _('Start') : _('Enable'), click: ui.createHandlerFn(this, 'act', d.enabled ? 'start' : 'enable') }),
-					mh.button({ icon: 'x', cls: 'cbi-button-negative', text: _('Turn off KillSwitch'), click: ui.createHandlerFn(this, 'act', 'ks_off') })
-				])
-			]);
 
 		if (!d.enabled)
 			return E('div', { 'class': 'mh-box mh-alert' }, [
@@ -739,6 +747,10 @@ return view.extend({
 	},
 
 	updateLatency(tag) {
+		// The yellow line of KillSwitch follows the check of the main server.
+		if (this.data && this.killSwitchStuck(this.data) !== !!this.ksShown)
+			this.redraw();
+
 		const els = document.querySelectorAll(`[data-mh-lat="${tag}"]`);
 		const n = this.findNode(tag);
 		let updated = false;
@@ -1315,7 +1327,7 @@ return view.extend({
 		sys.classList.add('mh-a-sys');
 		side.classList.add('mh-a-side');
 
-		return [ this.renderTop(d), this.renderAlert(d), E('div', { 'class': 'mh-layout' }, [
+		return [ this.renderTop(d), this.renderKillSwitch(d), this.renderAlert(d), E('div', { 'class': 'mh-layout' }, [
 			conn, sys, side,
 			E('div', { 'class': 'mh-stack mh-a-servers' }, boxes)
 		]) ];

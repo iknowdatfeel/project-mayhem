@@ -184,6 +184,29 @@ return baseclass.extend({
 		]);
 	},
 
+	// A new subscription under the name typed in its window: the section,
+	// not saved yet, is put under the new name with all its options.
+	renameNewSub(from, to, v) {
+		const data = this.map.data;
+
+		v = v || data.get('mayhem', from);
+
+		if (!v || from === to)
+			return Promise.resolve();
+
+		data.add('mayhem', 'subscription', to);
+
+		for (const k in v)
+			if (k.charAt(0) !== '.')
+				data.set('mayhem', to, k, v[k]);
+
+		data.remove('mayhem', from);
+		delete this.newSubs[from];
+		this.newSubs[to] = true;
+
+		return data.save().then(() => this.map.load()).then(() => this.map.reset());
+	},
+
 	addSubscriptionLink(link) {
 		let raw = (link || '').trim();
 		if (!raw)
@@ -215,6 +238,10 @@ return baseclass.extend({
 		while (reserved[sid] || uci.get('mayhem', sid) || (this.map && this.map.data && this.map.data.get('mayhem', sid))) {
 			sid = `${base}_${idx++}`;
 		}
+
+		// New, not saved yet: its window offers to change the name.
+		this.newSubs = this.newSubs || {};
+		this.newSubs[sid] = true;
 
 		if (this.map && this.map.data) {
 			this.map.data.add('mayhem', 'subscription', sid);
@@ -531,8 +558,52 @@ return baseclass.extend({
 			return td;
 		};
 
+		// The window of a new subscription saves the name typed in it.
+		s.handleModalSave = function(modalMap, ev) {
+			const active = L.dom.findClassInstance(this.getActiveModalMap());
+			let p = null, vals = null;
+
+			self.pendingName = null;
+
+			// The values of the window as typed, before they are saved
+			// under the old name; then saved, then moved to the new name.
+			return active.parse().then(() => {
+				p = self.pendingName;
+				vals = p ? Object.assign({}, this.map.data.get('mayhem', p[0])) : null;
+			}).then(() => form.GridSection.prototype.handleModalSave.apply(this, [ modalMap, ev ])).then(() => {
+				self.pendingName = null;
+				return p ? self.renameNewSub(p[0], p[1], vals) : null;
+			});
+		};
+
 		s.tab('main', _('Subscription'));
 		s.tab('device', _('Device data'));
+
+		// The name of a new subscription (a saved one is renamed with ✎).
+		o = s.taboption('main', form.Value, '_name', _('Name'), _('Latin letters, digits and _.'));
+		o.modalonly = true;
+		o.cfgvalue = (sid) => sid;
+		o.render = function(option_index, section_id) {
+			return (self.newSubs && self.newSubs[section_id]) ? form.Value.prototype.render.apply(this, arguments) : E([]);
+		};
+		o.validate = function(section_id, value) {
+			const v = (value || '').trim();
+
+			if (!/^[A-Za-z0-9_]+$/.test(v))
+				return _('The subscription name may only contain letters, digits and _');
+
+			if (v !== section_id && ({ main: 1, settings: 1, dns: 1, pool: 1, routing: 1 }[v] || this.map.data.get('mayhem', v)))
+				return _('This name is taken');
+
+			return true;
+		};
+		o.write = function(section_id, value) {
+			const v = (value || '').trim();
+
+			if (v && v !== section_id)
+				self.pendingName = [ section_id, v ];
+		};
+		o.remove = function() {};
 
 		o = s.taboption('main', form.Flag, 'enabled', _('Enabled'));
 		o.default = '1';
