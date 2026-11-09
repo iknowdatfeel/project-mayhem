@@ -2397,6 +2397,10 @@ function dashboard(pid, state, out) {
 				pinned: s.override ?? null, nodes: nodes, traffic: traffic,
 				chain: s.chain ?? null, units: s.units ?? null, items: s.items ?? null, subs: s.subs ?? null,
 				down: health.sections?.[sn]?.down == true,
+				// health.uc's last word (every 20 s) on whether the section's
+				// traffic gets through, by the logic of its mode; null when it
+				// has none for this xray or it is older than a minute
+				reachable: (health.pid == pid && health.sections?.[sn]?.checked >= time() - 60) ? health.sections[sn].ok : null,
 				down_since: health.sections?.[sn]?.since ?? null
 			};
 

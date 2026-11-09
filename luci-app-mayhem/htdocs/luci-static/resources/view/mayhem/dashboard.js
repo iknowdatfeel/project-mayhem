@@ -657,14 +657,14 @@ return view.extend({
 	// holds it, xray is down, a tunnel it waits for is down, or the main
 	// server does not answer the check. A yellow line with the way out.
 	killSwitchStuck(d) {
-		const main = mh.mainServer(d);
-		const p = main.node && checks.probes[main.node.tag];
+		const main = mh.mainServer(d).section;
 
+		// The main section by the checks of the router, which follow its mode:
+		// the server chosen by hand, the chain's server, the automatic
+		// choice's own path - never the number of another server on the page.
 		return !!d.killswitch && !!(d.held || (d.enabled && !d.running) ||
 			(d.sections || []).some((s) => s.tunnel && s.tunnel.state === 'held') ||
-			// only the URL test is asked again every poll: an old TCP or
-			// ICMP failure would keep the line after the connection is back
-			(p && p.method === 'url' && !p.pending && typeof p.value === 'string'));
+			(main && main.reachable === false));
 	},
 
 	renderKillSwitch(d) {
@@ -749,10 +749,6 @@ return view.extend({
 	},
 
 	updateLatency(tag) {
-		// The yellow line of KillSwitch follows the check of the main server.
-		if (this.data && this.killSwitchStuck(this.data) !== !!this.ksShown)
-			this.redraw();
-
 		const els = document.querySelectorAll(`[data-mh-lat="${tag}"]`);
 		const n = this.findNode(tag);
 		let updated = false;

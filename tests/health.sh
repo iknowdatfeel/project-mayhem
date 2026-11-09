@@ -96,13 +96,19 @@ echo '{ "n-auto-2": { "alive": true, "delay": 100 }, "n-ch-2": { "alive": true, 
 # Everything answers: nothing changes.
 tick
 if [ -s "$T/xray.log" ]; then bad "all answer: xray was told $(cat "$T/xray.log")"; else ok "all servers answer: nothing goes direct"; fi
+if "$UCODE" -e "const h = json(require('fs').readfile('$T/run/health.json')); exit(h.sections.pool.ok === true && h.sections.auto.ok === true && h.sections.ch.ok === true ? 0 : 1)"; then
+	ok "every section is noted as getting through"
+else
+	bad "sections noted: $(cat "$T/run/health.json")"
+fi
 
 # Every server goes silent; xray still believes in n-auto-2 and n-ch-2.
 printf 'n-pool-a\nn-ch-1\nn-ch-2\nn-ch-3\nn-auto-1\nn-auto-2\nn-auto-3\n' > "$T/dead"
 tick
 if [ -s "$T/xray.log" ]; then bad "one failed check is enough to go direct"; else ok "one failed check: not direct yet"; fi
 tick
-if [ "$(bo bal-pool direct)" = 1 ] && [ "$(bo bal-ch direct)" = 1 ] && down pool && down ch; then
+if [ "$(bo bal-pool direct)" = 1 ] && [ "$(bo bal-ch direct)" = 1 ] && down pool && down ch &&
+   "$UCODE" -e "const h = json(require('fs').readfile('$T/run/health.json')); exit(h.sections.pool.ok === false && h.sections.pool.checked > 0 ? 0 : 1)"; then
 	ok "server list and fallback chain go direct after two failed checks"
 else
 	bad "direct after two checks: $(cat "$T/xray.log")"

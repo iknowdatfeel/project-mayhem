@@ -139,6 +139,17 @@ pool = filter(d?.sections ?? [], (x) => x.name == 'pool')[0];
 
 expect('dashboard: a pin of another xray does not count', pool?.active == 'n-pool-a', pool?.active);
 
+// --- whether the section's traffic gets through: health.uc's word, fresh ----------
+fs.writefile(`${run}/health.json`, sprintf('%J', { pid: me, sections: { pool: { down: false, fails: 1, ok: false, checked: time() } } }));
+d = call('dashboard', {});
+pool = filter(d?.sections ?? [], (x) => x.name == 'pool')[0];
+expect('dashboard: a section health.uc found cut off is not reachable', pool?.reachable === false, pool?.reachable);
+
+fs.writefile(`${run}/health.json`, sprintf('%J', { pid: me, sections: { pool: { down: false, fails: 1, ok: false, checked: time() - 300 } } }));
+d = call('dashboard', {});
+pool = filter(d?.sections ?? [], (x) => x.name == 'pool')[0];
+expect('dashboard: an old word of health.uc does not count', pool?.reachable === null, pool?.reachable);
+
 // --- the dashboard reads the configuration again only when it changed ---------------
 d = call('dashboard', {});
 expect('dashboard: enabled as configured', d?.enabled == true, d?.enabled);

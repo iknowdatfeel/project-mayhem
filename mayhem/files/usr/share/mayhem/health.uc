@@ -557,6 +557,9 @@ for (let sn, p in plan) {
 		// The first in the order of the tries that answers.
 		const good = filter(p.tries, (t) => second[t] != null)[0];
 
+		hs.checked = time();
+		hs.ok = false;
+
 		if (good) {
 			const r = restore(sn, s, good, true);
 
@@ -578,12 +581,19 @@ for (let sn, p in plan) {
 		continue;
 	}
 
+	// What the dashboard shows: does the traffic of the section get through
+	// now, by the logic of its mode (the server chosen by hand; the chain's
+	// server; the automatic choice's own path) - not a guess of the page.
+	hs.checked = time();
+
 	if (p.ok || second[p.cur] != null) {
 		hs.fails = 0;
+		hs.ok = true;
 		continue;
 	}
 
 	hs.fails++;
+	hs.ok = false;
 
 	const other = p.cands ? fastest(p.cands, second) : null;
 
