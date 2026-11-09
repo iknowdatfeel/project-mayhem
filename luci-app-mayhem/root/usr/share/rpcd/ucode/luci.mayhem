@@ -3715,10 +3715,29 @@ const methods = {
 	action: {
 		args: { name: 'restart' },
 		call: function(req) {
-			const cmd = ACTIONS[req.args?.name];
+			const name = req.args?.name;
+			const cmd = ACTIONS[name];
 
 			if (!cmd)
 				return { error: 'unknown action' };
+
+			// The kill switch off: saved at once, so the next poll already
+			// shows it off; the reload that puts it in force (from seconds to
+			// half a minute while the servers do not answer) runs apart -
+			// waited for here, it outlived the browser's call and the button
+			// seemed to do nothing.
+			if (name == 'ks_off') {
+				const c = uci_cursor();
+
+				c.set('mayhem', 'settings', 'killswitch', '0');
+
+				if (!c.commit('mayhem'))
+					return { error: 'the configuration could not be saved' };
+
+				apply_bg(cmd);
+
+				return { result: true };
+			}
 
 			run(`${cmd} >/dev/null 2>&1`);
 

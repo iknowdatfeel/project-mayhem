@@ -313,7 +313,19 @@ return view.extend({
 	},
 
 	act(name) {
-		return callAction(name).then(() => this.refresh());
+		// The kill switch off: the yellow line goes at once, the router
+		// reloads in the background.
+		if (name === 'ks_off' && this.data) {
+			this.data.killswitch = false;
+			this.redraw();
+		}
+
+		return callAction(name).then((r) => {
+			if (r && r.error)
+				ui.addNotification(null, E('p', r.error), 'error');
+		}, (e) => {
+			ui.addNotification(null, E('p', e.message || String(e)), 'error');
+		}).then(() => this.refresh().catch(() => {}));
 	},
 
 	select(section, tag) {
