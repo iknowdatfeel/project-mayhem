@@ -725,7 +725,7 @@ export function apply_generation(text, gen_num) {
 	let res = replace(text, /ct mark & 0x30000000 != 0x[0-9a-fA-F]+/g, `ct mark & ${gmask} != ${gen}`);
 	res = replace(res, /ct mark set ct mark & 0xcfffffff \| 0x[0-9a-fA-F]+/g, `ct mark set ct mark & ${cmask} | ${gen}`);
 	return res;
-}
+};
 
 // The fixed tail of a regexp rule as a domain: ^r+\d+\.googlevideo\.com$ ->
 // googlevideo.com. Only when the tail starts at a label (after an escaped
