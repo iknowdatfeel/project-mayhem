@@ -260,6 +260,22 @@ if [ "$first2|$second2" = "n-1 0|n-6 1" ]; then
 else
 	bad "fallback.uc dead servers: got $first2|$second2, expected n-1 0|n-6 1"
 fi
+
+# The same with the dashboard open: its URL test just saw n-2..n-5 fail and
+# n-6 answer - the chain is on n-6 in one run.
+sed -i 's/"selected": "n-[0-9]"/"selected": "n-1"/' "$R2/nodes.json"
+rm -f "$R2/fallback.json" "$R2/fallback.left"
+: > "$R2/warm.alive"
+now="$(date +%s)"
+printf '{ "results": { "n-2": { "error": "timeout", "at": %s }, "n-3": { "error": "timeout", "at": %s }, "n-4": { "error": "timeout", "at": %s }, "n-5": { "error": "timeout", "at": %s }, "n-6": { "ms": 40, "at": %s } } }' \
+	"$now" "$now" "$now" "$now" "$now" > "$R2/warm.json"
+: > "$T/xray.log"
+fb2
+if [ "$(sel2)" = n-6 ]; then
+	ok "fallback.uc: the dashboard's URL test leaves out servers that just failed it"
+else
+	bad "fallback.uc warm hint: $(sel2) / $(cat "$T/xray.log")"
+fi
 : > "$T/dead"
 
 # 8. The rpcd methods: a click from the chain, the chain's window.

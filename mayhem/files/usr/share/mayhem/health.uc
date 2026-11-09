@@ -28,7 +28,7 @@
 //                        until xray's checks no longer pick the dead one;
 //   pinned by hand     - for a manually selected server (override / manual),
 //                        substitution by another server is not performed;
-//   fallback chain     - fallback.uc moves the chain on.
+//   fallback chain     - mayhem.fallback (run first) moves the chain on.
 // A section is "down" (direct) only when the server in use failed two runs
 // in a row and no other server answered either. A server is checked through
 // the helper proxy with its own tag as the user (mayhem.check). While a
@@ -41,6 +41,7 @@ import * as fs from 'fs';
 import { RUN_DIR, API_PORT, HELPER_PORT, HELPER_PASS, DEFAULT_PROBE_URL } from 'mayhem.const';
 import * as check from 'mayhem.check';
 import * as metrics from 'mayhem.metrics';
+import * as fallback from 'mayhem.fallback';
 
 const XRAY = getenv('MAYHEM_XRAY_BIN') ?? '/usr/libexec/mayhem/xray';
 const LIB = getenv('MAYHEM_LIB_DIR') ?? '/usr/share/mayhem';
@@ -177,6 +178,14 @@ function bo(bal, tag, sn) {
 }
 
 let obs = null;
+let warm_seen = null;
+
+// What the dashboard's URL test saw a moment ago (mayhem.check), once per run.
+function warm() {
+	warm_seen ??= check.warm_recent();
+
+	return warm_seen;
+}
 
 // What xray's own checks saw, read once per run (2 s at most: a hung xray
 // must not hold the scheduler).
@@ -280,12 +289,17 @@ function fastest(users, ms) {
 
 // Other servers of the section to try, at most n: those xray saw working
 // first (fastest first), then the rest in the section's order.
+// Those that answered the dashboard's URL test a moment ago come before
+// all, by its numbers; those that just failed it go last.
 function candidates(s, skip, n) {
 	const o = observatory();
+	const w = warm();
 	const all = filter(members(s), (t) => index(skip, t) < 0);
-	const seen = sort(filter(all, (t) => o[t]?.alive == true), (a, b) => (o[a].delay ?? 0) - (o[b].delay ?? 0));
+	const fresh = sort(filter(all, (t) => type(w[t]) == 'int'), (a, b) => w[a] - w[b]);
+	const seen = sort(filter(all, (t) => o[t]?.alive == true && index(fresh, t) < 0 && w[t] !== false), (a, b) => (o[a].delay ?? 0) - (o[b].delay ?? 0));
+	const rest = filter(all, (t) => index(fresh, t) < 0 && index(seen, t) < 0);
 
-	return slice([ ...seen, ...filter(all, (t) => index(seen, t) < 0) ], 0, n);
+	return slice([ ...fresh, ...seen, ...filter(rest, (t) => w[t] !== false), ...filter(rest, (t) => w[t] === false) ], 0, n);
 }
 
 // The server xray's automatic choice takes by itself: the fastest it saw
@@ -335,6 +349,60 @@ function restore(sn, s, tag, pin) {
 const mark = (s) => `${state.generated ?? ''} ${s.selected ?? ''} ${s.override ?? ''}`;
 
 const names = (s, tags) => join(', ', map(tags, (t) => filter(s.nodes, (n) => n.tag == t)[0]?.name ?? t));
+
+// --- remote DNS ------------------------------------------------------------------
+
+// A DNS query for the check URL's host, in the wire format (RFC 8484 GET).
+function doh_query() {
+	const host = match(url, /^https?:\/\/([^/:]+)/)?.[1] ?? 'www.gstatic.com';
+	let q = '\0\0\x01\0\0\x01\0\0\0\0\0\0';
+
+	for (let l in split(host, '.'))
+		if (length(l))
+			q += chr(length(l)) + l;
+
+	q += '\0\0\x01\0\x01';
+
+	return replace(replace(replace(b64enc(q), /\+/g, '-'), /\//g, '_'), /=+$/, '');
+}
+
+// The check of one remote DNS server as a shell line that prints "<i>
+// <answer>" (200: it answered); null: cannot tell from here (the path
+// decides, and that is the section's).
+function dns_check_cmd(i, srv, via) {
+	if (match(srv.address, /^https:\/\//)) {
+		const proxy = via ? `-x ${q(`socks5h://${via}:${HELPER_PASS}@127.0.0.1:${HELPER_PORT}`)}` : '';
+		const sep = index(srv.address, '?') >= 0 ? '&' : '?';
+
+		return `echo "${i} $(curl -s -o /dev/null -m 6 ${proxy} -H 'accept: application/dns-message' -w '%{http_code}' ${q(srv.address + sep + 'dns=' + doh_query())} 2>/dev/null)"`;
+	}
+
+	// UDP or TCP through a server: the helper proxy carries neither.
+	if (via || (srv.port && srv.port != 53))
+		return null;
+
+	const host = match(url, /^https?:\/\/([^/:]+)/)?.[1] ?? 'www.gstatic.com';
+
+	return `if nslookup ${q(host)} ${q(srv.host)} 2>/dev/null | grep -q '^Name:'; then echo "${i} 200"; else echo "${i} 000"; fi`;
+}
+
+// Every remote DNS server at once, in the background while the sections
+// are checked: null when there is nothing to check, else the pipe to read.
+function dns_start(dc) {
+	let cmd = '';
+
+	for (let i, srv in dc.servers ?? []) {
+		const c = dns_check_cmd(i, srv, dc.via);
+
+		if (c != null)
+			cmd += `( ${c} ) & `;
+	}
+
+	return cmd == '' ? null : fs.popen(`${cmd}wait`, 'r');
+}
+
+const dc = state.dns_check;
+const dns_job = (dc && !ks) ? dns_start(dc) : null;
 
 // What each section is checked with in this run: { user, cur } while it
 // works (cur null: not known yet), { down } while it goes direct.
@@ -406,7 +474,28 @@ for (let sn in keys(state.sections ?? {})) {
 }
 
 // 1. Every section that works, at once.
-const first = check.works_many(map(filter(keys(plan), (sn) => !plan[sn].down), (sn) => plan[sn].user), url, FIRST);
+const asked = map(filter(keys(plan), (sn) => !plan[sn].down), (sn) => plan[sn].user);
+const first = check.works_many(asked, url, FIRST);
+
+// Fallback chains move along (mayhem.fallback), in the same process: with
+// the answers above for the servers they use now, and the observatory read
+// once. Their word on a chain counts below, nothing is asked twice.
+const fb = fallback.run({ obs: observatory(), asked: asked, first: first });
+
+for (let sn, p in plan) {
+	const s = state.sections[sn];
+
+	if (p.down || s.mode != 'fallback')
+		continue;
+
+	const v = fb?.verdict?.[sn];
+
+	if (v)
+		plan[sn] = { cur: v.cur, user: v.cur, ok: v.ok, checked: true };
+	// The chain went back to a server earlier in it: that one is checked.
+	else if (known_in_use(sn, s) != p.cur)
+		plan[sn] = { cur: known_in_use(sn, s), user: null };
+}
 
 // 2. Those that failed: the server in use once more, with the servers that
 // may take over; and the tries of the sections that are down. At once.
@@ -435,6 +524,9 @@ for (let sn, p in plan) {
 		push(again, ...p.tries);
 		continue;
 	}
+
+	if (p.checked)
+		continue;
 
 	if (first[p.user] != null) {
 		p.ok = true;
@@ -533,42 +625,6 @@ for (let sn in keys(h.sections))
 	if (!state.sections?.[sn])
 		delete h.sections[sn];
 
-// --- remote DNS ------------------------------------------------------------------
-
-// A DNS query for the check URL's host, in the wire format (RFC 8484 GET).
-function doh_query() {
-	const host = match(url, /^https?:\/\/([^/:]+)/)?.[1] ?? 'www.gstatic.com';
-	let q = '\0\0\x01\0\0\x01\0\0\0\0\0\0';
-
-	for (let l in split(host, '.'))
-		if (length(l))
-			q += chr(length(l)) + l;
-
-	q += '\0\0\x01\0\x01';
-
-	return replace(replace(replace(b64enc(q), /\+/g, '-'), /\//g, '_'), /=+$/, '');
-}
-
-// null: cannot tell from here (the path decides, and that is the section's).
-function dns_works(srv, via) {
-	if (match(srv.address, /^https:\/\//)) {
-		const proxy = via ? `-x ${q(`socks5h://${via}:${HELPER_PASS}@127.0.0.1:${HELPER_PORT}`)}` : '';
-		const sep = index(srv.address, '?') >= 0 ? '&' : '?';
-		const code = int(trim(command(`curl -s -o /dev/null -m 6 ${proxy} -H 'accept: application/dns-message' -w '%{http_code}' ${q(srv.address + sep + 'dns=' + doh_query())} 2>/dev/null`)));
-
-		return code == 200;
-	}
-
-	// UDP or TCP through a server: the helper proxy carries neither.
-	if (via || (srv.port && srv.port != 53))
-		return null;
-
-	const host = match(url, /^https?:\/\/([^/:]+)/)?.[1] ?? 'www.gstatic.com';
-
-	return system(`nslookup ${q(host)} ${q(srv.host)} 2>/dev/null | grep -q '^Name:'`) == 0;
-}
-
-const dc = state.dns_check;
 const d = h.dns;
 let dns_changed = false;
 
@@ -585,19 +641,16 @@ if (!dc || ks) {
 else {
 	let ok = false, known = false;
 
-	for (let srv in dc.servers ?? []) {
-		const r = dns_works(srv, dc.via);
+	for (let l in split(dns_job?.read('all') ?? '', '\n')) {
+		const m = match(l, /^[0-9]+ ([0-9]+)/);
 
-		if (r == null)
-			continue;
-
-		known = true;
-
-		if (r) {
-			ok = true;
-			break;
+		if (m) {
+			known = true;
+			ok ||= m[1] == '200';
 		}
 	}
+
+	dns_job?.close();
 
 	if (!known || ok) {
 		if (d.down) {

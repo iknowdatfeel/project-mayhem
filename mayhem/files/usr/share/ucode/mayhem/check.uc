@@ -120,3 +120,33 @@ export function works(user, url, timeout) {
 	return works_many([ user ], url, timeout)[user] != null ||
 		works_many([ user ], url, max(3, (timeout ?? 6) - 2))[user] != null;
 };
+
+// What the dashboard's URL test (warm.uc) measured through each server in
+// the last `fresh` seconds (20), while the dashboard is open: { tag: ms } for
+// those that answered, { tag: false } for those that did not; {} otherwise.
+// health.uc and mayhem.fallback try first the servers that answered it and
+// leave out those that just failed it - each one is still checked before it
+// takes over.
+export function warm_recent(fresh) {
+	const alive = fs.stat(`${RUN_DIR}/warm.alive`);
+
+	if (!alive || time() - alive.mtime > 60)
+		return {};
+
+	let j;
+
+	try {
+		j = json(fs.readfile(`${RUN_DIR}/warm.json`) ?? '');
+	}
+	catch (e) {
+		return {};
+	}
+
+	const out = {}, since = time() - (fresh ?? 20);
+
+	for (let tag, r in j?.results ?? {})
+		if (r?.at >= since)
+			out[tag] = r.ms != null ? r.ms : false;
+
+	return out;
+};

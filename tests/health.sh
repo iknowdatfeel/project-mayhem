@@ -313,7 +313,7 @@ rm -f "$T/run/health.json" "$T/bi.log"
 : > "$T/sec_ok"
 : > "$T/curl.log"
 tick
-if [ ! -s "$T/bi.log" ] && grep -q ' sec-auto ' "$T/curl.log" && ! grep -q ' n-auto-' "$T/curl.log" && [ ! -s "$T/xray.log" ]; then
+if [ ! -s "$T/bi.log" ] && grep -q ' sec-auto ' "$T/curl.log" && ! grep -q ' n-auto-' "$T/curl.log" && ! grep -q 'bal-auto' "$T/xray.log"; then
 	ok "automatic: its own path answers, xray is not asked which server it uses"
 else
 	bad "automatic path: bi $(cat "$T/bi.log" 2>/dev/null) / $(cat "$T/curl.log")"
@@ -339,6 +339,19 @@ if [ "$took" -le 4 ]; then
 else
 	bad "silent sections took ${took} s for 1 s checks"
 fi
+: > "$T/dead"
+
+# The dashboard's URL test a moment ago: n-auto-3 answered it, n-auto-2 (the
+# observatory's next fastest) did not - n-auto-3 takes over.
+nodes false
+rm -f "$T/run/health.json"
+echo '{ "n-auto-1": { "alive": true, "delay": 50 }, "n-auto-2": { "alive": true, "delay": 100 }, "n-auto-3": { "alive": true, "delay": 300 } }' > "$T/obs.json"
+printf 'n-auto-1\n' > "$T/dead"
+: > "$T/run/warm.alive"
+printf '{ "results": { "n-auto-3": { "ms": 30, "at": %s }, "n-auto-2": { "error": "timeout", "at": %s } } }' "$(date +%s)" "$(date +%s)" > "$T/run/warm.json"
+tick
+if [ "$(bo bal-auto n-auto-3)" = 1 ]; then ok "the dashboard's URL test picks the server that takes over"; else bad "warm hint: $(cat "$T/xray.log")"; fi
+rm -f "$T/run/warm.alive" "$T/run/warm.json"
 : > "$T/dead"
 
 # One run of the scheduler (MAYHEM_TICK): a server that answered is not asked

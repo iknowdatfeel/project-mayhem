@@ -7,8 +7,9 @@
 # Also every minute, apart (minute_jobs()): the tunnels, the watchdog (xray
 # memory, dnsmasq), xray's freed memory back to the system; and, when turned
 # on, the nightly update of Mayhem itself. Fallback chains of servers
-# are checked every 20 seconds, and so are the servers and the remote DNS
-# (health.uc: direct while they do not answer, unless the kill switch is on).
+# are moved along every 20 seconds, and the servers and the remote DNS are
+# checked (health.uc, both in one process: direct while they do not answer,
+# unless the kill switch is on).
 
 . "${MAYHEM_LIB_DIR:-/usr/share/mayhem}/lib.sh"
 
@@ -116,14 +117,10 @@ while :; do
 		mayhem_dns_catchup
 	fi
 
-	# Only when a section has a chain: a ucode process costs a little.
-	# MAYHEM_TICK: a server that answered fallback.uc is not asked again by
-	# health.uc in the same run (mayhem.check).
-	grep -q '"mode": *"fallback"' "$MAYHEM_RUN_DIR/nodes.json" 2>/dev/null &&
-		bounded 90 env MAYHEM_TICK="$$.$tick" ucode "$MAYHEM_LIB_DIR/fallback.uc" >/dev/null 2>&1
-
-	# Sections and remote DNS that stop answering go direct and come back
-	# (kill switch off), or get back from direct (kill switch on).
+	# Fallback chains move along, sections and remote DNS that stop
+	# answering go direct and come back (kill switch off), or get back from
+	# direct (kill switch on): health.uc, one process for all of it.
+	# MAYHEM_TICK: a server that answered is not asked twice in one run.
 	[ -f "$MAYHEM_RUN_DIR/active" ] &&
 		bounded 120 env MAYHEM_TICK="$$.$tick" ucode "$MAYHEM_LIB_DIR/health.uc" >/dev/null 2>&1
 
