@@ -662,7 +662,9 @@ return view.extend({
 
 		return !!d.killswitch && !!(d.held || (d.enabled && !d.running) ||
 			(d.sections || []).some((s) => s.tunnel && s.tunnel.state === 'held') ||
-			(p && !p.pending && typeof p.value === 'string'));
+			// only the URL test is asked again every poll: an old TCP or
+			// ICMP failure would keep the line after the connection is back
+			(p && p.method === 'url' && !p.pending && typeof p.value === 'string'));
 	},
 
 	renderKillSwitch(d) {
