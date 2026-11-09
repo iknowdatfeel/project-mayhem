@@ -8,7 +8,6 @@
 import * as fs from 'fs';
 import { parse_link, outbound_host, outbound_port, refused_by_xray } from 'mayhem.links';
 import { list_key, entries, as_list, dnsmasq_nftset } from 'mayhem.rules';
-import { parse_conf, is_amnezia, uci_sections, to_conf } from 'mayhem.awg';
 import * as C from 'mayhem.const';
 import { tcp_ping } from 'mayhem.ping';
 import * as runstate from 'mayhem.runstate';
@@ -108,7 +107,7 @@ const APPLY_STALE = 300;
 
 function apply_bg(cmd) {
 	fs.mkdir(RUN, 0700);
-	system(`(f=${RUN}/applying.$$; : > "$f"; ${cmd}; rm -f "$f") >/dev/null 2>&1 </dev/null &`);
+	system(`sh -c '(${cmd}) & pid=$!; f=${RUN}/applying.$pid; : > "$f"; wait $pid; rm -f "$f"' >/dev/null 2>&1 </dev/null &`);
 }
 
 // An explicit choice changes the restart key and capture generation. The
@@ -128,7 +127,19 @@ function applying() {
 	for (let f in fs.glob(`${RUN}/applying.*`) ?? []) {
 		const st = fs.stat(f);
 
-		if (st && now - st.mtime < APPLY_STALE)
+		if (!st)
+			continue;
+
+		const m = match(f, /applying\.([0-9]+)$/);
+		if (m) {
+			const pid = m[1];
+			if (!fs.stat(`/proc/${pid}`)) {
+				fs.unlink(f);
+				continue;
+			}
+		}
+
+		if (now - st.mtime < APPLY_STALE)
 			return true;
 
 		fs.unlink(f);
@@ -227,6 +238,30 @@ function metrics_cmd() {
 }
 
 function metrics(text) {
+	if (text == null) {
+		try {
+			const s = require('socket');
+			const sock = s.connect('127.0.0.1', C.METRICS_PORT, { socktype: s.SOCK_STREAM }, 1500);
+			if (sock) {
+				sock.send("GET /debug/vars HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n");
+				let buf = '';
+				while (true) {
+					const chunk = sock.recv(16384);
+					if (!chunk || chunk == '')
+						break;
+					buf += chunk;
+				}
+				sock.close();
+				const idx = index(buf, '\r\n\r\n');
+				if (idx >= 0)
+					text = substr(buf, idx + 4);
+			}
+		}
+		catch (e) {
+			text = null;
+		}
+	}
+
 	try {
 		const j = json(text ?? run(metrics_cmd()) ?? '');
 
@@ -595,9 +630,39 @@ function lines_of(text) {
 }
 
 function listening(ports) {
-	const out = run(`sh -c '. ${LIB}/lib.sh; for p in ${join(' ', ports)}; do mayhem_port_listening $p && echo $p; done' 2>/dev/null`) ?? '';
+	const want = {};
 
-	return map(lines_of(out), (l) => int(l));
+	for (let p in ports)
+		want[int(p)] = sprintf('%04X', int(p));
+
+	const found = {};
+
+	for (let f in [ '/proc/net/tcp', '/proc/net/tcp6' ]) {
+		const content = fs.readfile(f);
+
+		if (!content)
+			continue;
+
+		for (let line in split(content, '\n')) {
+			const parts = split(trim(line), /[ \t]+/);
+
+			if (length(parts) < 4 || uc(parts[3]) != '0A')
+				continue;
+
+			const m = match(parts[1], /:([0-9A-Fa-f]{4})$/);
+
+			if (!m)
+				continue;
+
+			const hex_port = uc(m[1]);
+
+			for (let p, hex in want)
+				if (hex == hex_port)
+					found[p] = true;
+		}
+	}
+
+	return filter(ports, (p) => found[int(p)] == true);
 }
 
 function diag_local() {
@@ -1317,6 +1382,7 @@ function reset_config(keep) {
 
 	// Server keys of every section go to the server list; subscriptions stay.
 	const links = [];
+	const prev_uhttpd = uci_cursor().get('mayhem', 'settings', 'uhttpd_tuned');
 
 	if (keep)
 		for (let x in uci_sections_ordered(uci_cursor()))
@@ -1330,6 +1396,12 @@ function reset_config(keep) {
 		return res;
 
 	const c = uci_cursor();
+
+	if (prev_uhttpd != null) {
+		if (!c.get('mayhem', 'settings'))
+			c.set('mayhem', 'settings', 'settings');
+		c.set('mayhem', 'settings', 'uhttpd_tuned', prev_uhttpd);
+	}
 
 	if (!c.get('mayhem', 'pool'))
 		c.set('mayhem', 'pool', 'pool');
@@ -1495,17 +1567,41 @@ function subs_download(name, always) {
 const REPO = getenv('MAYHEM_REPO') ?? 'iknowdatfeel/project-mayhem';
 
 // Latest release of a GitHub repository, through the default section first.
-// Numbers of a version: "v26.9.30" -> [ 26, 9, 30 ].
+// Numbers of a version: "v26.9.30" -> [ 26, 9, 30 ]. Prerelease suffixes
+// (-exp.N, _preN) are separated so stable releases have priority.
+function parse_version(v) {
+	let s = replace(v ?? '', /^v/, '');
+	let pre = null;
+	const m = match(s, /^(.*?)(?:-exp\.?([0-9]+)|_pre([0-9]+))$/);
+
+	if (m) {
+		s = m[1];
+		pre = int(m[2] || m[3]) || 0;
+	}
+
+	const parts = map(split(s, /[.-]/), (x) => int(x) || 0);
+
+	return { parts: parts, pre: pre };
+}
+
 function version_parts(v) {
-	return map(split(replace(v ?? '', /^v/, ''), /[.-]/), (x) => int(x) || 0);
+	return parse_version(v).parts;
 }
 
 function version_newer(a, b) {
-	const x = version_parts(a), y = version_parts(b);
+	const va = parse_version(a), vb = parse_version(b);
+	const x = va.parts, y = vb.parts;
 
 	for (let i = 0; i < max(length(x), length(y)); i++)
 		if ((x[i] ?? 0) != (y[i] ?? 0))
 			return (x[i] ?? 0) > (y[i] ?? 0);
+
+	if (va.pre == null && vb.pre != null)
+		return true;
+	if (va.pre != null && vb.pre == null)
+		return false;
+	if (va.pre != null && vb.pre != null)
+		return va.pre > vb.pre;
 
 	return false;
 }
@@ -1880,6 +1976,8 @@ function connections(stop, device) {
 	// Nothing to switch off: the log is always kept (folded by the scheduler).
 	if (stop)
 		return { ok: true };
+
+	fs.writefile(`${RUN}/conn.watch`, `${time()}\n`);
 
 	const log = C.CONN_LOG;
 	let st = fs.lstat(log);
@@ -2409,10 +2507,21 @@ const methods = {
 				else
 					c.delete('mayhem', ut, 'override');
 
-				reconnect_epoch(c);
+				const active = xray_pid() && fs.access(`${RUN}/active`);
+				const cur_tag = s.override ?? s.selected;
+				const cur_node = filter(s.nodes ?? [], (n) => n.tag == cur_tag)[0];
+				const is_cur_kernel = cur_node?.iface != null || cur_node?.protocol == 'interface';
+				const is_new_kernel = node?.iface != null || node?.protocol == 'interface';
+				const fast_path = active && !is_cur_kernel && !is_new_kernel;
+
+				if (!fast_path)
+					reconnect_epoch(c);
+
 				if (!c.commit('mayhem'))
 					return { error: 'the configuration could not be saved' };
+
 				apply(s);
+				let next_gen = null;
 				runstate.update(RUN, (st) => {
 					const x = st.sections?.[sn];
 
@@ -2420,10 +2529,46 @@ const methods = {
 						return false;
 
 					apply(x);
+					if (st.flow_path) {
+						const prev_gen = int(st.flow_path.generation ?? '1') || 1;
+						next_gen = (prev_gen % 3) + 1;
+						st.flow_path.generation = next_gen;
+					}
 				});
 
 				// The choice for the next start of xray as well.
 				runstate.set_overrides(RUN, { [s.balancer]: tag });
+
+				if (fast_path) {
+					const h = read_json(`${RUN}/health.json`) ?? {};
+					h.sections ??= {};
+					h.sections[sn] = { down: false, fails: 0, picked: time() };
+					let dns_changed = false;
+					if (h.dns?.down) {
+						fs.unlink(`${RUN}/dns.degraded`);
+						h.dns = {};
+						dns_changed = true;
+					}
+					write_json(`${RUN}/health.json`, h);
+					if (dns_changed)
+						system(`sh -c ${q(`. ${LIB}/lib.sh; mayhem_dns_servers xray`)} >/dev/null 2>&1`);
+
+					if (next_gen != null) {
+						const gen = sprintf('0x%x', next_gen << C.CT_GEN_SHIFT);
+						const gmask = sprintf('0x%x', C.CT_GEN_MASK);
+						const cmask = sprintf('0x%x', 0xffffffff & ~C.CT_GEN_MASK);
+						for (let f in [ 'running.nft.conf', 'nft.conf' ]) {
+							let text = fs.readfile(`${RUN}/${f}`);
+							if (text) {
+								text = replace(text, /ct mark & 0x30000000 != 0x[0-9a-fA-F]+/g, `ct mark & ${gmask} != ${gen}`);
+								text = replace(text, /ct mark set ct mark & 0xcfffffff \| 0x[0-9a-fA-F]+/g, `ct mark set ct mark & ${cmask} | ${gen}`);
+								fs.writefile(`${RUN}/${f}`, text);
+							}
+						}
+					}
+
+					return { ok: true, fast: true };
+				}
 
 				health_now(sn);
 
@@ -2998,15 +3143,16 @@ const methods = {
 				return { error: 'the name must start with a letter and have at most 15 lower-case letters, digits or _' };
 
 			let conf, cfg;
+			const awg_mod = require('mayhem.awg');
 
 			try {
-				conf = parse_conf(req.args?.conf);
+				conf = awg_mod.parse_conf(req.args?.conf);
 			}
 			catch (e) {
 				return { error: e.message };
 			}
 
-			const amnezia = is_amnezia(conf);
+			const amnezia = awg_mod.is_amnezia(conf);
 			let proto;
 
 			if (has_awg())
@@ -3017,7 +3163,7 @@ const methods = {
 				return { error: amnezia ? 'install AmneziaWG first' : 'install AmneziaWG or WireGuard first' };
 
 			try {
-				cfg = uci_sections(conf, proto);
+				cfg = awg_mod.uci_sections(conf, proto);
 			}
 			catch (e) {
 				return { error: e.message };
@@ -3990,8 +4136,10 @@ const methods = {
 
 			c.foreach('network', `${proto}_${iface}`, (p) => push(peers, { ...p }));
 
+			const awg_mod = require('mayhem.awg');
+
 			return {
-				ok: true, proto: proto, conf: to_conf(opts, peers),
+				ok: true, proto: proto, conf: awg_mod.to_conf(opts, peers),
 				loopback: length(peers) > 0 && loopback_host(peers[0].endpoint_host)
 			};
 		}
@@ -4017,14 +4165,15 @@ const methods = {
 				return { error: 'only AmneziaWG and WireGuard tunnels can be edited here' };
 
 			let conf, cfg;
+			const awg_mod = require('mayhem.awg');
 
 			try {
-				conf = parse_conf(req.args?.conf);
+				conf = awg_mod.parse_conf(req.args?.conf);
 
-				if (proto == 'wireguard' && is_amnezia(conf))
+				if (proto == 'wireguard' && awg_mod.is_amnezia(conf))
 					die('this config has AmneziaWG parameters, but the tunnel is plain WireGuard');
 
-				cfg = uci_sections(conf, proto);
+				cfg = awg_mod.uci_sections(conf, proto);
 			}
 			catch (e) {
 				return { error: e.message };
@@ -4139,6 +4288,45 @@ const methods = {
 				return { error: 'the configuration could not be saved' };
 
 			fs.unlink(`${RUN}/fallback.fails`);
+
+			let fast_fb = false;
+			if (mode == 'fallback' && xray_pid() && fs.access(`${RUN}/active`)) {
+				const sinfo = state?.sections?.[sn];
+				const bal = sinfo?.balancer;
+				if (bal && length(chain)) {
+					const warm = read_json(`${RUN}/warm.json`)?.results ?? {};
+					const obs = metrics()?.observatory ?? {};
+					let best_tag = null;
+					for (let item in chain) {
+						const sub_match = match(item, /^@(.+)$/);
+						for (let n in sinfo.nodes ?? []) {
+							if (n.name == item || (sub_match && n.source == sub_match[1])) {
+								if (warm[n.tag]?.ms != null || obs[n.tag]?.alive == true) {
+									best_tag = n.tag;
+									break;
+								}
+							}
+						}
+						if (best_tag)
+							break;
+					}
+					best_tag ??= sinfo.nodes?.[0]?.tag;
+					if (best_tag) {
+						system(`${XRAY} api bo --server=127.0.0.1:${C.API_PORT} -b ${q(bal)} ${q(best_tag)} >/dev/null 2>&1 &`);
+						system(`ucode ${q(LIB + '/fallback.uc')} >/dev/null 2>&1 &`);
+						fast_fb = true;
+					}
+				}
+			}
+
+			if (fast_fb) {
+				const h = read_json(`${RUN}/health.json`) ?? {};
+				h.sections ??= {};
+				h.sections[sn] = { down: false, fails: 0, picked: time() };
+				write_json(`${RUN}/health.json`, h);
+				return { ok: true, fast: true };
+			}
+
 			reload_choice();
 
 			if (kind != 'subscription')

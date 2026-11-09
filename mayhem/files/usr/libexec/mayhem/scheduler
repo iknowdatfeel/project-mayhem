@@ -18,16 +18,25 @@
 # for the downloads before). No reload once the scheduler is gone: the
 # service was stopped meanwhile.
 downloads() {
-	local reload=0
+	local reload=0 sub_pid="" upd_pid=""
+	trap '[ -n "$sub_pid" ] && kill "$sub_pid" 2>/dev/null; [ -n "$upd_pid" ] && kill "$upd_pid" 2>/dev/null; exit 0' TERM INT
 
-	ucode "$MAYHEM_SUB" update --no-wait >/dev/null 2>&1
-	if [ "$?" = 3 ]; then
+	ucode "$MAYHEM_SUB" update --no-wait >/dev/null 2>&1 &
+	sub_pid=$!
+	wait "$sub_pid"
+	local sub_rc=$?
+	sub_pid=""
+	if [ "$sub_rc" = 3 ]; then
 		mayhem_log "subscriptions changed, applying the new servers"
 		reload=1
 	fi
 
-	ucode "$MAYHEM_UPDATE" due >/dev/null 2>&1
-	if [ "$?" = 3 ]; then
+	ucode "$MAYHEM_UPDATE" due >/dev/null 2>&1 &
+	upd_pid=$!
+	wait "$upd_pid"
+	local upd_rc=$?
+	upd_pid=""
+	if [ "$upd_rc" = 3 ]; then
 		mayhem_log "geo data or rule lists changed, applying them"
 		reload=1
 	fi
@@ -37,7 +46,19 @@ downloads() {
 
 dl_pid=""
 nap_pid=""
-trap '[ -n "$dl_pid" ] && kill "$dl_pid" 2>/dev/null; [ -n "$nap_pid" ] && kill "$nap_pid" 2>/dev/null; exit 0' TERM INT
+on_term() {
+	if [ -n "$dl_pid" ]; then
+		if command -v pgrep >/dev/null 2>&1; then
+			for cpid in $(pgrep -P "$dl_pid" 2>/dev/null); do
+				kill "$cpid" 2>/dev/null
+			done
+		fi
+		kill "$dl_pid" 2>/dev/null
+	fi
+	[ -n "$nap_pid" ] && kill "$nap_pid" 2>/dev/null
+	exit 0
+}
+trap on_term TERM INT
 
 # sh runs the trap only once a command in the foreground is done: a plain
 # sleep 20 held the TERM of a stop until procd killed the scheduler (and its

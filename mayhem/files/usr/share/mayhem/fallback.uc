@@ -39,6 +39,8 @@ function q(s) {
 	return "'" + replace(`${s}`, /'/g, "'\\''") + "'";
 }
 
+const my_pid = fs.readlink('/proc/self') || split(fs.readfile('/proc/self/stat') ?? '', ' ')[0] || '';
+
 function read_json(name) {
 	try {
 		return json(fs.readfile(`${RUN_DIR}/${name}`) ?? '');
@@ -49,7 +51,7 @@ function read_json(name) {
 }
 
 function write(name, data) {
-	const tmp = `${RUN_DIR}/${name}.tmp`;
+	const tmp = `${RUN_DIR}/${name}.${my_pid}.tmp`;
 
 	if (fs.writefile(tmp, data) != null)
 		fs.rename(tmp, `${RUN_DIR}/${name}`);
@@ -72,19 +74,107 @@ function log(msg, level) {
 	system(`logger -t mayhem -p daemon.${level ?? 'info'} -- ${q(msg)}`);
 }
 
+function is_applying() {
+	const now = time();
+
+	for (let f in fs.glob(`${RUN_DIR}/applying.*`) ?? []) {
+		const st = fs.stat(f);
+
+		if (!st)
+			continue;
+
+		const m = match(f, /applying\.([0-9]+)$/);
+		if (m) {
+			const apid = m[1];
+			if (!fs.stat(`/proc/${apid}`)) {
+				fs.unlink(f);
+				continue;
+			}
+		}
+
+		if (now - st.mtime < 300)
+			return true;
+
+		fs.unlink(f);
+	}
+
+	return false;
+}
+
+if (is_applying())
+	exit(0);
+
 const state = read_json('nodes.json');
 const chains = filter(keys(state?.sections ?? {}), (sn) => state.sections[sn].mode == 'fallback' && length(state.sections[sn].chain ?? []));
 
 if (!length(chains) || !fs.access(`${RUN_DIR}/active`))
 	exit(0);
 
-let obs = {};
+const LOCK = `${RUN_DIR}/fallback.lock`;
+
+function unlock() {
+	fs.unlink(`${LOCK}/pid`);
+	fs.rmdir(LOCK);
+}
+
+function finish(code) {
+	unlock();
+	exit(code);
+}
+
+for (let i = 0; ; i++) {
+	if (fs.mkdir(LOCK)) {
+		fs.writefile(`${LOCK}/pid`, `${my_pid}\n`);
+		break;
+	}
+
+	const lock_pid = int(trim(fs.readfile(`${LOCK}/pid`) ?? '0'));
+	const st = fs.stat(LOCK);
+
+	if ((lock_pid > 0 && !fs.access(`/proc/${lock_pid}`)) || (lock_pid <= 0 && st && time() - st.mtime > 60)) {
+		unlock();
+		continue;
+	}
+
+	if (i >= 30)
+		exit(0);
+
+	sleep(500);
+}
+
+const started = time();
+
+let obs = null;
 
 try {
-	obs = json(command(`curl -s -m 3 http://127.0.0.1:${METRICS_PORT}/debug/vars`))?.observatory ?? {};
+	const s = require('socket');
+	const sock = s.connect('127.0.0.1', METRICS_PORT, { socktype: s.SOCK_STREAM }, 1500);
+	if (sock) {
+		sock.send("GET /debug/vars HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n");
+		let buf = '';
+		while (true) {
+			const chunk = sock.recv(16384);
+			if (!chunk || chunk == '')
+				break;
+			buf += chunk;
+		}
+		sock.close();
+		const idx = index(buf, '\r\n\r\n');
+		if (idx >= 0)
+			obs = json(substr(buf, idx + 4))?.observatory ?? {};
+	}
 }
 catch (e) {
-	obs = {};
+	obs = null;
+}
+
+if (!obs) {
+	try {
+		obs = json(command(`curl -s -m 3 http://127.0.0.1:${METRICS_PORT}/debug/vars`))?.observatory ?? {};
+	}
+	catch (e) {
+		obs = {};
+	}
 }
 
 // true / false when the observatory checked the server, null before that
@@ -213,6 +303,17 @@ for (let sn in chains) {
 	if (want == s.selected)
 		continue;
 
+	if (is_applying()) {
+		now[sn] = s.selected;
+		continue;
+	}
+
+	const cur_h = read_json('health.json');
+	if ((cur_h?.sections?.[sn]?.picked ?? 0) >= started) {
+		now[sn] = s.selected;
+		continue;
+	}
+
 	const rc = system(`${XRAY} api bo --server=127.0.0.1:${API_PORT} -b ${q(s.balancer)} ${q(want)} >/dev/null 2>&1`);
 
 	if (rc != 0) {
@@ -248,4 +349,4 @@ if (length(moved)) {
 	runstate.set_overrides(RUN_DIR, moved);
 }
 
-exit(0);
+finish(0);

@@ -51,24 +51,73 @@ function read_json(path) {
 	}
 }
 
+let rotate_offset = 0;
+let rotate_timer = 0;
+
 // The servers kept warm: every server of nodes.json with a tag, in order, at
 // most MAX. The rpcd method "warm" takes the same ones.
+// When total servers exceed MAX, round-robin rotation cycles the pool while
+// preserving active/selected servers in priority.
 function wanted(state) {
 	const out = [], seen = {};
+	const priority = [];
+	const rest = [];
 
-	for (let sn in sort(keys(state?.sections ?? {})))
-		for (let n in state.sections[sn].nodes ?? [])
-			if (n.tag && !seen[n.tag] && length(out) < MAX) {
+	for (let sn in sort(keys(state?.sections ?? {}))) {
+		const s = state.sections[sn];
+		const act = s.selected ?? s.override;
+
+		for (let n in s.nodes ?? []) {
+			if (!n.tag)
+				continue;
+
+			if (n.tag == act)
+				push(priority, n);
+			else
+				push(rest, n);
+		}
+	}
+
+	for (let n in priority) {
+		if (!seen[n.tag] && length(out) < MAX) {
+			seen[n.tag] = true;
+			push(out, { tag: n.tag, address: n.address ?? n.iface ?? n.tag });
+		}
+	}
+
+	const remaining_slots = MAX - length(out);
+	const unique_rest = filter(rest, (n) => !seen[n.tag]);
+
+	if (length(unique_rest) <= remaining_slots) {
+		for (let n in unique_rest) {
+			if (!seen[n.tag]) {
 				seen[n.tag] = true;
 				push(out, { tag: n.tag, address: n.address ?? n.iface ?? n.tag });
 			}
+		}
+	}
+	else {
+		for (let i = 0; i < remaining_slots; i++) {
+			const idx = (rotate_offset + i) % length(unique_rest);
+			const n = unique_rest[idx];
+
+			if (!seen[n.tag]) {
+				seen[n.tag] = true;
+				push(out, { tag: n.tag, address: n.address ?? n.iface ?? n.tag });
+			}
+		}
+	}
 
 	return out;
 }
 
 // An https:// URL is asked over plain HTTP on port 80 of the same host: ucode
 // has no TLS, and the delay through the server to that host is the same.
+// If an https:// probe is configured to run over port 80, fall back to DEFAULT_PROBE_URL.
 function parse_url(u) {
+	if (match(u ?? '', /^https:\/\//))
+		u = C.DEFAULT_PROBE_URL;
+
 	const m = match(u ?? '', /^(https?):\/\/([A-Za-z0-9.-]+)(:([0-9]+))?(\/[^#]*)?$/);
 
 	if (!m)
@@ -138,10 +187,13 @@ function send(n, data) {
 	return true;
 }
 
-function sync_nodes() {
+function sync_nodes(force) {
 	const st = fs.stat(`${RUN}/nodes.json`);
 
-	if (!st || st.mtime == nodes_mtime)
+	if (!st)
+		return;
+
+	if (!force && st.mtime == nodes_mtime)
 		return;
 
 	nodes_mtime = st.mtime;
@@ -165,7 +217,6 @@ function sync_nodes() {
 		if (!keep[tag]) {
 			close_conn(nodes[tag]);
 			delete nodes[tag];
-			delete results[tag];
 			dirty = true;
 		}
 
@@ -402,7 +453,14 @@ while (true) {
 		if (!alive || time() - alive.mtime > IDLE || !xray_running())
 			break;
 
-		sync_nodes();
+		let rotate = false;
+		if (now - rotate_timer >= PERIOD) {
+			rotate_timer = now;
+			rotate_offset += 16;
+			rotate = true;
+		}
+
+		sync_nodes(rotate);
 	}
 
 	// The button on the dashboard: everything at once (a quarter of a

@@ -23,8 +23,8 @@
 // over without waiting for xray's own checks, which come minutes apart:
 //   automatic choice   - the server that answers is pinned in the balancer
 //                        until xray's checks no longer pick the dead one;
-//   pinned by hand     - the server that answers stands in for the pinned
-//                        one until that one answers again;
+//   pinned by hand     - for a manually selected server (override / manual),
+//                        substitution by another server is not performed;
 //   fallback chain     - fallback.uc moves the chain on.
 // A section is "down" (direct) only when the server in use failed two runs
 // in a row and no other server answered either. A server is checked through
@@ -81,6 +81,36 @@ function log(msg, level) {
 	system(`logger -t mayhem -p daemon.${level ?? 'info'} -- ${q(msg)}`);
 }
 
+function is_applying() {
+	const now = time();
+
+	for (let f in fs.glob(`${RUN_DIR}/applying.*`) ?? []) {
+		const st = fs.stat(f);
+
+		if (!st)
+			continue;
+
+		const m = match(f, /applying\.([0-9]+)$/);
+		if (m) {
+			const apid = m[1];
+			if (!fs.stat(`/proc/${apid}`)) {
+				fs.unlink(f);
+				continue;
+			}
+		}
+
+		if (now - st.mtime < 300)
+			return true;
+
+		fs.unlink(f);
+	}
+
+	return false;
+}
+
+if (is_applying())
+	exit(0);
+
 const state = read_json('nodes.json');
 const pid = trim(fs.readfile(`${RUN_DIR}/xray.pid`) ?? '');
 
@@ -128,7 +158,16 @@ function works(user) {
 	return check.works(user, url, 6);
 }
 
-function bo(bal, tag) {
+function bo(bal, tag, sn) {
+	if (is_applying())
+		return false;
+
+	if (sn) {
+		const cur_h = read_json('health.json');
+		if ((cur_h?.sections?.[sn]?.picked ?? 0) >= started)
+			return false;
+	}
+
 	return system(`${XRAY} api bo --server=127.0.0.1:${API_PORT} -b ${q(bal)} ${tag ? q(tag) : '-r'} >/dev/null 2>&1`) == 0;
 }
 
@@ -137,10 +176,34 @@ let obs = null;
 function observatory() {
 	if (obs == null) {
 		try {
-			obs = json(command(`curl -s -m 3 http://127.0.0.1:${METRICS_PORT}/debug/vars`))?.observatory ?? {};
+			const s = require('socket');
+			const sock = s.connect('127.0.0.1', METRICS_PORT, { socktype: s.SOCK_STREAM }, 1500);
+			if (sock) {
+				sock.send("GET /debug/vars HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n");
+				let buf = '';
+				while (true) {
+					const chunk = sock.recv(16384);
+					if (!chunk || chunk == '')
+						break;
+					buf += chunk;
+				}
+				sock.close();
+				const idx = index(buf, '\r\n\r\n');
+				if (idx >= 0)
+					obs = json(substr(buf, idx + 4))?.observatory ?? {};
+			}
 		}
 		catch (e) {
-			obs = {};
+			obs = null;
+		}
+
+		if (obs == null) {
+			try {
+				obs = json(command(`curl -s -m 3 http://127.0.0.1:${METRICS_PORT}/debug/vars`))?.observatory ?? {};
+			}
+			catch (e) {
+				obs = {};
+			}
 		}
 	}
 
@@ -266,20 +329,20 @@ function restore(sn, s, tag, pin) {
 		fb[sn] = tag;
 		write('fallback.json', sprintf('%J\n', fb));
 
-		return bo(bal, tag);
+		return bo(bal, tag, sn);
 	}
 
 	if (s.mode == 'manual')
-		return bo(bal, s.selected);
+		return bo(bal, s.selected, sn);
 
 	if (pin && !s.override && s.mode == 'auto') {
 		const o = observatory();
 
 		if (!length(filter(map(s.nodes, (n) => n.tag), (t) => o[t]?.alive == true)))
-			return bo(bal, tag) ? 'pinned' : false;
+			return bo(bal, tag, sn) ? 'pinned' : false;
 	}
 
-	return bo(bal, s.override);
+	return bo(bal, s.override, sn);
 }
 
 // What makes the balancer change behind our back: a choice on the
@@ -312,7 +375,7 @@ for (let sn in keys(state.sections ?? {})) {
 	// Another server put in for a pinned one by an older Mayhem: the pinned
 	// one again.
 	if (hs.stand_in) {
-		if (!s.override || bo(bal, s.override))
+		if (!s.override || bo(bal, s.override, sn))
 			delete hs.stand_in;
 	}
 
@@ -329,14 +392,14 @@ for (let sn in keys(state.sections ?? {})) {
 				delete hs.avoid;
 			}
 			else if (hs.avoid ? (best != null && index(hs.avoid, best) < 0) : length(filter(s.nodes, (n) => o[n.tag]?.alive == true))) {
-				if (bo(bal, s.override)) {
+				if (bo(bal, s.override, sn)) {
 					delete hs.pinned;
 					delete hs.avoid;
 					delete hs.pin_mark;
 				}
 			}
 			// A reload put new balancers in: the pin goes in again.
-			else if (hs.pin_mark != null && hs.pin_mark != mark(s) && bo(bal, hs.pinned))
+			else if (hs.pin_mark != null && hs.pin_mark != mark(s) && bo(bal, hs.pinned, sn))
 				hs.pin_mark = mark(s);
 		}
 
@@ -357,7 +420,7 @@ for (let sn in keys(state.sections ?? {})) {
 
 			if (other) {
 				if (s.mode == 'auto') {
-					if (bo(bal, other)) {
+					if (bo(bal, other, sn)) {
 						hs.pinned = other;
 						hs.avoid = uniq([ ...(hs.avoid ?? []), cur ]);
 						hs.pin_mark = mark(s);
@@ -374,7 +437,7 @@ for (let sn in keys(state.sections ?? {})) {
 		if (hs.fails < FAILS || ks)
 			continue;
 
-		if (!bo(bal, 'direct')) {
+		if (!bo(bal, 'direct', sn)) {
 			log(`section ${sn}: its servers do not answer, but xray did not take "direct"`, 'warn');
 			continue;
 		}
@@ -425,7 +488,7 @@ for (let sn in keys(state.sections ?? {})) {
 	}
 
 	// Still down, but someone pointed the balancer elsewhere meanwhile.
-	if (hs.mark != mark(s) && bo(bal, 'direct'))
+	if (hs.mark != mark(s) && bo(bal, 'direct', sn))
 		hs.mark = mark(s);
 }
 

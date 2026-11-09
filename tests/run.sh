@@ -716,12 +716,21 @@ if command -v shellcheck >/dev/null 2>&1; then
 	if out="$(shellcheck -s sh -f gcc -e SC1091,SC2034,SC3043,SC2086,SC2046,SC2317,SC2329 \
 		"$FILES/usr/bin/mayhem" "$FILES/usr/libexec/mayhem/xray-run" "$FILES/usr/libexec/mayhem/scheduler" \
 		"$FILES/etc/uci-defaults/90-mayhem" "$ROOT/tests/netns.sh" "$ROOT/tests/build-ucode.sh" "$ROOT/tests/health.sh" "$ROOT/tests/tunsync.sh" "$ROOT/tests/nftkeep.sh" "$ROOT/tests/scheduler.sh" "$ROOT/tests/serverlist.sh" "$ROOT/tests/conns.sh" "$ROOT/tests/bbr.sh" \
+		"$ROOT/tests/inodes.sh" "$ROOT/tests/applying.sh" "$ROOT/tests/prerelease.sh" "$ROOT/tests/fast_switch.sh" \
 		"$FILES/usr/share/mayhem/lib.sh" "$FILES/usr/share/mayhem/const.sh" "$ROOT/install.sh" 2>&1)"; then
 		ok "shellcheck"
 	else
 		bad "shellcheck: $out"
 	fi
 fi
+
+for sh_file in "$ROOT/tests/inodes.sh" "$ROOT/tests/applying.sh" "$ROOT/tests/prerelease.sh" "$ROOT/tests/fast_switch.sh"; do
+	if sh -n "$sh_file" 2>/dev/null; then
+		ok "syntax $(basename "$sh_file")"
+	else
+		bad "syntax $(basename "$sh_file")"
+	fi
+done
 
 if command -v node >/dev/null 2>&1; then
 	for f in "$ROOT"/luci-app-mayhem/htdocs/luci-static/resources/view/mayhem/*.js "$ROOT"/luci-app-mayhem/htdocs/luci-static/resources/mayhem/*.js "$ROOT"/luci-app-mayhem/htdocs/luci-static/resources/mayhem/page/*.js "$ROOT"/luci-app-mayhem/htdocs/luci-static/resources/mayhem/dash/*.js; do
@@ -883,6 +892,34 @@ if out="$(sh "$ROOT/tests/bbr.sh" 2>&1)"; then
 	ok "TCP BBR"
 else
 	bad "TCP BBR: $(printf '%s' "$out" | grep -v '^ok')"
+fi
+
+# Inodes isolation: working and running files never share inodes
+if out="$(UCODE="$UCODE" sh "$ROOT/tests/inodes.sh" 2>&1)"; then
+	ok "inodes: state files isolation"
+else
+	bad "inodes: $(printf '%s' "$out" | grep -v '^ok')"
+fi
+
+# Applying indicator: live process tracking and cleanup
+if out="$(UCODE="$UCODE" sh "$ROOT/tests/applying.sh" 2>&1)"; then
+	ok "applying indicator: process tracking and cleanup"
+else
+	bad "applying indicator: $(printf '%s' "$out" | grep -v '^ok')"
+fi
+
+# Pre-release versions: -exp and _pre SemVer ordering
+if out="$(sh "$ROOT/tests/prerelease.sh" 2>&1)"; then
+	ok "prerelease version comparison"
+else
+	bad "prerelease: $(printf '%s' "$out" | grep -v '^ok')"
+fi
+
+# Fast server switching: Fast-Path without full reload and generation update
+if out="$(UCODE="$UCODE" sh "$ROOT/tests/fast_switch.sh" 2>&1)"; then
+	ok "fast server switching"
+else
+	bad "fast switch: $(printf '%s' "$out" | grep -v '^ok')"
 fi
 
 # Backup and restore of the config, with and without subscriptions and keys.

@@ -260,15 +260,14 @@ if (failed) {
 	finish(1);
 }
 
-// From now on running xray has the new servers. A hard link where it works:
-// the generator replaces these files, so the link keeps this content, and
-// the config does not take RAM twice.
+// From now on running xray has the new servers. Atomic file copy without hard links
+// so that working and running files never share an inode in tmpfs.
 for (let f in [ 'xray.json', 'overrides' ]) {
 	const tmp = `${RUN_DIR}/running.${f}.tmp`;
 
 	fs.unlink(tmp);
 
-	if (system([ 'ln', '-f', `${RUN_DIR}/${f}`, tmp ]) == 0 || fs.writefile(tmp, read(f)) != null)
+	if (fs.writefile(tmp, read(f)) != null)
 		fs.rename(tmp, `${RUN_DIR}/running.${f}`);
 }
 

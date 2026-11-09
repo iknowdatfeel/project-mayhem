@@ -106,6 +106,17 @@ mayhem_ip_rule_has() {
 	ip -"$1" rule show 2>/dev/null | grep -qE "fwmark $MAYHEM_FWMARK(/$MAYHEM_FWMARK)? lookup $MAYHEM_RT_TABLE( |\$)"
 }
 
+# Atomically append restart marker to xray.key via a temporary file,
+# ensuring running.xray.key is never modified even if created from a shared source.
+mayhem_mark_restart() {
+	local tmp="$MAYHEM_RUN_DIR/xray.key.tmp.$$"
+	{
+		cat "$MAYHEM_RUN_DIR/xray.key" 2>/dev/null
+		echo "restart $(date +%s)"
+	} > "$tmp"
+	mv -f "$tmp" "$MAYHEM_RUN_DIR/xray.key"
+}
+
 # Reload while xray works: new firewall rules and tunnel routes go in place
 # without restarting xray (a new section, a tunnel chosen as the main server).
 mayhem_net_refresh() {
@@ -121,7 +132,7 @@ mayhem_net_refresh() {
 			[ -s "$MAYHEM_RUN_DIR/nft.emptied" ] && grep -q 'nftset=' "$MAYHEM_RUN_DIR/dnsmasq.conf" 2>/dev/null && mayhem_dnsmasq_hup
 		else
 			mayhem_log "could not change the firewall rules, restarting xray" warn
-			echo "restart $(date +%s)" >> "$MAYHEM_RUN_DIR/xray.key"
+			mayhem_mark_restart
 			return 1
 		fi
 	fi
@@ -376,13 +387,25 @@ mayhem_watchdog_note() {
 # "Download through Xray" switch); empty otherwise. Callers fall back to a
 # direct download when it does not work, e.g. while xray is stopped.
 mayhem_download_proxy() {
-	local sec
+	local sec nodes="$MAYHEM_RUN_DIR/nodes.json" health="$MAYHEM_RUN_DIR/health.json"
 
 	[ "$(uci -q get mayhem.geo.via_xray)" = 0 ] && return 0
 	[ -z "$(uci -q get mayhem.geo.via_xray)" ] && [ "$(uci -q get mayhem.geo.update_via)" = direct ] && return 0
+	[ -f "$nodes" ] || return 0
 
-	sec="$(grep -o '"default_section": *"[A-Za-z0-9_]*"' "$MAYHEM_RUN_DIR/nodes.json" 2>/dev/null | head -n 1 | sed 's/.*"\([A-Za-z0-9_]*\)"$/\1/')"
-	[ -n "$sec" ] && echo "socks5h://sec-$sec:mayhem@127.0.0.1:$MAYHEM_HELPER_PORT"
+	sec="$(grep -o '"default_section": *"[A-Za-z0-9_]*"' "$nodes" 2>/dev/null | head -n 1 | sed 's/.*"\([A-Za-z0-9_]*\)"$/\1/')"
+	[ -n "$sec" ] || return 0
+
+	# Check that the section does not use a kernel tunnel and is not down
+	if command -v jsonfilter >/dev/null 2>&1; then
+		[ "$(jsonfilter -i "$nodes" -e "@.sections['$sec'].type" 2>/dev/null)" = "interface" ] && return 0
+		[ -f "$health" ] && [ "$(jsonfilter -i "$health" -e "@.sections['$sec'].down" 2>/dev/null)" = "true" ] && return 0
+	else
+		grep -q "\"$sec\":[^{]*{[^}]*\"type\": *\"interface\"" "$nodes" 2>/dev/null && return 0
+		[ -f "$health" ] && grep -q "\"$sec\":[^{]*{[^}]*\"down\": *true" "$health" 2>/dev/null && return 0
+	fi
+
+	echo "socks5h://sec-$sec:mayhem@127.0.0.1:$MAYHEM_HELPER_PORT"
 }
 
 # Once a day, half an hour into the nightly update hour: Mayhem's own update
@@ -395,11 +418,10 @@ mayhem_auto_update() {
 	hour="$(uci -q get mayhem.geo.update_hour)"
 	[ "$(date +%H)" -eq "${hour:-4}" ] 2>/dev/null && [ "$(date +%M)" -ge 30 ] || return 0
 
+	[ -e "$MAYHEM_RUN_DIR/install.pid" ] && return 0
+
 	day="$(date +%Y%m%d)"
 	[ "$(cat "$stamp" 2>/dev/null)" = "$day" ] && return 0
-	echo "$day" > "$stamp"
-
-	[ -e "$MAYHEM_RUN_DIR/install.pid" ] && return 0
 
 	if command -v setsid >/dev/null 2>&1; then
 		setsid /usr/bin/mayhem auto-update >"$MAYHEM_RUN_DIR/auto-update.log" 2>&1 </dev/null &
@@ -532,6 +554,18 @@ mayhem_conn_fold() {
 	tail -c +"$((size + 1))" "$f" > "$f.t" 2>/dev/null && cat "$f.t" > "$f"
 	rm -f "$f.t"
 	rm -rf "$lock" 2>/dev/null || true
+
+	local watch="$MAYHEM_RUN_DIR/conn.watch"
+	if [ -f "$watch" ]; then
+		local now wtime
+		now="$(date +%s)"
+		wtime="$(cat "$watch" 2>/dev/null || echo 0)"
+		if [ "$(( now - wtime ))" -ge 60 ]; then
+			ln -sfn /dev/null "$f"
+			[ -n "$(cat "$MAYHEM_RUN_DIR/xray.pid" 2>/dev/null)" ] &&
+				"$MAYHEM_XRAY_BIN" api restartlogger --server="127.0.0.1:$MAYHEM_API_PORT" >/dev/null 2>&1
+		fi
+	fi
 	return 0
 }
 
@@ -999,14 +1033,14 @@ mayhem_live_update() {
 	# A restart asked for (mayhem_dns_catchup): the new key makes procd do it.
 	if [ -f "$MAYHEM_RUN_DIR/restart.pending" ]; then
 		rm -f "$MAYHEM_RUN_DIR/restart.pending"
-		echo "restart $(date +%s)" >> "$MAYHEM_RUN_DIR/xray.key"
+		mayhem_mark_restart
 		return 0
 	fi
 
 	ucode "$MAYHEM_LIB_DIR/live.uc" && return 0
 
 	mayhem_log "could not change the servers in running xray, restarting it" warn
-	echo "restart $(date +%s)" >> "$MAYHEM_RUN_DIR/xray.key"
+	mayhem_mark_restart
 }
 
 # nft.conf and dnsmasq.conf for the other choices of a server list with
@@ -1017,12 +1051,16 @@ mayhem_net_warm() {
 	grep -q '"iface": "' "$MAYHEM_RUN_DIR/nodes.json" 2>/dev/null || return 0
 
 	(
+		mayhem_lock net_warm 60 || exit 0
 		i=0
 		while [ ! -f "$MAYHEM_RUN_DIR/active" ] && [ "$i" -lt 60 ]; do
 			sleep 1
 			i=$((i + 1))
 		done
-		ucode "$MAYHEM_GEN" --warm
+		if [ -f "$MAYHEM_RUN_DIR/active" ]; then
+			ucode "$MAYHEM_GEN" --warm
+		fi
+		mayhem_unlock net_warm
 	) >/dev/null 2>&1 </dev/null &
 }
 

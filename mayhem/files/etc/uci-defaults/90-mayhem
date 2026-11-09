@@ -47,8 +47,14 @@ if [ -z "$(uci -q get mayhem.settings.uhttpd_tuned)" ] && uci -q get uhttpd.main
 	if [ -z "$ka" ] || [ "$ka" = 20 ]; then
 		uci set uhttpd.main.http_keepalive='0'
 		uci commit uhttpd
-		# later: an update from LuCI is still talking to uhttpd now
-		( sleep 10; /etc/init.d/uhttpd restart ) >/dev/null 2>&1 </dev/null &
+		# later: do not restart uhttpd while installer is active
+		(
+			while [ -f "${MAYHEM_RUN_DIR:-/var/run/mayhem}/install.pid" ]; do
+				sleep 2
+			done
+			sleep 10
+			/etc/init.d/uhttpd restart
+		) >/dev/null 2>&1 </dev/null &
 	fi
 
 	uci set mayhem.settings.uhttpd_tuned='1'
