@@ -8,6 +8,7 @@
 import * as fs from 'fs';
 import { parse_link, outbound_host, outbound_port, refused_by_xray } from 'mayhem.links';
 import { list_key, entries, as_list, dnsmasq_nftset } from 'mayhem.rules';
+import { parse_conf, is_amnezia, uci_sections, to_conf } from 'mayhem.awg';
 import * as C from 'mayhem.const';
 import { tcp_ping } from 'mayhem.ping';
 import * as runstate from 'mayhem.runstate';
@@ -3143,16 +3144,15 @@ const methods = {
 				return { error: 'the name must start with a letter and have at most 15 lower-case letters, digits or _' };
 
 			let conf, cfg;
-			const awg_mod = require('mayhem.awg');
 
 			try {
-				conf = awg_mod.parse_conf(req.args?.conf);
+				conf = parse_conf(req.args?.conf);
 			}
 			catch (e) {
 				return { error: e.message };
 			}
 
-			const amnezia = awg_mod.is_amnezia(conf);
+			const amnezia = is_amnezia(conf);
 			let proto;
 
 			if (has_awg())
@@ -3163,7 +3163,7 @@ const methods = {
 				return { error: amnezia ? 'install AmneziaWG first' : 'install AmneziaWG or WireGuard first' };
 
 			try {
-				cfg = awg_mod.uci_sections(conf, proto);
+				cfg = uci_sections(conf, proto);
 			}
 			catch (e) {
 				return { error: e.message };
@@ -4136,10 +4136,8 @@ const methods = {
 
 			c.foreach('network', `${proto}_${iface}`, (p) => push(peers, { ...p }));
 
-			const awg_mod = require('mayhem.awg');
-
 			return {
-				ok: true, proto: proto, conf: awg_mod.to_conf(opts, peers),
+				ok: true, proto: proto, conf: to_conf(opts, peers),
 				loopback: length(peers) > 0 && loopback_host(peers[0].endpoint_host)
 			};
 		}
@@ -4165,15 +4163,14 @@ const methods = {
 				return { error: 'only AmneziaWG and WireGuard tunnels can be edited here' };
 
 			let conf, cfg;
-			const awg_mod = require('mayhem.awg');
 
 			try {
-				conf = awg_mod.parse_conf(req.args?.conf);
+				conf = parse_conf(req.args?.conf);
 
-				if (proto == 'wireguard' && awg_mod.is_amnezia(conf))
+				if (proto == 'wireguard' && is_amnezia(conf))
 					die('this config has AmneziaWG parameters, but the tunnel is plain WireGuard');
 
-				cfg = awg_mod.uci_sections(conf, proto);
+				cfg = uci_sections(conf, proto);
 			}
 			catch (e) {
 				return { error: e.message };

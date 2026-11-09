@@ -698,9 +698,13 @@ function load_model(both, lazy) {
 	};
 
 	let lists_data = null;
+	let res;
 	const ensure_lists = function() {
-		if (lists_data == null)
+		if (lists_data == null) {
 			lists_data = lists(sections);
+			if (res)
+				res.lists = lists_data;
+		}
 		return lists_data;
 	};
 
@@ -711,6 +715,8 @@ function load_model(both, lazy) {
 		const doms = geo_domains(sections, sources, kernel_rest, settings.mode != 'global', need_both ?? both);
 		for (let k in doms)
 			geo[k] = doms[k];
+		if (res)
+			res.geo = geo;
 		return geo;
 	};
 
@@ -719,7 +725,7 @@ function load_model(both, lazy) {
 		ensure_lists();
 	}
 
-	return {
+	res = {
 		subscriptions: subscriptions,
 		subs_new: subs_new,
 		geo: geo,
@@ -737,6 +743,8 @@ function load_model(both, lazy) {
 		sections: sections,
 		runtime: runtime(sections)
 	};
+
+	return res;
 }
 
 return { load_model, runtime, own_servers };

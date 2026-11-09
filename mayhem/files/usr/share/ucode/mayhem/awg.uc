@@ -215,5 +215,3 @@ export function to_conf(iface, peers) {
 
 	return s;
 };
-
-return { parse_conf, is_amnezia, uci_sections, to_conf };
