@@ -18,7 +18,17 @@
 // component updates. Checks, diagnostics, logs and the service controls sit
 // together at the side. The main section is chosen in the connection box.
 
-const callDashboard = rpc.declare({ object: 'luci.mayhem', method: 'dashboard', expect: { '': {} } });
+const callDashboard = rpc.declare({ object: 'luci.mayhem', method: 'dashboard', params: [ 'warm' ], expect: { '': {} } });
+const callServerLink = rpc.declare({ object: 'luci.mayhem', method: 'server_link', params: [ 'section', 'tag' ], expect: { '': {} } });
+
+// What changes at every poll without changing what the page shows but its
+// numbers: traffic, memory, the time. A poll with only these new updates the
+// widgets in place instead of building every tile again.
+const VOLATILE = { time: true, totals: true, traffic: true, rss_kb: true, rss_total_kb: true, mem_trim: true, handshake: true, warm: true };
+
+function signature(d) {
+	return JSON.stringify(d, (k, v) => (VOLATILE[k] || ((k === 'up' || k === 'down') && typeof v === 'number')) ? undefined : v);
+}
 const callAction = rpc.declare({ object: 'luci.mayhem', method: 'action', params: [ 'name' ], expect: { '': {} } });
 const callSelect = rpc.declare({ object: 'luci.mayhem', method: 'select_node', params: [ 'section', 'tag' ], expect: { '': {} } });
 const callSubUpdate = rpc.declare({ object: 'luci.mayhem', method: 'sub_update', params: [ 'name' ], expect: { '': {} } });
@@ -99,6 +109,7 @@ const CSS = `
 .mh-tile-foot > span:last-child { white-space:nowrap; }
 .mh-alert { display:grid; grid-template-columns:24px 1fr auto; grid-column-gap:10px; align-items:center; }
 .mh-alert ul { margin:4px 0 0; padding-left:18px; }
+.mh-alert-actions { display:flex; flex-wrap:wrap; gap:6px; justify-content:flex-end; }
 .mh-ghead .btn { padding:0 8px; line-height:22px; min-height:0; font-size:90%; }
 .mh-ghead > .btn:last-child { margin-left:auto; }
 .mh-ghead .mh-title { margin-right:4px; }
@@ -178,17 +189,7 @@ return view.extend({
 	// With the URL test the page waits for its last numbers too, so the
 	// servers have real ones from the first look.
 	load() {
-		return callDashboard().then((d) => {
-			const m = checks.known(d.ping_method) ? d.ping_method : 'url';
-
-			if (m !== 'url' || !d.running)
-				return d;
-
-			return checks.load().then((w) => {
-				d.warm = w;
-				return d;
-			}, () => d);
-		});
+		return callDashboard(true);
 	},
 
 	update(d) {
@@ -207,8 +208,34 @@ return view.extend({
 			};
 		}
 
+		// Only the numbers changed: the widgets in place (open lists, a
+		// selection, a hint under the pointer stay). Everything again at
+		// least every 30 s, for the times ("… ago").
+		const live = this.data && this.drawnSig === signature(d) && Date.now() - (this.drawnAt || 0) < 30000;
+
 		this.data = d;
-		this.redraw();
+
+		if (live)
+			this.redrawLive();
+		else
+			this.redraw();
+	},
+
+	redrawLive() {
+		const [ conn, sys ] = this.renderWidgets(this.data);
+		const swap = (cls, el) => {
+			const old = document.querySelector('#mayhem-body .' + cls);
+
+			if (!old)
+				return false;
+
+			el.classList.add(cls);
+			old.replaceWith(el);
+			return true;
+		};
+
+		if (!swap('mh-a-conn', conn) || !swap('mh-a-sys', sys))
+			this.redraw();
 	},
 
 	// Deleted servers leave the page at once: the router reloads in the
@@ -268,12 +295,24 @@ return view.extend({
 			return;
 		}
 
-		if (body)
+		if (body) {
 			body.replaceChildren(...this.renderBody(this.data));
+			this.drawnSig = signature(this.data);
+			this.drawnAt = Date.now();
+		}
 	},
 
-	refresh() {
-		return callDashboard().then((d) => this.update(d));
+	// warm: the URL test of the servers comes with the data (one call).
+	refresh(warm) {
+		return callDashboard(warm ? true : false).then((d) => {
+			const w = d.warm;
+
+			delete d.warm;
+			this.update(d);
+
+			if (w !== undefined)
+				checks.takeWarm(w);
+		});
 	},
 
 	act(name) {
@@ -363,18 +402,20 @@ return view.extend({
 		if (n.iface && (n.tproto === 'amneziawg' || n.tproto === 'wireguard'))
 			return tunnels.editDialog(n.iface, () => window.setTimeout(() => this.refresh(), 3000));
 
-		if (!n.link)
+		if (!n.has_link)
 			return this.renameDialog(section, n);
 
-		return callParseOne(n.link).then((r) => {
-			linkedit.dialog(n.link, r.outbound, n.name, (link) => callServerEdit(n.usec || section, n.link, link, n.tag).then((res) => {
+		// The key is asked for when the editor opens: the polled data does
+		// not carry the keys of all servers.
+		return callServerLink(section, n.tag).then((k) => k.link ? callParseOne(k.link).then((r) => {
+			linkedit.dialog(k.link, r.outbound, n.name, (link) => callServerEdit(n.usec || section, k.link, link, n.tag).then((res) => {
 				if (res.error)
 					return res.error;
 
 				window.setTimeout(() => this.refresh(), 2000);
 				return null;
 			}));
-		});
+		}) : this.renameDialog(section, n));
 	},
 
 	// The bin of a server, after a question. It is gone from the page at once.
@@ -624,6 +665,23 @@ return view.extend({
 		if (d.xray_error && d.enabled)
 			errors.push(_('Xray does not start: %s').format(d.xray_error));
 
+		// Off, and the kill switch holds the traffic: nothing of proxies and
+		// tunnels goes anywhere until Mayhem starts or the switch is off.
+		if (d.held)
+			return E('div', { 'class': 'mh-box mh-box--fail mh-alert mh-fail' }, [
+				mh.icon('circle-x'),
+				E('div', [
+					E('b', _('Mayhem is off, the KillSwitch holds the traffic')),
+					E('div', { 'class': 'mh-muted mh-small' }, d.mode === 'global'
+						? _('Everything except exclusions waits until Mayhem starts or KillSwitch is turned off. Exclusions and blocking work.')
+						: _('Traffic of proxy sections and tunnels waits until Mayhem starts or KillSwitch is turned off. The rest goes direct.'))
+				]),
+				E('div', { 'class': 'mh-alert-actions' }, [
+					mh.button({ icon: 'play', cls: 'cbi-button-positive', text: d.enabled ? _('Start') : _('Enable'), click: ui.createHandlerFn(this, 'act', d.enabled ? 'start' : 'enable') }),
+					mh.button({ icon: 'x', cls: 'cbi-button-negative', text: _('Turn off KillSwitch'), click: ui.createHandlerFn(this, 'act', 'ks_off') })
+				])
+			]);
+
 		if (!d.enabled)
 			return E('div', { 'class': 'mh-box mh-alert' }, [
 				E('span', { 'class': 'mh-muted' }, mh.icon('circle-idle')),
@@ -692,11 +750,11 @@ return view.extend({
 			});
 		}
 
-		if (this.data && this.data.conn && this.data.conn.tag === tag) {
+		if (checks.conn && checks.conn.tag === tag) {
 			const connPing = document.getElementById('mh-conn-ping');
 			if (connPing) {
 				const p = checks.probes[tag];
-				const c = this.data.conn;
+				const c = checks.conn;
 				if (p) {
 					if (p.pending) {
 						connPing.className = 'mh-muted';
@@ -781,7 +839,7 @@ return view.extend({
 				pos >= 0 ? E('span', { 'class': 'mh-chain-no', 'title': _('Place in the fallback chain') }, String(pos + 1)) : '',
 				E('b', n.name),
 				E('button', {
-					'class': 'mh-ren', 'title': ((n.link && n.usec) || n.iface) ? _('Edit') : _('Rename'),
+					'class': 'mh-ren', 'title': ((n.has_link && n.usec) || n.iface) ? _('Edit') : _('Rename'),
 					'click': (ev) => {
 						ev.stopPropagation();
 						this.editServer(s.name, n);
@@ -1321,7 +1379,7 @@ return view.extend({
 
 			polling = true;
 
-			return this.refresh().then(() => (checks.method === 'url' && this.data && this.data.running) ? checks.pollWarm(false) : null)
+			return this.refresh(checks.method === 'url' && this.data && this.data.running)
 				.catch(() => {}).finally(() => { polling = false; });
 		}, 3);
 

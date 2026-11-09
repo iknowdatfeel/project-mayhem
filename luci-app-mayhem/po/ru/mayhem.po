@@ -2492,3 +2492,24 @@ msgstr "освобождено %s КиБ (%s с назад)"
 
 msgid "The endpoint of this config is 127.0.0.1. Enter the external server address in the tunnel settings."
 msgstr "Endpoint этого конфига — 127.0.0.1. Укажите внешний адрес сервера в настройках туннеля."
+
+msgid "Mayhem is off, the KillSwitch holds the traffic"
+msgstr "Mayhem выключен, KillSwitch удерживает трафик"
+
+msgid "Everything except exclusions waits until Mayhem starts or KillSwitch is turned off. Exclusions and blocking work."
+msgstr "Всё, кроме исключений, ждёт, пока Mayhem не запустится или KillSwitch не будет выключен. Исключения и блокировка работают."
+
+msgid "Traffic of proxy sections and tunnels waits until Mayhem starts or KillSwitch is turned off. The rest goes direct."
+msgstr "Трафик прокси-секций и туннелей ждёт, пока Mayhem не запустится или KillSwitch не будет выключен. Остальное идёт напрямую."
+
+msgid "Turn off KillSwitch"
+msgstr "Выключить KillSwitch"
+
+msgid "Start"
+msgstr "Запустить"
+
+msgid "Hold traffic while Mayhem is off"
+msgstr "Удерживать трафик, пока Mayhem выключен"
+
+msgid "With KillSwitch on: traffic of proxy sections and tunnels (in global mode everything but exclusions and blocking) also waits while Mayhem is stopped or turned off, from the boot of the router on, until Mayhem starts or KillSwitch is turned off. Exclusions work."
+msgstr "При включённом KillSwitch: трафик прокси-секций и туннелей (в глобальном режиме — всё, кроме исключений и блокировки) ждёт и пока Mayhem остановлен или выключен — с загрузки роутера и до запуска Mayhem или выключения KillSwitch. Исключения работают."

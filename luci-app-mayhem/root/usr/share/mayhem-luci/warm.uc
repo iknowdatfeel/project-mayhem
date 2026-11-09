@@ -51,13 +51,12 @@ function read_json(path) {
 	}
 }
 
-let rotate_offset = 0;
-let rotate_timer = 0;
-
-// The servers kept warm: every server of nodes.json with a tag, in order, at
-// most MAX. The rpcd method "warm" takes the same ones.
-// When total servers exceed MAX, round-robin rotation cycles the pool while
-// preserving active/selected servers in priority.
+// The servers kept warm: the ones sections use first, then every other server
+// of nodes.json in order, at most MAX. The set stays the same while the
+// servers do (warm.json names it, the rpcd method "warm" passes it on): the
+// dashboard tests the other servers one by one. A window moving over them
+// closed and opened 16 connections every round - handshakes through servers
+// all the time - and the dashboard waited for numbers of servers outside it.
 function wanted(state) {
 	const out = [], seen = {};
 	const priority = [];
@@ -98,8 +97,7 @@ function wanted(state) {
 	}
 	else {
 		for (let i = 0; i < remaining_slots; i++) {
-			const idx = (rotate_offset + i) % length(unique_rest);
-			const n = unique_rest[idx];
+			const n = unique_rest[i];
 
 			if (!seen[n.tag]) {
 				seen[n.tag] = true;
@@ -453,14 +451,7 @@ while (true) {
 		if (!alive || time() - alive.mtime > IDLE || !xray_running())
 			break;
 
-		let rotate = false;
-		if (now - rotate_timer >= PERIOD) {
-			rotate_timer = now;
-			rotate_offset += 16;
-			rotate = true;
-		}
-
-		sync_nodes(rotate);
+		sync_nodes(false);
 	}
 
 	// The button on the dashboard: everything at once (a quarter of a

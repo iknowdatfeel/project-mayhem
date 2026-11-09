@@ -639,7 +639,9 @@ const ACTIONS = {
 	disable: '/usr/bin/mayhem disable',
 	// start on boot or not; the service keeps its current state
 	autostart_on: '/etc/init.d/mayhem enable',
-	autostart_off: '/etc/init.d/mayhem disable'
+	autostart_off: '/etc/init.d/mayhem disable',
+	// the kill switch off: a hold while Mayhem is off ends at once
+	ks_off: '/usr/bin/mayhem killswitch off'
 };
 
 const IP_CHECK_URL = 'https://api.ipify.org';
@@ -2213,6 +2215,78 @@ function connections(stop, device) {
 		devices: sort(values(devs), (a, b) => b.count - a.count) };
 }
 
+// The URL test over kept-alive connections (warm.uc), as the dashboard asks
+// for it every poll (with its data) or at once (now: every server asked
+// anew): it keeps warm.uc running while the dashboard is open.
+function warm_state(now_all) {
+	try {
+		require('socket');
+	}
+	catch (e) {
+		return { error: 'no socket module' };
+	}
+
+	if (!xray_pid())
+		return { error: 'xray is not running' };
+
+	const state = read_json(`${RUN}/nodes.json`);
+
+	if (!match(state?.probe_url ?? C.DEFAULT_PROBE_URL, /^https?:\/\/[A-Za-z0-9.-]+(:[0-9]+)?(\/|$)/))
+		return { error: 'not an http(s):// URL' };
+
+	fs.mkdir(RUN, 0700);
+	fs.writefile(`${RUN}/warm.alive`, `${time()}\n`);
+
+	if (now_all)
+		fs.writefile(`${RUN}/warm.now`, '');
+
+	const pid = trim(fs.readfile(`${RUN}/warm.pid`) ?? '');
+	const fresh = !match(pid, /^[0-9]+$/) || index(fs.readfile(`/proc/${pid}/cmdline`) ?? '', 'warm.uc') < 0;
+
+	if (fresh)
+		system(`(ucode ${q(WARM)} >/dev/null 2>&1 </dev/null & echo $! > ${q(RUN + '/warm.pid')}) >/dev/null 2>&1 </dev/null`);
+
+	const all = {};
+
+	for (let sn in keys(state?.sections ?? {}))
+		for (let n in state.sections[sn].nodes ?? [])
+			if (n.tag)
+				all[n.tag] = true;
+
+	const j = read_json(`${RUN}/warm.json`);
+	const now = time();
+	const period = j?.period ?? 10;
+	const results = {};
+
+	// The servers warm.uc keeps connections through (it puts the ones in use
+	// first): the dashboard tests the others one by one. Until it has said,
+	// the first ones of the list.
+	let tags = filter(j?.tags ?? [], (t) => all[t]);
+
+	if (!length(tags))
+		for (let sn in sort(keys(state?.sections ?? {})))
+			for (let n in state.sections[sn].nodes ?? [])
+				if (n.tag && index(tags, n.tag) < 0 && length(tags) < WARM_MAX)
+					push(tags, n.tag);
+
+	const seen = {};
+
+	for (let t in tags)
+		seen[t] = true;
+
+	// A result older than three rounds is from a connection that stalled, or
+	// from an earlier run. Except while the run is new: then the numbers of
+	// the last one (up to half an hour old) show until its own come, rather
+	// than nothing.
+	const young = fresh || j?.started >= now - 3 * period;
+
+	for (let tag, r in j?.results ?? {})
+		if (seen[tag] && (r?.at >= now - 3 * period || (young && r?.ms != null && r?.at >= now - WARM_LAST)))
+			results[tag] = r;
+
+	return { ok: true, now: now, period: period, tags: tags, results: results };
+}
+
 const MARK = '@@mayhem@@';
 
 function dashboard_cmd(pid, state) {
@@ -2269,7 +2343,7 @@ function dashboard(pid, state, out) {
 
 				push(nodes, {
 					tag: n.tag, name: n.name, protocol: n.protocol, address: n.address,
-					port: n.port, udp: n.udp, source: n.source, iface: n.iface, tproto: n.tproto, link: n.link, usec: n.usec,
+					port: n.port, udp: n.udp, source: n.source, iface: n.iface, tproto: n.tproto, has_link: n.link != null, usec: n.usec,
 					delay: o ? o.delay : null, alive: o ? o.alive : null,
 					up: t.uplink ?? 0, down: t.downlink ?? 0
 				});
@@ -2375,6 +2449,10 @@ function dashboard(pid, state, out) {
 			enabled: c.get('mayhem', 'settings', 'enabled') == '1',
 			autostart: length(fs.glob('/etc/rc.d/S[0-9][0-9]mayhem') ?? []) > 0,
 			running: pid != null,
+			// the kill switch holds the traffic of proxies and tunnels while
+			// Mayhem is off (mayhem_hold_up)
+			killswitch: c.get('mayhem', 'settings', 'killswitch') == '1',
+			held: pid == null && fs.access(`${RUN}/held`) == true,
 			applying: applying(),
 			active: pid != null && fs.access(`${RUN}/active`) == true,
 			xray: trim(fs.readfile(`${RUN}/xray.version`) ?? '') || null,
@@ -2414,12 +2492,34 @@ const methods = {
 	},
 
 	// rpcd does not wait for the processes: the answer goes when they are done.
+	// warm: the URL test of the servers in the same answer (one call per
+	// poll instead of two), when it is the check method and xray runs.
 	dashboard: {
+		args: { warm: false },
 		call: function(req) {
 			const pid = xray_pid();
 			const state = read_json(`${RUN}/nodes.json`) ?? { sections: {} };
 
-			return deferred_sh(req, dashboard_cmd(pid, state), (out) => dashboard(pid, state, dashboard_parts(out)));
+			return deferred_sh(req, dashboard_cmd(pid, state), (out) => {
+				const d = dashboard(pid, state, dashboard_parts(out));
+
+				if (req.args?.warm == true && pid && d.ping_method == 'url')
+					d.warm = warm_state(false);
+
+				return d;
+			});
+		}
+	},
+
+	// The key of a server, for its editor: the dashboard's data does not
+	// carry the keys of all servers at every poll.
+	server_link: {
+		args: { section: '', tag: '' },
+		call: function(req) {
+			const state = read_json(`${RUN}/nodes.json`);
+			const n = filter(state?.sections?.[req.args?.section ?? '']?.nodes ?? [], (x) => x.tag == req.args?.tag)[0];
+
+			return n ? { link: n.link } : { error: 'unknown server' };
 		}
 	},
 
@@ -2922,59 +3022,7 @@ const methods = {
 	warm: {
 		args: { now: false },
 		call: function(req) {
-			try {
-				require('socket');
-			}
-			catch (e) {
-				return { error: 'no socket module' };
-			}
-
-			if (!xray_pid())
-				return { error: 'xray is not running' };
-
-			const state = read_json(`${RUN}/nodes.json`);
-
-			if (!match(state?.probe_url ?? C.DEFAULT_PROBE_URL, /^https?:\/\/[A-Za-z0-9.-]+(:[0-9]+)?(\/|$)/))
-				return { error: 'not an http(s):// URL' };
-
-			fs.mkdir(RUN, 0700);
-			fs.writefile(`${RUN}/warm.alive`, `${time()}\n`);
-
-			if (req.args?.now)
-				fs.writefile(`${RUN}/warm.now`, '');
-
-			const pid = trim(fs.readfile(`${RUN}/warm.pid`) ?? '');
-
-			const fresh = !match(pid, /^[0-9]+$/) || index(fs.readfile(`/proc/${pid}/cmdline`) ?? '', 'warm.uc') < 0;
-
-			if (fresh)
-				system(`(ucode ${q(WARM)} >/dev/null 2>&1 </dev/null & echo $! > ${q(RUN + '/warm.pid')}) >/dev/null 2>&1 </dev/null`);
-
-			const tags = [], seen = {};
-
-			for (let sn in sort(keys(state?.sections ?? {})))
-				for (let n in state.sections[sn].nodes ?? [])
-					if (n.tag && !seen[n.tag] && length(tags) < WARM_MAX) {
-						seen[n.tag] = true;
-						push(tags, n.tag);
-					}
-
-			const j = read_json(`${RUN}/warm.json`);
-			const now = time();
-			const period = j?.period ?? 10;
-			const results = {};
-
-			// A result older than three rounds is from a connection that
-			// stalled, or from an earlier run. Except while the run is new: then
-			// the numbers of the last one (up to half an hour old) show until
-			// its own come, rather than nothing.
-			const young = fresh || j?.started >= now - 3 * period;
-
-			for (let tag, r in j?.results ?? {})
-				if (seen[tag] && (r?.at >= now - 3 * period || (young && r?.ms != null && r?.at >= now - WARM_LAST)))
-					results[tag] = r;
-
-			return { ok: true, now: now, period: period, tags: tags, results: results };
+			return warm_state(req.args?.now == true);
 		}
 	},
 
