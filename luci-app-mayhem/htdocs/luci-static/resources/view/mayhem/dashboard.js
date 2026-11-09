@@ -281,16 +281,37 @@ return view.extend({
 	},
 
 	select(section, tag) {
+		this.pendingSel = this.pendingSel || {};
+		this.pendingSel[section] = { mode: tag ? 'manual' : 'auto', tag: tag, time: Date.now() };
+
+		const s = this.data?.sections?.[section];
+		if (s) {
+			if (tag) {
+				s.active = tag;
+				s.pinned = tag;
+			}
+			else {
+				delete s.pinned;
+			}
+		}
+		this.redraw();
+
 		return callSelect(section, tag).then((r) => {
-			if (r.error)
+			if (r.error) {
+				delete this.pendingSel[section];
+				this.redraw();
 				ui.addNotification(null, E('p', r.error), 'error');
+			}
 
-			return this.refresh();
-		}).then(() => {
-			const main = mh.mainServer(this.data).section;
+			return this.refresh().then(() => {
+				const main = mh.mainServer(this.data).section;
 
-			if (main && section === main.name)
-				checks.checkConnection();
+				if (main && section === main.name)
+					checks.checkConnection(true);
+			});
+		}).catch(() => {
+			delete this.pendingSel[section];
+			this.redraw();
 		});
 	},
 

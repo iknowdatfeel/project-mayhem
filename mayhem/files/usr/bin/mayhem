@@ -82,12 +82,37 @@ xray_asset() {
 }
 
 version_newer() {
-	# $1 newer than $2: numbers separated by dots, compared one by one
+	# $1 newer than $2: numbers compared one by one; prereleases (-exp.N, _preN)
+	# are older than the corresponding stable release
 	awk -v a="$1" -v b="$2" 'BEGIN {
+		sub(/^v/, "", a); sub(/^v/, "", b)
+
+		preA = -1; preB = -1
+		if (match(a, /(-exp\.?([0-9]+)|_pre([0-9]+))$/)) {
+			s = substr(a, RSTART, RLENGTH)
+			sub(/^(-exp\.?|_pre)/, "", s)
+			preA = s + 0
+			a = substr(a, 1, RSTART - 1)
+		}
+		if (match(b, /(-exp\.?([0-9]+)|_pre([0-9]+))$/)) {
+			s = substr(b, RSTART, RLENGTH)
+			sub(/^(-exp\.?|_pre)/, "", s)
+			preB = s + 0
+			b = substr(b, 1, RSTART - 1)
+		}
+
 		n = split(a, x, /[.-]/); m = split(b, y, /[.-]/)
-		for (i = 1; i <= (n > m ? n : m); i++)
-			if (x[i] + 0 != y[i] + 0)
-				exit !(x[i] + 0 > y[i] + 0)
+		len = (n > m ? n : m)
+		for (i = 1; i <= len; i++) {
+			xi = (i <= n ? x[i] + 0 : 0)
+			yi = (i <= m ? y[i] + 0 : 0)
+			if (xi != yi)
+				exit !(xi > yi)
+		}
+
+		if (preA == -1 && preB != -1) exit 0
+		if (preA != -1 && preB == -1) exit 1
+		if (preA != -1 && preB != -1) exit !(preA > preB)
 		exit 1
 	}'
 }
@@ -644,7 +669,9 @@ case "$1" in
 		# Run by the scheduler once a day: installs a newer release when
 		# automatic updates are on.
 		[ "$(uci -q get mayhem.settings.auto_update)" = 1 ] || exit 0
+		[ -e "$MAYHEM_RUN_DIR/install.pid" ] && exit 0
 		tag="$(latest_tag)" || exit 1
+		echo "$(date +%Y%m%d)" > "$MAYHEM_RUN_DIR/auto-update.day"
 		latest="${tag#v}"
 		version_newer "$latest" "$MAYHEM_VERSION" || { echo "Mayhem $MAYHEM_VERSION is up to date"; exit 0; }
 		mayhem_log "updating Mayhem $MAYHEM_VERSION to $latest"

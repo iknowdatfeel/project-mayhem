@@ -15,16 +15,35 @@ const callComponents = rpc.declare({ object: 'luci.mayhem', method: 'components'
 const callGeo = rpc.declare({ object: 'luci.mayhem', method: 'geo', expect: { '': {} } });
 const callDataUpdate = rpc.declare({ object: 'luci.mayhem', method: 'data_update', params: [ 'what', 'name' ], expect: { '': {} } });
 
+function parseVersion(v) {
+	if (!v) return { parts: [], pre: null };
+	let s = String(v).replace(/^v/, '');
+	let pre = null;
+	const m = s.match(/^(.*?)(?:-exp\.?([0-9]+)|_pre([0-9]+))$/);
+	if (m) {
+		s = m[1];
+		pre = parseInt(m[2] || m[3], 10) || 0;
+	}
+	const parts = s.split(/[.-]/).map((x) => parseInt(x, 10) || 0);
+	return { parts: parts, pre: pre };
+}
+
 function newer(latest, cur) {
 	if (!latest || !cur)
 		return false;
 
-	const a = latest.split(/[.-]/).map((x) => parseInt(x, 10) || 0);
-	const b = cur.split(/[.-]/).map((x) => parseInt(x, 10) || 0);
+	const a = parseVersion(latest), b = parseVersion(cur);
 
-	for (let i = 0; i < Math.max(a.length, b.length); i++)
-		if ((a[i] || 0) !== (b[i] || 0))
-			return (a[i] || 0) > (b[i] || 0);
+	for (let i = 0; i < Math.max(a.parts.length, b.parts.length); i++)
+		if ((a.parts[i] || 0) !== (b.parts[i] || 0))
+			return (a.parts[i] || 0) > (b.parts[i] || 0);
+
+	if (a.pre === null && b.pre !== null)
+		return true;
+	if (a.pre !== null && b.pre === null)
+		return false;
+	if (a.pre !== null && b.pre !== null)
+		return a.pre > b.pre;
 
 	return false;
 }

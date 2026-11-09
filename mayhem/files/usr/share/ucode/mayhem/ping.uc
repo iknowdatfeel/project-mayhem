@@ -105,8 +105,10 @@ export function tcp_ping(targets, timeout, v6, budget) {
 
 	const open = [];
 	const busy = {};
-	// hosts that let a handshake time out
+	// hosts that let handshakes time out
 	const silent = {};
+	const ip_timeouts = {};
+	const ip_success = {};
 
 	const put = (c, r) => {
 		for (let key in same[c.key])
@@ -120,8 +122,15 @@ export function tcp_ping(targets, timeout, v6, budget) {
 		c.sock = null;
 		delete busy[c.ip];
 
-		if (c.err == 'timeout' && c.best == null)
-			silent[c.ip] = true;
+		if (c.best != null) {
+			ip_success[c.ip] = true;
+			ip_timeouts[c.ip] = 0;
+		}
+		else if (c.err == 'timeout') {
+			ip_timeouts[c.ip] = (ip_timeouts[c.ip] ?? 0) + 1;
+			if (!ip_success[c.ip] && ip_timeouts[c.ip] >= 2)
+				silent[c.ip] = true;
+		}
 
 		if (++c.tries < TRIES && c.err == null)
 			push(queue, c);

@@ -718,6 +718,15 @@ function build_nft(S, v6, sets, tunnels, dns_redirect, fake_pool, kdef, cap, pat
 	return with_hostsets(build_nft_text(S, v6, sets, tunnels, dns_redirect, fake_pool, kdef, cap, path_generation));
 }
 
+function apply_generation(text, gen_num) {
+	const gen = sprintf('0x%x', gen_num << C.CT_GEN_SHIFT);
+	const gmask = sprintf('0x%x', C.CT_GEN_MASK);
+	const cmask = sprintf('0x%x', 0xffffffff & ~C.CT_GEN_MASK);
+	let res = replace(text, /ct mark & 0x30000000 != 0x[0-9a-fA-F]+/g, `ct mark & ${gmask} != ${gen}`);
+	res = replace(res, /ct mark set ct mark & 0xcfffffff \| 0x[0-9a-fA-F]+/g, `ct mark set ct mark & ${cmask} | ${gen}`);
+	return res;
+}
+
 // The fixed tail of a regexp rule as a domain: ^r+\d+\.googlevideo\.com$ ->
 // googlevideo.com. Only when the tail starts at a label (after an escaped
 // dot, or the whole anchored name) and the regexp ends with $; null otherwise.
@@ -800,6 +809,9 @@ function dns_names(RLs, model) {
 				take(d, `section "${x.name}"`);
 
 		for (let g in x.RL.sites) {
+			if (model.ensure_geo)
+				model.ensure_geo();
+
 			const list = model.geo?.domains?.[g.key];
 
 			if (list == null) {
@@ -1053,6 +1065,9 @@ function collect_nodes(sec, model, warn) {
 // geoip categories for nftables) }.
 function collect_rules(sec, model, warn, G) {
 	const name = sec['.name'];
+	if (model.ensure_lists && (length(entries(sec.list_url)) || length(entries(sec.list_file))))
+		model.ensure_lists();
+
 	const sources = model.geo?.sources ?? [];
 	const domains = uset(), ip4 = uset(), ip6 = uset(), geoip = uset();
 	const geo4 = [], geo6 = [], sites = [], geo_nosub = [], geoip_xray = [];
@@ -1064,6 +1079,9 @@ function collect_rules(sec, model, warn, G) {
 			warn(`section "${name}": ${text}: ${x.error}; skipped`);
 			return;
 		}
+
+		if (model.ensure_geo)
+			model.ensure_geo();
 
 		if (x.state != 'ready') {
 			G.pending[x.source] ??= [];
@@ -1203,6 +1221,9 @@ function kernel_domains(name, RL, model, warn, fallback) {
 			take(d);
 
 	for (let g in RL.sites) {
+		if (model.ensure_geo)
+			model.ensure_geo();
+
 		const list = model.geo?.domains?.[g.key];
 
 		if ((g.count ?? 0) > KERNEL_DOMAINS_MAX) {
@@ -1303,6 +1324,9 @@ function block_for_dnsmasq(RL, model) {
 	const lists = [];
 
 	for (let g in RL.sites) {
+		if (model.ensure_geo)
+			model.ensure_geo();
+
 		const list = model.geo?.domains?.[g.key];
 
 		if (g.attr != '' || list == null || (g.count ?? 0) > KERNEL_DOMAINS_MAX) {
@@ -2148,10 +2172,17 @@ export function build(model) {
 	const net_key = NC ? NC.base + sprintf('%J', {
 		tunnels: map(tunnels, (t) => [ t.name, t.index, t.device, t.v6, t.mark ?? null ]),
 		kdef: kdef_tun?.name, nftset: nftset ? true : false, default: default_name,
-		endpoints: [ endpoint4, endpoint6, endpoint_domains ], generation: path_generation
+		endpoints: [ endpoint4, endpoint6, endpoint_domains ]
 	}) : null;
 	const net_entry = NC ? NC.get(net_slot) : null;
 	const net_hit = net_entry != null && net_entry.key == net_key ? net_entry : null;
+
+	if (!net_hit) {
+		if (model.ensure_geo)
+			model.ensure_geo();
+		if (model.ensure_lists)
+			model.ensure_lists();
+	}
 	// The warnings of what a hit skips come with the entry.
 	const net_warns = [];
 	const nwarn = (m) => {
@@ -2724,7 +2755,7 @@ export function build(model) {
 	} : null;
 	state.probe_url = xray.burstObservatory?.pingConfig?.destination ?? (match(S.probe_url ?? '', /^https?:\/\//) ? S.probe_url : C.DEFAULT_PROBE_URL);
 
-	const nft = net_hit ? net_hit.nft : build_nft(S, v6, {
+	const nft = net_hit ? apply_generation(net_hit.nft, path_generation) : build_nft(S, v6, {
 		ifaces: entries(S.interface),
 		...bypass_sets(S, nwarn),
 		endpoint4: endpoint4, endpoint6: endpoint6,

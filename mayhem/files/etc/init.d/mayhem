@@ -158,8 +158,13 @@ restart() {
 	start "$@"
 }
 
+reload_service() {
+	start "$@"
+}
+
 service_triggers() {
 	procd_add_reload_trigger mayhem
-	# Provider DNS servers may change with the WAN lease.
-	procd_add_interface_trigger "interface.*.up" wan /etc/init.d/mayhem reload
+	# Provider DNS servers may change when an interface comes up.
+	# Debounce and serialize network interface reload triggers across all interfaces.
+	procd_add_raw_trigger "interface.*.up" 2000 /etc/init.d/mayhem reload
 }

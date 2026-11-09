@@ -37,12 +37,10 @@ if [ ! -x "$MAYHEM_XRAY_BIN" ]; then
 	exit 1
 fi
 
-# What this xray runs with: reloads compare the new config with it. Hard
-# links, not copies: the generator replaces its files (rename), so the links
-# keep the old content, and /var/run is RAM.
+# What this xray runs with: reloads compare the new config with it.
+# Copies, not hard links: working and running files never share an inode in tmpfs.
 for f in xray.json xray.key overrides nft.conf tunnels geo.stamp; do
-	ln -f "$MAYHEM_RUN_DIR/$f" "$MAYHEM_RUN_DIR/running.$f" 2>/dev/null ||
-		cp "$MAYHEM_RUN_DIR/$f" "$MAYHEM_RUN_DIR/running.$f" 2>/dev/null || : > "$MAYHEM_RUN_DIR/running.$f"
+	cp "$MAYHEM_RUN_DIR/$f" "$MAYHEM_RUN_DIR/running.$f" 2>/dev/null || : > "$MAYHEM_RUN_DIR/running.$f"
 done
 
 start_xray() {

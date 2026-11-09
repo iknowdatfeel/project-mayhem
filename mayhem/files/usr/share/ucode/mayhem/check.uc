@@ -36,6 +36,21 @@ function command(cmd) {
 const TICK = getenv('MAYHEM_TICK');
 const SEEN = `${RUN_DIR}/check.seen`;
 
+function cache_key(u) {
+	const m = match(u, /^sec-(.+)$/);
+	if (!m)
+		return u;
+
+	try {
+		const st = json(fs.readfile(`${RUN_DIR}/nodes.json`) ?? '');
+		const tag = st?.sections?.[m[1]]?.selected ?? st?.sections?.[m[1]]?.override ?? '';
+		return `${u}#${tag}`;
+	}
+	catch (e) {
+		return u;
+	}
+}
+
 function seen_read(url) {
 	if (TICK == null)
 		return {};
@@ -70,8 +85,9 @@ export function works_many(users, url, timeout) {
 	let cmd = '';
 
 	for (let i, u in users) {
-		if (seen[u] != null) {
-			res[u] = seen[u];
+		const k = cache_key(u);
+		if (seen[k] != null) {
+			res[u] = seen[k];
 			continue;
 		}
 
@@ -85,8 +101,12 @@ export function works_many(users, url, timeout) {
 	for (let l in split(command(cmd + 'wait'), '\n')) {
 		const m = match(l, /^([0-9]+) ([0-9]+)( ([0-9.]+))?/);
 
-		if (m && int(m[2]) >= 100 && users[int(m[1])] != null)
-			res[users[int(m[1])]] = fresh[users[int(m[1])]] = int((m[4] ?? 0) * 1000) || 1;
+		if (m && int(m[2]) >= 100 && users[int(m[1])] != null) {
+			const u = users[int(m[1])];
+			const ms = int((m[4] ?? 0) * 1000) || 1;
+			res[u] = ms;
+			fresh[cache_key(u)] = ms;
+		}
 	}
 
 	seen_write(url, fresh);
