@@ -232,6 +232,36 @@ else
 	bad "fallback.uc: got $step1|$step2|$step3|$step3b|$step4, expected B (x).y|A|K2|K2|A"
 fi
 
+# 7b. Nothing of the next few answers: the chain stays where it is (it moved
+# on to a server that had not answered either, one dead server per run), and
+# the next run tries the next few - the sixth server takes over in the
+# second run, without walking through the dead ones.
+R2="$T/fb2.run"
+mkdir -p "$R2"
+: > "$R2/active"
+cat > "$R2/nodes.json" <<'EOF2'
+{ "probe_url": "http://www.gstatic.com/generate_204", "sections": { "ch": {
+  "type": "proxy", "mode": "fallback", "balancer": "bal-ch", "selected": "n-1",
+  "chain": [ "n-1", "n-2", "n-3", "n-4", "n-5", "n-6" ],
+  "nodes": [ { "tag": "n-1", "name": "1" }, { "tag": "n-2", "name": "2" }, { "tag": "n-3", "name": "3" },
+    { "tag": "n-4", "name": "4" }, { "tag": "n-5", "name": "5" }, { "tag": "n-6", "name": "6" } ] } } }
+EOF2
+echo '{}' > "$T/obs.json"
+printf 'n-1\nn-2\nn-3\nn-4\nn-5\n' > "$T/dead"
+: > "$T/xray.log"
+fb2() { PATH="$T/bin:$PATH" STUB="$T" MAYHEM_RUN_DIR="$R2" MAYHEM_XRAY_BIN="$T/bin/xray" uc "$FILES/usr/share/mayhem/fallback.uc"; }
+sel2() { uc -e "print(json(require('fs').readfile('$R2/nodes.json')).sections.ch.selected)"; }
+fb2
+first2="$(sel2) $(grep -c 'bal-ch' "$T/xray.log")"
+fb2
+second2="$(sel2) $(grep -c 'bal-ch n-6' "$T/xray.log")"
+if [ "$first2|$second2" = "n-1 0|n-6 1" ]; then
+	ok "fallback.uc: no move to a server that did not answer either; the next few are tried in the next run"
+else
+	bad "fallback.uc dead servers: got $first2|$second2, expected n-1 0|n-6 1"
+fi
+: > "$T/dead"
+
 # 8. The rpcd methods: a click from the chain, the chain's window.
 mkdir -p "$T/u8"
 : > "$T/u8/mayhem"

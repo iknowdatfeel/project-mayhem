@@ -4,9 +4,9 @@
 # reloads the service when something changed (in the background, see
 # downloads()). A reload only restarts xray
 # when its generated config or the geo files it uses really changed.
-# Then checks the tunnels, runs the watchdog (xray memory, dnsmasq), gives
-# xray's freed memory back to the system and, when
-# turned on, the nightly update of Mayhem itself. Fallback chains of servers
+# Also every minute, apart (minute_jobs()): the tunnels, the watchdog (xray
+# memory, dnsmasq), xray's freed memory back to the system; and, when turned
+# on, the nightly update of Mayhem itself. Fallback chains of servers
 # are checked every 20 seconds, and so are the servers and the remote DNS
 # (health.uc: direct while they do not answer, unless the kill switch is on).
 
@@ -44,9 +44,22 @@ downloads() {
 	[ "$reload" = 1 ] && kill -0 "$1" 2>/dev/null && /etc/init.d/mayhem reload
 }
 
+# The jobs of the minute that may take a while (a tunnel's ping, xray's
+# heap through curl, folding the connection log): apart, one run at a time,
+# so the checks of the servers keep their 20 s.
+minute_jobs() {
+	trap 'exit 0' TERM INT
+	mayhem_tunnels_check
+	mayhem_watchdog
+	mayhem_mem_trim
+	mayhem_conn_fold
+}
+
 dl_pid=""
+job_pid=""
 nap_pid=""
 on_term() {
+	[ -n "$job_pid" ] && kill "$job_pid" 2>/dev/null
 	if [ -n "$dl_pid" ]; then
 		if command -v pgrep >/dev/null 2>&1; then
 			for cpid in $(pgrep -P "$dl_pid" 2>/dev/null); do
@@ -92,10 +105,13 @@ while :; do
 			dl_pid=$!
 		fi
 
-		mayhem_tunnels_check
-		mayhem_watchdog
-		mayhem_mem_trim
-		mayhem_conn_fold
+		if [ -z "$job_pid" ] || ! kill -0 "$job_pid" 2>/dev/null; then
+			minute_jobs &
+			job_pid=$!
+		fi
+
+		# These may restart the service: in the scheduler itself, which
+		# finishes them before it takes a stop.
 		mayhem_auto_update
 		mayhem_dns_catchup
 	fi

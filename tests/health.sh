@@ -43,6 +43,10 @@ while [ $# -gt 0 ]; do
 	shift
 done
 echo "curl $user $url" >> "$STUB/curl.log"
+# A section's own path (sec-<section>) answers only while $STUB/sec_ok exists.
+case "$user" in
+	sec-*) case "$url" in *dns=*) ;; *) if [ -f "$STUB/sec_ok" ]; then printf 204; else printf 000; fi; exit 0 ;; esac ;;
+esac
 case "$url" in
 	*/debug/vars) printf '{"observatory":%s}' "$(cat "$STUB/obs.json" 2>/dev/null || echo '{}')"; exit 0 ;;
 	*dns=*) if [ -f "$STUB/dns_dead" ]; then printf 000; else printf 200; fi; exit 0 ;;
@@ -52,7 +56,7 @@ EOF
 # shellcheck disable=SC2016
 # xray: "api bi" (which server a balancer takes) answers from $STUB/bi, the
 # rest is logged.
-printf '#!/bin/sh\n[ "$1 $2" = "api bi" ] && { cat "$STUB/bi" 2>/dev/null; exit 0; }\necho "$*" >> "$STUB/xray.log"\n' > "$T/bin/xray"
+printf '#!/bin/sh\n[ "$1 $2" = "api bi" ] && { echo "$*" >> "$STUB/bi.log"; cat "$STUB/bi" 2>/dev/null; exit 0; }\necho "$*" >> "$STUB/xray.log"\n' > "$T/bin/xray"
 # shellcheck disable=SC2016
 printf '#!/bin/sh\nshift 4; echo "$*" >> "$STUB/syslog"\n' > "$T/bin/logger"
 printf '#!/bin/sh\nexit 1\n' > "$T/bin/pidof"
@@ -300,6 +304,41 @@ printf 'n-auto-2\n' > "$T/dead"
 tick
 if [ "$(bo bal-auto n-auto-1)" = 1 ] && ! down auto; then ok "the server xray says it uses is the one checked"; else bad "xray's choice: $(cat "$T/xray.log")"; fi
 rm -f "$T/bi"
+: > "$T/dead"
+
+# A plain automatic section whose own path answers: one check of the path,
+# no xray process to learn which server it uses, no check of each server.
+nodes false
+rm -f "$T/run/health.json" "$T/bi.log"
+: > "$T/sec_ok"
+: > "$T/curl.log"
+tick
+if [ ! -s "$T/bi.log" ] && grep -q ' sec-auto ' "$T/curl.log" && ! grep -q ' n-auto-' "$T/curl.log" && [ ! -s "$T/xray.log" ]; then
+	ok "automatic: its own path answers, xray is not asked which server it uses"
+else
+	bad "automatic path: bi $(cat "$T/bi.log" 2>/dev/null) / $(cat "$T/curl.log")"
+fi
+rm -f "$T/sec_ok"
+
+# Sections are checked at once: three silent sections cost one wave of
+# checks and one of retries, not one per section.
+nodes false
+rm -f "$T/run/health.json"
+printf 'n-pool-a\nn-ch-1\nn-ch-2\nn-ch-3\nn-auto-1\nn-auto-2\nn-auto-3\n' > "$T/dead"
+# curl that takes a second for every check
+mv "$T/bin/curl" "$T/bin/curl.real"
+# shellcheck disable=SC2016
+printf '#!/bin/sh\ncase "$*" in *debug/vars*) exec "$(dirname "$0")/curl.real" "$@" ;; esac\nsleep 1\nexec "$(dirname "$0")/curl.real" "$@"\n' > "$T/bin/curl"
+chmod +x "$T/bin/curl"
+s0="$(date +%s)"
+tick
+took=$(( $(date +%s) - s0 ))
+mv "$T/bin/curl.real" "$T/bin/curl"
+if [ "$took" -le 4 ]; then
+	ok "silent sections are checked at once (${took} s for 1 s checks)"
+else
+	bad "silent sections took ${took} s for 1 s checks"
+fi
 : > "$T/dead"
 
 # One run of the scheduler (MAYHEM_TICK): a server that answered is not asked

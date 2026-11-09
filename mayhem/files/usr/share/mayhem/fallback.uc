@@ -32,9 +32,12 @@ import * as metrics from 'mayhem.metrics';
 import * as runstate from 'mayhem.runstate';
 
 const XRAY = getenv('MAYHEM_XRAY_BIN') ?? '/usr/libexec/mayhem/xray';
-const FAILS = 1;
 // servers of the chain checked at once when it moves on
 const TRIES = 4;
+// The server in use is checked in FIRST seconds; when it fails, it is asked
+// once more together with the next few of the chain, all at once, in AGAIN
+// seconds (as in health.uc).
+const FIRST = 5, AGAIN = 4;
 
 function q(s) {
 	return "'" + replace(`${s}`, /'/g, "'\\''") + "'";
@@ -153,12 +156,7 @@ const obs = metrics.observatory(2000);
 const alive = (t) => obs[t] ? obs[t].alive == true : null;
 const url = match(state.probe_url ?? '', /^https?:\/\//) ? state.probe_url : DEFAULT_PROBE_URL;
 
-function works(tag) {
-	return check.works(tag, url, 6);
-}
-
 const now = read_json('fallback.json') ?? {};
-const fails = read_json('fallback.fails') ?? {};
 // section -> { tag: xray's number of checks of it when the chain left it }
 const left = read_json('fallback.left') ?? {};
 const checks = (t) => obs[t]?.health_ping?.all ?? 0;
@@ -230,44 +228,54 @@ for (let sn in chains) {
 			want = best;
 	}
 
+	if (!want && check.works_many([ cur ], url, FIRST)[cur] != null)
+		want = cur;
+
 	if (!want) {
-		if (works(cur)) {
-			fails[sn] = 0;
+		// The rest of the current unit first (fastest first), then the
+		// units after it, then those before it.
+		const rest = [ ...filter(units[k], (t) => t != cur) ];
+
+		for (let i = k + 1; i < length(units); i++)
+			push(rest, ...units[i]);
+
+		for (let i = 0; i < k; i++)
+			push(rest, ...units[i]);
+
+		// The next few xray does not know to be down, checked at once with
+		// the current one again: the current one if it answers now (a lost
+		// packet does not move the chain), else the first of them in the
+		// chain that answers.
+		const next = slice(filter(rest, (t) => alive(t) !== false && left[sn][t] == null), 0, TRIES);
+		const ms = check.works_many([ cur, ...next ], url, AGAIN);
+
+		if (ms[cur] != null)
 			want = cur;
-		}
-		else if ((fails[sn] = (fails[sn] ?? 0) + 1) < FAILS) {
-			want = cur;
-		}
-		else {
-			// The rest of the current unit first (fastest first), then the
-			// units after it, then those before it.
-			const rest = [ ...filter(units[k], (t) => t != cur) ];
+		else if (length(next)) {
+			want = filter(next, (t) => ms[t] != null)[0];
 
-			for (let i = k + 1; i < length(units); i++)
-				push(rest, ...units[i]);
-
-			for (let i = 0; i < k; i++)
-				push(rest, ...units[i]);
-
-			// The next few xray does not know to be down, all checked at
-			// once: the first of them in the chain that answers.
-			const next = slice(filter(rest, (t) => alive(t) !== false && left[sn][t] == null), 0, TRIES);
-			const ms = check.works_many(next, url, 6);
-
-			want = filter(next, (t) => ms[t] != null)[0] ?? next[0];
-
-			// Nothing of the chain works: the fastest server of the section.
+			// None of them answered either: they count as left, so the next
+			// run tries the next few, and the chain stays where it is
+			// meanwhile - it moved on to a server that had not answered
+			// either, one by one. When nothing answers, health.uc sends the
+			// section direct (or the kill switch holds it).
 			if (!want) {
-				const ok = sort(filter(tags, (t) => alive(t) === true && t != cur), (a, b) => (obs[a].delay ?? 0) - (obs[b].delay ?? 0));
+				for (let t in next)
+					left[sn][t] = checks(t);
 
-				want = ok[0] ?? cur;
+				want = cur;
 			}
-
-			fails[sn] = 0;
-
-			if (want != cur)
-				left[sn][cur] = checks(cur);
 		}
+		// The whole chain was tried: the fastest server of the section xray
+		// sees working, if any.
+		else {
+			const ok = sort(filter(tags, (t) => alive(t) === true && t != cur), (a, b) => (obs[a].delay ?? 0) - (obs[b].delay ?? 0));
+
+			want = ok[0] ?? cur;
+		}
+
+		if (want != cur)
+			left[sn][cur] = checks(cur);
 	}
 
 	now[sn] = want;
@@ -303,7 +311,6 @@ for (let sn in chains) {
 }
 
 write('fallback.json', sprintf('%J\n', now));
-write('fallback.fails', sprintf('%J\n', fails));
 write('fallback.left', sprintf('%J\n', left));
 
 if (length(moved)) {

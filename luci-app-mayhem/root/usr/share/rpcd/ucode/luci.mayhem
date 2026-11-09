@@ -325,6 +325,19 @@ function active_tag(s, obs) {
 	return best?.tag ?? s.nodes[0].tag;
 }
 
+// A server health.uc pinned in an automatic section in place of one that
+// stopped answering carries the traffic, while xray's own checks (minutes
+// apart) still count the dead one as the fastest. Only for the xray it was
+// pinned in, and while the section is not direct.
+function health_pin(health, pid, sn, s) {
+	const hs = health?.sections?.[sn];
+
+	if (s.mode != 'auto' || s.override || !hs?.pinned || hs.down || health.pid != pid)
+		return null;
+
+	return length(filter(s.nodes ?? [], (n) => n.tag == hs.pinned)) ? hs.pinned : null;
+}
+
 // The downloaded subscriptions as the dashboard needs them (number of
 // servers, info), kept while their file stays the same: the dashboard asks
 // every few seconds, and a subscription of 200 servers is a JSON file of
@@ -2266,7 +2279,7 @@ function dashboard(pid, state, out) {
 				name: sn, type: s.type, mode: s.mode, balancer: s.balancer, pool: s.pool == true,
 				// A server standing in for a pinned one that does not answer
 				// (health.uc) carries the traffic.
-				active: s.type == 'proxy' ? (health.sections?.[sn]?.stand_in?.tag ?? active_tag(s, m.observatory)) : null,
+				active: s.type == 'proxy' ? (health_pin(health, pid, sn, s) ?? active_tag(s, m.observatory)) : null,
 				pinned: s.override ?? null, nodes: nodes, traffic: traffic,
 				chain: s.chain ?? null, units: s.units ?? null, items: s.items ?? null, subs: s.subs ?? null,
 				down: health.sections?.[sn]?.down == true,

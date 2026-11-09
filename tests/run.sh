@@ -528,9 +528,9 @@ elif ! uc -e "
 elif ! uc -e "
 	const x = json(require('fs').readfile('$OUT/subs/xray.json'));
 	const b = x.burstObservatory;
-	exit((x.observatory == null && b?.pingConfig?.sampling == 1 && length(b.subjectSelector) > 0) ? 0 : 1);
+	exit((x.observatory == null && b?.pingConfig?.sampling == 3 && length(b.subjectSelector) > 0) ? 0 : 1);
 " 2>/dev/null; then
-	bad "model subs: servers are not checked one at a time (burstObservatory)"
+	bad "model subs: servers are not checked one at a time with the last three kept (burstObservatory)"
 elif [ "$(wc -l < "$OUT/lists/xray.json")" != 1 ]; then
 	bad "model lists: xray.json is not compact"
 elif ! uc -e "

@@ -67,6 +67,27 @@ fi
 # a minute is 0.6 s here: more minutes passed than downloads started
 if [ "$starts" -le 2 ]; then ok "one download at a time"; else bad "downloads started: $starts"; fi
 
+# A watchdog that takes long (a hung xray: curl waits for it) does not hold
+# the checks of the servers either.
+: > "$T/log"
+{
+	cat "$T/lib/lib.sh"
+	# shellcheck disable=SC2016
+	echo 'mayhem_watchdog() { echo "watchdog start" >> "$STUB/log"; /bin/sleep 1.5; echo "watchdog end" >> "$STUB/log"; }'
+} > "$T/lib/lib2.sh"
+mv "$T/lib/lib2.sh" "$T/lib/lib.sh"
+PATH="$T/bin:$PATH" MAYHEM_SUB=sub MAYHEM_UPDATE=upd sh "$FILES/usr/libexec/mayhem/scheduler" &
+pid=$!
+/bin/sleep 2.5
+kill "$pid" 2>/dev/null
+wait "$pid" 2>/dev/null
+checks_during="$(awk '/watchdog start/ { on = 1 } /watchdog end/ { on = 0 } on && /^health/ { n++ } END { print n + 0 }' "$T/log")"
+if [ "$checks_during" -ge 3 ]; then
+	ok "the checks go on while the watchdog runs"
+else
+	bad "checks during the watchdog: $checks_during / $(cat "$T/log")"
+fi
+
 # A stop: the scheduler goes at once on TERM, also while it sleeps (procd
 # killed it 5 s later, its downloads with it).
 cat > "$T/bin/sleep" <<'EOF2'

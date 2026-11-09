@@ -2680,8 +2680,12 @@ export function build(model) {
 	// moment of it. The plain observatory checks all of them at once: with 150
 	// servers xray took up to 20 MB more at every interval (37 MB instead of
 	// 16). At start every server is checked at once, for a quick choice.
-	// The same checks: GET, 5 s timeout; a server counts as working when its
-	// last check passed, and leastPing picks the fastest such.
+	// The same checks: GET, 5 s timeout. xray keeps the last three: a server
+	// counts as working while one of them passed, and leastPing picks the
+	// lowest average. With only the last check the choice (and the address
+	// sites see) moved at every check between servers of close delays; a
+	// server that stops answering is left at once by health.uc anyway, not
+	// after xray's checks.
 	if (length(observe)) {
 		let iv = match(S.probe_interval ?? '', /^[0-9]+[smh]$/) ? S.probe_interval : C.DEFAULT_PROBE_INTERVAL;
 
@@ -2700,7 +2704,7 @@ export function build(model) {
 
 		xray.burstObservatory = {
 			subjectSelector: observe,
-			pingConfig: { destination: url, interval: iv, sampling: 1, timeout: '5s', httpMethod: 'GET' }
+			pingConfig: { destination: url, interval: iv, sampling: 3, timeout: '5s', httpMethod: 'GET' }
 		};
 	}
 

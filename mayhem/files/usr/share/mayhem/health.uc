@@ -17,10 +17,13 @@
 // A section or the DNS that went direct before the switch was turned on is
 // put back at once.
 //
-// The server in use is checked every run (a failed check is asked again at
-// once). When it does not answer, the other servers are checked at once, in
-// parallel, those xray saw working first, and the fastest that answers takes
-// over without waiting for xray's own checks, which come minutes apart:
+// Every section is checked every run, all sections at once: the server in
+// use, or for a plain automatic choice its own path (sec-<section>, through
+// the same balancer as the traffic; xray is asked which server that is only
+// when it fails). A failed check is asked again at once, together with the
+// other servers of the section, those xray saw working first, and the
+// fastest that answers takes over without waiting for xray's own checks,
+// which come minutes apart:
 //   automatic choice   - the server that answers is pinned in the balancer
 //                        until xray's checks no longer pick the dead one;
 //   pinned by hand     - for a manually selected server (override / manual),
@@ -153,11 +156,12 @@ if (type(h.dns) != 'object')
 
 const url = match(state.probe_url ?? '', /^https?:\/\//) ? state.probe_url : DEFAULT_PROBE_URL;
 
-// GET of the check URL through the helper proxy as user `user`: a server
-// tag, or sec-<section> for the section's own path.
-function works(user) {
-	return check.works(user, url, 6);
-}
+// GETs of the check URL through the helper proxy as user <server tag>, or
+// sec-<section> for the section's own path. Every section at once (FIRST
+// seconds); those that failed are asked again together with the servers
+// that may take over, again all at once (AGAIN seconds). A dead server costs
+// both once per run, not a sum per section and per step.
+const FIRST = 5, AGAIN = 4;
 
 function bo(bal, tag, sn) {
 	if (is_applying())
@@ -203,8 +207,9 @@ function xray_choice(bal) {
 	return ov ?? sel;
 }
 
-// The server a section uses when nothing goes direct.
-function in_use(sn, s) {
+// The server a section uses when nothing goes direct, as far as it is known
+// without asking xray: null for a plain automatic choice.
+function known_in_use(sn, s) {
 	const tags = map(s.nodes, (n) => n.tag);
 
 	if (s.mode == 'fallback') {
@@ -213,11 +218,19 @@ function in_use(sn, s) {
 		return index(tags, now) >= 0 ? now : s.selected;
 	}
 
-	if (s.mode == 'manual')
-		return s.selected;
+	if (s.mode == 'manual' || s.mode == 'single')
+		return s.selected ?? tags[0];
 
-	if (s.override)
-		return s.override;
+	return s.override ?? null;
+}
+
+// The server a section uses when nothing goes direct.
+function in_use(sn, s) {
+	const tags = map(s.nodes, (n) => n.tag);
+	const known = known_in_use(sn, s);
+
+	if (known != null)
+		return known;
 
 	// What xray's balancer takes now. Guessed from the observatory, it was
 	// at times another server than xray's (delays close to each other), and
@@ -253,9 +266,9 @@ function members(s) {
 	return map(s.nodes, (n) => n.tag);
 }
 
-// The fastest of these that answers, all checked at once; null when none.
-function fastest(users) {
-	const ms = check.works_many(users, url, 6);
+// The fastest of these that answered (ms: what the checks gave); null when
+// none did.
+function fastest(users, ms) {
 	let best = null;
 
 	for (let u in users)
@@ -323,6 +336,10 @@ const mark = (s) => `${state.generated ?? ''} ${s.selected ?? ''} ${s.override ?
 
 const names = (s, tags) => join(', ', map(tags, (t) => filter(s.nodes, (n) => n.tag == t)[0]?.name ?? t));
 
+// What each section is checked with in this run: { user, cur } while it
+// works (cur null: not known yet), { down } while it goes direct.
+const plan = {};
+
 for (let sn in keys(state.sections ?? {})) {
 	const s = state.sections[sn];
 
@@ -351,117 +368,164 @@ for (let sn in keys(state.sections ?? {})) {
 			delete hs.stand_in;
 	}
 
-	if (!hs.down) {
-		// A server pinned on the way back from direct is let go once xray's
-		// checks see a working server; one pinned in place of servers that
-		// stopped answering (avoid) once xray's own choice is none of them.
-		if (hs.pinned) {
-			const o = observatory();
-			const best = observed_best(s);
+	if (hs.down) {
+		plan[sn] = { down: true };
+		continue;
+	}
 
-			if (index(map(s.nodes, (n) => n.tag), hs.pinned) < 0) {
+	// A server pinned on the way back from direct is let go once xray's
+	// checks see a working server; one pinned in place of servers that
+	// stopped answering (avoid) once xray's own choice is none of them.
+	if (hs.pinned) {
+		const o = observatory();
+		const best = observed_best(s);
+
+		if (index(map(s.nodes, (n) => n.tag), hs.pinned) < 0) {
+			delete hs.pinned;
+			delete hs.avoid;
+		}
+		else if (hs.avoid ? (best != null && index(hs.avoid, best) < 0) : length(filter(s.nodes, (n) => o[n.tag]?.alive == true))) {
+			if (bo(bal, s.override, sn)) {
 				delete hs.pinned;
 				delete hs.avoid;
+				delete hs.pin_mark;
 			}
-			else if (hs.avoid ? (best != null && index(hs.avoid, best) < 0) : length(filter(s.nodes, (n) => o[n.tag]?.alive == true))) {
-				if (bo(bal, s.override, sn)) {
-					delete hs.pinned;
-					delete hs.avoid;
-					delete hs.pin_mark;
-				}
-			}
-			// A reload put new balancers in: the pin goes in again.
-			else if (hs.pin_mark != null && hs.pin_mark != mark(s) && bo(bal, hs.pinned, sn))
-				hs.pin_mark = mark(s);
 		}
+		// A reload put new balancers in: the pin goes in again.
+		else if (hs.pin_mark != null && hs.pin_mark != mark(s) && bo(bal, hs.pinned, sn))
+			hs.pin_mark = mark(s);
+	}
 
-		const cur = hs.pinned ?? in_use(sn, s);
+	// A plain automatic choice is checked through its own path: the helper's
+	// sec-<section> goes through the same balancer as the traffic. Which
+	// server that is xray is asked only when it fails (`xray api bi` is an
+	// xray process of its own, ~30 MB for a moment).
+	const cur = hs.pinned ?? known_in_use(sn, s);
 
-		if (works(cur)) {
-			hs.fails = 0;
+	plan[sn] = { cur: cur, user: cur ?? `sec-${sn}` };
+}
+
+// 1. Every section that works, at once.
+const first = check.works_many(map(filter(keys(plan), (sn) => !plan[sn].down), (sn) => plan[sn].user), url, FIRST);
+
+// 2. Those that failed: the server in use once more, with the servers that
+// may take over; and the tries of the sections that are down. At once.
+const again = [];
+
+for (let sn, p in plan) {
+	const s = state.sections[sn];
+	const hs = h.sections[sn];
+
+	if (p.down) {
+		// Those xray saw working first, then the rest in turn: one server
+		// xray saw working, the others in turn, so every server gets its
+		// try within a few runs.
+		const o = observatory();
+		const all = members(s);
+		const seen = sort(filter(all, (t) => o[t]?.alive == true), (a, b) => (o[a].delay ?? 0) - (o[b].delay ?? 0));
+		const rest = filter(all, (t) => index(seen, t) < 0);
+		let taken = 0;
+
+		p.tries = slice(seen, 0, 1);
+
+		for (let i = 0; length(p.tries) < TRIES && i < length(rest); i++, taken++)
+			push(p.tries, rest[((hs.next ?? 0) + i) % length(rest)]);
+
+		hs.next = ((hs.next ?? 0) + taken) % (length(rest) || 1);
+		push(again, ...p.tries);
+		continue;
+	}
+
+	if (first[p.user] != null) {
+		p.ok = true;
+		continue;
+	}
+
+	p.cur ??= in_use(sn, s);
+	push(again, p.cur);
+
+	// Automatic choice and chains: another server that answers takes over
+	// at once - xray checks each server once per interval, minutes apart,
+	// and keeps the dead one until then.
+	if (s.mode != 'manual' && s.mode != 'single') {
+		p.cands = candidates(s, [ p.cur ], TRIES);
+		push(again, ...p.cands);
+	}
+}
+
+const second = length(again) ? check.works_many(uniq(again), url, AGAIN) : {};
+
+// 3. What each section does with the answers.
+for (let sn, p in plan) {
+	const s = state.sections[sn];
+	const bal = s.balancer ?? `bal-${sn}`;
+	const hs = h.sections[sn];
+
+	if (p.down) {
+		// The first in the order of the tries that answers.
+		const good = filter(p.tries, (t) => second[t] != null)[0];
+
+		if (good) {
+			const r = restore(sn, s, good, true);
+
+			if (r) {
+				log(`section ${sn}: ${names(s, [ good ])} answers again, its traffic goes through the servers`);
+				h.sections[sn] = { down: false, fails: 0 };
+
+				if (r == 'pinned')
+					h.sections[sn].pinned = good;
+			}
+
 			continue;
 		}
 
-		hs.fails++;
+		// Still down, but someone pointed the balancer elsewhere meanwhile.
+		if (hs.mark != mark(s) && bo(bal, 'direct', sn))
+			hs.mark = mark(s);
 
-		// Automatic choice and chains: another server that answers takes
-		// over at once - xray checks each server once per interval, minutes
-		// apart, and keeps the dead one until then.
-		if (s.mode != 'manual' && s.mode != 'single') {
-			const other = fastest(candidates(s, [ cur ], TRIES));
+		continue;
+	}
 
-			if (other) {
-				if (s.mode == 'auto') {
-					if (bo(bal, other, sn)) {
-						hs.pinned = other;
-						hs.avoid = uniq([ ...(hs.avoid ?? []), cur ]);
-						hs.pin_mark = mark(s);
-						log(`section ${sn}: ${names(s, [ cur ])} does not answer, now ${names(s, [ other ])}`, 'warn');
-					}
-				}
-				// A chain: fallback.uc moves it on to a server that answers.
-
-				hs.fails = 0;
-				continue;
-			}
-		}
-
-		if (hs.fails < FAILS || ks)
-			continue;
-
-		if (!bo(bal, 'direct', sn)) {
-			log(`section ${sn}: its servers do not answer, but xray did not take "direct"`, 'warn');
-			continue;
-		}
-
-		hs.down = true;
+	if (p.ok || second[p.cur] != null) {
 		hs.fails = 0;
-		hs.since = time();
-		delete hs.pinned;
-		delete hs.avoid;
-		hs.mark = mark(s);
-		hs.next = 0;
-		log(`section ${sn}: no server answers (${names(s, members(s))}), its traffic goes direct until one does`, 'warn');
 		continue;
 	}
 
-	// Down: try the servers, those xray saw working first, then the rest
-	// in turn.
-	const o = observatory();
-	const all = members(s);
-	const seen = sort(filter(all, (t) => o[t]?.alive == true), (a, b) => (o[a].delay ?? 0) - (o[b].delay ?? 0));
-	const rest = filter(all, (t) => index(seen, t) < 0);
-	// One server xray saw working, the others in turn: every server gets
-	// its try within a few runs.
-	const tries = slice(seen, 0, 1);
-	let taken = 0;
+	hs.fails++;
 
-	for (let i = 0; length(tries) < TRIES && i < length(rest); i++, taken++)
-		push(tries, rest[((hs.next ?? 0) + i) % length(rest)]);
+	const other = p.cands ? fastest(p.cands, second) : null;
 
-	hs.next = ((hs.next ?? 0) + taken) % (length(rest) || 1);
-
-	// All at once; the first in the order above that answers.
-	const ms = check.works_many(tries, url, 6);
-	const good = filter(tries, (t) => ms[t] != null)[0];
-
-	if (good) {
-		const r = restore(sn, s, good, true);
-
-		if (r) {
-			log(`section ${sn}: ${names(s, [ good ])} answers again, its traffic goes through the servers`);
-			h.sections[sn] = { down: false, fails: 0 };
-
-			if (r == 'pinned')
-				h.sections[sn].pinned = good;
+	if (other) {
+		if (s.mode == 'auto') {
+			if (bo(bal, other, sn)) {
+				hs.pinned = other;
+				hs.avoid = uniq([ ...(hs.avoid ?? []), p.cur ]);
+				hs.pin_mark = mark(s);
+				log(`section ${sn}: ${names(s, [ p.cur ])} does not answer, now ${names(s, [ other ])}`, 'warn');
+			}
 		}
+		// A chain: fallback.uc moves it on to a server that answers.
 
+		hs.fails = 0;
 		continue;
 	}
 
-	// Still down, but someone pointed the balancer elsewhere meanwhile.
-	if (hs.mark != mark(s) && bo(bal, 'direct', sn))
-		hs.mark = mark(s);
+	if (hs.fails < FAILS || ks)
+		continue;
+
+	if (!bo(bal, 'direct', sn)) {
+		log(`section ${sn}: its servers do not answer, but xray did not take "direct"`, 'warn');
+		continue;
+	}
+
+	hs.down = true;
+	hs.fails = 0;
+	hs.since = time();
+	delete hs.pinned;
+	delete hs.avoid;
+	hs.mark = mark(s);
+	hs.next = 0;
+	log(`section ${sn}: no server answers (${names(s, members(s))}), its traffic goes direct until one does`, 'warn');
 }
 
 // Sections that are gone.

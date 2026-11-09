@@ -121,4 +121,22 @@ sleep(300);
 expect('chain: a chain of unknown servers points at nothing', read(`${stub}/xray.log`) == '', read(`${stub}/xray.log`));
 expect('chain: a chain of unknown servers still reloads', waits(`${stub}/init.log`, 'init reload'), read(`${stub}/init.log`));
 
+// --- the dashboard shows the server that carries the traffic -----------------------
+// health.uc pinned n-pool-c in place of n-pool-a, which xray's checks still
+// count as the fastest: the dashboard shows n-pool-c, and the observatory's
+// pick again once the pin is from another xray.
+reset();
+const me = fs.readlink('/proc/self');
+fs.writefile(`${run}/health.json`, sprintf('%J', { pid: me, sections: { pool: { down: false, fails: 0, pinned: 'n-pool-c', avoid: [ 'n-pool-a' ] } } }));
+let d = call('dashboard', {});
+let pool = filter(d?.sections ?? [], (x) => x.name == 'pool')[0];
+
+expect('dashboard: the server health.uc pinned is the active one', pool?.active == 'n-pool-c', pool?.active);
+
+fs.writefile(`${run}/health.json`, sprintf('%J', { pid: '1', sections: { pool: { down: false, fails: 0, pinned: 'n-pool-c' } } }));
+d = call('dashboard', {});
+pool = filter(d?.sections ?? [], (x) => x.name == 'pool')[0];
+
+expect('dashboard: a pin of another xray does not count', pool?.active == 'n-pool-a', pool?.active);
+
 exit(fails ? 1 : 0);
