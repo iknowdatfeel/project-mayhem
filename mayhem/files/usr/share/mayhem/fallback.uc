@@ -26,8 +26,9 @@
 'use strict';
 
 import * as fs from 'fs';
-import { RUN_DIR, API_PORT, METRICS_PORT, DEFAULT_PROBE_URL } from 'mayhem.const';
+import { RUN_DIR, API_PORT, DEFAULT_PROBE_URL } from 'mayhem.const';
 import * as check from 'mayhem.check';
+import * as metrics from 'mayhem.metrics';
 import * as runstate from 'mayhem.runstate';
 
 const XRAY = getenv('MAYHEM_XRAY_BIN') ?? '/usr/libexec/mayhem/xray';
@@ -144,38 +145,9 @@ for (let i = 0; ; i++) {
 
 const started = time();
 
-let obs = null;
-
-try {
-	const s = require('socket');
-	const sock = s.connect('127.0.0.1', METRICS_PORT, { socktype: s.SOCK_STREAM }, 1500);
-	if (sock) {
-		sock.send("GET /debug/vars HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n");
-		let buf = '';
-		while (true) {
-			const chunk = sock.recv(16384);
-			if (!chunk || chunk == '')
-				break;
-			buf += chunk;
-		}
-		sock.close();
-		const idx = index(buf, '\r\n\r\n');
-		if (idx >= 0)
-			obs = json(substr(buf, idx + 4))?.observatory ?? {};
-	}
-}
-catch (e) {
-	obs = null;
-}
-
-if (!obs) {
-	try {
-		obs = json(command(`curl -s -m 3 http://127.0.0.1:${METRICS_PORT}/debug/vars`))?.observatory ?? {};
-	}
-	catch (e) {
-		obs = {};
-	}
-}
+// What xray's own checks saw (2 s at most: a hung xray must not hold the
+// scheduler).
+const obs = metrics.observatory(2000);
 
 // true / false when the observatory checked the server, null before that
 const alive = (t) => obs[t] ? obs[t].alive == true : null;

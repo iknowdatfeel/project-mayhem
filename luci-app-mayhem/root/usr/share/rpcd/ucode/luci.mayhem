@@ -12,6 +12,7 @@ import { parse_conf, is_amnezia, uci_sections, to_conf } from 'mayhem.awg';
 import * as C from 'mayhem.const';
 import { tcp_ping } from 'mayhem.ping';
 import * as runstate from 'mayhem.runstate';
+import * as M from 'mayhem.metrics';
 
 const XRAY = getenv('MAYHEM_XRAY_BIN') ?? '/usr/libexec/mayhem/xray';
 const RUN = C.RUN_DIR;
@@ -238,39 +239,13 @@ function metrics_cmd() {
 	return `curl -s -m 2 http://127.0.0.1:${C.METRICS_PORT}/debug/vars`;
 }
 
+// The traffic counters and the observatory: from text curl printed (the
+// dashboard), or read here (2 s at most: rpcd and the whole web interface
+// wait meanwhile, and a hung xray must not hold them).
 function metrics(text) {
-	if (text == null) {
-		try {
-			const s = require('socket');
-			const sock = s.connect('127.0.0.1', C.METRICS_PORT, { socktype: s.SOCK_STREAM }, 1500);
-			if (sock) {
-				sock.send("GET /debug/vars HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n");
-				let buf = '';
-				while (true) {
-					const chunk = sock.recv(16384);
-					if (!chunk || chunk == '')
-						break;
-					buf += chunk;
-				}
-				sock.close();
-				const idx = index(buf, '\r\n\r\n');
-				if (idx >= 0)
-					text = substr(buf, idx + 4);
-			}
-		}
-		catch (e) {
-			text = null;
-		}
-	}
+	const j = text != null ? M.parse(text) : M.vars(2000);
 
-	try {
-		const j = json(text ?? run(metrics_cmd()) ?? '');
-
-		return { stats: j?.stats?.outbound ?? {}, observatory: j?.observatory ?? {} };
-	}
-	catch (e) {
-		return { stats: {}, observatory: {} };
-	}
+	return { stats: j?.stats?.outbound ?? {}, observatory: j?.observatory ?? {} };
 }
 
 function os_release() {

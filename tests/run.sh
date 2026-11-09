@@ -716,7 +716,7 @@ if command -v shellcheck >/dev/null 2>&1; then
 	if out="$(shellcheck -s sh -f gcc -e SC1091,SC2034,SC3043,SC2086,SC2046,SC2317,SC2329 \
 		"$FILES/usr/bin/mayhem" "$FILES/usr/libexec/mayhem/xray-run" "$FILES/usr/libexec/mayhem/scheduler" \
 		"$FILES/etc/uci-defaults/90-mayhem" "$ROOT/tests/netns.sh" "$ROOT/tests/build-ucode.sh" "$ROOT/tests/health.sh" "$ROOT/tests/tunsync.sh" "$ROOT/tests/nftkeep.sh" "$ROOT/tests/scheduler.sh" "$ROOT/tests/serverlist.sh" "$ROOT/tests/conns.sh" "$ROOT/tests/bbr.sh" \
-		"$ROOT/tests/inodes.sh" "$ROOT/tests/applying.sh" "$ROOT/tests/prerelease.sh" "$ROOT/tests/fast_switch.sh" \
+		"$ROOT/tests/inodes.sh" "$ROOT/tests/applying.sh" "$ROOT/tests/prerelease.sh" "$ROOT/tests/fast_switch.sh" "$ROOT/tests/metrics.sh" \
 		"$FILES/usr/share/mayhem/lib.sh" "$FILES/usr/share/mayhem/const.sh" "$ROOT/install.sh" 2>&1)"; then
 		ok "shellcheck"
 	else
@@ -1096,6 +1096,14 @@ if out="$(UCODE="$UCODE" sh "$ROOT/tests/warm.sh" 2>&1)"; then
 	*) ok "URL test over kept-alive connections" ;; esac
 else
 	bad "warm: $(printf '%s' "$out" | grep -v '^ok')"
+fi
+
+# xray's metrics endpoint: a hung one costs the deadline, chunks are read.
+if out="$(UCODE="$UCODE" sh "$ROOT/tests/metrics.sh" 2>&1)"; then
+	case "$out" in skip:*) printf 'skip %s\n' "metrics endpoint: ${out#skip: }" ;;
+	*) ok "metrics endpoint: read with a deadline, plain and in chunks" ;; esac
+else
+	bad "metrics: $(printf '%s' "$out" | grep -v '^ok')"
 fi
 
 # Servers or remote DNS that stop answering: direct and back, or the kill switch.

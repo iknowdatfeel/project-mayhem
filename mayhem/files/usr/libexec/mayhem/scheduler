@@ -70,6 +70,17 @@ nap() {
 	nap_pid=""
 }
 
+# A check that hangs (a stuck xray, a server that holds a connection) must
+# not hold the loop: the watchdog that restarts such an xray runs in it too.
+bounded() {
+	if command -v timeout >/dev/null 2>&1; then
+		timeout "$@"
+	else
+		shift
+		"$@"
+	fi
+}
+
 nap 10
 
 tick=0
@@ -93,12 +104,12 @@ while :; do
 	# MAYHEM_TICK: a server that answered fallback.uc is not asked again by
 	# health.uc in the same run (mayhem.check).
 	grep -q '"mode": *"fallback"' "$MAYHEM_RUN_DIR/nodes.json" 2>/dev/null &&
-		MAYHEM_TICK="$$.$tick" ucode "$MAYHEM_LIB_DIR/fallback.uc" >/dev/null 2>&1
+		bounded 90 env MAYHEM_TICK="$$.$tick" ucode "$MAYHEM_LIB_DIR/fallback.uc" >/dev/null 2>&1
 
 	# Sections and remote DNS that stop answering go direct and come back
 	# (kill switch off), or get back from direct (kill switch on).
 	[ -f "$MAYHEM_RUN_DIR/active" ] &&
-		MAYHEM_TICK="$$.$tick" ucode "$MAYHEM_LIB_DIR/health.uc" >/dev/null 2>&1
+		bounded 120 env MAYHEM_TICK="$$.$tick" ucode "$MAYHEM_LIB_DIR/health.uc" >/dev/null 2>&1
 
 	tick=$((tick + 1))
 	nap 20
