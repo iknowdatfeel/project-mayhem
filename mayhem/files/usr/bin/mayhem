@@ -671,7 +671,7 @@ case "$1" in
 		[ "$(uci -q get mayhem.settings.auto_update)" = 1 ] || exit 0
 		[ -e "$MAYHEM_RUN_DIR/install.pid" ] && exit 0
 		tag="$(latest_tag)" || exit 1
-		echo "$(date +%Y%m%d)" > "$MAYHEM_RUN_DIR/auto-update.day"
+		date +%Y%m%d > "$MAYHEM_RUN_DIR/auto-update.day"
 		latest="${tag#v}"
 		version_newer "$latest" "$MAYHEM_VERSION" || { echo "Mayhem $MAYHEM_VERSION is up to date"; exit 0; }
 		mayhem_log "updating Mayhem $MAYHEM_VERSION to $latest"

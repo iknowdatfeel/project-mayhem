@@ -738,6 +738,5 @@ function load_model(both, lazy) {
 		runtime: runtime(sections)
 	};
 }
-}
 
 return { load_model, runtime, own_servers };
