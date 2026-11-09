@@ -226,6 +226,185 @@ mayhem_killswitch() {
 	grep -q '^MAYHEM_KILLSWITCH=1$' "$MAYHEM_RUN_DIR/env" 2>/dev/null
 }
 
+# --- kill switch while Mayhem does not run ---------------------------------------
+# With the kill switch on, the traffic Mayhem sends through a proxy or a
+# tunnel also waits while Mayhem itself is stopped or turned off, and from
+# the boot of the router on: Mayhem's rules stay with nothing behind them
+# (what would go to xray is refused, a tunnel section's traffic goes
+# nowhere, the names xray resolves get no answer), while exclusions and
+# blocking work as with Mayhem on. It ends when Mayhem starts again or the
+# kill switch is turned off (Settings, the dashboard, `mayhem killswitch
+# off`). The rules for a boot are kept on flash (MAYHEM_HOLD_DIR), written
+# only when they change.
+
+# Is the kill switch on in the configuration (the user's word now, not the
+# last generated one)?
+mayhem_ks_on() {
+	[ "${MAYHEM_KS:-$(uci -q get mayhem.settings.killswitch)}" = 1 ]
+}
+
+# Is Mayhem running (procd has its instances, or xray-run is alive)?
+mayhem_running() {
+	local pid
+
+	pid="$(cat "$MAYHEM_RUN_DIR/xray-run.pid" 2>/dev/null)"
+	[ -n "$pid" ] && kill -0 "$pid" 2>/dev/null && return 0
+	"${MAYHEM_INIT:-/etc/init.d/mayhem}" running >/dev/null 2>&1
+}
+
+# The rules of the last generated configuration to flash, for a hold after a
+# boot; with the kill switch off, the copy goes. The path generation of the
+# moment does not matter for a hold: kept as generation 1, so a server chosen
+# by hand writes nothing.
+mayhem_hold_save() {
+	local d="$MAYHEM_HOLD_DIR" run="$MAYHEM_RUN_DIR" f src
+
+	[ -n "$d" ] || return 1
+
+	if ! mayhem_ks_on; then
+		rm -rf "$d"
+		return 0
+	fi
+
+	[ -s "$run/nft.conf" ] || return 1
+	mkdir -p "$d" && chmod 0700 "$d" || return 1
+
+	sed -e 's/ct mark & 0x30000000 != 0x[0-9a-fA-F]*/ct mark \& 0x30000000 != 0x10000000/g' \
+		-e 's/ct mark set ct mark & 0xcfffffff | 0x[0-9a-fA-F]*/ct mark set ct mark \& 0xcfffffff | 0x10000000/g' \
+		"$run/nft.conf" > "$run/hold.nft" || return 1
+	grep '^MAYHEM_IPV6=' "$run/env" > "$run/hold.env" 2>/dev/null
+
+	for f in nft dnsmasq.conf dns.xray tunnels env; do
+		case "$f" in
+			nft) src="$run/hold.nft" ;;
+			env) src="$run/hold.env" ;;
+			*) src="$run/$f" ;;
+		esac
+
+		if [ ! -f "$src" ]; then
+			rm -f "$d/$f"
+		elif ! cmp -s "$src" "$d/$f"; then
+			cp "$src" "$d/$f.tmp" && mv -f "$d/$f.tmp" "$d/$f"
+		fi
+	done
+
+	rm -f "$run/hold.nft" "$run/hold.env"
+	return 0
+}
+
+# Tunnel sections in kernel mode while held: their traffic goes nowhere, also
+# when the tunnel itself works (it is Mayhem that sends traffic into it).
+mayhem_tunnels_hold() {
+	local name dev mark table v6 bal
+
+	[ -s "$MAYHEM_RUN_DIR/tunnels" ] || return 0
+
+	while read -r name dev mark table v6 bal; do
+		[ "$mark" = - ] && continue
+		mayhem_tun_rule_has 4 "$mark" "$table" ||
+			ip rule add fwmark "$mark/$MAYHEM_TUN_MASK" table "$table" priority "$MAYHEM_TUN_RULE_PRIO"
+		ip route replace blackhole default table "$table" 2>/dev/null
+
+		if [ "$v6" = 1 ]; then
+			mayhem_tun_rule_has 6 "$mark" "$table" ||
+				ip -6 rule add fwmark "$mark/$MAYHEM_TUN_MASK" table "$table" priority "$MAYHEM_TUN_RULE_PRIO"
+			ip -6 route replace blackhole default table "$table" 2>/dev/null
+		fi
+
+		echo held > "$MAYHEM_RUN_DIR/tunnel.$name"
+	done < "$MAYHEM_RUN_DIR/tunnels"
+}
+
+# The hold: with the rules in the kernel (a stop), or from the copy on flash
+# (a boot, Mayhem turned off). 1 when there is nothing to hold with: the
+# kill switch was turned on, but Mayhem has not run with it yet.
+mayhem_hold_up() {
+	local run="$MAYHEM_RUN_DIR" d="$MAYHEM_HOLD_DIR" f
+
+	mkdir -p "$run"
+	chmod 0700 "$run" 2>/dev/null || true
+
+	if ! nft list table inet "$MAYHEM_NFT_TABLE" >/dev/null 2>&1; then
+		[ -s "$d/nft" ] || return 1
+
+		cp "$d/nft" "$run/nft.conf" || return 1
+
+		for f in dnsmasq.conf dns.xray tunnels; do
+			rm -f "$run/$f"
+			[ -f "$d/$f" ] && cp "$d/$f" "$run/$f"
+		done
+
+		if ! ( MAYHEM_IPV6=0; [ -f "$d/env" ] && . "$d/env"; mayhem_net_up ); then
+			mayhem_log "kill switch: the rules could not be put in place, traffic is not held" err
+			return 1
+		fi
+
+		cp "$run/nft.conf" "$run/running.nft.conf"
+	fi
+
+	mayhem_tunnels_hold
+
+	# dnsmasq: Mayhem's file, and the names xray resolves sent to it (they
+	# get no answer); the provider's servers for the rest.
+	mayhem_dns_up hold
+	mayhem_dns_servers xray
+
+	rm -f "$run/active" "$run/health.json" "$run/dns.degraded"
+	: > "$run/held"
+	return 0
+}
+
+# The end of a hold (the kill switch was turned off while Mayhem is off):
+# everything goes back to how it is without Mayhem.
+mayhem_hold_release() {
+	mayhem_dns_down
+	mayhem_net_down
+	rm -f "$MAYHEM_RUN_DIR/held"
+	[ -n "$MAYHEM_HOLD_DIR" ] && rm -rf "$MAYHEM_HOLD_DIR"
+	return 0
+}
+
+# What the stop of the service leaves: with the kill switch, a hold; without
+# it, everything as it is without Mayhem. A restart without the kill switch
+# keeps Mayhem's file in dnsmasq (see stop_service).
+mayhem_service_stop() {
+	if mayhem_ks_on && mayhem_hold_save && mayhem_hold_up; then
+		mayhem_log "stopped; the kill switch holds the traffic of proxies and tunnels until Mayhem starts or the kill switch is turned off"
+	else
+		if [ "${MAYHEM_RESTART:-0}" = 1 ]; then
+			mayhem_dns_servers isp
+		else
+			mayhem_dns_down
+		fi
+
+		mayhem_net_down
+		rm -f "$MAYHEM_RUN_DIR/held"
+	fi
+
+	# Nothing is redirected to xray from here on, also before xray-run sees it go.
+	rm -f "$MAYHEM_RUN_DIR/health.json" "$MAYHEM_RUN_DIR/dns.degraded" "$MAYHEM_RUN_DIR/active"
+}
+
+# Mayhem does not run (turned off, stopped, a boot with it off) and the
+# configuration changed, or an interface came up: the hold goes up, is
+# brought up to date (the provider's DNS servers), or ends. Mayhem that runs
+# looks after itself.
+mayhem_hold_sync() {
+	mayhem_lock start
+
+	if mayhem_running; then
+		:
+	elif mayhem_ks_on; then
+		mayhem_hold_up ||
+			mayhem_log "kill switch: no rules to hold the traffic with yet, Mayhem has not run with the kill switch on" warn
+	elif [ -f "$MAYHEM_RUN_DIR/held" ] || [ -d "$MAYHEM_HOLD_DIR" ]; then
+		mayhem_hold_release
+		mayhem_log "kill switch turned off: traffic goes direct while Mayhem is off"
+	fi
+
+	mayhem_unlock start
+}
+
 # --- tunnel sections ---------------------------------------------------------
 # $MAYHEM_RUN_DIR/tunnels: "section device mark table v6 [bal]" per line. In kernel
 # mode, marked packets use the section's routing table, which holds a default
@@ -238,10 +417,13 @@ mayhem_tunnels_up() {
 
 	[ -s "$MAYHEM_RUN_DIR/tunnels" ] || return 0
 
+	# A hold of the kill switch may have put the rules in already.
 	while read -r name dev mark table v6 bal; do
 		[ "$mark" = - ] && continue
-		ip rule add fwmark "$mark/$MAYHEM_TUN_MASK" table "$table" priority "$MAYHEM_TUN_RULE_PRIO"
-		[ "$v6" = 1 ] && ip -6 rule add fwmark "$mark/$MAYHEM_TUN_MASK" table "$table" priority "$MAYHEM_TUN_RULE_PRIO"
+		mayhem_tun_rule_has 4 "$mark" "$table" ||
+			ip rule add fwmark "$mark/$MAYHEM_TUN_MASK" table "$table" priority "$MAYHEM_TUN_RULE_PRIO"
+		[ "$v6" = 1 ] && { mayhem_tun_rule_has 6 "$mark" "$table" ||
+			ip -6 rule add fwmark "$mark/$MAYHEM_TUN_MASK" table "$table" priority "$MAYHEM_TUN_RULE_PRIO"; }
 	done < "$MAYHEM_RUN_DIR/tunnels"
 
 	rm -f "$MAYHEM_RUN_DIR"/tunnel.*
@@ -905,16 +1087,23 @@ mayhem_dns_servers() {
 }
 
 # Puts Mayhem's file into dnsmasq's conf-dir; restarts dnsmasq only when the
-# file is new or changed (tunnel domains, first start).
+# file is new or changed (tunnel domains, first start). $1 "hold": for the
+# kill switch while Mayhem does not run.
 mayhem_dns_up() {
 	local d changed=0
 
-	# xray-run switches dnsmasq to xray once xray listens.
+	# xray-run switches dnsmasq to xray once xray listens. Until then the
+	# provider's servers; with the kill switch the names xray resolves get
+	# no answer instead (from the provider they would go direct).
 	mkdir -p "$(dirname "$MAYHEM_DNS_SERVERS")"
 
 	if [ ! -f "$MAYHEM_DNS_SERVERS" ] || [ ! -f "$MAYHEM_RUN_DIR/active" ]; then
-		mayhem_isp_dns > "$MAYHEM_DNS_SERVERS.tmp" && chmod 644 "$MAYHEM_DNS_SERVERS.tmp" &&
-			mv -f "$MAYHEM_DNS_SERVERS.tmp" "$MAYHEM_DNS_SERVERS"
+		if { [ "${1:-}" = hold ] || mayhem_killswitch; } && [ -s "$MAYHEM_RUN_DIR/dns.xray" ]; then
+			mayhem_dns_servers xray
+		else
+			mayhem_isp_dns > "$MAYHEM_DNS_SERVERS.tmp" && chmod 644 "$MAYHEM_DNS_SERVERS.tmp" &&
+				mv -f "$MAYHEM_DNS_SERVERS.tmp" "$MAYHEM_DNS_SERVERS"
+		fi
 	fi
 
 	for d in $(mayhem_dnsmasq_dirs); do

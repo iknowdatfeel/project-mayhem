@@ -35,6 +35,9 @@ export MAYHEM_XRAY_BIN="$XRAY"
 export MAYHEM_GEO_DIR="$WORK/etc/geo"
 export MAYHEM_LISTS_DIR="$WORK/etc/lists"
 export MAYHEM_TMP_DIR="$WORK"
+# The rules the kill switch holds the traffic with while Mayhem is off (on
+# flash on a router).
+export MAYHEM_HOLD_DIR="$WORK/hold"
 
 SS_KEY='AAECAwQFBgcICQoLDA0ODw=='
 SS_LINK='ss://2022-blake3-aes-128-gcm:AAECAwQFBgcICQoLDA0ODw%3D%3D@45.0.0.3:8443#srv'
@@ -166,8 +169,10 @@ start_mayhem() {
 	ip netns exec router "$FILES/usr/libexec/mayhem/xray-run" > "$WORK/run.log" 2>&1 &
 
 	local i=0
+	# Ready once xray-run has put the interception up (the table alone may
+	# be a hold of the kill switch from before).
 	while [ "$i" -lt 20 ]; do
-		ip netns exec router nft list table inet mayhem >/dev/null 2>&1 && return 0
+		[ -f "$MAYHEM_RUN_DIR/active" ] && ip netns exec router nft list table inet mayhem >/dev/null 2>&1 && return 0
 		sleep 1
 		i=$((i + 1))
 	done
@@ -191,6 +196,13 @@ proc_in() {
 	for p in $(ip netns pids "$1"); do
 		[ "$(cat "/proc/$p/comm" 2>/dev/null)" = "$2" ] && { echo "$p"; return; }
 	done
+}
+
+hold() {
+	# The kill switch while Mayhem is off. $1: the kill switch (1/0), $2: what
+	# to run with lib.sh; procd does not run Mayhem (init-stub).
+	# shellcheck disable=SC2016 # expanded by the inner shell
+	ip netns exec router env MAYHEM_KS="$1" MAYHEM_INIT="$WORK/init-stub" sh -c '. "$MAYHEM_LIB_DIR/lib.sh"; '"$2"
 }
 
 # --- network ------------------------------------------------------------------
@@ -248,6 +260,8 @@ table ip nat {
 NFT
 
 mkdir -p "$MAYHEM_DNSMASQ_DIRS"
+printf '#!/bin/sh\n# Mayhem does not run for procd\nexit 1\n' > "$WORK/init-stub"
+chmod +x "$WORK/init-stub"
 echo 'nameserver 45.0.0.2' > "$MAYHEM_RESOLV_AUTO"
 cat > "$MAYHEM_DNSMASQ_INIT" <<EOF
 #!/bin/sh
@@ -923,6 +937,21 @@ if start_mayhem uci; then
 	tunnels_check
 	expect "tunnel back: kernel section uses it again" 45.0.1.1 http://45.0.0.6:8080/
 	expect "tunnel back: xray mode uses it again" 45.0.1.1 $(site viaxray.test)
+
+	# The kill switch while Mayhem is off: the traffic of a kernel tunnel
+	# section waits too, although the tunnel works (it is Mayhem that sends
+	# traffic into it); with the kill switch off it goes direct.
+	echo 'MAYHEM_KILLSWITCH=1' >> "$MAYHEM_RUN_DIR/env"
+	hold 1 mayhem_service_stop
+	stop_mayhem
+	expect "hold: a kernel tunnel section waits, although the tunnel works" failed http://45.0.0.6:8080/
+	if ip netns exec router ip route show table 111 | grep -q '^blackhole default'; then
+		ok "hold: the tunnel section's table leads nowhere"
+	else
+		bad "hold: tunnel table: $(ip netns exec router ip route show table 111)"
+	fi
+	hold 0 mayhem_hold_sync
+	expect "hold: kill switch off, the tunnel section goes direct" 192.168.1.2 http://45.0.0.6:8080/
 fi
 stop_mayhem
 
@@ -1165,6 +1194,86 @@ EOF
 	fi
 	server_up
 	stop_mayhem
+done
+
+# The kill switch while Mayhem is off: stopped, turned off, after a boot. The
+# traffic of the proxy section waits (global mode: everything but the
+# exclusions), Direct works; a start of Mayhem ends the hold, and so does the
+# kill switch turned off.
+for mode in global lists; do
+	cat > "$WORK/hold.json" <<EOF
+{
+  "settings": { "mode": "$mode", "killswitch": "1", "default_section": "main", "interface": [ "br-lan" ], "ip_family": "ipv4_only" },
+  "dns": { "domestic": [ "45.0.0.2" ], "remote": [ "45.0.0.4" ], "hijack": "1" },
+  "sections": [
+    { ".name": "main", "type": "proxy", "link": "$SS_LINK", "domain": [ "shared-vpn.test" ], "ip": [ "45.0.0.9" ] },
+    { ".name": "direct", "type": "exclusion", "domain": [ "direct.test" ], "ip": [ "45.0.0.6" ] }
+  ],
+  "runtime": { "wan_dns": [ "45.0.0.2" ], "ipv6": false, "dnsmasq_nftset": true }
+}
+EOF
+	# An address of the proxy section's rules, and one outside every rule:
+	# through the proxy in global mode, direct in lists mode. (45.0.0.2 is
+	# the answer of the test DNS to every name: a Direct domain's address.)
+	vpn=http://45.0.0.9:8080/ other=http://45.0.0.8:8080/
+	if [ "$mode" = global ]; then other_on=45.0.0.3 other_held=failed; else other_on=192.168.1.2 other_held=192.168.1.2; fi
+
+	echo "== kill switch while Mayhem is off ($mode)"
+	hold 0 'mayhem_hold_save'
+	if start_mayhem "$WORK/hold.json"; then
+		expect "hold: Mayhem on, through the server" 45.0.0.3 "$vpn"
+		expect "hold: Mayhem on, outside the rules ($mode)" "$other_on" "$other"
+
+		# a stop, as the init script does it
+		hold 1 mayhem_service_stop
+		stop_mayhem
+		expect "hold: stopped, the proxy section's traffic waits" failed "$vpn"
+		expect "hold: stopped, outside the rules ($mode)" "$other_held" "$other"
+		expect "hold: stopped, Direct goes direct" 192.168.1.2 http://45.0.0.6:8080/
+		expect_dns "hold: stopped, Direct names are resolved" client 192.168.1.1 53 stop.direct.test 45.0.0.2
+		if [ "$mode" = lists ]; then
+			got="$(dns client 192.168.1.1 53 shared-vpn.test)"
+			case "$got" in
+				45.*) bad "hold: a name of the proxy section was resolved by the provider: $got" ;;
+				*) ok "hold: names of the proxy section get no real address ($got)" ;;
+			esac
+		fi
+		if [ -f "$MAYHEM_RUN_DIR/held" ] && [ -s "$MAYHEM_HOLD_DIR/nft" ]; then
+			ok "hold: marked as held, the rules kept for a boot"
+		else
+			bad "hold: no mark or no copy of the rules: $(find "$MAYHEM_RUN_DIR" "$MAYHEM_HOLD_DIR" -maxdepth 1 2>&1 | tr '\n' ' ')"
+		fi
+
+		# a boot with Mayhem off: nothing in the kernel, nothing in /var/run
+		hold 1 'mayhem_dns_down; mayhem_net_down'
+		find "$MAYHEM_RUN_DIR" -mindepth 1 -delete
+		expect "hold: before the boot's hold, nothing holds" 192.168.1.2 "$vpn"
+		hold 1 mayhem_hold_sync
+		expect "hold: after a boot, the proxy section's traffic waits" failed "$vpn"
+		expect "hold: after a boot, outside the rules ($mode)" "$other_held" "$other"
+		expect "hold: after a boot, Direct goes direct" 192.168.1.2 http://45.0.0.6:8080/
+		expect_dns "hold: after a boot, Direct names are resolved" client 192.168.1.1 53 boot.direct.test 45.0.0.2
+
+		# Mayhem starts: the hold ends
+		if start_mayhem "$WORK/hold.json"; then
+			expect "hold: Mayhem started again, through the server" 45.0.0.3 "$vpn"
+			if [ -f "$MAYHEM_RUN_DIR/held" ]; then bad "hold: still marked as held while Mayhem runs"; else ok "hold: no longer held while Mayhem runs"; fi
+		fi
+
+		# stopped again, then the kill switch turned off
+		hold 1 mayhem_service_stop
+		stop_mayhem
+		expect "hold: stopped again, waits" failed "$vpn"
+		hold 0 mayhem_hold_sync
+		expect "hold: kill switch off, the traffic goes direct" 192.168.1.2 "$vpn"
+		if ip netns exec router nft list table inet mayhem >/dev/null 2>&1 || [ -d "$MAYHEM_HOLD_DIR" ] || [ -f "$MAYHEM_RUN_DIR/held" ]; then
+			bad "hold: kill switch off, but rules, the copy or the mark stayed"
+		else
+			ok "hold: kill switch off, rules, copy and mark gone"
+		fi
+	fi
+	stop_mayhem
+	hold 0 'mayhem_dns_down; mayhem_net_down'
 done
 
 # The fastest server stops answering (its packets are dropped, nothing is

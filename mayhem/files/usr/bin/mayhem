@@ -12,6 +12,9 @@ Usage: mayhem <command>
   start | stop | restart     control the service
   enable | disable           turn routing on/off (saved in /etc/config/mayhem)
   status                     service state as JSON
+  killswitch on|off|status   the kill switch: with it on, the traffic of proxies
+                             and tunnels waits also while Mayhem is off (from the
+                             boot on), until Mayhem starts or it is turned off
   check                      validate the configuration without applying it
   show-config                print the generated xray config
   sub-update [NAME]          download subscriptions now (all or one)
@@ -603,6 +606,40 @@ cmd_dnsmasq_full() {
 	return 1
 }
 
+# The kill switch from the command line: on Mayhem that runs a reload
+# applies it; on Mayhem that is off the hold goes up or ends at once (a
+# commit here does not reach the triggers of the services).
+cmd_killswitch() {
+	case "$1" in
+		on|off)
+			uci set mayhem.settings.killswitch="$([ "$1" = on ] && echo 1 || echo 0)"
+			uci commit mayhem
+
+			if mayhem_running; then
+				/etc/init.d/mayhem reload
+			else
+				mayhem_hold_sync
+			fi
+			cmd_killswitch status
+			;;
+		status|"")
+			if ! mayhem_ks_on; then
+				echo "off"
+			elif mayhem_running; then
+				echo "on: Mayhem runs"
+			elif [ -f "$MAYHEM_RUN_DIR/held" ]; then
+				echo "on: Mayhem is off, the traffic of proxies and tunnels is held"
+			else
+				echo "on: Mayhem is off and has not run with the kill switch yet, nothing is held"
+			fi
+			;;
+		*)
+			echo "usage: mayhem killswitch on|off|status" >&2
+			return 1
+			;;
+	esac
+}
+
 case "$1" in
 	start|stop|restart|reload)
 		/etc/init.d/mayhem "$1"
@@ -615,6 +652,9 @@ case "$1" in
 		;;
 	status)
 		cmd_status
+		;;
+	killswitch)
+		cmd_killswitch "$2"
 		;;
 	check)
 		ucode "$MAYHEM_GEN" --check

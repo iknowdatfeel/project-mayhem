@@ -61,9 +61,18 @@ mayhem_start() {
 	config_load mayhem
 	config_get_bool enabled settings enabled 0
 
+	# Turned off. With the kill switch the traffic of proxies and tunnels
+	# waits (from the rules of the last start, kept on flash), also after a
+	# boot; without it everything is as it is without Mayhem.
 	if [ "$enabled" != 1 ]; then
+		if mayhem_ks_on && mayhem_hold_up; then
+			return 0
+		fi
+
 		mayhem_dns_down
 		mayhem_net_down
+		rm -f "$MAYHEM_RUN_DIR/held"
+		mayhem_ks_on || mayhem_hold_save
 		return 0
 	fi
 
@@ -102,6 +111,10 @@ mayhem_start() {
 
 	. "$MAYHEM_RUN_DIR/env"
 
+	# The rules the kill switch holds the traffic with while Mayhem does not
+	# run, on flash when they changed (gone with the kill switch off).
+	mayhem_hold_save
+
 	# New servers and routing go into running xray without a restart when
 	# nothing else changed; if that fails, the key changes and procd
 	# restarts xray. New firewall rules go in place the same way.
@@ -125,28 +138,24 @@ mayhem_start() {
 	mayhem_instances
 }
 
+# With the kill switch on, the traffic of proxies and tunnels waits while
+# Mayhem is stopped (mayhem_service_stop), a restart included: nothing goes
+# direct between the stop and the start. Without it, a restart keeps
+# Mayhem's file in dnsmasq's conf-dir: dnsmasq restarted without it here and
+# with it again on start, and with an ad list each restart reads tens of
+# thousands of names (seconds on a router). The provider's servers until the
+# new xray listens (a SIGHUP), like after a crash; the start puts in a new
+# file only when it changed.
 stop_service() {
-	# A restart keeps Mayhem's file in dnsmasq's conf-dir: dnsmasq restarted
-	# without it here and with it again on start, and with an ad list each
-	# restart reads tens of thousands of names (seconds on a router). The
-	# provider's servers until the new xray listens (a SIGHUP), like after a
-	# crash; the start puts in a new file only when it changed.
-	if [ "$MAYHEM_RESTART" = 1 ]; then
-		mayhem_dns_servers isp
-	else
-		mayhem_dns_down
-	fi
-
-	mayhem_net_down
-
-	# Nothing is redirected from here on, also before xray-run sees it go.
-	rm -f "$MAYHEM_RUN_DIR/health.json" "$MAYHEM_RUN_DIR/dns.degraded" "$MAYHEM_RUN_DIR/active"
+	mayhem_lock start
+	mayhem_service_stop
+	mayhem_unlock start
 }
 
 # A restart that does not start again takes Mayhem's file out of dnsmasq,
-# as a stop does.
+# as a stop does - unless the kill switch holds the traffic.
 mayhem_restart_failed() {
-	[ "$MAYHEM_RESTART" = 1 ] && mayhem_dns_down
+	[ "$MAYHEM_RESTART" = 1 ] && [ ! -f "$MAYHEM_RUN_DIR/held" ] && mayhem_dns_down
 	return 0
 }
 

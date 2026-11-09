@@ -22,6 +22,9 @@ MAYHEM_DNS_SERVERS="${MAYHEM_DNS_SERVERS:-/var/run/dnsmasq/mayhem.servers}"
 MAYHEM_SUBS_DIR="${MAYHEM_SUBS_DIR:-/etc/mayhem/subs}"
 MAYHEM_GEO_DIR="${MAYHEM_GEO_DIR:-/etc/mayhem/geo}"
 MAYHEM_LISTS_DIR="${MAYHEM_LISTS_DIR:-/etc/mayhem/lists}"
+# The rules the kill switch holds the traffic with while Mayhem does not run,
+# on flash for a boot (written only when they change).
+MAYHEM_HOLD_DIR="${MAYHEM_HOLD_DIR:-/etc/mayhem/hold}"
 
 MAYHEM_XRAY_BIN="${MAYHEM_XRAY_BIN:-/usr/libexec/mayhem/xray}"
 MAYHEM_LIB_DIR="${MAYHEM_LIB_DIR:-/usr/share/mayhem}"

@@ -100,6 +100,8 @@ if [ "$ready" = 1 ]; then
 	# dnsmasq asks xray from now on (a SIGHUP, not a restart).
 	if mayhem_net_up && mayhem_tunnels_up && mayhem_dns_servers xray; then
 		touch "$MAYHEM_RUN_DIR/active"
+		# A hold of the kill switch (Mayhem was off) ends here.
+		rm -f "$MAYHEM_RUN_DIR/held"
 		mayhem_log "started, traffic is redirected to xray (pid $xray_pid)"
 		mayhem_xray_started
 	else
