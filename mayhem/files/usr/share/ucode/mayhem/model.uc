@@ -230,7 +230,9 @@ function runtime(sections) {
 		// the servers fallback chains use now (fallback.uc): { section: tag }
 		fallback: fallback_now(),
 		dnsmasq_servers: dnsmasq_servers(),
-		leases: leases()
+		leases: leases(),
+		// servers xray refused: { tag: { name, error, at } } (live.uc, xray-run)
+		refused: read_json(`${RUN_DIR}/refused.json`) ?? {}
 	};
 }
 

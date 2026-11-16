@@ -12,7 +12,9 @@
 // and there is nothing to do here.
 //
 // Exit code 0: nothing to do, or done. 1: xray did not take the change (the
-// caller restarts it).
+// caller restarts it). 2: xray refused some of the new servers; their tags
+// are in refused.json ({ tag: { name, error, at } }) and the caller builds
+// the config again without them.
 
 'use strict';
 
@@ -44,6 +46,8 @@ function q(s) {
 }
 
 let failed = null;
+// What the last failed call said.
+let said = '';
 
 // One xray API call; the first failure stops the rest.
 function api(cmd, args) {
@@ -55,7 +59,8 @@ function api(cmd, args) {
 	const rc = system(`XRAY_LOCATION_ASSET=${q(GEO_DIR)} ${XRAY} api ${cmd} --server=127.0.0.1:${API_PORT} ${args} >${out} 2>&1`);
 
 	if (rc != 0) {
-		failed = `xray api ${cmd}: ${trim(fs.readfile(out) ?? '')}`;
+		said = trim(fs.readfile(out) ?? '');
+		failed = `xray api ${cmd}: ${said}`;
 		return false;
 	}
 
@@ -211,8 +216,58 @@ if (!length(add) && !length(remove) && !length(replace_ob) && !length(add_rules)
 if (length(replace_ob))
 	api('rmo', join(' ', map(replace_ob, (o) => q(o.tag))));
 
-if (length(add) || length(replace_ob))
-	api_file('ado', { outbounds: [ ...add, ...replace_ob ] });
+// xray adds a batch one by one and stops at the first server it refuses
+// (an unknown protocol in a JSON subscription, say): then they go in one at
+// a time, each taken out first in case the batch got it in. A refused server
+// (n-) is noted in refused.json, and the caller builds the config again
+// without it; anything else refused restarts xray.
+const refused = {};
+
+if ((length(add) || length(replace_ob)) && !api_file('ado', { outbounds: [ ...add, ...replace_ob ] })) {
+	const names = {};
+
+	for (let sn, sec in read_json('nodes.json')?.sections ?? {})
+		for (let nd in sec?.nodes ?? [])
+			names[nd.tag] = nd.name;
+
+	const batch = failed;
+
+	failed = null;
+
+	for (let o in [ ...add, ...replace_ob ]) {
+		api('rmo', q(o.tag));
+		failed = null;
+
+		if (api_file('ado', { outbounds: [ o ] }))
+			continue;
+
+		if (!match(o.tag, /^n-/)) {
+			failed = `${batch}; ${o.tag}: ${said}`;
+			break;
+		}
+
+		refused[o.tag] = { name: names[o.tag] ?? o.tag, error: substr(said, 0, 400), at: time() };
+		failed = null;
+	}
+}
+
+if (length(refused)) {
+	const all = read_json('refused.json');
+	const out = type(all) == 'object' ? all : {};
+
+	for (let tag, r in refused)
+		out[tag] = r;
+
+	const tmp = `${RUN_DIR}/refused.json.tmp`;
+
+	fs.writefile(tmp, sprintf('%J\n', out));
+	fs.rename(tmp, `${RUN_DIR}/refused.json`);
+
+	for (let tag, r in refused)
+		log(`xray refused server "${r.name}": ${r.error}`, 'warn');
+
+	finish(2);
+}
 
 // Other rules or balancers (the main section, a fallback chain, rules of a
 // section): the routing is replaced as a whole; balancers start over, so

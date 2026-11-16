@@ -819,6 +819,40 @@ for i in range(3): s.sendto(b'hi', ('192.168.1.1', 12701))
 fi
 stop_mayhem
 
+echo "== a server xray refuses"
+# A JSON subscription; a new server of a protocol xray does not know comes in
+# while xray runs. The others keep working, xray is not restarted.
+sub_json() {
+	printf '[{"remarks":"Good","outbounds":[{"protocol":"shadowsocks","settings":{"servers":[{"address":"45.0.0.3","port":8443,"method":"2022-blake3-aes-128-gcm","password":"%s"}]}}]}%s]\n' \
+		"$SS_KEY" "$1" > "$WORK/sub.txt"
+}
+rm -f "$MAYHEM_RUN_DIR/refused.json"
+write_uci "	option select 'auto'" direct
+sub_json ''
+sub_update >/dev/null
+if start_mayhem uci; then
+	pid="$(proc_in router xray)"
+	expect "JSON subscription: the server works" 45.0.0.3 $(site youtube.test)
+	sub_json ',{"remarks":"Weird","outbounds":[{"protocol":"bogus","settings":{}}]}'
+	sub_update >/dev/null
+	reload_live
+	if grep -q '"name": *"Weird"' "$MAYHEM_RUN_DIR/refused.json" 2>/dev/null; then
+		ok "the refused server is noted"
+	else
+		bad "refused server: $(cat "$MAYHEM_RUN_DIR/refused.json" 2>/dev/null)"
+	fi
+	if grep -q 'server \\"Weird\\": xray refused it' "$MAYHEM_RUN_DIR/status.json" 2>/dev/null; then
+		ok "the refused server is a warning on the dashboard"
+	else
+		bad "no warning: $(cat "$MAYHEM_RUN_DIR/status.json")"
+	fi
+	sleep 6
+	if [ "$(proc_in router xray)" = "$pid" ]; then ok "xray keeps running, not restarted"; else bad "xray was restarted"; fi
+	expect "the other server still works" 45.0.0.3 $(site youtube.test)
+fi
+stop_mayhem
+rm -f "$MAYHEM_RUN_DIR/refused.json"
+
 # --- geo data and rule lists --------------------------------------------------------
 
 echo "== geo data and lists"

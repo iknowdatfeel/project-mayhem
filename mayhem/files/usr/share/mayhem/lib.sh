@@ -860,9 +860,43 @@ mayhem_xray_started() {
 }
 
 # xray quit before it listened: its error message (xray run -test, only now).
+# xray's own words on a config it does not take, for the dashboard. Once per
+# config: while running.xray.json is the same (its checksum next to
+# xray.error), the next failed start does not test it again.
 mayhem_xray_error() {
+	local sum
+
+	sum="$(md5sum "$MAYHEM_RUN_DIR/running.xray.json" 2>/dev/null | cut -d ' ' -f 1)"
+	if [ -n "$sum" ] && [ -f "$MAYHEM_RUN_DIR/xray.error" ] &&
+	   [ "$(cat "$MAYHEM_RUN_DIR/xray.error.sum" 2>/dev/null)" = "$sum" ]; then
+		return 0
+	fi
+
 	"$MAYHEM_XRAY_BIN" run -test -c "$MAYHEM_RUN_DIR/running.xray.json" 2>&1 |
 		grep -v -e '^Xray ' -e '^A unified platform' -e 'Reading config' -e 'deprecated' | tail -n 3 | cut -c 1-400 > "$MAYHEM_RUN_DIR/xray.error"
+	echo "$sum" > "$MAYHEM_RUN_DIR/xray.error.sum"
+}
+
+# A server xray refused at start: $1 its tag, $2 xray's words. Into
+# refused.json ({ tag: { name, error, at } }, the name from nodes.json);
+# 1 when it is there already.
+mayhem_refused_add() {
+	# shellcheck disable=SC2016 # ucode code, not shell
+	ucode -e '
+		const fs = require("fs");
+		const dir = ARGV[0], tag = ARGV[1], err = ARGV[2];
+		const rd = (f) => { try { return json(fs.readfile(`${dir}/${f}`) ?? ""); } catch (e) { return null; } };
+		let all = rd("refused.json");
+		if (type(all) != "object") all = {};
+		if (all[tag]) exit(1);
+		let name = tag;
+		for (let sn, sec in rd("nodes.json")?.sections ?? {})
+			for (let nd in sec?.nodes ?? [])
+				if (nd.tag == tag) name = nd.name ?? tag;
+		all[tag] = { name: name, error: substr(err, 0, 400), at: time() };
+		fs.writefile(`${dir}/refused.json.tmp`, sprintf("%J\n", all));
+		fs.rename(`${dir}/refused.json.tmp`, `${dir}/refused.json`);
+	' "$MAYHEM_RUN_DIR" "$1" "$2"
 }
 
 # Memory xray's heap freed (closed connections, a burst of blocked ones) goes
@@ -1279,7 +1313,17 @@ mayhem_live_update() {
 		return 0
 	fi
 
-	ucode "$MAYHEM_LIB_DIR/live.uc" && return 0
+	local rc
+
+	ucode "$MAYHEM_LIB_DIR/live.uc"
+	rc=$?
+	[ "$rc" = 0 ] && return 0
+
+	# Some new servers refused by xray (refused.json): once more, built
+	# without them.
+	if [ "$rc" = 2 ] && ucode "$MAYHEM_GEN" && ucode "$MAYHEM_LIB_DIR/live.uc"; then
+		return 0
+	fi
 
 	mayhem_log "could not change the servers in running xray, restarting it" warn
 	mayhem_mark_restart

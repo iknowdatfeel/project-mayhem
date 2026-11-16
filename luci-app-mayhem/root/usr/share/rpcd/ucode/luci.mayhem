@@ -3831,6 +3831,9 @@ const methods = {
 	// nothing changed: servers that did not make it into xray get there.
 	refresh_servers: {
 		call: function() {
+			// New servers, another chance with xray for the refused ones.
+			fs.unlink(`${RUN}/refused.json`);
+
 			return { results: subs_download('', true) ?? [] };
 		}
 	},

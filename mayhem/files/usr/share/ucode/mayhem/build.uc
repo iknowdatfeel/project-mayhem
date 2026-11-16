@@ -1770,18 +1770,42 @@ export function build(model) {
 				nodes = slice(nodes, 0, C.MAX_NODES);
 			}
 
+			// The tags first: a server running xray refused (refused.json,
+			// written by live.uc and xray-run) is left out before the mode of
+			// the section is known. The others keep the tags they run with.
+			const used = {};
+			const refused = model.runtime?.refused ?? {};
+
+			for (let nd in nodes) {
+				apply_sockopt(nd.outbound, F.sockopt);
+				apply_mux(nd.outbound, S);
+				nd.outbound.tag = node_tag(name, nd.outbound, used);
+			}
+
+			nodes = filter(nodes, (nd) => {
+				const r = refused[nd.outbound.tag];
+
+				if (type(r) != 'object')
+					return true;
+
+				warn(`server "${nd.name ?? r.name ?? nd.outbound.tag}": xray refused it (${r.error ?? 'unknown error'}); skipped`);
+
+				return false;
+			});
+
+			if (!length(nodes)) {
+				info.error = 'no servers';
+				warn(`section "${name}": xray refused every server, skipped`);
+				continue;
+			}
+
 			const smode = index([ 'manual', 'fallback' ], sec.select) >= 0 ? sec.select : 'auto';
 			const sinfo = { type: 'proxy', mode: length(nodes) > 1 ? smode : 'single', nodes: [] };
-
-			const used = {};
 
 			for (let i = 0; i < length(nodes); i++) {
 				const ob = nodes[i].outbound;
 				const host = outbound_host(ob);
 
-				apply_sockopt(ob, F.sockopt);
-				apply_mux(ob, S);
-				ob.tag = node_tag(name, ob, used);
 				push(outbounds, ob);
 				push(node_tags, ob.tag);
 

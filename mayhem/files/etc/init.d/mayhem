@@ -161,6 +161,8 @@ mayhem_restart_failed() {
 
 restart() {
 	MAYHEM_RESTART=1
+	# A restart gives every server another chance with xray.
+	rm -f "$MAYHEM_RUN_DIR/refused.json"
 	trap '' TERM
 	stop "$@"
 	trap - TERM
