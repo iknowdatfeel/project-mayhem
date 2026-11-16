@@ -42,6 +42,7 @@ stop() {
 	: > "$T/calls"
 	echo "MAYHEM_KILLSWITCH=$ks" > "$T/run/env"
 	echo 'server=127.0.0.1#12753' > "$T/dnsmasq/mayhem.servers"
+	# shellcheck disable=SC2016 # expanded by the inner shell
 	env "$@" PATH="$T/bin:$PATH" STUB="$T" MAYHEM_RUN_DIR="$T/run" MAYHEM_LIB_DIR="$FILES/usr/share/mayhem" \
 		MAYHEM_DNS_SERVERS="$T/dnsmasq/mayhem.servers" MAYHEM_RESOLV_AUTO="$T/resolv.conf.auto" \
 		MAYHEM_DNSMASQ_INIT=/bin/true MAYHEM_KS="$ks" MAYHEM_KS_HOLD=0 \
