@@ -195,6 +195,15 @@ if [ ! -e "$T/au/started" ] && [ -e "$T/au/run/install.pid" ]; then
 else
 	bad "auto-update next to a running install: started $(cat "$T/au/started" 2>/dev/null)"
 fi
+rm -f "$T/au/run/install.pid"
+echo "$$" > "$T/au/run/auto-update.pid"
+auto_update
+if [ ! -e "$T/au/started" ]; then
+	ok "auto-update: one that still runs is not started again"
+else
+	bad "auto-update next to a running one: started $(cat "$T/au/started" 2>/dev/null)"
+fi
+rm -f "$T/au/run/auto-update.pid"
 
 # A stop: the scheduler goes at once on TERM, also while it sleeps (procd
 # killed it 5 s later, its downloads with it).

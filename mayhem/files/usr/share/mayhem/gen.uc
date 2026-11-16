@@ -146,6 +146,13 @@ if (opts.warm) {
 	    model.runtime?.dnsmasq_nftset === false)
 		exit(0);
 
+	// The model is lazy: the geo and the lists are read here, before the
+	// copies below, which would not get what ensure_geo writes.
+	if (model.ensure_geo)
+		model.ensure_geo(true);
+	if (model.ensure_lists)
+		model.ensure_lists();
+
 	// A tunnel by its interface; a proxy as no pinned server at all.
 	for (let v in [ ...pool.iface_node, null ]) {
 		const p = { ...pool, override: v };

@@ -481,7 +481,7 @@ function install_running() {
 
 const NETIFD_PROTO = getenv('MAYHEM_NETIFD_PROTO_DIR') ?? '/lib/netifd/proto';
 const SYS_NET = getenv('MAYHEM_SYS_NET') ?? '/sys/class/net';
-const DNSMASQ_PIDS = getenv('MAYHEM_DNSMASQ_PIDS') ?? '/var/run/dnsmasq';
+const PROC = getenv('MAYHEM_PROC') ?? '/proc';
 
 function has_awg() {
 	return fs.access(`${NETIFD_PROTO}/amneziawg.sh`) == true && (NETIFD_PROTO != '/lib/netifd/proto' || fs.access('/usr/bin/awg') == true);
@@ -2334,29 +2334,19 @@ function warm_state(now_all) {
 
 const MARK = '@@mayhem@@';
 
-// Does dnsmasq run? From its pid files (OpenWrt's init writes one per
-// instance); null when there are none to tell by (pidof is asked then).
+// Does dnsmasq run? By the names of the processes, as pidof tells, without
+// running it. Not by its pid files: OpenWrt starts dnsmasq in ujail, in a pid
+// namespace of its own, and the pid it writes is the one inside it.
 function dnsmasq_running() {
-	const files = fs.glob(`${DNSMASQ_PIDS}/dnsmasq*.pid`) ?? [];
-
-	if (!length(files))
-		return null;
-
-	for (let f in files) {
-		const p = trim(fs.readfile(f) ?? '');
-
-		if (match(p, /^[0-9]+$/) && index(fs.readfile(`/proc/${p}/cmdline`) ?? '', 'dnsmasq') >= 0)
+	for (let f in fs.glob(`${PROC}/[0-9]*/comm`) ?? [])
+		if (trim(fs.readfile(f) ?? '') == 'dnsmasq')
 			return true;
-	}
 
 	return false;
 }
 
-function dashboard_cmd(pid, state, dnsmasq) {
+function dashboard_cmd(pid, state) {
 	const parts = [ pid ? metrics_cmd() : 'true' ];
-
-	if (dnsmasq == null)
-		push(parts, `echo; echo ${MARK}dnsmasq; pidof dnsmasq 2>/dev/null`);
 
 	for (let sn in keys(state.sections ?? {})) {
 		const dev = state.sections[sn].device;
@@ -2370,16 +2360,14 @@ function dashboard_cmd(pid, state, dnsmasq) {
 
 function dashboard_parts(text) {
 	const chunks = split(text ?? '', MARK);
-	const res = { metrics: trim(chunks[0] ?? ''), dnsmasq: false, hs: {} };
+	const res = { metrics: trim(chunks[0] ?? ''), hs: {} };
 
 	for (let i = 1; i < length(chunks); i++) {
 		const nl = index(chunks[i], '\n');
 		const head = nl < 0 ? chunks[i] : substr(chunks[i], 0, nl);
 		const rest = nl < 0 ? '' : substr(chunks[i], nl + 1);
 
-		if (head == 'dnsmasq')
-			res.dnsmasq = trim(rest) != '';
-		else if (substr(head, 0, 3) == 'hs ')
+		if (substr(head, 0, 3) == 'hs ')
 			res.hs[substr(head, 3)] = rest;
 	}
 
@@ -2580,11 +2568,10 @@ const methods = {
 
 			const dm = dnsmasq_running();
 
-			return deferred_sh(req, dashboard_cmd(pid, state, dm), (out) => {
+			return deferred_sh(req, dashboard_cmd(pid, state), (out) => {
 				const parts = dashboard_parts(out);
 
-				if (dm != null)
-					parts.dnsmasq = dm;
+				parts.dnsmasq = dm;
 
 				const d = dashboard(pid, state, parts);
 

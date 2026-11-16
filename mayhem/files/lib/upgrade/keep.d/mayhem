@@ -1,3 +1,4 @@
 /etc/mayhem/subs/
 /etc/mayhem/geo/upload/
+/etc/mayhem/hold/
 /etc/sysctl.d/12-mayhem-bbr.conf

@@ -123,17 +123,43 @@ if (!state || !fs.access(`${RUN_DIR}/active`) || pid == '')
 	exit(0);
 
 // One check at a time: the scheduler's and one started by a choice on the
-// dashboard may meet. A lock left by a process that is gone is taken over.
+// dashboard may meet. A lock left by a process that is gone is removed and
+// taken again - only while it still names that process (two checks must not
+// both take it); one without a pid yet is being taken (10 s to write it).
 const LOCK = `${RUN_DIR}/health.lock`;
 
-if (!fs.mkdir(LOCK)) {
-	const owner = trim(fs.readfile(`${LOCK}/pid`) ?? '');
+function lock() {
+	const me = split(fs.readfile('/proc/self/stat') ?? '', ' ')[0];
 
-	if (owner != '' && fs.access(`/proc/${owner}`))
-		exit(0);
+	for (let i = 0; i < 5; i++) {
+		if (fs.mkdir(LOCK)) {
+			fs.writefile(`${LOCK}/pid`, `${me}\n`);
+			return true;
+		}
+
+		const owner = trim(fs.readfile(`${LOCK}/pid`) ?? '');
+		const st = fs.stat(LOCK);
+
+		if (!st)
+			continue;
+
+		if ((owner != '' && !fs.access(`/proc/${owner}`)) || (owner == '' && time() - st.mtime > 10)) {
+			if (trim(fs.readfile(`${LOCK}/pid`) ?? '') == owner) {
+				fs.unlink(`${LOCK}/pid`);
+				fs.rmdir(LOCK);
+			}
+
+			continue;
+		}
+
+		return false;
+	}
+
+	return false;
 }
 
-fs.writefile(`${LOCK}/pid`, `${fs.readfile('/proc/self/stat') ? split(fs.readfile('/proc/self/stat'), ' ')[0] : ''}\n`);
+if (!lock())
+	exit(0);
 
 function unlock() {
 	fs.unlink(`${LOCK}/pid`);

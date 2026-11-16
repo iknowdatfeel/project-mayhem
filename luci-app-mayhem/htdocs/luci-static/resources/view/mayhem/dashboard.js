@@ -26,6 +26,12 @@ const callServerLink = rpc.declare({ object: 'luci.mayhem', method: 'server_link
 // widgets in place instead of building every tile again.
 const VOLATILE = { time: true, totals: true, traffic: true, rss_kb: true, rss_total_kb: true, mem_trim: true, warm: true };
 
+// The hint of a server's tile: where it is and its traffic.
+function tileTitle(n) {
+	return '%s · ↓ %s ↑ %s'.format(n.iface ? _('Interface %s').format(n.iface) : mh.ipText('%s:%s'.format(n.address || '?', n.port || '?')),
+		mh.bytes(n.down), mh.bytes(n.up));
+}
+
 function signature(d) {
 	return JSON.stringify(d, (k, v) => (VOLATILE[k] || ((k === 'up' || k === 'down') && typeof v === 'number')) ? undefined : v);
 }
@@ -232,8 +238,25 @@ return view.extend({
 			return true;
 		};
 
-		if (!swap('mh-a-conn', conn) || !swap('mh-a-sys', sys))
+		if (!swap('mh-a-conn', conn) || !swap('mh-a-sys', sys)) {
 			this.redraw();
+			return;
+		}
+
+		// The traffic of the tunnels and of the servers changes too: their
+		// rows and the hints of the tiles in place.
+		for (const s of (this.data.sections || [])) {
+			if (s.type === 'interface') {
+				const old = document.querySelector('#mayhem-body [data-mh-tun="%s"]'.format(CSS.escape(s.name)));
+
+				if (old)
+					old.replaceWith(this.renderTunnel(s, this.data.time));
+			}
+
+			for (const n of (s.nodes || []))
+				document.querySelectorAll('#mayhem-body [data-mh-tile="%s"]'.format(CSS.escape(n.tag)))
+					.forEach((el) => el.setAttribute('title', tileTitle(n)));
+		}
 	},
 
 	// Deleted servers leave the page at once: the router reloads in the
@@ -849,8 +872,8 @@ return view.extend({
 
 		const attrs = {
 			'class': 'mh-tile' + (active ? ' mh-tile--active' : '') + (pick ? ' mh-tile--pick' : '') + (chosen ? ' mh-tile--chosen' : ''),
-			'title': '%s · ↓ %s ↑ %s'.format(n.iface ? _('Interface %s').format(n.iface) : mh.ipText('%s:%s'.format(n.address || '?', n.port || '?')),
-				mh.bytes(n.down), mh.bytes(n.up))
+			'data-mh-tile': n.tag,
+			'title': tileTitle(n)
 		};
 
 		if (pick)
@@ -1271,7 +1294,7 @@ return view.extend({
 
 		info.push('↓ %s ↑ %s'.format(mh.bytes(s.traffic.down), mh.bytes(s.traffic.up)));
 
-		return E('div', { 'class': 'mh-tunrow mh-head' }, [
+		return E('div', { 'class': 'mh-tunrow mh-head', 'data-mh-tun': s.name }, [
 			E('div', { 'class': 'mh-grow' }, [
 				E('b', s.name), ' ',
 				E('span', { 'class': 'mh-muted mh-small' }, _('Tunnel') + ' · ' + info.join(' · '))

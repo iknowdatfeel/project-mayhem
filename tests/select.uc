@@ -163,9 +163,15 @@ expect('dashboard: enabled as configured', d?.enabled == true, d?.enabled);
 d = call('dashboard', {});
 expect('dashboard: a changed configuration is read again', d?.enabled == false, d?.enabled);
 
-// dnsmasq from its pid file: one of a process that is gone means not running
-fs.writefile(`${stub}/dnsmasq-pids/dnsmasq.cfg01411c.pid`, '999999\n');
+// dnsmasq by the names of the processes, not by its pid file: in ujail it
+// writes the pid of its own namespace there
+fs.mkdir(`${stub}/proc/1`);
+fs.writefile(`${stub}/proc/1/comm`, 'procd\n');
 d = call('dashboard', {});
-expect('dashboard: dnsmasq of a stale pid file is not running', d?.dnsmasq == false, d?.dnsmasq);
+expect('dashboard: no dnsmasq process, not running', d?.dnsmasq == false, d?.dnsmasq);
+fs.mkdir(`${stub}/proc/2345`);
+fs.writefile(`${stub}/proc/2345/comm`, 'dnsmasq\n');
+d = call('dashboard', {});
+expect('dashboard: a dnsmasq process, running', d?.dnsmasq == true, d?.dnsmasq);
 
 exit(fails ? 1 : 0);

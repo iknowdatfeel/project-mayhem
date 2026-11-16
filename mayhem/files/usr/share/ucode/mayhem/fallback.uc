@@ -137,7 +137,10 @@ export function run(opts) {
 		const st = fs.stat(LOCK);
 
 		if ((lock_pid > 0 && !fs.access(`/proc/${lock_pid}`)) || (lock_pid <= 0 && st && time() - st.mtime > 60)) {
-			unlock();
+			// only while it still names that process: another one may have
+			// taken it meanwhile
+			if (int(trim(fs.readfile(`${LOCK}/pid`) ?? '0')) == lock_pid)
+				unlock();
 			continue;
 		}
 

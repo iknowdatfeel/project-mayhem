@@ -735,6 +735,9 @@ case "$1" in
 		# automatic updates are on.
 		[ "$(uci -q get mayhem.settings.auto_update)" = 1 ] || exit 0
 		[ -e "$MAYHEM_RUN_DIR/install.pid" ] && exit 0
+		# the scheduler starts no second one while this pid lives (it stays
+		# the same through the exec of self-update)
+		echo "$$" > "$MAYHEM_RUN_DIR/auto-update.pid"
 		tag="$(latest_tag)" || exit 1
 		date +%Y%m%d > "$MAYHEM_RUN_DIR/auto-update.day"
 		latest="${tag#v}"

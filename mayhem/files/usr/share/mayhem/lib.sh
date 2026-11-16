@@ -725,6 +725,14 @@ mayhem_auto_update() {
 	day="$(date +%Y%m%d)"
 	[ "$(cat "$stamp" 2>/dev/null)" = "$day" ] && return 0
 
+	# The day is stamped by the update itself, after it asked for the latest
+	# release (a slow network): one that still runs is not started again.
+	ipid="$(cat "$MAYHEM_RUN_DIR/auto-update.pid" 2>/dev/null)"
+	case "$ipid" in
+		''|*[!0-9]*) ;;
+		*) kill -0 "$ipid" 2>/dev/null && return 0 ;;
+	esac
+
 	if command -v setsid >/dev/null 2>&1; then
 		setsid "$cli" auto-update >"$MAYHEM_RUN_DIR/auto-update.log" 2>&1 </dev/null &
 	else
