@@ -324,6 +324,15 @@ if [ ! -s "$T/bi.log" ] && grep -q ' sec-auto ' "$T/curl.log" && ! grep -q ' n-a
 else
 	bad "automatic path: bi $(cat "$T/bi.log" 2>/dev/null) / $(cat "$T/curl.log")"
 fi
+# Ten runs with nothing changed: xray is asked at most once which server a
+# balancer takes (an xray process of its own every time).
+i=0
+while [ "$i" -lt 10 ]; do
+	tick
+	i=$((i + 1))
+done
+n="$(grep -c 'api bi' "$T/bi.log" 2>/dev/null)"
+if [ "${n:-0}" -le 1 ]; then ok "ten runs, nothing changed: api bi at most once ($n)"; else bad "ten runs: api bi $n times"; fi
 rm -f "$T/sec_ok"
 
 # Sections are checked at once: three silent sections cost one wave of
