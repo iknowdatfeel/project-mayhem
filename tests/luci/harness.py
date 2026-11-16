@@ -158,8 +158,9 @@ def ucode(script, *args):
     return json.loads(out.stdout)
 
 
-# Set by a test to show the router as one without subscriptions.
-HIDE = {'subscription': False}
+# Set by a test to show the router as one without subscriptions, or with one
+# server of a subscription in the server list.
+HIDE = {'subscription': False, 'one_server': False}
 
 
 # Subscriptions added (and deleted again) in this session, as rpcd keeps the
@@ -207,7 +208,12 @@ def call(obj, method, args):
             imports.append(args or {})
         if method in SIDE_EFFECTS:
             return {'started': True} if method in ('system_install', 'data_update') else {'ok': True}
-        return ucode(os.path.join(os.path.dirname(__file__), 'rpc.uc'), PLUGIN, method, json.dumps(args or {}))
+        out = ucode(os.path.join(os.path.dirname(__file__), 'rpc.uc'), PLUGIN, method, json.dumps(args or {}))
+        if method == 'dashboard' and HIDE['one_server']:
+            for s in out.get('sections') or []:
+                if s.get('name') == 'pool':
+                    s['nodes'] = [n for n in s.get('nodes') or [] if n.get('source') not in (None, 'link', 'json', 'interface')][:1]
+        return out
 
     if obj == 'uci':
         if method == 'get':
@@ -864,6 +870,10 @@ def main():
                 raise RuntimeError('the main section can still be chosen on the dashboard')
             if not pg.query_selector('#mayhem-body .mh-ghead .mh-bar'):
                 raise RuntimeError('no subscription traffic on the dashboard')
+            # the button of the server pages adds a connection, whatever there is
+            nav = pg.inner_text('#mayhem-body .mh-navbtn >> nth=0').strip()
+            if nav != TRANSLATIONS.get('Add connection', 'Add connection'):
+                raise RuntimeError('the button of the server pages: %r' % nav)
             if not DEMO:  # a screenshot shows the demo delays, not failed checks
                 pg.click('#mayhem-body .mh-side button >> nth=0')
                 pg.wait_for_timeout(1500)
@@ -877,6 +887,28 @@ def main():
                     raise RuntimeError('ICMP did not go as one call per section: %s' % got)
             else:
                 pg.wait_for_timeout(4500)  # two polls: the speed widget has numbers
+
+        def one_server(pg):
+            # One server of a subscription in the list: nothing to choose,
+            # but the list keeps its title above the subscription.
+            HIDE['one_server'] = True
+            try:
+                pg.reload()
+                pg.wait_for_selector('#mayhem-body .mh-list .mh-tile', timeout=15000)
+                if pg.locator('#mayhem-body .mh-list .mh-tile').count() != 1:
+                    raise RuntimeError('more than one server in the list of one')
+                first = pg.eval_on_selector('#mayhem-body .mh-list', 'e => e.firstElementChild.className')
+                titles = pg.eval_on_selector_all('#mayhem-body .mh-list .mh-title', 'es => es.map(e => e.textContent)')
+                title = TRANSLATIONS.get('Server list', 'Server list')
+                if first != 'mh-ghead' or titles[:1] != [title] or titles.count(title) != 1:
+                    raise RuntimeError('no title above the one server of the list: %s %s' % (first, titles))
+                if pg.query_selector('#mayhem-body .mh-list > .mh-ghead select'):
+                    raise RuntimeError('a choice of the server with one server')
+                shot(pg, 'dashboard_one_server')
+            finally:
+                HIDE['one_server'] = False
+                pg.reload()
+                pg.wait_for_selector('#mayhem-body .mh-tile', timeout=15000)
 
         def conns_modal(pg):
             # the connections of the fixture (run.sh): names, servers, counts
@@ -1096,7 +1128,7 @@ def main():
                 raise RuntimeError('the address keeps a page after closing: %s' % pg.url)
 
         pages = [
-            ('mayhem/dashboard', [('buttons', dashboard_buttons), ('active connections', conns_modal), ('logs dialog', logs_dialog), ('run diagnostics', run_diag),
+            ('mayhem/dashboard', [('buttons', dashboard_buttons), ('one server in the list', one_server), ('active connections', conns_modal), ('logs dialog', logs_dialog), ('run diagnostics', run_diag),
                                   ('edit a server', edit_server), ('delete a server', delete_server), ('choose how', choose_mode), ('chain of the list', list_chain),
                                   ('delete a tunnel', delete_tunnel), ('services', services_badge), ('pages in a window', nav_pages)]),
             ('mayhem/dashboard#settings', [('sections tab', lambda pg: shot(pg, 'routing_sections')), ('main section', main_section),

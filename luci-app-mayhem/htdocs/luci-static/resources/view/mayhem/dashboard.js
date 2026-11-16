@@ -1060,7 +1060,7 @@ return view.extend({
 			}
 
 			// In the list: a group of its one box; elsewhere a box of its own.
-			const box = E('div', { 'class': pool ? 'mh-group' : 'mh-box mh-section' }, [
+			const box = E('div', { 'class': pool ? 'mh-group' + (src === 'link' ? ' mh-group--own' : '') : 'mh-box mh-section' }, [
 				head,
 				by[src].length ? E('div', { 'class': 'mh-grid' }, by[src].map((n) => this.tile(s, n)))
 					: E('div', { 'class': 'mh-muted mh-small' }, _('Add servers with the "Add connection" button.'))
@@ -1114,9 +1114,14 @@ return view.extend({
 	// The server list: one box, its title and how it picks the server on top,
 	// then its groups (keys and tunnels, every subscription).
 	listBox(s, groups) {
-		// One server: nothing to choose, no row for the choice.
-		if ((s.nodes || []).length <= 1 && !this.pendingSel[s.name])
-			return E('div', { 'class': 'mh-box mh-section mh-list' }, groups);
+		// One server: nothing to choose, no row for the choice; the list's
+		// title on top unless the group of its own keys already has it.
+		if ((s.nodes || []).length <= 1 && !this.pendingSel[s.name]) {
+			const own = groups.some((g) => g.classList.contains('mh-group--own'));
+			const head = own ? [] : [ E('div', { 'class': 'mh-ghead' }, [ E('span', { 'class': 'mh-title' }, _('Server list')) ]) ];
+
+			return E('div', { 'class': 'mh-box mh-section mh-list' }, head.concat(groups));
+		}
 
 		const bar = this.chooseBar(s);
 		const head = E('div', { 'class': 'mh-ghead' }, [ E('span', { 'class': 'mh-title' }, _('Server choice')) ].concat(Array.from(bar.childNodes)));
@@ -1288,7 +1293,7 @@ return view.extend({
 		side.push(E('div', { 'class': 'mh-side-gap' }));
 		side.push(this.navButton('servers', d.has_connections ? 'logs' : 'plus',
 			d.has_connections ? 'cbi-button-neutral mh-navbtn' : 'cbi-button-add mh-navbtn',
-			d.has_connections ? _('Connection list') : _('Add connection')));
+			_('Add connection')));
 		side.push(this.navButton('settings', 'settings', 'cbi-button mh-navbtn'));
 		side.push(E('div', { 'class': 'mh-side-gap' }));
 

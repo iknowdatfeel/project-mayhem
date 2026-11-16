@@ -398,10 +398,6 @@ msgid "Connection"
 msgstr ""
 
 #: htdocs/luci-static/resources/view/mayhem/dashboard.js
-msgid "Connection list"
-msgstr ""
-
-#: htdocs/luci-static/resources/view/mayhem/dashboard.js
 msgid "Connection state"
 msgstr ""
 
