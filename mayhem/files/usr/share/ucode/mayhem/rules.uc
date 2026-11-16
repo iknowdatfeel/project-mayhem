@@ -7,14 +7,24 @@
 // takes ~0.1 ms for each on a router.
 const DOMAIN_CHARS = 'abcdefghijklmnopqrstuvwxyz0123456789_-.*';
 
-function domain_ok(d) {
+export function domain_ok(d) {
 	if (d == '' || ltrim(d, DOMAIN_CHARS) != '' || substr(d, 0, 1) == '.' || index(d, '..') >= 0)
 		return false;
 
 	const dot = index(d, '.');
 
 	return dot < 0 || index(substr(d, dot), '*') < 0;
-}
+};
+
+// A whole list of lowercase names at once, as domain_ok() would take each
+// (without "*", which only a name of its own may have): one pass over the
+// joined text. false sends the caller to check them one by one.
+export function names_ok(names) {
+	const text = join('\n', names);
+
+	return text != '' && ltrim(text, `${DOMAIN_CHARS}\n`) == '' && index(text, '*') < 0 &&
+		index(text, '..') < 0 && index(`\n${text}`, '\n.') < 0 && index(`\n${text}\n`, '\n\n') < 0;
+};
 
 export function is_true(v) {
 	return v === true || v === 1 || v == '1' || v == 'true' || v == 'yes' || v == 'on';

@@ -810,7 +810,7 @@ if command -v shellcheck >/dev/null 2>&1; then
 	if out="$(shellcheck -s sh -f gcc -e SC1091,SC2034,SC3043,SC2086,SC2046,SC2317,SC2329 \
 		"$FILES/usr/bin/mayhem" "$FILES/usr/libexec/mayhem/xray-run" "$FILES/usr/libexec/mayhem/scheduler" \
 		"$FILES/etc/uci-defaults/90-mayhem" "$ROOT/tests/netns.sh" "$ROOT/tests/build-ucode.sh" "$ROOT/tests/health.sh" "$ROOT/tests/tunsync.sh" "$ROOT/tests/nftkeep.sh" "$ROOT/tests/scheduler.sh" "$ROOT/tests/serverlist.sh" "$ROOT/tests/conns.sh" "$ROOT/tests/bbr.sh" \
-		"$ROOT/tests/inodes.sh" "$ROOT/tests/applying.sh" "$ROOT/tests/prerelease.sh" "$ROOT/tests/select.sh" "$ROOT/tests/metrics.sh" "$ROOT/tests/netgen.sh" "$ROOT/tests/refused.sh" "$ROOT/tests/install.sh" "$ROOT/tests/pkgscripts.sh" "$ROOT/tests/ksrestart.sh" "$ROOT/tests/wake.sh" \
+		"$ROOT/tests/inodes.sh" "$ROOT/tests/applying.sh" "$ROOT/tests/prerelease.sh" "$ROOT/tests/select.sh" "$ROOT/tests/metrics.sh" "$ROOT/tests/netgen.sh" "$ROOT/tests/refused.sh" "$ROOT/tests/install.sh" "$ROOT/tests/pkgscripts.sh" "$ROOT/tests/ksrestart.sh" "$ROOT/tests/wake.sh" "$ROOT/tests/dnsup.sh" \
 		"$FILES/usr/share/mayhem/lib.sh" "$FILES/usr/share/mayhem/const.sh" "$ROOT/install.sh" 2>&1)"; then
 		ok "shellcheck"
 	else
@@ -1225,6 +1225,19 @@ if out="$(UCODE="$UCODE" sh "$ROOT/tests/metrics.sh" 2>&1)"; then
 	*) ok "metrics endpoint: read with a deadline, plain and in chunks" ;; esac
 else
 	bad "metrics: $(printf '%s' "$out" | grep -v '^ok')"
+fi
+
+# Names of geo data that are not domain names stay out of dnsmasq's files,
+# and a file dnsmasq refuses never replaces the one it has.
+if out="$(uc "$ROOT/tests/badnames.uc" 2>&1)"; then
+	ok "geo names that are not domain names are skipped"
+else
+	bad "bad geo names: $out"
+fi
+if out="$(sh "$ROOT/tests/dnsup.sh" 2>&1)"; then
+	ok "dnsmasq's file: tested before it goes in"
+else
+	bad "dnsmasq's file: $(printf '%s' "$out" | grep -v '^ok')"
 fi
 
 # An idle tunnel is woken inside its AllowedIPs.

@@ -5,7 +5,7 @@
 'use strict';
 
 import { parse_link, outbound_host, outbound_port, outbound_udp, refused_by_xray } from 'mayhem.links';
-import { is_true, as_list, entries, norm_domain, norm_ip, is_ip, dns_server, split_list, list_key } from 'mayhem.rules';
+import { is_true, as_list, entries, norm_domain, norm_ip, is_ip, dns_server, split_list, list_key, domain_ok, names_ok } from 'mayhem.rules';
 import { resolve, HEAVY, KERNEL_DOMAINS_MAX } from 'mayhem.geo';
 import * as C from 'mayhem.const';
 
@@ -783,12 +783,37 @@ export function regexp_tail(re) {
 // their traffic direct. Returns { names } or { why } when a rule cannot be
 // spelled out so (keyword:, a regexp without a fixed tail, a category that is
 // not spelled out on the router).
-function dns_names(RLs, model) {
+// Names of geo data go into dnsmasq's files (nftset=, server=, local=) only
+// as domain names: one with a line break, "/" or a space would make a
+// directive of its own or a file dnsmasq does not load (and then no DNS and
+// no DHCP). The bad ones are skipped, one warning per section and category.
+let BAD_NAMES_TOLD = {};
+
+function geo_bad(warn, sec, g, n) {
+	const k = `${sec}\n${g.text}`;
+
+	if (n > 0 && warn && !BAD_NAMES_TOLD[k]) {
+		BAD_NAMES_TOLD[k] = true;
+		warn(`section "${sec}": ${n} names of ${g.text} are not valid domain names, skipped`);
+	}
+}
+
+// A name of geo data for dnsmasq: lowercase, or null when it is not a
+// domain name.
+function geo_name(n) {
+	n = lc(n);
+
+	return domain_ok(n) ? n : null;
+}
+
+function dns_names(RLs, model, warn) {
 	const seen = {};
 	const names = [];
 	let why = null;
 
-	const take = (rule, where) => {
+	let bad = 0;
+
+	const take = (rule, where, geo) => {
 		const c = index(rule, ':');
 		const kind = c > 0 ? substr(rule, 0, c) : null;
 
@@ -809,6 +834,11 @@ function dns_names(RLs, model) {
 
 		if (n == null) {
 			why ??= `${kind}:${val} in ${where}`;
+			return;
+		}
+
+		if (geo && !domain_ok(lc(n))) {
+			bad++;
 			return;
 		}
 
@@ -835,8 +865,12 @@ function dns_names(RLs, model) {
 			}
 
 			// An attribute picks part of the category: all of it goes to xray.
+			bad = 0;
+
 			for (let d in list)
-				take(d, g.text);
+				take(d, g.text, true);
+
+			geo_bad(warn, x.name, g, bad);
 		}
 	}
 
@@ -1220,7 +1254,7 @@ function collect_rules(sec, model, warn, G) {
 // well there). keyword: and regexp: only work through xray.
 function kernel_domains(name, RL, model, warn, fallback) {
 	const out = uset();
-	let skipped = 0;
+	let skipped = 0, bad = 0;
 
 	const take = (d) => {
 		const n = plain_name(d);
@@ -1251,8 +1285,21 @@ function kernel_domains(name, RL, model, warn, fallback) {
 			continue;
 		}
 
-		for (let d in list)
-			take(d);
+		bad = 0;
+
+		for (let d in list) {
+			const n = plain_name(d);
+			const ok = n != null ? geo_name(n) : null;
+
+			if (n == null)
+				skipped++;
+			else if (ok != null)
+				out.add(ok);
+			else
+				bad++;
+		}
+
+		geo_bad(warn, name, g, bad);
 	}
 
 	if (skipped)
@@ -1292,7 +1339,14 @@ function direct_dns_rules(routed, model, warn) {
 				warn(`section "${r.name}": ${g.text} needs running Xray; its Direct DNS cannot bypass it`);
 				continue;
 			}
-			for (let d in list) take(d);
+			let bad = 0;
+			for (let d in list) {
+				const n = plain_name(d);
+				if (n == null) skipped++;
+				else if (geo_name(n) == null) bad++;
+				else take(d);
+			}
+			geo_bad(warn, r.name, g, bad);
 		}
 		if (skipped)
 			warn(`section "${r.name}": ${skipped} keyword/regexp Direct rules need running Xray`);
@@ -1331,7 +1385,7 @@ function plain_names(list) {
 	return split(lc(substr(text, 1)), '\n');
 }
 
-function block_for_dnsmasq(RL, model) {
+function block_for_dnsmasq(RL, model, name, warn) {
 	const names = uset(), keep = [], sites = [];
 	const spelled = {};
 	// whole categories, as plain_names() gives them (a name in two of them
@@ -1351,13 +1405,14 @@ function block_for_dnsmasq(RL, model) {
 
 		const fast = plain_names(list);
 
-		if (fast) {
+		// The whole list in one pass; a bad character anywhere: one by one.
+		if (fast && names_ok(fast)) {
 			push(lists, fast);
 			spelled[`ext:${split(g.key, ':')[0]}.dat:${split(g.key, ':')[1]}`] = true;
 			continue;
 		}
 
-		let all = true;
+		let all = true, bad = 0;
 		const seen = names.seen, items = names.items;
 
 		for (let d in list) {
@@ -1368,13 +1423,20 @@ function block_for_dnsmasq(RL, model) {
 				continue;
 			}
 
-			n = lc(n);
+			n = geo_name(n);
+
+			if (n == null) {
+				bad++;
+				continue;
+			}
 
 			if (!seen[n]) {
 				seen[n] = true;
 				push(items, n);
 			}
 		}
+
+		geo_bad(warn, name, g, bad);
 
 		if (all)
 			spelled[`ext:${split(g.key, ':')[0]}.dat:${split(g.key, ':')[1]}`] = true;
@@ -1536,6 +1598,8 @@ export function build(model) {
 	const R = model.runtime ?? {};
 	const st = { warnings: [], errors: [], sections: [] };
 	const warn = (m) => push(st.warnings, m);
+
+	BAD_NAMES_TOLD = {};
 	const fail = (m) => push(st.errors, m);
 
 	const mode = S.mode == 'global' ? 'global' : 'lists';
@@ -1968,7 +2032,7 @@ export function build(model) {
 
 			// Spelled-out domains are refused by dnsmasq (DNS of the network
 			// redirected to it); xray keeps only what dnsmasq cannot match.
-			const bd = dns_redirect ? block_for_dnsmasq(RL, model) : null;
+			const bd = dns_redirect ? block_for_dnsmasq(RL, model, name, warn) : null;
 
 			if (bd) {
 				push(dns_block, ...bd.lists);
@@ -2398,7 +2462,7 @@ export function build(model) {
 				upstream += `server=${d.address}${d.port ? `#${d.port}` : ''}\n`;
 		}
 
-		const r = dns_names(xray_dns, model);
+		const r = dns_names(xray_dns, model, warn);
 
 		if (r.why)
 			split_why = r.why;
@@ -2494,7 +2558,7 @@ export function build(model) {
 			// Real addresses come from the remote DNS: tunnels in kernel
 			// mode, and everything routed through xray without FakeDNS.
 			const remote_named = (x) => (x.type == 'interface' && x.kernel) || (!fake && (x.type == 'proxy' || x.type == 'interface'));
-			const keep = dns_names(filter(xray_dns, (x) => !remote_named(x)), model);
+			const keep = dns_names(filter(xray_dns, (x) => !remote_named(x)), model, warn);
 
 			dns_fallback = isp + (keep.names ? server_lines(filter(keep.names, (h) => index(endpoint_domains, h) < 0), `127.0.0.1#${C.DNS_PORT}`) : '');
 		}

@@ -1161,6 +1161,30 @@ mayhem_dns_servers() {
 # Puts Mayhem's file into dnsmasq's conf-dir; restarts dnsmasq only when the
 # file is new or changed (tunnel domains, first start). $1 "hold": for the
 # kill switch while Mayhem does not run.
+# dnsmasq's own check of Mayhem's new file; its words go to the log and to
+# the errors of status.json for the dashboard.
+mayhem_dnsmasq_test() {
+	local out
+
+	command -v "${MAYHEM_DNSMASQ_BIN:-dnsmasq}" >/dev/null 2>&1 || return 0
+	out="$("${MAYHEM_DNSMASQ_BIN:-dnsmasq}" --test --conf-file="$MAYHEM_RUN_DIR/dnsmasq.conf" 2>&1)" && return 0
+
+	out="$(printf '%s' "$out" | tail -n 1 | cut -c 1-300)"
+	mayhem_log "dnsmasq does not take Mayhem's new file, the old one stays: $out" err
+	# shellcheck disable=SC2016 # ucode code, not shell
+	ucode -e '
+		const fs = require("fs");
+		let st;
+		try { st = json(fs.readfile(ARGV[0]) ?? ""); } catch (e) { st = null; }
+		if (type(st) != "object") st = {};
+		if (type(st.errors) != "array") st.errors = [];
+		push(st.errors, `dnsmasq does not take the new file: ${ARGV[1]}`);
+		fs.writefile(`${ARGV[0]}.tmp`, sprintf("%.J\n", st));
+		fs.rename(`${ARGV[0]}.tmp`, ARGV[0]);
+	' "$MAYHEM_RUN_DIR/status.json" "$out" >/dev/null 2>&1
+	return 1
+}
+
 mayhem_dns_up() {
 	local d changed=0
 
@@ -1177,6 +1201,14 @@ mayhem_dns_up() {
 				mv -f "$MAYHEM_DNS_SERVERS.tmp" "$MAYHEM_DNS_SERVERS"
 		fi
 	fi
+
+	# A file dnsmasq would not load (it would not start: no DNS, no DHCP)
+	# stays out of its conf-dir; the one there keeps working.
+	for d in $(mayhem_dnsmasq_dirs); do
+		cmp -s "$MAYHEM_RUN_DIR/dnsmasq.conf" "$d/$MAYHEM_DNSMASQ_FILE" && continue
+		mayhem_dnsmasq_test || return 1
+		break
+	done
 
 	for d in $(mayhem_dnsmasq_dirs); do
 		mkdir -p "$d" || continue
