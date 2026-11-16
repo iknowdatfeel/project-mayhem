@@ -397,10 +397,6 @@ msgstr ""
 msgid "Connection"
 msgstr ""
 
-#: htdocs/luci-static/resources/view/mayhem/dashboard.js
-msgid "Connection state"
-msgstr ""
-
 #: htdocs/luci-static/resources/mayhem/sheet.js
 msgid "Connections"
 msgstr ""
@@ -829,6 +825,10 @@ msgstr ""
 msgid "Incoming"
 msgstr ""
 
+#: htdocs/luci-static/resources/view/mayhem/dashboard.js
+msgid "Information"
+msgstr ""
+
 #: htdocs/luci-static/resources/mayhem/page/components.js
 msgid "Install"
 msgstr ""
@@ -1003,6 +1003,10 @@ msgstr ""
 
 #: htdocs/luci-static/resources/view/mayhem/dashboard.js
 msgid "Mayhem is turned off"
+msgstr ""
+
+#: htdocs/luci-static/resources/view/mayhem/dashboard.js
+msgid "Mayhem version"
 msgstr ""
 
 #: htdocs/luci-static/resources/mayhem/diag.js
@@ -1439,10 +1443,6 @@ msgstr ""
 
 #: htdocs/luci-static/resources/mayhem/page/sections.js
 msgid "Route router traffic through VPN"
-msgstr ""
-
-#: htdocs/luci-static/resources/view/mayhem/dashboard.js
-msgid "Router"
 msgstr ""
 
 #: htdocs/luci-static/resources/mayhem/diag.js
@@ -1973,6 +1973,10 @@ msgstr ""
 msgid "Update"
 msgstr ""
 
+#: htdocs/luci-static/resources/view/mayhem/dashboard.js
+msgid "Update all subscriptions"
+msgstr ""
+
 #: htdocs/luci-static/resources/mayhem/page/servers.js
 msgid "Update every, hours"
 msgstr ""
@@ -2111,6 +2115,10 @@ msgstr ""
 
 #: htdocs/luci-static/resources/mayhem/page/sections.js
 msgid "Xray recognizes BitTorrent by its first packets and sends it direct, past the proxy."
+msgstr ""
+
+#: htdocs/luci-static/resources/view/mayhem/dashboard.js
+msgid "Xray version"
 msgstr ""
 
 #: htdocs/luci-static/resources/mayhem/page/components.js

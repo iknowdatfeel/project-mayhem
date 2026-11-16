@@ -122,6 +122,7 @@ while :; do
 		# finishes them before it takes a stop.
 		mayhem_auto_update
 		mayhem_dns_catchup
+		mayhem_isp_dns_catchup
 
 		# The provider's DNS servers after a change of network on any
 		# uplink (wwan, LTE: a reload follows only the WAN's "up"). dnsmasq

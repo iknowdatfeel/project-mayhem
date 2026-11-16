@@ -2419,6 +2419,8 @@ export function build(model) {
 
 		if (!length(domestic)) {
 			warn('no DNS servers received from the provider, using the public fallback');
+			// The scheduler applies the provider's servers when they come.
+			st.isp_dns_fallback = true;
 
 			for (let ip in C.FALLBACK_DOMESTIC_DNS)
 				push(domestic, { address: ip, host: ip });

@@ -179,6 +179,26 @@ reload_service() {
 	start "$@"
 }
 
+# At boot the WAN often comes up after Mayhem's turn, and the configuration
+# would get the public DNS servers instead of the provider's. While they
+# have not come, Mayhem waits for them in the background (at most 60 s, then
+# it starts with the public ones and the scheduler applies the provider's
+# later): procd runs the boot scripts one at a time, a wait here would hold
+# the rest of the boot. Meanwhile mayhem-hold keeps the kill switch.
+boot() {
+	if mayhem_isp_dns_pending; then
+		mayhem_log "waiting for the provider's DNS servers before the start (at most 60 s)"
+		(
+			mayhem_isp_dns_wait 60 ||
+				mayhem_log "no DNS servers from the provider in 60 s: starting with the public ones" warn
+			start "$@"
+		) </dev/null 2>&1 | logger -t mayhem >/dev/null 2>&1 &
+		return 0
+	fi
+
+	start "$@"
+}
+
 service_triggers() {
 	procd_add_reload_trigger mayhem
 	# Provider DNS servers may change when an interface comes up.

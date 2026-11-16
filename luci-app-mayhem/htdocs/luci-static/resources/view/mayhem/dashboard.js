@@ -69,9 +69,11 @@ const CSS = `
 .mh-del:hover { color:var(--error-color-medium, red); }
 .mh-head { display:flex; align-items:center; justify-content:space-between; gap:10px; flex-wrap:wrap; }
 .mh-head .mh-grow { flex:1 1 auto; }
-.mh-layout { display:grid; grid-template-columns:1fr 1fr 240px; grid-template-rows:auto 1fr; grid-template-areas:"conn sys side" "servers servers side"; grid-gap:10px; align-items:start; }
-.mh-a-conn { grid-area:conn; align-self:stretch; min-width:0; } .mh-a-sys { grid-area:sys; align-self:stretch; min-width:0; } .mh-a-side { grid-area:side; } .mh-a-servers { grid-area:servers; }
-@media (max-width: 900px) { .mh-layout { grid-template-columns:1fr; grid-template-rows:none; grid-template-areas:"conn" "sys" "side" "servers"; } }
+.mh-layout { display:grid; grid-template-columns:1fr 240px; grid-template-rows:auto 1fr; grid-template-areas:"servers side" "servers info"; grid-gap:10px; align-items:start; }
+.mh-a-info { grid-area:info; min-width:0; } .mh-a-side { grid-area:side; } .mh-a-servers { grid-area:servers; min-width:0; }
+@media (max-width: 900px) { .mh-layout { grid-template-columns:1fr; grid-template-rows:none; grid-template-areas:"side" "info" "servers"; } }
+.mh-gextra { display:inline-flex; align-items:center; gap:4px 12px; flex-wrap:wrap; margin-left:auto; }
+.mh-speed { white-space:nowrap; }
 .mh-widget-row { white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
 .mh-widget-row.mh-wrap { white-space:normal; }
 .mh-whead { display:flex; justify-content:space-between; align-items:baseline; gap:8px; }
@@ -226,7 +228,6 @@ return view.extend({
 	},
 
 	redrawLive() {
-		const [ conn, sys ] = this.renderWidgets(this.data);
 		const swap = (cls, el) => {
 			const old = document.querySelector('#mayhem-body .' + cls);
 
@@ -238,10 +239,13 @@ return view.extend({
 			return true;
 		};
 
-		if (!swap('mh-a-conn', conn) || !swap('mh-a-sys', sys)) {
+		if (!swap('mh-a-info', this.renderInfo(this.data))) {
 			this.redraw();
 			return;
 		}
+
+		// The speed in the head of the server list.
+		swap('mh-speed', this.renderSpeed(this.data));
 
 		// The traffic of the tunnels and of the servers changes too: their
 		// rows and the hints of the tiles in place.
@@ -557,12 +561,8 @@ return view.extend({
 			} else if (d.running) {
 				xrayText = _('Works');
 				xrayClass = 'mh-ok';
-				if (d.xray_started && d.xray_started.time) {
-					const uptime = Math.max(0, Math.floor((d.time || Date.now() / 1000) - d.xray_started.time));
-					const upstr = uptime >= 3600 ? Math.floor(uptime / 3600) + 'h ' + Math.floor((uptime % 3600) / 60) + 'm'
-						: (uptime >= 60 ? Math.floor(uptime / 60) + 'm ' + (uptime % 60) + 's' : uptime + 's');
-					xrayText += ' (' + upstr + (d.xray_started.why ? ', ' + d.xray_started.why : '') + ')';
-				}
+				if (d.xray_started && d.xray_started.why)
+					xrayText += ' (' + d.xray_started.why + ')';
 			}
 			const xray = [ xrayText, xrayClass ];
 			const row = (name, v) => E('div', { 'class': 'mh-svc-row' }, [
@@ -637,9 +637,10 @@ return view.extend({
 		return [ _('Server'), m.node ? m.node.name : '—' ];
 	},
 
-	connectionRows(d, working) {
+	// The connection of the main traffic: its server, ping, external IP and
+	// location.
+	connectionRows(d) {
 		const c = checks.conn;
-		const sp = this.speed && working ? this.speed : null;
 		const rows = [
 			this.serverRow(d)
 		];
@@ -647,10 +648,6 @@ return view.extend({
 		if (d.dns_down)
 			rows.push([ _('DNS'), _('Provider\'s: the remote DNS does not answer'), 'mh-warn' ]);
 
-		rows.push(
-			[ _('Incoming'), sp ? rate(sp.down) : '—' ],
-			[ _('Outgoing'), sp ? rate(sp.up) : '—' ]
-		);
 		const wait = '…';
 
 		if (!c) {
@@ -682,23 +679,35 @@ return view.extend({
 		return rows;
 	},
 
-	// The connection, the system and all the buttons in one row; the state of
-	// the service is the badge at the top.
-	renderWidgets(d) {
-		const working = d.running && d.active;
+	// One box under the buttons: the connection, then the versions and the
+	// memory; the router and its OS are in the diagnostics.
+	renderInfo(d) {
+		const box = this.widget(_('Information'), this.connectionRows(d).concat([
+			[ _('Mayhem version'), d.version || '—' ],
+			[ _('Xray version'), d.xray || '—' ],
+			// xray's data, as the watchdog counts it; with its code, in the hint.
+			[ _('Memory use'), d.rss_kb ? mh.bytes(d.rss_kb * 1024) : '—', '',
+				d.rss_total_kb ? _('%s with the code of xray').format(mh.bytes(d.rss_total_kb * 1024)) : null ]
+		]));
 
-		return [
-			this.widget(_('Connection state'), this.connectionRows(d, working)),
-			this.widget(_('System'), [
-				[ _('Router'), d.model || '—' ],
-				[ _('OS'), d.system || '—' ],
-				[ 'Mayhem', d.version || '—' ],
-				[ 'Xray', d.xray || '—' ],
-				// xray's data, as the watchdog counts it; with its code, in the hint.
-				[ _('Memory use'), d.rss_kb ? mh.bytes(d.rss_kb * 1024) : '—', '',
-					d.rss_total_kb ? _('%s with the code of xray').format(mh.bytes(d.rss_total_kb * 1024)) : null ]
-			])
-		];
+		box.classList.add('mh-a-info');
+		return box;
+	},
+
+	// The traffic of the moment: down is what comes in, up what goes out.
+	renderSpeed(d) {
+		const sp = this.speed && d.running && d.active ? this.speed : null;
+
+		return E('span', { 'class': 'mh-speed mh-small' }, [
+			E('span', { 'title': _('Incoming') }, '↓ ' + (sp ? rate(sp.down) : '—')), '  ',
+			E('span', { 'title': _('Outgoing') }, '↑ ' + (sp ? rate(sp.up) : '—'))
+		]);
+	},
+
+	// The enabled subscriptions: one button in the head of the list updates
+	// them all; with several, each has its own too.
+	enabledSubs() {
+		return ((this.data || {}).subscriptions || []).filter((s) => s.enabled).map((s) => s.name);
 	},
 
 	// Configuration errors stop xray: they stay in sight. Warnings are on the
@@ -966,10 +975,11 @@ return view.extend({
 		else if (info.hwid && info.hwid.not_supported)
 			parts.push(E('span', { 'class': 'mh-warn mh-small' }, _('The provider expects an HWID: turn on "Send device data"')));
 
-		parts.push(mh.button({
-			icon: 'refresh', text: _('Update'), busy: this.busy['subs:' + sub.name],
-			click: ui.createHandlerFn(this, 'updateSubs', 'subs:' + sub.name, [ sub.name ])
-		}));
+		if (this.enabledSubs().length > 1)
+			parts.push(mh.button({
+				icon: 'refresh', text: _('Update'), busy: this.busy['subs:' + sub.name],
+				click: ui.createHandlerFn(this, 'updateSubs', 'subs:' + sub.name, [ sub.name ])
+			}));
 
 		return E('div', { 'class': 'mh-ghead' }, parts);
 	},
@@ -1375,17 +1385,36 @@ return view.extend({
 				])
 			].concat(tunnels.map((t) => this.renderTunnel(t, d.time)))));
 
-		// The connection and the system on top, the servers under them, the
-		// column of buttons at the side all the way down.
-		const [ conn, sys ] = this.renderWidgets(d);
+		// The head of the list: the speed and, with subscriptions, the button
+		// that updates them all.
+		const lhead = list.querySelector('.mh-ghead');
+
+		if (lhead) {
+			const subs = this.enabledSubs();
+			const extra = [ this.renderSpeed(d) ];
+
+			if (subs.length) {
+				const all = mh.button({
+					icon: 'refresh', text: _('Update'), busy: this.busy['subs:*'],
+					click: ui.createHandlerFn(this, 'updateSubs', 'subs:*', subs)
+				});
+
+				all.setAttribute('title', _('Update all subscriptions'));
+				all.classList.add('mh-subs-all');
+				extra.push(all);
+			}
+
+			lhead.appendChild(E('span', { 'class': 'mh-gextra' }, extra));
+		}
+
+		// The servers on the left; the column of buttons on the right and the
+		// information under it, of the same width.
 		const side = this.renderSide(d);
 
-		conn.classList.add('mh-a-conn');
-		sys.classList.add('mh-a-sys');
 		side.classList.add('mh-a-side');
 
 		return [ this.renderTop(d), this.renderKillSwitch(d), this.renderAlert(d), E('div', { 'class': 'mh-layout' }, [
-			conn, sys, side,
+			side, this.renderInfo(d),
 			E('div', { 'class': 'mh-stack mh-a-servers' }, boxes)
 		]) ];
 	},

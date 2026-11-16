@@ -772,6 +772,28 @@ else
 	bad "global mode, excluded domains in the kernel: got $got, want 1 2 / 1 2 / 0 0"
 fi
 
+# No DNS servers from the provider yet (a boot before the WAN is up): the
+# public ones, and status.json tells the scheduler to apply the provider's
+# when they come. With them: no such mark.
+ispdns() {
+	# $1 name, $2 wan_dns as JSON; prints "flag warning"
+	cat > "$OUT/ispdns-$1.json" <<JSON
+{ "settings": { "mode": "lists", "interface": ["br-lan"] },
+  "dns": { "remote": ["https://1.1.1.1/dns-query"] },
+  "sections": [ { ".name": "main", "type": "proxy", "enabled": "1", "link": "socks://1.2.3.4:1080", "domain": ["a.test"] } ],
+  "runtime": { "wan_dns": $2, "ipv6": false } }
+JSON
+	mkdir -p "$OUT/ispdns-$1"
+	uc "$FILES/usr/share/mayhem/gen.uc" --model "$OUT/ispdns-$1.json" --out "$OUT/ispdns-$1" 2>/dev/null || { echo fail; return; }
+	echo "$(grep -c '"isp_dns_fallback": true' "$OUT/ispdns-$1/status.json") $(grep -c 'no DNS servers received from the provider' "$OUT/ispdns-$1/status.json")"
+}
+got="$(ispdns none '[]') / $(ispdns isp '["192.168.100.1"]')"
+if [ "$got" = "1 1 / 0 0" ]; then
+	ok "no provider DNS yet: the public ones, marked for the scheduler"
+else
+	bad "no provider DNS: got $got, want 1 1 / 0 0"
+fi
+
 # Firmware version, target and package arch for the AmneziaWG builds.
 # `ubus call system board` has no arch, so it must come from the release file.
 mkdir -p "$OUT/fw/bin"
@@ -822,7 +844,7 @@ if command -v shellcheck >/dev/null 2>&1; then
 	if out="$(shellcheck -s sh -f gcc -e SC1091,SC2034,SC3043,SC2086,SC2046,SC2317,SC2329 \
 		"$FILES/usr/bin/mayhem" "$FILES/usr/libexec/mayhem/xray-run" "$FILES/usr/libexec/mayhem/scheduler" \
 		"$FILES/etc/uci-defaults/90-mayhem" "$ROOT/tests/netns.sh" "$ROOT/tests/build-ucode.sh" "$ROOT/tests/health.sh" "$ROOT/tests/tunsync.sh" "$ROOT/tests/nftkeep.sh" "$ROOT/tests/scheduler.sh" "$ROOT/tests/serverlist.sh" "$ROOT/tests/conns.sh" "$ROOT/tests/bbr.sh" \
-		"$ROOT/tests/inodes.sh" "$ROOT/tests/applying.sh" "$ROOT/tests/prerelease.sh" "$ROOT/tests/select.sh" "$ROOT/tests/metrics.sh" "$ROOT/tests/netgen.sh" "$ROOT/tests/refused.sh" "$ROOT/tests/install.sh" "$ROOT/tests/pkgscripts.sh" "$ROOT/tests/ksrestart.sh" "$ROOT/tests/wake.sh" "$ROOT/tests/dnsup.sh" "$ROOT/tests/locks.sh" "$ROOT/tests/fetch.sh" "$ROOT/tests/stopped.sh" "$ROOT/tests/geohead.sh" \
+		"$ROOT/tests/inodes.sh" "$ROOT/tests/applying.sh" "$ROOT/tests/prerelease.sh" "$ROOT/tests/select.sh" "$ROOT/tests/metrics.sh" "$ROOT/tests/netgen.sh" "$ROOT/tests/refused.sh" "$ROOT/tests/install.sh" "$ROOT/tests/pkgscripts.sh" "$ROOT/tests/ksrestart.sh" "$ROOT/tests/wake.sh" "$ROOT/tests/dnsup.sh" "$ROOT/tests/ispdns.sh" "$ROOT/tests/locks.sh" "$ROOT/tests/fetch.sh" "$ROOT/tests/stopped.sh" "$ROOT/tests/geohead.sh" \
 		"$FILES/usr/share/mayhem/lib.sh" "$FILES/usr/share/mayhem/const.sh" "$ROOT/install.sh" 2>&1)"; then
 		ok "shellcheck"
 	else
@@ -1269,6 +1291,11 @@ if out="$(sh "$ROOT/tests/dnsup.sh" 2>&1)"; then
 	ok "dnsmasq's file: tested before it goes in"
 else
 	bad "dnsmasq's file: $(printf '%s' "$out" | grep -v '^ok')"
+fi
+if out="$(sh "$ROOT/tests/ispdns.sh" 2>&1)"; then
+	ok "the provider's DNS servers: waited for at boot, applied when they come later"
+else
+	bad "the provider's DNS servers: $(printf '%s' "$out" | grep -v '^ok')"
 fi
 
 # Locks: no two critical parts at once, no lock taken from a live owner.

@@ -158,9 +158,9 @@ def ucode(script, *args):
     return json.loads(out.stdout)
 
 
-# Set by a test to show the router as one without subscriptions, or with one
-# server of a subscription in the server list.
-HIDE = {'subscription': False, 'one_server': False}
+# Set by a test to show the router as one without subscriptions, with one
+# server of a subscription in the server list, or with a second subscription.
+HIDE = {'subscription': False, 'one_server': False, 'two_subs': False}
 
 
 # Subscriptions added (and deleted again) in this session, as rpcd keeps the
@@ -213,6 +213,10 @@ def call(obj, method, args):
             for s in out.get('sections') or []:
                 if s.get('name') == 'pool':
                     s['nodes'] = [n for n in s.get('nodes') or [] if n.get('source') not in (None, 'link', 'json', 'interface')][:1]
+        if method == 'dashboard' and HIDE['two_subs']:
+            first = next((x for x in out.get('subscriptions') or [] if x.get('enabled')), None)
+            if first:
+                out['subscriptions'].append(dict(first, name='othersub', nodes=0))
         return out
 
     if obj == 'uci':
@@ -870,6 +874,34 @@ def main():
                 raise RuntimeError('the main section can still be chosen on the dashboard')
             if not pg.query_selector('#mayhem-body .mh-ghead .mh-bar'):
                 raise RuntimeError('no subscription traffic on the dashboard')
+            # one box of information under the buttons, as wide as they are
+            if pg.query_selector('#mayhem-body .mh-a-conn, #mayhem-body .mh-a-sys'):
+                raise RuntimeError('the connection or system box is still on the dashboard')
+            info = pg.eval_on_selector('#mayhem-body .mh-a-info', 'e => e.getBoundingClientRect().toJSON()')
+            side = pg.eval_on_selector('#mayhem-body .mh-a-side', 'e => e.getBoundingClientRect().toJSON()')
+            if info['top'] < side['bottom'] or abs(info['width'] - side['width']) > 1:
+                raise RuntimeError('the information is not under the buttons with their width: %s %s' % (info, side))
+            title = pg.inner_text('#mayhem-body .mh-a-info .mh-whead .mh-title').strip()
+            if title != TRANSLATIONS.get('Information', 'Information'):
+                raise RuntimeError('the title of the information box: %r' % title)
+            labels = [x.rstrip(': ') for x in pg.eval_on_selector_all('#mayhem-body .mh-a-info .mh-widget-row > .mh-muted', 'es => es.map(e => e.textContent)')]
+            want = [TRANSLATIONS.get(x, x) for x in ('Server', 'Ping time', 'External IP', 'Location', 'Mayhem version', 'Xray version', 'Memory use')]
+            if [x for x in labels if x != TRANSLATIONS.get('DNS', 'DNS')] != want:
+                raise RuntimeError('the rows of the information box: %s' % labels)
+            # the speed in the head of the list, down in and up out
+            speed = pg.inner_text('#mayhem-body .mh-list .mh-ghead .mh-speed')
+            if '↓' not in speed or '↑' not in speed:
+                raise RuntimeError('no speed in the head of the server list: %r' % speed)
+            # one subscription: its update is the button of the list, not of its group
+            if pg.locator('#mayhem-body .mh-list .mh-ghead .mh-subs-all').count() != 1:
+                raise RuntimeError('no button that updates all subscriptions in the head of the list')
+            if pg.locator('#mayhem-body .mh-group .mh-ghead > .btn').count():
+                raise RuntimeError('a subscription has its own update button while it is the only one')
+            n = len(calls)
+            pg.click('#mayhem-body .mh-subs-all')
+            pg.wait_for_timeout(1500)
+            if 'luci.mayhem.sub_update' not in calls[n:]:
+                raise RuntimeError('the button of the list did not update the subscription: %s' % calls[n:])
             # the button of the server pages adds a connection, whatever there is
             nav = pg.inner_text('#mayhem-body .mh-navbtn >> nth=0').strip()
             if nav != TRANSLATIONS.get('Add connection', 'Add connection'):
@@ -907,6 +939,26 @@ def main():
                 shot(pg, 'dashboard_one_server')
             finally:
                 HIDE['one_server'] = False
+                pg.reload()
+                pg.wait_for_selector('#mayhem-body .mh-tile', timeout=15000)
+
+        def two_subs(pg):
+            # Several subscriptions: each has its own update button, and the
+            # one of the list updates them all.
+            HIDE['two_subs'] = True
+            try:
+                pg.reload()
+                pg.wait_for_selector('#mayhem-body .mh-subs-all', timeout=15000)
+                own = pg.locator('#mayhem-body .mh-group .mh-ghead > .btn').count()
+                if own != 2:
+                    raise RuntimeError('subscriptions with their own update button: %d of 2' % own)
+                n = len(calls)
+                pg.click('#mayhem-body .mh-subs-all')
+                pg.wait_for_timeout(2500)
+                if calls[n:].count('luci.mayhem.sub_update') != 2:
+                    raise RuntimeError('the button of the list did not update every subscription: %s' % calls[n:])
+            finally:
+                HIDE['two_subs'] = False
                 pg.reload()
                 pg.wait_for_selector('#mayhem-body .mh-tile', timeout=15000)
 
@@ -1128,7 +1180,7 @@ def main():
                 raise RuntimeError('the address keeps a page after closing: %s' % pg.url)
 
         pages = [
-            ('mayhem/dashboard', [('buttons', dashboard_buttons), ('one server in the list', one_server), ('active connections', conns_modal), ('logs dialog', logs_dialog), ('run diagnostics', run_diag),
+            ('mayhem/dashboard', [('buttons', dashboard_buttons), ('one server in the list', one_server), ('several subscriptions', two_subs), ('active connections', conns_modal), ('logs dialog', logs_dialog), ('run diagnostics', run_diag),
                                   ('edit a server', edit_server), ('delete a server', delete_server), ('choose how', choose_mode), ('chain of the list', list_chain),
                                   ('delete a tunnel', delete_tunnel), ('services', services_badge), ('pages in a window', nav_pages)]),
             ('mayhem/dashboard#settings', [('sections tab', lambda pg: shot(pg, 'routing_sections')), ('main section', main_section),

@@ -982,7 +982,7 @@ msgstr "Память"
 
 #: htdocs/luci-static/resources/view/mayhem/dashboard.js
 msgid "Memory use"
-msgstr "Использование памяти"
+msgstr "Использование ОЗУ"
 
 #: htdocs/luci-static/resources/mayhem/diag.js
 msgid "Messages of Mayhem, xray and dnsmasq from the system log. At the debug level xray logs every connection and DNS query: turn it back down when you are done."
@@ -2441,3 +2441,19 @@ msgstr "Ускорение потоков (flow offloading)"
 #: htdocs/luci-static/resources/mayhem/diag.js
 msgid "Flow offloading is on: connections opened before a server or tunnel change keep their old path until they close."
 msgstr "Включено ускорение потоков (flow offloading): соединения, открытые до смены сервера или туннеля, идут прежним путём, пока не закроются."
+
+#: htdocs/luci-static/resources/view/mayhem/dashboard.js
+msgid "Information"
+msgstr "Информация"
+
+#: htdocs/luci-static/resources/view/mayhem/dashboard.js
+msgid "Mayhem version"
+msgstr "Версия Mayhem"
+
+#: htdocs/luci-static/resources/view/mayhem/dashboard.js
+msgid "Xray version"
+msgstr "Версия Xray"
+
+#: htdocs/luci-static/resources/view/mayhem/dashboard.js
+msgid "Update all subscriptions"
+msgstr "Обновить все подписки"

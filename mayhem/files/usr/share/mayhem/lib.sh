@@ -1154,6 +1154,69 @@ mayhem_isp_dns() {
 	done
 }
 
+# The provider's DNS servers as the generator takes them (model.uc wan_dns,
+# build.uc): one address a line, none while the WAN has not got them.
+mayhem_isp_dns_list() {
+	local f files="${MAYHEM_RESOLV_AUTO:-/tmp/resolv.conf.d/resolv.conf.auto /tmp/resolv.conf.auto}" out
+
+	for f in $files; do
+		out="$(awk '$1 == "nameserver" { ip = $2; sub(/[#%].*/, "", ip)
+			if (ip ~ /^[0-9a-fA-F.:]+$/ && ip ~ /[.:]/ && ip !~ /^(127\.|::1$)/) print ip }' "$f" 2>/dev/null)"
+		if [ -n "$out" ]; then
+			echo "$out"
+			return 0
+		fi
+	done
+}
+
+# At boot the WAN often comes up after Mayhem's turn: a configuration built
+# then has the public DNS servers instead of the provider's, and procd takes
+# the triggers of the service (the WAN's "up") only once its start is done.
+# Wait for the provider's servers only when they are what the start needs:
+# Mayhem turned on and no domestic DNS of the user's own.
+mayhem_isp_dns_pending() {
+	[ "$(uci -q get mayhem.settings.enabled)" = 1 ] || return 1
+	[ -z "$(uci -q get mayhem.dns.domestic)" ] || return 1
+	[ -z "$(mayhem_isp_dns_list)" ]
+}
+
+# $1: at most so many seconds. 0: they are there.
+mayhem_isp_dns_wait() {
+	local left="${1:-60}"
+
+	while [ "$left" -gt 0 ]; do
+		[ -n "$(mayhem_isp_dns_list)" ] && return 0
+		sleep 1
+		left=$((left - 1))
+	done
+
+	[ -n "$(mayhem_isp_dns_list)" ]
+}
+
+# The scheduler, every minute: a configuration built while the WAN had no
+# DNS servers (a boot that waited in vain, a reload while the internet was
+# down) gets the provider's ones when they are there again - even when the
+# WAN's "up" was missed. Once for each build of the configuration, at most
+# once in 5 minutes: a build that keeps the public servers does not loop.
+mayhem_isp_dns_catchup() {
+	local st="$MAYHEM_RUN_DIR/status.json" stamp="$MAYHEM_RUN_DIR/isp-dns.retry" gen now last
+
+	[ -f "$MAYHEM_RUN_DIR/active" ] || return 0
+	grep -q '"isp_dns_fallback":[[:space:]]*true' "$st" 2>/dev/null || return 0
+	[ -n "$(mayhem_isp_dns_list)" ] || return 0
+
+	gen="$(sed -n 's/.*"generated":[[:space:]]*\([0-9][0-9]*\).*/\1/p' "$st" | head -n 1)"
+	now="$(date +%s)"
+	set -- $(cat "$stamp" 2>/dev/null)
+	last="${2:-0}"
+	[ "${1:-}" = "$gen" ] && return 0
+	[ $((now - last)) -lt 300 ] 2>/dev/null && return 0
+
+	echo "$gen $now" > "$stamp"
+	mayhem_log "the provider's DNS servers are there now: applying them instead of the public ones" notice
+	"${MAYHEM_INIT:-/etc/init.d/mayhem}" reload
+}
+
 mayhem_dnsmasq_hup() {
 	local pids
 
