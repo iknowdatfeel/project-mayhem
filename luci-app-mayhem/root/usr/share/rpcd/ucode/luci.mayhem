@@ -4478,10 +4478,28 @@ function run_apart(name, inplace, req) {
 	if (!fs.access(CALL) || ubus_link() == null || type(req?.reply) != 'function')
 		return inplace(req);
 
-	const cmd = `MAYHEM_RPC_CHILD=1 exec ucode ${q(CALL)} ${q(name)} ${q(sprintf('%J', req.args ?? {}))}`;
+	// The arguments go in a file of the run directory (0600), not on the
+	// command line: one argument is limited to 128 KB (a backup with its
+	// lists is more), and the process list would show server keys.
+	fs.mkdir(RUN, 0700);
+
+	const now = clock();
+	const file = `${RUN}/call.${name}.${now[0]}.${now[1]}.json`;
+	const fh = fs.open(file, 'w', 0600);
+
+	if (!fh)
+		return inplace(req);
+
+	fh.write(sprintf('%J', req.args ?? {}));
+	fh.close();
+
+	const cmd = `MAYHEM_RPC_CHILD=1 exec ucode ${q(CALL)} ${q(name)} ${q(`@${file}`)}`;
 
 	return deferred_sh(req, cmd, (text) => {
 		let res = null;
+
+		// call.uc took it already, unless it never ran.
+		fs.unlink(file);
 
 		try {
 			res = json(text);

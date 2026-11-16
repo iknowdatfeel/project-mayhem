@@ -1030,6 +1030,31 @@ else
 	bad "backup: $out"
 fi
 
+# A backup bigger than one argument may be (128 KB) through call.uc: the
+# arguments come in a file, which is gone after the call.
+mkdir -p "$OUT/bigbk-uci" "$OUT/bigbk-run"
+cp "$ROOT/tests/uci/mayhem" "$OUT/bigbk-uci/mayhem"
+PATH="$OUT/bin:$PATH" MAYHEM_UCI_DIR="$OUT/bigbk-uci" MAYHEM_RUN_DIR="$OUT/bigbk-run" uc -e "
+	const p = loadfile(ARGV[0])()['luci.mayhem'];
+	const b = p.backup_export.call({ args: { connections: true } });
+	const big = [];
+	for (let i = 0; i < 20000; i++) push(big, sprintf('d%05d.example.com', i));
+	for (let s in b.sections)
+		if (s['.type'] == 'section') { s.domain = big; break; }
+	require('fs').writefile(ARGV[1], sprintf('%J', { backup: b }));
+" "$ROOT/luci-app-mayhem/root/usr/share/rpcd/ucode/luci.mayhem" "$OUT/bigbk-run/call.json" 2>/dev/null
+size="$(wc -c < "$OUT/bigbk-run/call.json" 2>/dev/null || echo 0)"
+out="$(PATH="$OUT/bin:$PATH" MAYHEM_UCI_DIR="$OUT/bigbk-uci" MAYHEM_RUN_DIR="$OUT/bigbk-run" \
+	MAYHEM_RPC_PLUGIN="$ROOT/luci-app-mayhem/root/usr/share/rpcd/ucode/luci.mayhem" MAYHEM_RPC_CACHE="$OUT/rpccache/bk" \
+	MAYHEM_RPC_MODULES="$FILES/usr/share/ucode/mayhem" \
+	uc "$ROOT/luci-app-mayhem/root/usr/share/mayhem-luci/call.uc" backup_import "@$OUT/bigbk-run/call.json" 2>&1)"
+if [ "$size" -gt 307200 ] && printf '%s' "$out" | grep -q '"ok": true' && [ ! -e "$OUT/bigbk-run/call.json" ] &&
+   grep -q "d19999.example.com" "$OUT/bigbk-uci/mayhem"; then
+	ok "backup of $((size / 1024)) KB through call.uc, its file gone"
+else
+	bad "big backup through call.uc ($size bytes): $out"
+fi
+
 # Sections limited to devices: xray rules by source address (a MAC by its
 # lease), kernel tunnels by MAC and address; a section whose devices have no
 # address has no rules yet.

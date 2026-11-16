@@ -1,5 +1,6 @@
 // Mayhem: runs one method of the rpcd plugin in a process of its own.
 //   call.uc METHOD JSON-ARGS
+//   call.uc METHOD @FILE      the arguments in FILE, removed once read
 //
 // rpcd runs every plugin call in its one process: a call that waits for the
 // network (a URL test, the external address, a subscription download) would
@@ -65,10 +66,19 @@ function compiled() {
 
 const plugin = compiled() ?? loadfile(PLUGIN)();
 const m = plugin['luci.mayhem'][ARGV[0]];
-let args;
+let args, text = ARGV[1] ?? 'null';
+
+// The plugin passes the arguments in a file (run_apart()): read at once
+// and gone, whatever is in it.
+if (substr(text, 0, 1) == '@') {
+	const file = substr(text, 1);
+
+	text = fs.readfile(file) ?? 'null';
+	fs.unlink(file);
+}
 
 try {
-	args = json(ARGV[1] ?? 'null') ?? {};
+	args = json(text) ?? {};
 }
 catch (e) {
 	args = {};
