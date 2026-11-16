@@ -143,8 +143,9 @@ fetch() {
 		return 0
 	fi
 
+	# A hung connection must not hold the nightly update.
 	if command -v curl >/dev/null 2>&1; then
-		curl -fsSL --retry 2 -o "$2" "$1"
+		curl -fsSL --retry 2 --connect-timeout 15 -m 600 -o "$2" "$1"
 	else
 		wget -q -O "$2" "$1"
 	fi

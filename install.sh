@@ -117,8 +117,9 @@ fetch() {
 		return 0
 	fi
 
+	# A hung connection must not hold the installer (or the nightly update).
 	if command -v curl >/dev/null 2>&1; then
-		curl -fsSL -o "$2" "$1"
+		curl -fsSL --connect-timeout 15 -m 600 -o "$2" "$1"
 	else
 		wget -q -O "$2" "$1"
 	fi
