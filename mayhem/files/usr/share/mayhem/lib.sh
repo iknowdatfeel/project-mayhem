@@ -64,9 +64,28 @@ mayhem_nft_kept() {
 	done
 
 	sed -n 's/^\tset \([A-Za-z0-9_]*_d[46]\) {$/\1/p' "$MAYHEM_RUN_DIR/nft.conf" > "$MAYHEM_RUN_DIR/nft.dynsets"
+	[ -s "$MAYHEM_RUN_DIR/nft.dynsets" ] || return 0
+
+	# The sets whose nftset= lines changed between the old and the new file
+	# (or all of them without an old one): one pass of awk over each file.
+	[ -f "$new" ] || new=/dev/null
+	awk -v t="$MAYHEM_NFT_TABLE" -v have_old="$([ -n "$old" ] && echo 1)" '
+		FILENAME == ARGV[1] { if ($0 != "") { set[$0] = 1; order[++n] = $0 } next }
+		{
+			for (s in set)
+				if (index($0, "#" t "#" s) > 0) {
+					if (FILENAME == ARGV[2]) a[s] = a[s] "\n" $0
+					else b[s] = b[s] "\n" $0
+				}
+		}
+		END {
+			for (i = 1; i <= n; i++)
+				if (have_old != 1 || a[order[i]] != b[order[i]])
+					print order[i]
+		}' "$MAYHEM_RUN_DIR/nft.dynsets" "${old:-/dev/null}" "$new" > "$MAYHEM_RUN_DIR/nft.changed"
 
 	while read -r set; do
-		if [ -z "$old" ] || [ "$(grep -F "#$MAYHEM_NFT_TABLE#$set" "$old" | md5sum)" != "$(grep -F "#$MAYHEM_NFT_TABLE#$set" "$new" 2>/dev/null | md5sum)" ]; then
+		if grep -qx -F "$set" "$MAYHEM_RUN_DIR/nft.changed"; then
 			echo "$set" >> "$MAYHEM_RUN_DIR/nft.emptied"
 			continue
 		fi
@@ -935,12 +954,19 @@ mayhem_refused_add() {
 # grows or every two minutes. Once a minute: with more than 8 MiB freed but
 # kept (HeapIdle - HeapReleased), a collection is started at once through
 # xray's metrics port (pprof's "gc=1"), and Go hands the pages back.
+# $1 (from the scheduler): what /debug/vars said, empty when xray did not
+# answer; without it asked here.
 mayhem_mem_trim() {
 	local vars idle rel
 
 	[ -f "$MAYHEM_RUN_DIR/active" ] || return 0
 
-	vars="$(curl -s -m 5 "http://127.0.0.1:$MAYHEM_METRICS_PORT/debug/vars" 2>/dev/null)" || return 0
+	if [ "$#" -gt 0 ]; then
+		vars="$1"
+		[ -n "$vars" ] || return 0
+	else
+		vars="$(curl -s -m 5 "http://127.0.0.1:$MAYHEM_METRICS_PORT/debug/vars" 2>/dev/null)" || return 0
+	fi
 	idle="$(printf '%s' "$vars" | grep -o '"HeapIdle": *[0-9]*' | head -n 1 | grep -o '[0-9]*$')"
 	rel="$(printf '%s' "$vars" | grep -o '"HeapReleased": *[0-9]*' | head -n 1 | grep -o '[0-9]*$')"
 
@@ -968,8 +994,11 @@ mayhem_xray_swap() {
 	fi
 }
 
+# $1 (from the scheduler, which asks /debug/vars once a minute): 1 when xray
+# answered on its metrics port, 0 when it did not; without it the watchdog
+# asks itself.
 mayhem_watchdog() {
-	local pid rss total pct limit n gml
+	local pid rss total pct limit n gml answered="${1:-}"
 
 	[ "${MAYHEM_WATCHDOG:-$(uci -q get mayhem.settings.watchdog)}" = 0 ] && return 0
 
@@ -1018,7 +1047,8 @@ mayhem_watchdog() {
 			# process that is gone does not carry over.
 			if ! kill -0 "$pid" 2>/dev/null; then
 				rm -f "$MAYHEM_RUN_DIR/watchdog.hang"
-			elif curl -s -o /dev/null -m 5 "http://127.0.0.1:$MAYHEM_METRICS_PORT/debug/vars" 2>/dev/null; then
+			elif [ "$answered" = 1 ] || { [ -z "$answered" ] &&
+			     curl -s -o /dev/null -m 5 "http://127.0.0.1:$MAYHEM_METRICS_PORT/debug/vars" 2>/dev/null; }; then
 				rm -f "$MAYHEM_RUN_DIR/watchdog.hang"
 			else
 				n=1

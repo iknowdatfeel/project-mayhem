@@ -31,6 +31,9 @@ cp "$FILES/usr/share/mayhem/const.sh" "$T/lib/"
 } > "$T/lib/lib.sh"
 : > "$T/lib/health.uc"
 export MAYHEM_RUN_DIR="$T/run" MAYHEM_LIB_DIR="$T/lib" STUB="$T"
+# The provider's DNS for dnsmasq (every minute): files of the test, no dnsmasq.
+mkdir -p "$T/dnsmasq"
+export MAYHEM_DNS_SERVERS="$T/dnsmasq/mayhem.servers" MAYHEM_RESOLV_AUTO="$T/resolv.conf.auto"
 : > "$T/run/active"
 
 # ucode: the subscriptions take 1.5 s; every run is logged.
@@ -48,6 +51,7 @@ cat > "$T/bin/sleep" <<'EOF'
 /bin/sleep "$(awk -v s="$1" 'BEGIN { print s / 100 }')"
 EOF
 printf '#!/bin/sh\nexit 0\n' > "$T/bin/logger"
+printf '#!/bin/sh\nexit 1\n' > "$T/bin/pidof"
 chmod +x "$T/bin/"*
 
 PATH="$T/bin:$PATH" MAYHEM_SUB=sub MAYHEM_UPDATE=upd sh "$FILES/usr/libexec/mayhem/scheduler" &
@@ -95,7 +99,6 @@ fi
 	echo 'mayhem_watchdog() { :; }'
 } > "$T/lib/lib2.sh"
 mv "$T/lib/lib2.sh" "$T/lib/lib.sh"
-mkdir -p "$T/dnsmasq"
 printf '@ISP@\n' > "$T/run/dns.xray"
 echo 'nameserver 10.9.9.9' > "$T/resolv.conf.auto"
 echo 'server=10.9.9.9' > "$T/dnsmasq/mayhem.servers"
@@ -105,8 +108,7 @@ sh -c 'trap "echo hup >> \"$1/hups\"" HUP; while :; do /bin/sleep 0.05; done' sh
 dnsmasq_pid=$!
 printf '#!/bin/sh\necho %s\n' "$dnsmasq_pid" > "$T/bin/pidof"
 chmod +x "$T/bin/pidof"
-PATH="$T/bin:$PATH" MAYHEM_SUB=sub MAYHEM_UPDATE=upd MAYHEM_DNS_SERVERS="$T/dnsmasq/mayhem.servers" \
-	MAYHEM_RESOLV_AUTO="$T/resolv.conf.auto" sh "$FILES/usr/libexec/mayhem/scheduler" &
+PATH="$T/bin:$PATH" MAYHEM_SUB=sub MAYHEM_UPDATE=upd sh "$FILES/usr/libexec/mayhem/scheduler" &
 pid=$!
 /bin/sleep 1.5
 same_hups="$(grep -c hup "$T/hups")"
@@ -121,6 +123,39 @@ if [ "$(cat "$T/dnsmasq/mayhem.servers")" = 'server=10.7.7.7' ] && [ "$(grep -c 
 else
 	bad "new provider DNS: $(cat "$T/dnsmasq/mayhem.servers"), HUPs $(grep -c hup "$T/hups")"
 fi
+
+rm -f "$T/run/dns.xray"
+
+# xray's metrics (/debug/vars) once a minute for the watchdog and the memory
+# trim together, with the real functions of lib.sh and a running "xray".
+{
+	cat "$FILES/usr/share/mayhem/lib.sh"
+	for f in mayhem_tunnels_check mayhem_conn_fold mayhem_auto_update mayhem_dns_catchup; do
+		echo "$f() { :; }"
+	done
+} > "$T/lib/lib.sh"
+cp "$(command -v sleep)" "$T/xray"
+"$T/xray" 30 &
+xpid=$!
+echo "$xpid" > "$T/run/xray.pid"
+cat > "$T/bin/curl" <<'EOF2'
+#!/bin/sh
+for a; do url="$a"; done
+echo "$url" >> "$STUB/curl.log"
+case "$url" in */debug/vars) echo '{"memstats":{"HeapIdle":0,"HeapReleased":0}}' ;; esac
+EOF2
+chmod +x "$T/bin/curl"
+: > "$T/curl.log"
+PATH="$T/bin:$PATH" MAYHEM_SUB=sub MAYHEM_UPDATE=upd MAYHEM_WATCHDOG=1 MAYHEM_WATCHDOG_MEM=90 MAYHEM_DNSMASQ_INIT=/bin/false \
+	sh "$FILES/usr/libexec/mayhem/scheduler" &
+pid=$!
+/bin/sleep 0.45
+kill "$pid" 2>/dev/null
+wait "$pid" 2>/dev/null
+kill "$xpid" 2>/dev/null
+n="$(grep -c '/debug/vars$' "$T/curl.log")"
+if [ "$n" = 1 ]; then ok "one minute: /debug/vars asked once"; else bad "one minute: /debug/vars asked $n times"; fi
+rm -f "$T/bin/curl"
 
 # A stop: the scheduler goes at once on TERM, also while it sleeps (procd
 # killed it 5 s later, its downloads with it).

@@ -49,10 +49,17 @@ downloads() {
 # heap through curl, folding the connection log): apart, one run at a time,
 # so the checks of the servers keep their 20 s.
 minute_jobs() {
+	local vars="" answered=0
+
 	trap 'exit 0' TERM INT
 	mayhem_tunnels_check
-	mayhem_watchdog
-	mayhem_mem_trim
+	# xray's metrics once for the watchdog (does it answer) and the memory
+	# trim (its heap): one curl a minute instead of two.
+	if [ -f "$MAYHEM_RUN_DIR/active" ]; then
+		vars="$(curl -s -m 5 "http://127.0.0.1:$MAYHEM_METRICS_PORT/debug/vars" 2>/dev/null)" && answered=1
+	fi
+	mayhem_watchdog "$answered"
+	mayhem_mem_trim "$vars"
 	mayhem_conn_fold
 }
 
