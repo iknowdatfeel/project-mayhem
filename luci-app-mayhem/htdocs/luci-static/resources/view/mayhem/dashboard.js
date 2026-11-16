@@ -1076,6 +1076,10 @@ return view.extend({
 	// The server list: one box, its title and how it picks the server on top,
 	// then its groups (keys and tunnels, every subscription).
 	listBox(s, groups) {
+		// One server: nothing to choose, no row for the choice.
+		if ((s.nodes || []).length <= 1 && !this.pendingSel[s.name])
+			return E('div', { 'class': 'mh-box mh-section mh-list' }, groups);
+
 		const bar = this.chooseBar(s);
 		const head = E('div', { 'class': 'mh-ghead' }, [ E('span', { 'class': 'mh-title' }, _('Server choice')) ].concat(Array.from(bar.childNodes)));
 
