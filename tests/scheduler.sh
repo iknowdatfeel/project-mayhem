@@ -157,6 +157,45 @@ n="$(grep -c '/debug/vars$' "$T/curl.log")"
 if [ "$n" = 1 ]; then ok "one minute: /debug/vars asked once"; else bad "one minute: /debug/vars asked $n times"; fi
 rm -f "$T/bin/curl"
 
+# The nightly update of Mayhem: an install.pid whose process is gone does not
+# hold it off (and goes); one of a live process does.
+mkdir -p "$T/au/bin" "$T/au/run"
+cat > "$T/au/bin/uci" <<'EOF2'
+#!/bin/sh
+case "$*" in
+	*settings.auto_update*) echo 1 ;;
+	*geo.update_hour*) echo 4 ;;
+esac
+EOF2
+cat > "$T/au/bin/date" <<'EOF2'
+#!/bin/sh
+case "$1" in +%H) echo 04 ;; +%M) echo 45 ;; *) echo 20261116 ;; esac
+EOF2
+# shellcheck disable=SC2016
+printf '#!/bin/sh\necho "$1" > "%s/au/started"\n' "$T" > "$T/au/bin/cli"
+chmod +x "$T/au/bin/"*
+auto_update() {
+	rm -f "$T/au/started"
+	# shellcheck disable=SC2016 # expanded by the inner shell
+	PATH="$T/au/bin:$PATH" MAYHEM_RUN_DIR="$T/au/run" MAYHEM_LIB_DIR="$FILES/usr/share/mayhem" MAYHEM_CLI="$T/au/bin/cli" \
+		sh -c '. "$MAYHEM_LIB_DIR/lib.sh"; mayhem_auto_update'
+	/bin/sleep 0.3
+}
+echo 999999 > "$T/au/run/install.pid"
+auto_update
+if [ "$(cat "$T/au/started" 2>/dev/null)" = auto-update ] && [ ! -e "$T/au/run/install.pid" ]; then
+	ok "auto-update: a pid of a process that is gone does not hold it off"
+else
+	bad "auto-update with a stale install.pid: started $(cat "$T/au/started" 2>/dev/null), pid file $(cat "$T/au/run/install.pid" 2>/dev/null)"
+fi
+echo "$$" > "$T/au/run/install.pid"
+auto_update
+if [ ! -e "$T/au/started" ] && [ -e "$T/au/run/install.pid" ]; then
+	ok "auto-update: a running install holds it off"
+else
+	bad "auto-update next to a running install: started $(cat "$T/au/started" 2>/dev/null)"
+fi
+
 # A stop: the scheduler goes at once on TERM, also while it sleeps (procd
 # killed it 5 s later, its downloads with it).
 cat > "$T/bin/sleep" <<'EOF2'

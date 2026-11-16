@@ -186,6 +186,18 @@ sub_check b64.txt '"limit": true'
 sub_check plain.txt '"name": "US"'
 sub_check xray.json '"name": "NL xray"'
 sub_check clash.yaml 'not supported'
+# A name only from a string with something in it (remarks "", a number, an
+# object, a blank name): "server N" instead.
+sub_check names.json '"name": "server 1"'
+sub_check names.json '"name": "server 2"'
+sub_check names.json '"name": "server 3"'
+sub_check names.json '"name": "Named"'
+# geosite:/geoip: lines of a rule list are skipped with their own warning.
+if out="$(uc "$ROOT/tests/listgeo.uc" 2>&1)"; then
+	ok "geo lines of a rule list"
+else
+	bad "geo lines of a rule list: $out"
+fi
 # nftset support of dnsmasq: a plain build says "no-nftset" (OpenWrt's
 # dnsmasq), which must not count, or dnsmasq refuses Mayhem's config.
 if uc "$ROOT/tests/nftset.uc" 2>/dev/null; then

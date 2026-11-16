@@ -1228,13 +1228,35 @@ function collect_rules(sec, model, warn, G) {
 			L.ips = slice(L.ips, 0, max(0, LIST_RULES_MAX - length(L.domains)));
 		}
 
-		for (let d in L.domains)
-			if (add_domain(d))
-				bad++;
+		// geosite:/geoip: of a list are not looked up (nor waited for): only
+		// the section's own rules name categories.
+		let geo_lines = 0;
 
-		for (let i in L.ips)
-			if (add_ip(i))
+		for (let d in L.domains) {
+			// (a list's lines are told apart by their form: geoip:x is one too)
+			const r = match(lc(d), /^(geosite|geoip):/) ? { geo: true } : norm_domain(d);
+
+			if (r.geo)
+				geo_lines++;
+			else if (r.error)
 				bad++;
+			else
+				domains.add(r.value);
+		}
+
+		for (let i in L.ips) {
+			const r = norm_ip(i);
+
+			if (r.geo)
+				geo_lines++;
+			else if (r.error)
+				bad++;
+			else
+				(r.family == 4 ? ip4 : ip6).add(r.cidr);
+		}
+
+		if (geo_lines)
+			warn(`section "${name}": list ${src}: geosite:/geoip: entries work only in the section's own rules, skipped`);
 
 		if (bad)
 			warn(`section "${name}": list ${src}: skipped ${bad} lines that are not rules`);

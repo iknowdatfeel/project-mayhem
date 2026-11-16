@@ -172,7 +172,12 @@ function parse_body(body, format) {
 				}
 
 				delete ob.tag;
-				push(res.nodes, { name: cfg.remarks ?? cfg.name ?? `server ${n}`, outbound: ob });
+
+				// A name only from a string with something in it: a number,
+				// an object or "" in remarks would make a name of its own.
+				const named = (v) => type(v) == 'string' && trim(v) != '' ? v : null;
+
+				push(res.nodes, { name: named(cfg.remarks) ?? named(cfg.name) ?? `server ${n}`, outbound: ob });
 			}
 
 			return res;
