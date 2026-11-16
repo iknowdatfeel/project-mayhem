@@ -69,10 +69,10 @@ const CSS = `
 .mh-del:hover { color:var(--error-color-medium, red); }
 .mh-head { display:flex; align-items:center; justify-content:space-between; gap:10px; flex-wrap:wrap; }
 .mh-head .mh-grow { flex:1 1 auto; }
-.mh-layout { display:grid; grid-template-columns:1fr 240px; grid-template-rows:auto 1fr; grid-template-areas:"servers side" "servers info"; grid-gap:10px; align-items:start; }
+.mh-layout { display:grid; grid-template-columns:1fr 240px; grid-template-rows:auto 1fr; grid-template-areas:"servers info" "servers side"; grid-gap:10px; align-items:start; }
 .mh-a-info { grid-area:info; min-width:0; } .mh-a-side { grid-area:side; } .mh-a-servers { grid-area:servers; min-width:0; }
 .mh-a-info .mh-widget-row { white-space:normal; overflow-wrap:anywhere; }
-@media (max-width: 900px) { .mh-layout { grid-template-columns:1fr; grid-template-rows:none; grid-template-areas:"side" "info" "servers"; } }
+@media (max-width: 900px) { .mh-layout { grid-template-columns:1fr; grid-template-rows:none; grid-template-areas:"info" "side" "servers"; } }
 .mh-gextra { display:inline-flex; align-items:center; gap:4px 12px; flex-wrap:wrap; margin-left:auto; }
 .mh-speed { white-space:nowrap; }
 .mh-widget-row { white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
@@ -680,7 +680,7 @@ return view.extend({
 		return rows;
 	},
 
-	// One box under the buttons: the connection, then the versions and the
+	// One box above the buttons: the connection, then the versions and the
 	// memory; the router and its OS are in the diagnostics.
 	renderInfo(d) {
 		const box = this.widget(_('Information'), this.connectionRows(d).concat([
@@ -1411,14 +1411,14 @@ return view.extend({
 			lhead.appendChild(E('span', { 'class': 'mh-gextra' }, extra));
 		}
 
-		// The servers on the left; the column of buttons on the right and the
-		// information under it, of the same width.
+		// The servers on the left; on the right the information and the column
+		// of buttons under it, of the same width.
 		const side = this.renderSide(d);
 
 		side.classList.add('mh-a-side');
 
 		return [ this.renderTop(d), this.renderKillSwitch(d), this.renderAlert(d), E('div', { 'class': 'mh-layout' }, [
-			side, this.renderInfo(d),
+			this.renderInfo(d), side,
 			E('div', { 'class': 'mh-stack mh-a-servers' }, boxes)
 		]) ];
 	},

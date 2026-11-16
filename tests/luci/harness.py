@@ -883,13 +883,13 @@ def main():
                 raise RuntimeError('the main section can still be chosen on the dashboard')
             if not pg.query_selector('#mayhem-body .mh-ghead .mh-bar'):
                 raise RuntimeError('no subscription traffic on the dashboard')
-            # one box of information under the buttons, as wide as they are
+            # one box of information above the buttons, as wide as they are
             if pg.query_selector('#mayhem-body .mh-a-conn, #mayhem-body .mh-a-sys'):
                 raise RuntimeError('the connection or system box is still on the dashboard')
             info = pg.eval_on_selector('#mayhem-body .mh-a-info', 'e => e.getBoundingClientRect().toJSON()')
             side = pg.eval_on_selector('#mayhem-body .mh-a-side', 'e => e.getBoundingClientRect().toJSON()')
-            if info['top'] < side['bottom'] or abs(info['width'] - side['width']) > 1:
-                raise RuntimeError('the information is not under the buttons with their width: %s %s' % (info, side))
+            if side['top'] < info['bottom'] or abs(info['width'] - side['width']) > 1:
+                raise RuntimeError('the information is not above the buttons with their width: %s %s' % (info, side))
             title = pg.inner_text('#mayhem-body .mh-a-info .mh-whead .mh-title').strip()
             if title != TRANSLATIONS.get('Information', 'Information'):
                 raise RuntimeError('the title of the information box: %r' % title)
