@@ -71,6 +71,7 @@ const CSS = `
 .mh-head .mh-grow { flex:1 1 auto; }
 .mh-layout { display:grid; grid-template-columns:1fr 240px; grid-template-rows:auto 1fr; grid-template-areas:"servers side" "servers info"; grid-gap:10px; align-items:start; }
 .mh-a-info { grid-area:info; min-width:0; } .mh-a-side { grid-area:side; } .mh-a-servers { grid-area:servers; min-width:0; }
+.mh-a-info .mh-widget-row { white-space:normal; overflow-wrap:anywhere; }
 @media (max-width: 900px) { .mh-layout { grid-template-columns:1fr; grid-template-rows:none; grid-template-areas:"side" "info" "servers"; } }
 .mh-gextra { display:inline-flex; align-items:center; gap:4px 12px; flex-wrap:wrap; margin-left:auto; }
 .mh-speed { white-space:nowrap; }
@@ -714,16 +715,19 @@ return view.extend({
 	// diagnostics page.
 	// KillSwitch is on, but the traffic has no way out: Mayhem is off and
 	// holds it, xray is down, a tunnel it waits for is down, or the main
-	// server does not answer the check. A yellow line with the way out.
+	// section's servers do not answer and its traffic waits for them. A
+	// yellow line with the way out.
 	killSwitchStuck(d) {
 		const main = mh.mainServer(d).section;
 
 		// The main section by the checks of the router, which follow its mode:
 		// the server chosen by hand, the chain's server, the automatic
 		// choice's own path - never the number of another server on the page.
+		// Only when the router holds its traffic: one failed check, or one
+		// that another server took over from, is not that.
 		return !!d.killswitch && !!(d.held || (d.enabled && !d.running) ||
 			(d.sections || []).some((s) => s.tunnel && s.tunnel.state === 'held') ||
-			(main && main.reachable === false));
+			(main && (main.down || main.waiting)));
 	},
 
 	renderKillSwitch(d) {

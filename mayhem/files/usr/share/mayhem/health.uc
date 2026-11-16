@@ -615,6 +615,7 @@ for (let sn, p in plan) {
 	if (p.ok || second[p.cur] != null) {
 		hs.fails = 0;
 		hs.ok = true;
+		delete hs.waiting;
 		continue;
 	}
 
@@ -635,10 +636,23 @@ for (let sn, p in plan) {
 		// A chain: fallback.uc moves it on to a server that answers.
 
 		hs.fails = 0;
+		delete hs.waiting;
 		continue;
 	}
 
-	if (hs.fails < FAILS || ks)
+	// With the kill switch the section never goes direct: after as many
+	// failed checks in a row as would send it there, its traffic waits for
+	// the servers - what the dashboard tells (one failed check is not that).
+	if (ks) {
+		if (hs.fails >= FAILS)
+			hs.waiting = true;
+
+		continue;
+	}
+
+	delete hs.waiting;
+
+	if (hs.fails < FAILS)
 		continue;
 
 	if (!bo(bal, 'direct', sn)) {

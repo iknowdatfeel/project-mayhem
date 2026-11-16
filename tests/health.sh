@@ -197,6 +197,24 @@ else
 	bad "kill switch failover: $(cat "$T/xray.log")"
 fi
 
+# Kill switch on: one failed check of the server in use is not waiting; as
+# many in a row as would send the section direct are - the dashboard warns
+# then; an answer ends it.
+rm -f "$T/run/health.json"
+echo 'n-pool-a' > "$T/dead"
+waiting() { "$UCODE" -e "exit(json(require('fs').readfile('$T/run/health.json')).sections?.['$1']?.waiting ? 0 : 1)"; }
+tick
+if waiting pool; then bad "kill switch: one failed check is already waiting"; else ok "kill switch: one failed check is not waiting"; fi
+tick
+if waiting pool && ! down pool && ! grep -q direct "$T/xray.log"; then
+	ok "kill switch: two failed checks in a row, the traffic waits"
+else
+	bad "kill switch waiting: $(cat "$T/run/health.json")"
+fi
+: > "$T/dead"
+tick
+if waiting pool; then bad "kill switch: still waiting after the server answered"; else ok "kill switch: an answer ends the wait"; fi
+
 # Tunnels: with the kill switch the route stays and the balancer keeps the tunnel.
 rm -rf "$T/net"; mkdir -p "$T/net"
 

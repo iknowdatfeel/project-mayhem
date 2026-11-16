@@ -160,7 +160,7 @@ def ucode(script, *args):
 
 # Set by a test to show the router as one without subscriptions, with one
 # server of a subscription in the server list, or with a second subscription.
-HIDE = {'subscription': False, 'one_server': False, 'two_subs': False}
+HIDE = {'subscription': False, 'one_server': False, 'two_subs': False, 'ks': None}
 
 
 # Subscriptions added (and deleted again) in this session, as rpcd keeps the
@@ -213,6 +213,15 @@ def call(obj, method, args):
             for s in out.get('sections') or []:
                 if s.get('name') == 'pool':
                     s['nodes'] = [n for n in s.get('nodes') or [] if n.get('source') not in (None, 'link', 'json', 'interface')][:1]
+        if method == 'dashboard' and HIDE['ks']:
+            # the kill switch on, Mayhem running, the main section's server
+            # failed a check ('flaky') or its traffic waits for it ('waiting')
+            out.update(killswitch=True, enabled=True, running=True, held=False)
+            for x in out.get('sections') or []:
+                if x.get('name') == 'pool':
+                    x.update(reachable=False, down=False, waiting=HIDE['ks'] == 'waiting')
+                if x.get('tunnel'):
+                    x['tunnel']['state'] = 'up'
         if method == 'dashboard' and HIDE['two_subs']:
             first = next((x for x in out.get('subscriptions') or [] if x.get('enabled')), None)
             if first:
@@ -962,6 +971,23 @@ def main():
                 pg.reload()
                 pg.wait_for_selector('#mayhem-body .mh-tile', timeout=15000)
 
+        def ks_banner(pg):
+            # The kill switch line only when the router holds the traffic:
+            # not for one failed check of the server.
+            try:
+                seen = {}
+                for mode in ('flaky', 'waiting'):
+                    HIDE['ks'] = mode
+                    pg.reload()
+                    pg.wait_for_selector('#mayhem-body .mh-tile', timeout=15000)
+                    seen[mode] = pg.locator('#mayhem-body .mh-alert.mh-box--warn').count()
+                if seen != {'flaky': 0, 'waiting': 1}:
+                    raise RuntimeError('the kill switch line: %s' % seen)
+            finally:
+                HIDE['ks'] = None
+                pg.reload()
+                pg.wait_for_selector('#mayhem-body .mh-tile', timeout=15000)
+
         def conns_modal(pg):
             # the connections of the fixture (run.sh): names, servers, counts
             settings_tool(pg, 'connections')
@@ -1180,7 +1206,7 @@ def main():
                 raise RuntimeError('the address keeps a page after closing: %s' % pg.url)
 
         pages = [
-            ('mayhem/dashboard', [('buttons', dashboard_buttons), ('one server in the list', one_server), ('several subscriptions', two_subs), ('active connections', conns_modal), ('logs dialog', logs_dialog), ('run diagnostics', run_diag),
+            ('mayhem/dashboard', [('buttons', dashboard_buttons), ('one server in the list', one_server), ('several subscriptions', two_subs), ('kill switch line', ks_banner), ('active connections', conns_modal), ('logs dialog', logs_dialog), ('run diagnostics', run_diag),
                                   ('edit a server', edit_server), ('delete a server', delete_server), ('choose how', choose_mode), ('chain of the list', list_chain),
                                   ('delete a tunnel', delete_tunnel), ('services', services_badge), ('pages in a window', nav_pages)]),
             ('mayhem/dashboard#settings', [('sections tab', lambda pg: shot(pg, 'routing_sections')), ('main section', main_section),

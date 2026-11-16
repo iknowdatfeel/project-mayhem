@@ -2416,6 +2416,10 @@ function dashboard(pid, state, out) {
 				// traffic gets through, by the logic of its mode; null when it
 				// has none for this xray or it is older than a minute
 				reachable: (health.pid == pid && health.sections?.[sn]?.checked >= time() - 60) ? health.sections[sn].ok : null,
+				// With the kill switch: the servers failed as many checks in
+				// a row as would send the section direct, and its traffic
+				// waits for them (one failed check is not that).
+				waiting: health.pid == pid && health.sections?.[sn]?.checked >= time() - 60 && health.sections[sn].waiting == true,
 				down_since: health.sections?.[sn]?.since ?? null
 			};
 

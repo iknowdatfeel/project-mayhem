@@ -150,6 +150,27 @@ d = call('dashboard', {});
 pool = filter(d?.sections ?? [], (x) => x.name == 'pool')[0];
 expect('dashboard: an old word of health.uc does not count', pool?.reachable === null, pool?.reachable);
 
+// --- with the kill switch: does the section's traffic wait for its servers ----------
+fs.writefile(`${run}/health.json`, sprintf('%J', { pid: me, sections: { pool: { down: false, fails: 1, ok: false, checked: time() } } }));
+d = call('dashboard', {});
+pool = filter(d?.sections ?? [], (x) => x.name == 'pool')[0];
+expect('dashboard: one failed check is not waiting', pool?.waiting === false, pool?.waiting);
+
+fs.writefile(`${run}/health.json`, sprintf('%J', { pid: me, sections: { pool: { down: false, fails: 2, ok: false, waiting: true, checked: time() } } }));
+d = call('dashboard', {});
+pool = filter(d?.sections ?? [], (x) => x.name == 'pool')[0];
+expect('dashboard: a section whose traffic waits for its servers', pool?.waiting === true, pool?.waiting);
+
+fs.writefile(`${run}/health.json`, sprintf('%J', { pid: me, sections: { pool: { down: false, fails: 2, ok: false, waiting: true, checked: time() - 300 } } }));
+d = call('dashboard', {});
+pool = filter(d?.sections ?? [], (x) => x.name == 'pool')[0];
+expect('dashboard: an old word on waiting does not count', pool?.waiting === false, pool?.waiting);
+
+fs.writefile(`${run}/health.json`, sprintf('%J', { pid: '1', sections: { pool: { down: false, fails: 2, ok: false, waiting: true, checked: time() } } }));
+d = call('dashboard', {});
+pool = filter(d?.sections ?? [], (x) => x.name == 'pool')[0];
+expect('dashboard: waiting of another xray does not count', pool?.waiting === false, pool?.waiting);
+
 // --- the dashboard reads the configuration again only when it changed ---------------
 d = call('dashboard', {});
 expect('dashboard: enabled as configured', d?.enabled == true, d?.enabled);
