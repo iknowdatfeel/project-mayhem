@@ -115,6 +115,11 @@ while :; do
 		# finishes them before it takes a stop.
 		mayhem_auto_update
 		mayhem_dns_catchup
+
+		# The provider's DNS servers after a change of network on any
+		# uplink (wwan, LTE: a reload follows only the WAN's "up"). dnsmasq
+		# gets a HUP only when the file changed.
+		[ -f "$MAYHEM_RUN_DIR/active" ] && mayhem_dns_servers xray
 	fi
 
 	# Fallback chains move along, sections and remote DNS that stop

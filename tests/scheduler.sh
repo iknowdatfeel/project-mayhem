@@ -88,6 +88,40 @@ else
 	bad "checks during the watchdog: $checks_during / $(cat "$T/log")"
 fi
 
+# The provider's DNS servers follow resolv.conf.auto every minute without a
+# reload; dnsmasq gets a HUP only when the file changed.
+{
+	cat "$T/lib/lib.sh"
+	echo 'mayhem_watchdog() { :; }'
+} > "$T/lib/lib2.sh"
+mv "$T/lib/lib2.sh" "$T/lib/lib.sh"
+mkdir -p "$T/dnsmasq"
+printf '@ISP@\n' > "$T/run/dns.xray"
+echo 'nameserver 10.9.9.9' > "$T/resolv.conf.auto"
+echo 'server=10.9.9.9' > "$T/dnsmasq/mayhem.servers"
+: > "$T/hups"
+# shellcheck disable=SC2016
+sh -c 'trap "echo hup >> \"$1/hups\"" HUP; while :; do /bin/sleep 0.05; done' sh "$T" &
+dnsmasq_pid=$!
+printf '#!/bin/sh\necho %s\n' "$dnsmasq_pid" > "$T/bin/pidof"
+chmod +x "$T/bin/pidof"
+PATH="$T/bin:$PATH" MAYHEM_SUB=sub MAYHEM_UPDATE=upd MAYHEM_DNS_SERVERS="$T/dnsmasq/mayhem.servers" \
+	MAYHEM_RESOLV_AUTO="$T/resolv.conf.auto" sh "$FILES/usr/libexec/mayhem/scheduler" &
+pid=$!
+/bin/sleep 1.5
+same_hups="$(grep -c hup "$T/hups")"
+echo 'nameserver 10.7.7.7' > "$T/resolv.conf.auto"
+/bin/sleep 1.5
+kill "$pid" 2>/dev/null
+wait "$pid" 2>/dev/null
+kill "$dnsmasq_pid" 2>/dev/null
+if [ "$same_hups" = 0 ]; then ok "unchanged provider DNS: no HUP for dnsmasq"; else bad "unchanged provider DNS: $same_hups HUPs"; fi
+if [ "$(cat "$T/dnsmasq/mayhem.servers")" = 'server=10.7.7.7' ] && [ "$(grep -c hup "$T/hups")" -ge 1 ]; then
+	ok "new provider DNS: the servers file follows without a reload"
+else
+	bad "new provider DNS: $(cat "$T/dnsmasq/mayhem.servers"), HUPs $(grep -c hup "$T/hups")"
+fi
+
 # A stop: the scheduler goes at once on TERM, also while it sleeps (procd
 # killed it 5 s later, its downloads with it).
 cat > "$T/bin/sleep" <<'EOF2'
