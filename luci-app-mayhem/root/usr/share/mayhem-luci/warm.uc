@@ -344,6 +344,7 @@ function finish_request(n) {
 	}
 
 	n.phase = 'ready';
+	n.ready_at = ms_now();
 	n.buf = '';
 
 	if (ok && n.fresh)
@@ -499,10 +500,14 @@ while (true) {
 
 		if (data == '') {
 			// The other side closed: a connection that was waiting is
-			// opened again; one in the middle of something failed.
+			// opened again; one in the middle of something failed. Closed
+			// within 2 s of the answer (a server that closes after every
+			// one): the next one after PERIOD, not handshakes back to back.
 			if (n.phase == 'ready') {
+				const soon = ms_now() - (n.ready_at ?? 0) < 2000;
+
 				close_conn(n);
-				n.next = ms_now();
+				n.next = soon ? ms_now() + PERIOD : ms_now();
 			}
 			else if (n.phase == 'request' && n.status != null && n.left == null && !n.chunked) {
 				finish_request(n);

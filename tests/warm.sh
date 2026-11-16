@@ -152,4 +152,24 @@ for i in 1 2 3 4; do : > "$T/run/warm.alive"; sleep 1; done
 kill "$DAEMON" 2>/dev/null
 DAEMON=""
 
+# A server that closes the connection right after each answer: opened again
+# after the period, not handshake after handshake.
+cat > "$T/run/nodes.json" <<'EOF'
+{ "probe_url": "http://www.gstatic.com/generate_204",
+  "sections": { "pool": { "nodes": [ { "tag": "n-drop", "address": "10.0.0.7" } ] } } }
+EOF
+export MAYHEM_WARM_PERIOD=10
+warm_call false >/dev/null
+DAEMON="$(cat "$T/run/warm.pid" 2>/dev/null)"
+i=0
+while [ "$i" -lt 30 ]; do : > "$T/run/warm.alive"; sleep 1; i=$((i + 1)); done
+conns="$(grep -c 'connect n-drop' "$T/log")"
+if [ "$conns" -ge 1 ] && [ "$conns" -le 4 ]; then
+	ok "warm: a server that closes after each answer: $conns connections in 30 s"
+else
+	bad "warm: n-drop $conns connections in 30 s"
+fi
+kill "$DAEMON" 2>/dev/null
+DAEMON=""
+
 exit $fail
