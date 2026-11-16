@@ -1307,8 +1307,11 @@ mayhem_lock() {
 
 	fd="$(mayhem_lock_fd "$1")"
 	mayhem_run_dir
-	# A lock directory of an older Mayhem (updated without a reboot).
-	[ -d "$MAYHEM_RUN_DIR/$1.lock" ] && rm -rf "${MAYHEM_RUN_DIR:?}/$1.lock"
+	# A lock directory of an older Mayhem (updated without a reboot). With
+	# the "/": only a directory goes - once another process has put the lock
+	# file in its place, rm leaves that file alone (removing it would let both
+	# take a lock, each on a file of its own).
+	[ -d "$MAYHEM_RUN_DIR/$1.lock" ] && rm -rf "${MAYHEM_RUN_DIR:?}/$1.lock/" 2>/dev/null
 	eval "exec $fd>\"\$MAYHEM_RUN_DIR/\$1.lock\"" || return 1
 
 	while ! flock -n "$fd" 2>/dev/null; do
