@@ -245,18 +245,33 @@ return view.extend({
 
 		// The traffic of the tunnels and of the servers changes too: their
 		// rows and the hints of the tiles in place.
-		for (const s of (this.data.sections || [])) {
-			if (s.type === 'interface') {
-				const old = document.querySelector('#mayhem-body [data-mh-tun="%s"]'.format(CSS.escape(s.name)));
+		const body = document.getElementById('mayhem-body');
+		const tuns = {}, nodes = {};
 
-				if (old)
-					old.replaceWith(this.renderTunnel(s, this.data.time));
-			}
+		for (const s of (this.data.sections || [])) {
+			if (s.type === 'interface')
+				tuns[s.name] = s;
 
 			for (const n of (s.nodes || []))
-				document.querySelectorAll('#mayhem-body [data-mh-tile="%s"]'.format(CSS.escape(n.tag)))
-					.forEach((el) => el.setAttribute('title', tileTitle(n)));
+				nodes[n.tag] = n;
 		}
+
+		if (!body)
+			return;
+
+		body.querySelectorAll('[data-mh-tun]').forEach((el) => {
+			const s = tuns[el.getAttribute('data-mh-tun')];
+
+			if (s)
+				el.replaceWith(this.renderTunnel(s, this.data.time));
+		});
+
+		body.querySelectorAll('[data-mh-tile]').forEach((el) => {
+			const n = nodes[el.getAttribute('data-mh-tile')];
+
+			if (n)
+				el.setAttribute('title', tileTitle(n));
+		});
 	},
 
 	// Deleted servers leave the page at once: the router reloads in the
