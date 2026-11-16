@@ -512,6 +512,33 @@ mayhem_tunnels_down() {
 
 # Seconds since the newest WireGuard/AmneziaWG handshake of device $1; empty
 # for other kinds of devices (they count as working while the link is up).
+# "4 ADDR" or "6 ADDR": where to send a packet that wakes tunnel $1. Any
+# IPv4 address (0.0.0.0/0): 1.1.1.1; else the first address of its first
+# IPv4 subnet; without IPv4, 2606:4700:4700::1111 for ::/0, else the first
+# address of its first IPv6 subnet.
+mayhem_wake_addr() {
+	local out
+
+	out="$(awg show "$1" allowed-ips 2>/dev/null)" || out="$(wg show "$1" allowed-ips 2>/dev/null)" || out=""
+	printf '%s\n' "$out" | awk '
+		{
+			for (i = 2; i <= NF; i++) {
+				a = $i
+				if (a == "0.0.0.0/0") any4 = 1
+				else if (a == "::/0") any6 = 1
+				else if (a ~ /^[0-9.]+\/[0-9]+$/) { if (f4 == "") f4 = a }
+				else if (a ~ /:/ && a ~ /\//) { if (f6 == "") f6 = a }
+			}
+		}
+		END {
+			if (any4) print "4 1.1.1.1"
+			else if (f4 != "") { sub(/\/.*/, "", f4); print "4 " f4 }
+			else if (any6) print "6 2606:4700:4700::1111"
+			else if (f6 != "") { sub(/\/.*/, "", f6); print "6 " f6 }
+			else print "4 1.1.1.1"
+		}'
+}
+
 mayhem_handshake_age() {
 	local out now newest
 
@@ -536,8 +563,10 @@ mayhem_tunnel_ok() {
 	[ -z "$age" ] && return 0
 	[ "$age" -le 180 ] && return 0
 
-	# An idle tunnel does not handshake: send something through it and look again.
-	if ping -c 1 -W 2 -I "$dev" 1.1.1.1 >/dev/null 2>&1; then
+	# An idle tunnel does not handshake: send something through it and look
+	# again. To an address its AllowedIPs take (WireGuard drops the rest).
+	set -- $(mayhem_wake_addr "$dev")
+	if ping "-$1" -c 1 -W 2 -I "$dev" "$2" >/dev/null 2>&1; then
 		return 0
 	fi
 	sleep 2

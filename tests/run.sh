@@ -810,7 +810,7 @@ if command -v shellcheck >/dev/null 2>&1; then
 	if out="$(shellcheck -s sh -f gcc -e SC1091,SC2034,SC3043,SC2086,SC2046,SC2317,SC2329 \
 		"$FILES/usr/bin/mayhem" "$FILES/usr/libexec/mayhem/xray-run" "$FILES/usr/libexec/mayhem/scheduler" \
 		"$FILES/etc/uci-defaults/90-mayhem" "$ROOT/tests/netns.sh" "$ROOT/tests/build-ucode.sh" "$ROOT/tests/health.sh" "$ROOT/tests/tunsync.sh" "$ROOT/tests/nftkeep.sh" "$ROOT/tests/scheduler.sh" "$ROOT/tests/serverlist.sh" "$ROOT/tests/conns.sh" "$ROOT/tests/bbr.sh" \
-		"$ROOT/tests/inodes.sh" "$ROOT/tests/applying.sh" "$ROOT/tests/prerelease.sh" "$ROOT/tests/select.sh" "$ROOT/tests/metrics.sh" "$ROOT/tests/netgen.sh" "$ROOT/tests/refused.sh" "$ROOT/tests/install.sh" "$ROOT/tests/pkgscripts.sh" "$ROOT/tests/ksrestart.sh" \
+		"$ROOT/tests/inodes.sh" "$ROOT/tests/applying.sh" "$ROOT/tests/prerelease.sh" "$ROOT/tests/select.sh" "$ROOT/tests/metrics.sh" "$ROOT/tests/netgen.sh" "$ROOT/tests/refused.sh" "$ROOT/tests/install.sh" "$ROOT/tests/pkgscripts.sh" "$ROOT/tests/ksrestart.sh" "$ROOT/tests/wake.sh" \
 		"$FILES/usr/share/mayhem/lib.sh" "$FILES/usr/share/mayhem/const.sh" "$ROOT/install.sh" 2>&1)"; then
 		ok "shellcheck"
 	else
@@ -1225,6 +1225,13 @@ if out="$(UCODE="$UCODE" sh "$ROOT/tests/metrics.sh" 2>&1)"; then
 	*) ok "metrics endpoint: read with a deadline, plain and in chunks" ;; esac
 else
 	bad "metrics: $(printf '%s' "$out" | grep -v '^ok')"
+fi
+
+# An idle tunnel is woken inside its AllowedIPs.
+if out="$(sh "$ROOT/tests/wake.sh" 2>&1)"; then
+	ok "tunnel check: the wake-up ping goes into the AllowedIPs"
+else
+	bad "tunnel wake-up: $(printf '%s' "$out" | grep -v '^ok')"
 fi
 
 # The kill switch through a restart or an update: the interception stays.
