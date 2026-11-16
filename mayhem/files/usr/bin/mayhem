@@ -189,6 +189,20 @@ cmd_xray_install() {
 	new="$MAYHEM_XRAY_BIN.new"
 	mkdir -p "$(dirname "$MAYHEM_XRAY_BIN")"
 
+	# The new binary is written next to the installed one: room for it and
+	# 1 MB more, or the installed xray stays untouched.
+	local size avail need
+	size="$(unzip -l "$tmp/xray.zip" "$bin" 2>/dev/null | awk -v b="$bin" '$NF == b { print $1; exit }')"
+	avail="$(df -k "$(dirname "$MAYHEM_XRAY_BIN")" 2>/dev/null | awk 'NR > 1 && $4 ~ /^[0-9]+$/ { a = $4 } END { print a }')"
+	if [ -n "$size" ] && [ -n "$avail" ]; then
+		need=$(( (size + 1048576 + 1023) / 1024 ))
+		if [ "$avail" -lt "$need" ]; then
+			echo "Not enough flash space: need $(( (need + 1023) / 1024 )) MB, have $(( avail / 1024 )) MB" >&2
+			rm -rf "$tmp"
+			return 1
+		fi
+	fi
+
 	# Extract only the binary; the bundled geo files are not used.
 	if ! unzip -p "$tmp/xray.zip" "$bin" > "$new" || [ ! -s "$new" ]; then
 		echo "Not enough flash space or a broken archive" >&2
