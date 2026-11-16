@@ -1793,6 +1793,10 @@ msgstr "Час обновления"
 msgid "Update now"
 msgstr "Обновить сейчас"
 
+#: htdocs/luci-static/resources/view/mayhem/dashboard.js
+msgid "Update subscriptions"
+msgstr "Обновить подписки"
+
 #: htdocs/luci-static/resources/mayhem/page/components.js
 msgid "Update to %s"
 msgstr "Обновить до %s"

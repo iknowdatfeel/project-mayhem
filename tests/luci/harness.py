@@ -523,7 +523,7 @@ def main():
             # A vpn:// key on the Add server tab becomes a tunnel, named after
             # the key, with a message under the field (not a hang).
             key = open(os.path.join(ROOT, 'tests/awg/key.txt')).read().strip()
-            pg.click('.cbi-tabmenu [data-tab="geo"] a')
+            pg.click('#mh-servers-tab-geo')
             pg.wait_for_timeout(300)
             n = len(imports)
             pg.fill('div[data-tab="geo"] textarea', key)
@@ -535,7 +535,7 @@ def main():
             shot(pg, 'servers_add_vpn')
 
         def import_modal(pg):
-            pg.click('.mh-sheet-body .cbi-tabmenu [data-tab="device"] a')
+            pg.click('#mh-servers-tab-device')
             pg.wait_for_timeout(300)
             shot(pg, 'servers_tunnels')
             text = pg.inner_text('.mh-sheet-body div[data-tab="device"]')
@@ -656,6 +656,24 @@ def main():
             close_modal(pg)
 
         def servers_tabs(pg):
+            # tabs like those of Settings: a button with an icon each, LuCI's menu hidden
+            names = ['geo', 'subscription', 'device']
+            ids = pg.eval_on_selector_all('.mh-sheet-body .mh-settings-tabs [role="tab"]', 'es => es.map(e => e.id)')
+            if ids != ['mh-servers-tab-' + x for x in names]:
+                raise RuntimeError('tabs of the server pages: %s' % ids)
+            if pg.locator('.mh-sheet-body .mh-settings-tabs svg.mh-icon').count() != len(names):
+                raise RuntimeError('a tab of the server pages has no icon')
+            if pg.eval_on_selector('.mh-sheet-body .cbi-map > .cbi-tabmenu', 'e => e.offsetParent !== null'):
+                raise RuntimeError('the menu of LuCI is still shown')
+            # the window takes the widest tab and its height up to a limit
+            for x in names:
+                pg.click('#mh-servers-tab-' + x)
+                pg.wait_for_timeout(300)
+                box = pg.eval_on_selector('.mh-sheet', 'e => { const b = e.querySelector(".mh-sheet-body"); return { side: b.scrollWidth - b.clientWidth, h: e.getBoundingClientRect().height }; }')
+                if box['side'] > 1 or box['h'] > 721:
+                    raise RuntimeError('the window does not fit the tab %s: %s' % (x, box))
+            pg.click('#mh-servers-tab-geo')
+            pg.wait_for_timeout(300)
             if not pg.query_selector('[data-tab="geo"] .mh-keys'):
                 raise RuntimeError('no table of servers added by key')
             shot(pg, 'servers_add')
@@ -674,7 +692,7 @@ def main():
             links = [a.get('values', {}).get('link') for m, a in uci_writes[w:] if m == 'set' and a.get('section') == 'pool']
             if not links or not any('1.2.3.6' in ' '.join(x or []) for x in links):
                 raise RuntimeError('the key did not go into the server list: %s' % uci_writes[w:])
-            pg.click('.cbi-tabmenu [data-tab="subscription"] a')
+            pg.click('#mh-servers-tab-subscription')
             pg.wait_for_timeout(300)
             shot(pg, 'servers_subscriptions')
             open_modals(pg, '[data-tab="subscription"]')
@@ -872,7 +890,7 @@ def main():
             if not pg.query_selector('#mayhem-body .mh-tile'):
                 raise RuntimeError('no servers on the dashboard')
             # the URL test asks for the kept-alive connections when the page opens
-            if pg.evaluate("document.querySelector('#mayhem-body .mh-side select').value") == 'url' and 'luci.mayhem.warm' not in calls:
+            if pg.evaluate("document.querySelector('#mayhem-body .mh-list .mh-ghead .mh-ping select').value") == 'url' and 'luci.mayhem.warm' not in calls:
                 raise RuntimeError('the dashboard did not ask for the kept-alive URL test: %s' % calls)
             # like Happ: servers by link in one box, every subscription in its own
             titles = pg.eval_on_selector_all('#mayhem-body .mh-section .mh-ghead > .mh-title', 'es => es.map(e => e.textContent)')
@@ -901,9 +919,22 @@ def main():
             speed = pg.inner_text('#mayhem-body .mh-list .mh-ghead .mh-speed')
             if '↓' not in speed or '↑' not in speed:
                 raise RuntimeError('no speed in the head of the server list: %r' % speed)
+            # the check method and its button right after the speed, not at the side
+            order = pg.eval_on_selector('#mayhem-body .mh-list .mh-ghead .mh-gextra',
+                'e => Array.from(e.children).map(c => c.classList.contains("mh-speed") ? "speed" : c.className)')
+            if order[:2] != ['speed', 'mh-ping']:
+                raise RuntimeError('the check is not right after the speed: %s' % order)
+            if pg.query_selector('#mayhem-body .mh-a-side select'):
+                raise RuntimeError('the check method is still at the side')
+            ping = pg.inner_text('#mayhem-body .mh-ping button').strip()
+            if ping != TRANSLATIONS.get('Test latency', 'Test latency'):
+                raise RuntimeError('the button of the check: %r' % ping)
             # one subscription: its update is the button of the list, not of its group
             if pg.locator('#mayhem-body .mh-list .mh-ghead .mh-subs-all').count() != 1:
                 raise RuntimeError('no button that updates all subscriptions in the head of the list')
+            upd = pg.inner_text('#mayhem-body .mh-subs-all').strip()
+            if upd != TRANSLATIONS.get('Update subscriptions', 'Update subscriptions'):
+                raise RuntimeError('the button that updates all subscriptions: %r' % upd)
             if pg.locator('#mayhem-body .mh-group .mh-ghead > .btn').count():
                 raise RuntimeError('a subscription has its own update button while it is the only one')
             n = len(calls)
@@ -916,12 +947,12 @@ def main():
             if nav != TRANSLATIONS.get('Add connection', 'Add connection'):
                 raise RuntimeError('the button of the server pages: %r' % nav)
             if not DEMO:  # a screenshot shows the demo delays, not failed checks
-                pg.click('#mayhem-body .mh-side button >> nth=0')
+                pg.click('#mayhem-body .mh-ping button')
                 pg.wait_for_timeout(1500)
                 # ICMP asks for the servers of a section in one call
-                pg.select_option('#mayhem-body .mh-side select', 'icmp')
+                pg.select_option('#mayhem-body .mh-ping select', 'icmp')
                 n = len(calls)
-                pg.click('#mayhem-body .mh-side button >> nth=0')
+                pg.click('#mayhem-body .mh-ping button')
                 pg.wait_for_timeout(2500)
                 got = calls[n:]
                 if 'luci.mayhem.probe_icmp' not in got or got.count('luci.mayhem.probe') > 1:
@@ -943,7 +974,7 @@ def main():
                 title = TRANSLATIONS.get('Server list', 'Server list')
                 if first != 'mh-ghead' or titles[:1] != [title] or titles.count(title) != 1:
                     raise RuntimeError('no title above the one server of the list: %s %s' % (first, titles))
-                if pg.query_selector('#mayhem-body .mh-list > .mh-ghead select'):
+                if pg.query_selector('#mayhem-body .mh-list > .mh-ghead > select'):
                     raise RuntimeError('a choice of the server with one server')
                 shot(pg, 'dashboard_one_server')
             finally:
@@ -1118,7 +1149,7 @@ def main():
             # whole by its rule, saved in one call with the rule. (The key
             # DE was deleted by an earlier step and is hidden on the page.)
             conf = os.path.join(FIX, 'uci', 'mayhem')
-            pg.select_option('#mayhem-body .mh-list > .mh-ghead select', 'fallback')
+            pg.select_option('#mayhem-body .mh-list > .mh-ghead > select', 'fallback')
             pg.wait_for_selector('.modal .mh-chain-list', timeout=5000)
             add = '.modal .mh-add >> nth=-1'
             pg.select_option(add, 'awg0')

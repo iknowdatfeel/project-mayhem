@@ -73,9 +73,13 @@ const CSS = `
 .mh-a-info { grid-area:info; min-width:0; } .mh-a-side { grid-area:side; } .mh-a-servers { grid-area:servers; min-width:0; }
 .mh-a-info .mh-widget-row { white-space:normal; overflow-wrap:anywhere; }
 @media (max-width: 900px) { .mh-layout { grid-template-columns:1fr; grid-template-rows:none; grid-template-areas:"info" "side" "servers"; } }
-.mh-gextra { display:inline-flex; align-items:center; gap:4px 12px; flex-wrap:wrap; margin-left:auto; }
-.mh-speed { white-space:nowrap; }
-.mh-widget-row { white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+.mh-gextra { display:inline-flex; align-items:center; gap:4px 6px; flex-wrap:wrap; margin-left:auto; }
+.mh-speed { white-space:nowrap; margin-right:6px; }
+.mh-ping { display:inline-flex; align-items:center; gap:6px; }
+.mh-sel { position:relative; display:inline-flex; }
+.mh-sel::after { content:''; position:absolute; right:9px; top:50%; width:5px; height:5px; border:solid currentColor; border-width:0 1.5px 1.5px 0; transform:translateY(-75%) rotate(45deg); pointer-events:none; opacity:.8; }
+.mh-ghead .mh-ping select { margin:0; padding:0 22px 0 8px; -webkit-appearance:none; appearance:none; background-image:none; }
+.mh-ghead .mh-ping .btn { height:24px; margin:0; padding:0 8px; box-sizing:border-box; }.mh-widget-row { white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
 .mh-widget-row.mh-wrap { white-space:normal; }
 .mh-whead { display:flex; justify-content:space-between; align-items:baseline; gap:8px; }
 .mh-split { display:grid; grid-template-columns:1fr 240px; grid-column-gap:12px; align-items:start; }
@@ -1284,27 +1288,9 @@ return view.extend({
 	// The box at the side: checks and updates of every section, then the
 	// service controls; all buttons of one width and height.
 	renderSide(d) {
-		const proxies = (d.sections || []).filter((s) => s.type === 'proxy');
 		const side = [];
 
-		if (proxies.length) {
-			side.push(E('select', {
-				'class': 'cbi-input-select',
-				'title': _('Check method'),
-				'change': (ev) => {
-					ev.target.blur();
-					checks.setMethod(ev.target.value);
-				}
-			}, checks.METHODS.map((p) => E('option', { 'value': p[0], 'selected': p[0] === checks.method ? '' : null }, p[1]))));
-
-			side.push(mh.button({
-				icon: 'zap', text: _('Test latency'), busy: this.busy.probeAll,
-				click: ui.createHandlerFn(checks, 'probeAll', proxies)
-			}));
-		}
-
 		// The remaining tools are available from Settings.
-		side.push(E('div', { 'class': 'mh-side-gap' }));
 		side.push(this.navButton('servers', d.has_connections ? 'logs' : 'plus',
 			d.has_connections ? 'cbi-button-neutral mh-navbtn' : 'cbi-button-add mh-navbtn',
 			_('Add connection')));
@@ -1396,10 +1382,31 @@ return view.extend({
 		if (lhead) {
 			const subs = this.enabledSubs();
 			const extra = [ this.renderSpeed(d) ];
+			const proxies = (d.sections || []).filter((s) => s.type === 'proxy');
+
+			// The check method and the button that checks every server.
+			if (proxies.length) {
+				const go = mh.button({
+					icon: 'gauge', text: _('Test latency'), busy: this.busy.probeAll,
+					click: ui.createHandlerFn(checks, 'probeAll', proxies)
+				});
+
+				extra.push(E('span', { 'class': 'mh-ping' }, [
+					E('span', { 'class': 'mh-sel' }, E('select', {
+						'class': 'cbi-input-select',
+						'title': _('Check method'),
+						'change': (ev) => {
+							ev.target.blur();
+							checks.setMethod(ev.target.value);
+						}
+					}, checks.METHODS.map((p) => E('option', { 'value': p[0], 'selected': p[0] === checks.method ? '' : null }, p[1])))),
+					go
+				]));
+			}
 
 			if (subs.length) {
 				const all = mh.button({
-					icon: 'refresh', text: _('Update'), busy: this.busy['subs:*'],
+					icon: 'refresh', text: _('Update subscriptions'), busy: this.busy['subs:*'],
 					click: ui.createHandlerFn(this, 'updateSubs', 'subs:*', subs)
 				});
 

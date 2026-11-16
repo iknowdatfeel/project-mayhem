@@ -1989,6 +1989,10 @@ msgstr ""
 msgid "Update now"
 msgstr ""
 
+#: htdocs/luci-static/resources/view/mayhem/dashboard.js
+msgid "Update subscriptions"
+msgstr ""
+
 #: htdocs/luci-static/resources/mayhem/page/components.js
 msgid "Update to %s"
 msgstr ""
