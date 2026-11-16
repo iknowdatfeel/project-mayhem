@@ -153,9 +153,14 @@ stop_service() {
 }
 
 # A restart that does not start again takes Mayhem's file out of dnsmasq,
-# as a stop does - unless the kill switch holds the traffic.
+# as a stop does - unless the kill switch holds the traffic, or kept the
+# interception through the restart: then the traffic waits, the error is on
+# the dashboard, and "mayhem stop" ends it.
 mayhem_restart_failed() {
-	[ "$MAYHEM_RESTART" = 1 ] && [ ! -f "$MAYHEM_RUN_DIR/held" ] && mayhem_dns_down
+	[ "$MAYHEM_RESTART" = 1 ] || return 0
+	[ -f "$MAYHEM_RUN_DIR/held" ] && return 0
+	mayhem_killswitch && nft -t list table inet "$MAYHEM_NFT_TABLE" >/dev/null 2>&1 && return 0
+	mayhem_dns_down
 	return 0
 }
 

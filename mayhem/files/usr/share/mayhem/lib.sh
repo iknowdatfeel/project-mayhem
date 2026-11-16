@@ -373,6 +373,12 @@ mayhem_hold_release() {
 mayhem_service_stop() {
 	if mayhem_hold_on && mayhem_hold_save && mayhem_hold_up; then
 		mayhem_log "stopped; the kill switch holds the traffic of proxies and tunnels until Mayhem starts or the kill switch is turned off"
+	elif mayhem_killswitch && { [ "${MAYHEM_RESTART:-0}" = 1 ] || [ "${PKG_UPGRADE:-0}" = 1 ]; }; then
+		# A restart, or an update through opkg (its default_prerm stops the
+		# service): with the kill switch the interception and dnsmasq stay as
+		# they are, the traffic waits for the new xray instead of going
+		# direct. "mayhem stop" still removes them.
+		mayhem_log "stopped for a restart; the kill switch keeps the traffic waiting for xray"
 	else
 		if [ "${MAYHEM_RESTART:-0}" = 1 ]; then
 			mayhem_dns_servers isp
