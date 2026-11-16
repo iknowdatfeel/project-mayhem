@@ -1030,6 +1030,15 @@ else
 	bad "backup: $out"
 fi
 
+# The dashboard's polls carry no server keys; server_link gives one.
+mkdir -p "$OUT/dash-run"
+if out="$(PATH="$OUT/bin:$PATH" MAYHEM_RUN_DIR="$OUT/dash-run" MAYHEM_UCI_DIR="$OUT/backup-uci" \
+	uc "$ROOT/tests/dashlink.uc" "$ROOT/luci-app-mayhem/root/usr/share/rpcd/ucode/luci.mayhem" 2>&1)"; then
+	ok "dashboard without server keys, server_link"
+else
+	bad "dashboard keys: $out"
+fi
+
 # A backup bigger than one argument may be (128 KB) through call.uc: the
 # arguments come in a file, which is gone after the call.
 mkdir -p "$OUT/bigbk-uci" "$OUT/bigbk-run"

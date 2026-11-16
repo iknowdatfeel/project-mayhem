@@ -2588,7 +2588,8 @@ const methods = {
 			const state = read_json(`${RUN}/nodes.json`);
 			const n = filter(state?.sections?.[req.args?.section ?? '']?.nodes ?? [], (x) => x.tag == req.args?.tag)[0];
 
-			return n ? { link: n.link } : { error: 'unknown server' };
+			// usec: the subscription the server comes from, where its edit goes
+			return n ? { link: n.link, usec: n.usec } : { error: 'unknown server' };
 		}
 	},
 
