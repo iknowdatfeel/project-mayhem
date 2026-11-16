@@ -109,15 +109,14 @@ fi
 # The error of a config is tested once while the config is the same.
 rm -f "$R/xray.error" "$R/xray.error.sum"
 : > "$T/calls"
-(
-	PATH="$T/bin:$PATH"
-	. "$FILES/usr/share/mayhem/lib.sh"
-	mayhem_xray_error
-	mayhem_xray_error
-)
+xray_error() {
+	# shellcheck disable=SC2016 # expanded by the inner shell
+	PATH="$T/bin:$PATH" sh -c '. "$1/usr/share/mayhem/lib.sh"; shift; for i in "$@"; do mayhem_xray_error; done' sh "$FILES" "$@"
+}
+xray_error 1 2
 n1="$(grep -c '^test$' "$T/calls")"
 cfg "$GOOD" > "$R/running.xray.json"
-( PATH="$T/bin:$PATH"; . "$FILES/usr/share/mayhem/lib.sh"; mayhem_xray_error )
+xray_error 1
 n2="$(grep -c '^test$' "$T/calls")"
 if [ "$n1" = 1 ] && [ "$n2" = 2 ] && grep -q 'n-main-bad' "$R/xray.error"; then
 	ok "xray error: tested once per config"

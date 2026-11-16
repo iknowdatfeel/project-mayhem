@@ -36,10 +36,20 @@ for f in install cli; do
 		. '$T/$f-fetch.sh'
 		fetch https://example.invalid/x '$T/out'
 	" >/dev/null 2>&1
-	case " $(cat "$T/curl" 2>/dev/null) " in
-		*" --connect-timeout 15 "*" -m 600 "*) ok "$f: the direct download has its time limits" ;;
-		*) bad "$f: curl $(cat "$T/curl" 2>/dev/null)" ;;
+	args=" $(cat "$T/curl" 2>/dev/null) "
+	case "$args" in
+		*" --connect-timeout 15 "*) has_ct=1 ;;
+		*) has_ct=0 ;;
 	esac
+	case "$args" in
+		*" -m 600 "*) has_m=1 ;;
+		*) has_m=0 ;;
+	esac
+	if [ "$has_ct" = 1 ] && [ "$has_m" = 1 ]; then
+		ok "$f: the direct download has its time limits"
+	else
+		bad "$f: curl $args"
+	fi
 done
 
 rm -rf "$T"

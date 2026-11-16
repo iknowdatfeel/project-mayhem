@@ -829,11 +829,13 @@ fi
 stop_mayhem
 
 echo "== a server xray refuses"
-# A JSON subscription; a new server of a protocol xray does not know comes in
-# while xray runs. The others keep working, xray is not restarted.
+# A JSON subscription of two servers (an automatic choice already: a third
+# server changes nothing but the servers); a new server of a protocol xray
+# does not know comes in while xray runs. The others keep working, xray is
+# not restarted.
 sub_json() {
-	printf '[{"remarks":"Good","outbounds":[{"protocol":"shadowsocks","settings":{"servers":[{"address":"45.0.0.3","port":8443,"method":"2022-blake3-aes-128-gcm","password":"%s"}]}}]}%s]\n' \
-		"$SS_KEY" "$1" > "$WORK/sub.txt"
+	printf '[{"remarks":"Good","outbounds":[{"protocol":"shadowsocks","settings":{"servers":[{"address":"45.0.0.3","port":8443,"method":"2022-blake3-aes-128-gcm","password":"%s"}]}}]},{"remarks":"Good B","outbounds":[{"protocol":"shadowsocks","settings":{"servers":[{"address":"45.0.0.3","port":8444,"method":"2022-blake3-aes-128-gcm","password":"%s"}]}}]}%s]\n' \
+		"$SS_KEY" "$SS_KEY" "$1" > "$WORK/sub.txt"
 }
 rm -f "$MAYHEM_RUN_DIR/refused.json"
 write_uci "	option select 'auto'" direct
@@ -841,10 +843,15 @@ sub_json ''
 sub_update >/dev/null
 if start_mayhem uci; then
 	pid="$(proc_in router xray)"
-	expect "JSON subscription: the server works" 45.0.0.3 $(site youtube.test)
+	expect_one_of "JSON subscription: the servers work" "45.0.0.3 45.0.0.8" $(site youtube.test)
 	sub_json ',{"remarks":"Weird","outbounds":[{"protocol":"bogus","settings":{}}]}'
 	sub_update >/dev/null
 	reload_live
+	if cmp -s "$MAYHEM_RUN_DIR/xray.key" "$MAYHEM_RUN_DIR/running.xray.key"; then
+		ok "a new server of a JSON subscription needs no restart"
+	else
+		bad "a new server of a JSON subscription changed the restart key"
+	fi
 	if grep -q '"name": *"Weird"' "$MAYHEM_RUN_DIR/refused.json" 2>/dev/null; then
 		ok "the refused server is noted"
 	else
@@ -857,7 +864,7 @@ if start_mayhem uci; then
 	fi
 	sleep 6
 	if [ "$(proc_in router xray)" = "$pid" ]; then ok "xray keeps running, not restarted"; else bad "xray was restarted"; fi
-	expect "the other server still works" 45.0.0.3 $(site youtube.test)
+	expect_one_of "the other servers still work" "45.0.0.3 45.0.0.8" $(site youtube.test)
 fi
 stop_mayhem
 rm -f "$MAYHEM_RUN_DIR/refused.json"
