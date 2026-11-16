@@ -2185,12 +2185,6 @@ msgstr "Нажмите на сервер подписки, чтобы выбра
 msgid "Change in the chain"
 msgstr "Изменить в цепочке"
 
-msgid "click another server to switch to it"
-msgstr "нажмите на другой сервер, чтобы переключиться на него"
-
-msgid "the fastest of all servers; click one to choose it by hand"
-msgstr "самый быстрый из всех серверов; нажмите на сервер, чтобы выбрать его вручную"
-
 msgid "Server choice"
 msgstr "Выбор сервера"
 

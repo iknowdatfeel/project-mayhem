@@ -1240,9 +1240,6 @@ return view.extend({
 				parts.push(E('span', { 'class': 'mh-small' }, names.join(' → ')), change);
 			}
 		}
-		else if (pool && !pend)
-			parts.push(E('span', { 'class': 'mh-muted mh-small' }, mode === 'manual'
-				? _('click another server to switch to it') : _('the fastest of all servers; click one to choose it by hand')));
 
 		return E('div', { 'class': 'mh-chain' }, parts);
 	},

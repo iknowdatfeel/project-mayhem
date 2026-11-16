@@ -926,6 +926,9 @@ def main():
                 raise RuntimeError('the check is not right after the speed: %s' % order)
             if pg.query_selector('#mayhem-body .mh-a-side select'):
                 raise RuntimeError('the check method is still at the side')
+            # no hints next to the choice of the list: they broke the line
+            if pg.query_selector('#mayhem-body .mh-list > .mh-ghead > .mh-muted:not(.mh-chain-line)'):
+                raise RuntimeError('a hint next to the choice of the server list')
             ping = pg.inner_text('#mayhem-body .mh-ping button').strip()
             if ping != TRANSLATIONS.get('Test latency', 'Test latency'):
                 raise RuntimeError('the button of the check: %r' % ping)
