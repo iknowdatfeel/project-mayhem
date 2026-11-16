@@ -26,6 +26,7 @@ const CSS = `
 .mh-sheet { box-sizing:border-box; width:min(1100px, calc(100% - 32px)); max-height:calc(100% - 48px); margin-top:24px; display:flex; flex-direction:column; background:var(--background-color-high, #fff); border:1px solid var(--border-color-low, #ddd); border-radius:6px; box-shadow:0 8px 32px rgba(0,0,0,.35); }
 .mh-sheet--settings { width:min(var(--mh-settings-fit, 1200px), calc(100% - 32px)); height:calc(100% - 48px); max-width:calc(100% - 32px); }
 .mh-sheet--settings .mh-sheet-body { min-width:0; }
+.mh-sheet--fit { width:min(var(--mh-settings-fit, 1100px), calc(100% - 32px)); max-height:min(720px, calc(100% - 48px)); }
 .mh-sheet-head { display:flex; align-items:center; gap:10px; padding:12px 16px; border-bottom:1px solid var(--border-color-low, #ddd); }
 .mh-modal-close { margin-bottom:10px; text-align:right; }
 .mh-sheet-head h3 { margin:0; padding:0; flex:1; font-size:120%; border:0; }
@@ -44,6 +45,7 @@ body.mh-sheet-open { overflow:hidden; }
 @media (max-width: 600px) {
 .mh-sheet { width:100%; max-height:100%; margin-top:0; border-radius:0; }
 .mh-sheet--settings { width:100%; height:100%; max-width:100%; }
+.mh-sheet--fit { width:100%; max-height:100%; }
 .mh-sheet-overlay { align-items:stretch; }
 }
 `;
@@ -154,7 +156,7 @@ function show(name, onclose) {
 	const body = E('div', { 'class': 'mh-sheet-body' }, E('p', { 'class': 'spinning' }, _('Loading…')));
 	const notes = E('div', { 'class': 'mh-sheet-notes' });
 	const foot = E('div', { 'class': 'mh-sheet-foot' });
-	const overlay = E('div', { 'class': 'mh-sheet-overlay' }, E('div', { 'class': 'mh-sheet' + (name === 'settings' ? ' mh-sheet--settings' : ''), 'role': 'dialog', 'aria-label': PAGES[name] }, [
+	const overlay = E('div', { 'class': 'mh-sheet-overlay' }, E('div', { 'class': 'mh-sheet' + (name === 'settings' ? ' mh-sheet--settings' : name === 'servers' ? ' mh-sheet--fit' : ''), 'role': 'dialog', 'aria-label': PAGES[name] }, [
 		E('div', { 'class': 'mh-sheet-head' }, [
 			E('h3', PAGES[name]),
 			E('button', { 'class': 'mh-sheet-close', 'title': _('Close'), 'click': close }, '✕')
@@ -215,17 +217,29 @@ function show(name, onclose) {
 				return;
 
 			dom.content(body, node);
-			if (name === 'settings') {
-				const dialog = overlay.querySelector('.mh-sheet--settings');
+			const dialog = overlay.querySelector('.mh-sheet--settings, .mh-sheet--fit');
+			if (dialog && name === 'settings') {
 				const tabs = Array.from(body.querySelectorAll(
 					'.mh-settings-tabrow [role="tab"]'));
-				if (dialog && tabs.length) {
+				if (tabs.length) {
 					const first = tabs[0].getBoundingClientRect();
 					const last = tabs[tabs.length - 1].getBoundingClientRect();
 					const width = Math.ceil(last.right - first.left + 34);
 					dialog.style.setProperty(
 						'--mh-settings-fit', width + 'px');
 				}
+			}
+			else if (dialog) {
+				// The widest tab at its narrowest without overflow (the table
+				// of subscriptions with long URLs), not narrower than 1100px.
+				let width = 0;
+				body.querySelectorAll('.cbi-map-tabbed > [data-tab]').forEach((pane) => {
+					const keep = pane.style.cssText;
+					pane.style.cssText = keep + ';display:block;width:min-content';
+					width = Math.max(width, Math.ceil(pane.getBoundingClientRect().width));
+					pane.style.cssText = keep;
+				});
+				dialog.style.setProperty('--mh-settings-fit', Math.max(width + 34, 1100) + 'px');
 			}
 			dom.content(foot, footer(page, body));
 		});

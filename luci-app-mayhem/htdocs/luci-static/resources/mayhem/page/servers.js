@@ -42,7 +42,67 @@ const CSS = `
 .mh-keys .mh-key-actions { width:1%; white-space:nowrap; }
 .mh-keys .mh-key-actions > div { gap:4px; justify-content:flex-end; }
 .mh-keys .mh-key-actions > div > .btn { flex:0 0 auto; margin:0; }
+.mh-settings-tabs { display:flex; overflow:visible; gap:4px; border-bottom:1px solid var(--border-color-low, #ddd); margin-bottom:16px; }
+.mh-settings-tabrow { display:flex; flex-wrap:nowrap; justify-content:flex-start; gap:4px; }
+.mh-settings-tabs [role=tab] { display:inline-flex; flex-shrink:0; white-space:nowrap; align-items:center; gap:6px; background:none; color:inherit; border:0; border-bottom:3px solid transparent; padding:6px 6px; cursor:pointer; }
+.mh-settings-tabs [aria-selected=true] { border-bottom-color:var(--primary-color-high, #37c); font-weight:bold; }
 `;
+
+// The tabs of the page look like those of Settings: a button with an icon
+// for every tab of LuCI's menu, which stays hidden and switches the panes.
+const TAB_ICONS = { geo: 'plus', subscription: 'file-text', device: 'shield' };
+
+function tabBar(map) {
+	const menu = map.querySelector(':scope > .cbi-tabmenu');
+
+	if (!menu)
+		return;
+
+	const items = Array.from(menu.children);
+	const row = E('div', { 'class': 'mh-settings-tabrow', 'role': 'presentation' });
+	const buttons = [];
+	const pick = (i) => {
+		items[i].querySelector('a').click();
+		items.forEach((li, j) => {
+			const selected = li.classList.contains('cbi-tab');
+
+			buttons[j].setAttribute('aria-selected', String(selected));
+			buttons[j].tabIndex = selected ? 0 : -1;
+		});
+	};
+
+	items.forEach((li, i) => {
+		const shown = () => buttons.filter((b) => b.style.display !== 'none');
+		const b = E('button', {
+			'id': 'mh-servers-tab-' + li.getAttribute('data-tab'),
+			'type': 'button', 'role': 'tab',
+			'aria-selected': String(li.classList.contains('cbi-tab')),
+			'tabindex': li.classList.contains('cbi-tab') ? '0' : '-1',
+			'style': li.style.display === 'none' ? 'display:none' : null,
+			'click': () => pick(i),
+			'keydown': (ev) => {
+				const list = shown(), k = list.indexOf(b);
+				let next;
+
+				if (ev.key === 'ArrowRight') next = list[(k + 1) % list.length];
+				else if (ev.key === 'ArrowLeft') next = list[(k + list.length - 1) % list.length];
+				else if (ev.key === 'Home') next = list[0];
+				else if (ev.key === 'End') next = list[list.length - 1];
+				else return;
+
+				ev.preventDefault();
+				next.focus();
+				pick(buttons.indexOf(next));
+			}
+		}, [ mh.icon(TAB_ICONS[li.getAttribute('data-tab')] || 'logs', true), E('span', li.textContent) ]);
+
+		buttons.push(b);
+		row.appendChild(b);
+	});
+
+	menu.style.display = 'none';
+	menu.parentNode.insertBefore(E('div', { 'class': 'mh-settings-tabs', 'role': 'tablist' }, row), menu);
+}
 
 function randomHwid() {
 	const abc = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789';
@@ -696,11 +756,20 @@ return baseclass.extend({
 			return tunnels.render(info, { 'data-tab': this.section, 'data-tab-title': this.title });
 		};
 
-		return m.render().then((node) => {
-			node.insertBefore(mh.style(), node.firstChild);
-			node.insertBefore(E('style', CSS), node.firstChild);
+		// Every drawing of the form (a renamed subscription redraws it) gets
+		// the styles and the tabs again.
+		const contents = m.renderContents;
 
-			return node;
-		});
+		m.renderContents = function() {
+			return contents.apply(this, arguments).then((node) => {
+				tabBar(node);
+				node.insertBefore(mh.style(), node.firstChild);
+				node.insertBefore(E('style', CSS), node.firstChild);
+
+				return node;
+			});
+		};
+
+		return m.render();
 	}
 });
