@@ -120,9 +120,16 @@ function reconnect_epoch(c) {
 
 const INIT = getenv('MAYHEM_INIT') ?? '/etc/init.d/mayhem';
 
+// Every reload of Mayhem from here, as a shell command. After "stop" on the
+// dashboard (RUN_DIR/stopped, until start, restart or enable; in RAM, so a
+// boot starts Mayhem as before) none: a reload would start it again.
+function reload_cmd(then) {
+	return `[ -f ${q(RUN + '/stopped')} ] || { ${INIT} reload${then ? ` && ${then}` : ''}; }`;
+}
+
 function reload_choice() {
 	const lib = getenv('MAYHEM_LIB_DIR') ?? '/usr/share/mayhem';
-	apply_bg(`${INIT} reload && ucode ${q(lib + '/fallback.uc')}`);
+	apply_bg(reload_cmd(`ucode ${q(lib + '/fallback.uc')}`));
 }
 
 function applying() {
@@ -648,12 +655,13 @@ function find_node(state, tag) {
 
 const ACTIONS = {
 	// starting turns routing on as well: there is no separate switch for it
-	start: 'uci set mayhem.settings.enabled=1 && uci commit mayhem && /etc/init.d/mayhem start',
-	stop: '/etc/init.d/mayhem stop',
+	// "stop" holds until Mayhem is started again (reload_cmd())
+	start: `rm -f ${RUN}/stopped; uci set mayhem.settings.enabled=1 && uci commit mayhem && /etc/init.d/mayhem start`,
+	stop: `mkdir -p ${RUN} && : > ${RUN}/stopped; /etc/init.d/mayhem stop`,
 	// noted for the log: the next xray says it was restarted by hand
-	restart: `echo "$(date +%s) manual" > ${RUN}/restart.why; /etc/init.d/mayhem restart`,
-	reload: '/etc/init.d/mayhem reload',
-	enable: '/usr/bin/mayhem enable',
+	restart: `rm -f ${RUN}/stopped; echo "$(date +%s) manual" > ${RUN}/restart.why; /etc/init.d/mayhem restart`,
+	reload: reload_cmd(),
+	enable: `rm -f ${RUN}/stopped; /usr/bin/mayhem enable`,
 	disable: '/usr/bin/mayhem disable',
 	// start on boot or not; the service keeps its current state
 	autostart_on: '/etc/init.d/mayhem enable',
@@ -1391,7 +1399,7 @@ function backup_import(b, no_reload) {
 	}
 
 	if (!no_reload)
-		apply_bg('/etc/init.d/mayhem reload');
+		apply_bg(reload_cmd());
 
 	return { ok: true, sections: length(b.sections), files: files, kept_connections: !b.connections };
 }
@@ -1471,7 +1479,7 @@ function reset_config(keep) {
 		c.set('mayhem', 'device', 'model', trim(fs.readfile('/tmp/sysinfo/model') ?? '') || 'OpenWrt');
 
 	c.commit('mayhem');
-	apply_bg('/etc/init.d/mayhem reload');
+	apply_bg(reload_cmd());
 
 	return { ok: true, kept_connections: !!keep };
 }
@@ -1506,7 +1514,7 @@ function rename_section(from, to) {
 	});
 
 	c.commit('mayhem');
-	apply_bg('/etc/init.d/mayhem reload');
+	apply_bg(reload_cmd());
 
 	return { ok: true };
 }
@@ -1577,7 +1585,7 @@ function rename_subscription(from, to) {
 		write_json(`${RUN}/subs-state.json`, st);
 	}
 
-	apply_bg('/etc/init.d/mayhem reload');
+	apply_bg(reload_cmd());
 
 	return { ok: true, name: to };
 }
@@ -1607,7 +1615,7 @@ function subs_download(name, always) {
 	}
 
 	if (rc == 3 || always)
-		apply_bg('/etc/init.d/mayhem reload');
+		apply_bg(reload_cmd());
 
 	return results;
 }
@@ -2747,7 +2755,7 @@ const methods = {
 					// the rules cannot be swapped in place, a reload does it.
 					if (next_gen != null)
 						system(`sh -c ${q(`. ${LIB}/lib.sh; mayhem_lock start || exit 0; if mayhem_net_generation; then mayhem_unlock start; ` +
-							`else mayhem_unlock start; ${INIT} reload; fi`)} >/dev/null 2>&1 </dev/null &`);
+							`else mayhem_unlock start; ${reload_cmd()}; fi`)} >/dev/null 2>&1 </dev/null &`);
 
 					return { ok: true, fast: true };
 				}
@@ -3381,7 +3389,7 @@ const methods = {
 			if (!commit_all(c, 'mayhem', 'network', 'firewall'))
 				return { error: 'the config could not be saved' };
 
-			apply_bg('/etc/init.d/network reload; /etc/init.d/firewall reload; /etc/init.d/mayhem reload');
+			apply_bg(`/etc/init.d/network reload; /etc/init.d/firewall reload; ${reload_cmd()}`);
 
 			// A config made for a local obfuscator: the dialog asks for the
 			// obfuscation and its server next.
@@ -3490,7 +3498,7 @@ const methods = {
 				swap_list(usec, 'chain', old, name);
 
 			c.commit('mayhem');
-			apply_bg('/etc/init.d/mayhem reload');
+			apply_bg(reload_cmd());
 
 			return { ok: true, name: name };
 		}
@@ -3591,7 +3599,7 @@ const methods = {
 			if (!commit_all(c, 'network', 'firewall', 'mayhem'))
 				return { error: 'the config could not be saved' };
 
-			apply_bg('/etc/init.d/network reload; /etc/init.d/firewall reload; /etc/init.d/mayhem reload');
+			apply_bg(`/etc/init.d/network reload; /etc/init.d/firewall reload; ${reload_cmd()}`);
 
 			return { ok: true, interface: to };
 		}
@@ -3698,7 +3706,7 @@ const methods = {
 
 			c.set('mayhem', 'settings', 'log_level', level);
 			c.commit('mayhem');
-			apply_bg('/etc/init.d/mayhem reload');
+			apply_bg(reload_cmd());
 
 			return { ok: true };
 		}
@@ -3981,7 +3989,7 @@ const methods = {
 					}
 					if (!c.commit('mayhem'))
 						return { error: 'the configuration could not be saved' };
-					apply_bg('/etc/init.d/mayhem reload');
+					apply_bg(reload_cmd());
 					return { ok: true, name: parsed.name };
 				}
 			}
@@ -4017,7 +4025,7 @@ const methods = {
 			}
 
 			c.commit('mayhem');
-			apply_bg('/etc/init.d/mayhem reload');
+			apply_bg(reload_cmd());
 
 			return { ok: true, name: parsed.name };
 		}
@@ -4121,8 +4129,8 @@ const methods = {
 				return { error: 'the config could not be saved' };
 
 			apply_bg(mode == 'full'
-				? `ifdown ${q(iface)}; /etc/init.d/network reload; /etc/init.d/firewall reload; /etc/init.d/mayhem reload`
-				: '/etc/init.d/mayhem reload');
+				? `ifdown ${q(iface)}; /etc/init.d/network reload; /etc/init.d/firewall reload; ${reload_cmd()}`
+				: reload_cmd());
 
 			return { ok: true };
 		}
@@ -4155,7 +4163,7 @@ const methods = {
 				if (!c.commit('mayhem'))
 					return { error: 'the config could not be saved' };
 
-				apply_bg('/etc/init.d/mayhem reload');
+				apply_bg(reload_cmd());
 
 				return { ok: true };
 			}
@@ -4225,7 +4233,7 @@ const methods = {
 			if (!c.commit('mayhem'))
 				return { error: 'the config could not be saved' };
 
-			apply_bg('/etc/init.d/mayhem reload');
+			apply_bg(reload_cmd());
 
 			return { ok: true };
 		}
@@ -4260,7 +4268,7 @@ const methods = {
 			if (!c.commit('mayhem'))
 				return { error: 'the config could not be saved' };
 
-			apply_bg('/etc/init.d/mayhem reload');
+			apply_bg(reload_cmd());
 
 			return { ok: true, hidden: left };
 		}
@@ -4355,7 +4363,7 @@ const methods = {
 			if (!commit_all(c, 'network'))
 				return { error: 'the config could not be saved' };
 
-			apply_bg(`/etc/init.d/network reload; sleep 2; ifup ${iface}; /etc/init.d/mayhem reload`);
+			apply_bg(`/etc/init.d/network reload; sleep 2; ifup ${iface}; ${reload_cmd()}`);
 
 			return { ok: true };
 		}
