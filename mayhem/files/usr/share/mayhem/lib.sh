@@ -399,7 +399,7 @@ mayhem_service_stop() {
 # brought up to date (the provider's DNS servers), or ends. Mayhem that runs
 # looks after itself.
 mayhem_hold_sync() {
-	mayhem_lock start
+	mayhem_lock start || return 1
 
 	if mayhem_running; then
 		:
@@ -751,22 +751,17 @@ mayhem_conn_log() {
 # costs a name.
 mayhem_conn_fold() {
 	local f="$MAYHEM_RUN_DIR/conn.log" m="$MAYHEM_RUN_DIR/conn.names" size
-	local lock="$MAYHEM_RUN_DIR/fold.lock"
 
 	[ -f "$f" ] && [ ! -L "$f" ] || return 0
-	size="$(wc -c < "$f" 2>/dev/null)"
-	[ "${size:-0}" -gt 0 ] || return 0
 
-	if ! mkdir "$lock" 2>/dev/null; then
-		local lpid
-		lpid="$(cat "$lock/pid" 2>/dev/null)"
-		if [ -n "$lpid" ] && kill -0 "$lpid" 2>/dev/null; then
-			return 0
-		fi
-		rm -rf "$lock" 2>/dev/null
-		mkdir "$lock" 2>/dev/null || return 0
+	# The scheduler and the dashboard fold at once: one after the other, each
+	# with a file of its own.
+	mayhem_lock conn 30 || return 0
+	size="$(wc -c < "$f" 2>/dev/null)"
+	if [ "${size:-0}" -le 0 ]; then
+		mayhem_unlock conn
+		return 0
 	fi
-	echo "$$" > "$lock/pid"
 
 	{ [ -f "$m" ] && cat "$m"; head -c "$size" "$f"; } | awk -v max="${MAYHEM_CONN_NAMES:-3000}" '
 		function put(kind, key, line) {
@@ -818,12 +813,13 @@ mayhem_conn_fold() {
 			for (i = 1; i <= n; i++)
 				if (i in out)
 					print out[i]
-		}' > "$m.new" && mv -f "$m.new" "$m"
+		}' > "$m.new.$$" && mv -f "$m.new.$$" "$m"
+	rm -f "$m.new.$$"
 
 	# What xray wrote meanwhile stays.
-	tail -c +"$((size + 1))" "$f" > "$f.t" 2>/dev/null && cat "$f.t" > "$f"
-	rm -f "$f.t"
-	rm -rf "$lock" 2>/dev/null || true
+	tail -c +"$((size + 1))" "$f" > "$f.t.$$" 2>/dev/null && cat "$f.t.$$" > "$f"
+	rm -f "$f.t.$$"
+	mayhem_unlock conn
 
 	local watch="$MAYHEM_RUN_DIR/conn.watch"
 	if [ -f "$watch" ]; then
@@ -1249,31 +1245,52 @@ mayhem_dns_down() {
 # One holder of the lock $1 at a time ($MAYHEM_RUN_DIR/$1.lock with its pid).
 # A lock left by a process that is gone is taken over; after $2 seconds (300)
 # it is taken anyway.
-mayhem_lock() {
-	local d="$MAYHEM_RUN_DIR/$1.lock" i=0 pid
+# The descriptor a lock is held on (flock on RUN_DIR/<name>.lock, like
+# procd_lock): one per name, so a process may hold several. The kernel lets
+# go of it with the process: a lock is never left behind, nor taken from a
+# live owner. Background processes started under a lock close these
+# descriptors (6-9) so they do not keep it.
+mayhem_lock_fd() {
+	case "$1" in
+		start) echo 7 ;;
+		net_warm) echo 8 ;;
+		conn) echo 6 ;;
+		*) echo 9 ;;
+	esac
+}
 
+# $1 name, $2 seconds to wait (300). After that: an error in the log and 1,
+# the caller gives up what it was about to do.
+mayhem_lock() {
+	local fd i=0
+
+	fd="$(mayhem_lock_fd "$1")"
 	mkdir -p "$MAYHEM_RUN_DIR"
 	chmod 0700 "$MAYHEM_RUN_DIR" 2>/dev/null || true
+	# A lock directory of an older Mayhem (updated without a reboot).
+	[ -d "$MAYHEM_RUN_DIR/$1.lock" ] && rm -rf "${MAYHEM_RUN_DIR:?}/$1.lock"
+	eval "exec $fd>\"\$MAYHEM_RUN_DIR/\$1.lock\"" || return 1
 
-	while ! mkdir "$d" 2>/dev/null; do
-		pid="$(cat "$d/pid" 2>/dev/null)"
-
-		if { [ -n "$pid" ] && ! kill -0 "$pid" 2>/dev/null; } || [ "$i" -ge "${2:-300}" ]; then
-			rm -rf "$d"
-			continue
+	while ! flock -n "$fd" 2>/dev/null; do
+		if [ "$i" -ge "${2:-300}" ]; then
+			eval "exec $fd>&-"
+			mayhem_log "lock $1 is still taken after ${2:-300} s, giving up" err
+			return 1
 		fi
 
 		sleep 1
 		i=$((i + 1))
 	done
 
-	echo "$$" > "$d/pid"
+	return 0
 }
 
 mayhem_unlock() {
-	local d="$MAYHEM_RUN_DIR/$1.lock"
+	local fd
 
-	[ "$(cat "$d/pid" 2>/dev/null)" = "$$" ] && rm -rf "$d"
+	fd="$(mayhem_lock_fd "$1")"
+	flock -u "$fd" 2>/dev/null
+	eval "exec $fd>&-"
 	return 0
 }
 
@@ -1304,7 +1321,7 @@ mayhem_subs_new() {
 		rc=$?
 		rm -f "$f"
 		[ "$rc" = 3 ] && /etc/init.d/mayhem reload
-	) >/dev/null 2>&1 </dev/null &
+	) >/dev/null 2>&1 </dev/null 6>&- 7>&- 8>&- 9>&- &
 }
 
 # --- state -------------------------------------------------------------------
@@ -1414,7 +1431,7 @@ mayhem_net_warm() {
 			ucode "$MAYHEM_GEN" --warm
 		fi
 		mayhem_unlock net_warm
-	) >/dev/null 2>&1 </dev/null &
+	) >/dev/null 2>&1 </dev/null 6>&- 7>&- 8>&- 9>&- &
 }
 
 # Pin a balancer to a server; an empty tag returns it to automatic choice.

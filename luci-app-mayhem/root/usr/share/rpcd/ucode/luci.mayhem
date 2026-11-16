@@ -2746,7 +2746,7 @@ const methods = {
 					// server are reset and reconnect through the new one. If
 					// the rules cannot be swapped in place, a reload does it.
 					if (next_gen != null)
-						system(`sh -c ${q(`. ${LIB}/lib.sh; mayhem_lock start; if mayhem_net_generation; then mayhem_unlock start; ` +
+						system(`sh -c ${q(`. ${LIB}/lib.sh; mayhem_lock start || exit 0; if mayhem_net_generation; then mayhem_unlock start; ` +
 							`else mayhem_unlock start; ${INIT} reload; fi`)} >/dev/null 2>&1 </dev/null &`);
 
 					return { ok: true, fast: true };

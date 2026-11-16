@@ -19,7 +19,10 @@ start_service() {
 	chmod 0700 "$MAYHEM_RUN_DIR" 2>/dev/null || true
 	f="$MAYHEM_RUN_DIR/applying.$$"
 	: > "$f"
-	mayhem_lock start
+	if ! mayhem_lock start; then
+		rm -f "$f"
+		return 1
+	fi
 	mayhem_start
 	rc=$?
 	mayhem_unlock start
@@ -147,7 +150,7 @@ mayhem_start() {
 # new xray listens (a SIGHUP), like after a crash; the start puts in a new
 # file only when it changed.
 stop_service() {
-	mayhem_lock start
+	mayhem_lock start || return 1
 	mayhem_service_stop
 	mayhem_unlock start
 }

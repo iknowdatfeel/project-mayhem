@@ -368,7 +368,9 @@ function route_section(sub, sections) {
 
 // One download at a time (the scheduler, a new subscription, the button on
 // the dashboard): a second one waits, and then finds fresh what the first
-// one downloaded. A lock left by a process that is gone is taken over.
+// one downloaded. A lock left by a process that is gone is taken over -
+// only while it still names that process (two waiters must not both take
+// it); a live owner keeps it, and after 5 minutes the waiter gives up.
 function lock(wait) {
 	const me = split(fs.readfile('/proc/self/stat') ?? '', ' ')[0];
 
@@ -381,13 +383,19 @@ function lock(wait) {
 		const pid = trim(fs.readfile(`${LOCK}/pid`) ?? '');
 		const st = fs.stat(LOCK);
 
-		if ((pid != '' && !fs.access(`/proc/${pid}`)) || (pid == '' && st && time() - st.mtime > 10) || i >= 300) {
-			fs.unlink(`${LOCK}/pid`);
-			fs.rmdir(LOCK);
+		if (!st)
+			continue;
+
+		if ((pid != '' && !fs.access(`/proc/${pid}`)) || (pid == '' && time() - st.mtime > 10)) {
+			if (trim(fs.readfile(`${LOCK}/pid`) ?? '') == pid) {
+				fs.unlink(`${LOCK}/pid`);
+				fs.rmdir(LOCK);
+			}
+
 			continue;
 		}
 
-		if (!wait)
+		if (!wait || i >= 300)
 			return false;
 
 		sleep(1000);
