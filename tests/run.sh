@@ -1030,6 +1030,16 @@ else
 	bad "backup: $out"
 fi
 
+# Diagnostics: flow offloading in the firewall is a warning.
+mkdir -p "$OUT/offload-uci" "$OUT/offload-run"
+cp "$ROOT/tests/uci/mayhem" "$OUT/offload-uci/mayhem"
+if out="$(PATH="$OUT/bin:$PATH" MAYHEM_UCI_DIR="$OUT/offload-uci" MAYHEM_RUN_DIR="$OUT/offload-run" \
+	uc "$ROOT/tests/offload.uc" "$ROOT/luci-app-mayhem/root/usr/share/rpcd/ucode/luci.mayhem" 2>&1)"; then
+	ok "diagnostics: flow offloading warning"
+else
+	bad "diagnostics, flow offloading: $out"
+fi
+
 # The dashboard's polls carry no server keys; server_link gives one.
 mkdir -p "$OUT/dash-run"
 if out="$(PATH="$OUT/bin:$PATH" MAYHEM_RUN_DIR="$OUT/dash-run" MAYHEM_UCI_DIR="$OUT/backup-uci" \

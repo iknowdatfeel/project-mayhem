@@ -2433,3 +2433,11 @@ msgstr "Латинские буквы, цифры и _."
 
 msgid "Name"
 msgstr "Имя"
+
+#: htdocs/luci-static/resources/mayhem/diag.js
+msgid "Flow offloading"
+msgstr "Ускорение потоков (flow offloading)"
+
+#: htdocs/luci-static/resources/mayhem/diag.js
+msgid "Flow offloading is on: connections opened before a server or tunnel change keep their old path until they close."
+msgstr "Включено ускорение потоков (flow offloading): соединения, открытые до смены сервера или туннеля, идут прежним путём, пока не закроются."

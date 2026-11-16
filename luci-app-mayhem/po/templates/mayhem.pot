@@ -705,6 +705,14 @@ msgstr ""
 msgid "Filter…"
 msgstr ""
 
+#: htdocs/luci-static/resources/mayhem/diag.js
+msgid "Flow offloading"
+msgstr ""
+
+#: htdocs/luci-static/resources/mayhem/diag.js
+msgid "Flow offloading is on: connections opened before a server or tunnel change keep their old path until they close."
+msgstr ""
+
 #: htdocs/luci-static/resources/mayhem/tunnels.js
 msgid "For example, Netherlands"
 msgstr ""

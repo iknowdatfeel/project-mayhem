@@ -831,6 +831,22 @@ function diag_local() {
 	check(res, 'kernel', 'Policy routing', index(rules, `lookup ${C.RT_TABLE}`) >= 0 ? 'ok' : (active ? 'fail' : 'info'),
 		index(rules, `lookup ${C.RT_TABLE}`) >= 0 ? `rule for table ${C.RT_TABLE} is in place` : 'no rule');
 
+	// Flows in the firewall's flowtable skip the chains after ingress: the
+	// reset of old connections on a server or tunnel change (prerouting)
+	// does not reach them.
+	const fw = uci_open();
+	let offload = false;
+
+	if (fw.load('firewall'))
+		fw.foreach('firewall', 'defaults', (d) => {
+			if (d.flow_offloading == '1' || d.flow_offloading_hw == '1')
+				offload = true;
+		});
+
+	if (offload)
+		check(res, 'kernel', 'Flow offloading', 'warn',
+			'flow offloading is on: connections opened before a server or tunnel change keep their old path until they close');
+
 	// DNS
 	const dnsmasq_pid = trim(run('pidof dnsmasq 2>/dev/null') ?? '');
 

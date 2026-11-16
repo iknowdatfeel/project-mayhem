@@ -48,6 +48,8 @@ function checkAgo(s) {
 
 function checkDetail(d) {
 	const details = {
+		'flow offloading is on: connections opened before a server or tunnel change keep their old path until they close':
+			_('Flow offloading is on: connections opened before a server or tunnel change keep their old path until they close.'),
 		'no generated configuration status': _('No generated configuration status'),
 		'remote DNS failed; queries may use the provider fallback': _('Remote DNS failed; queries may use the provider fallback'),
 		'VPN failed; traffic waits for it': _('VPN failed; traffic waits for it'),
@@ -100,6 +102,7 @@ const NAMES = {
 	'Ports': _('Ports'),
 	'nftables': 'Nftables',
 	'Policy routing': _('Policy routing'),
+	'Flow offloading': _('Flow offloading'),
 	'dnsmasq': 'Dnsmasq',
 	'Remote DNS': _('Remote DNS'),
 	'Clock': _('Clock'),
