@@ -288,17 +288,79 @@ function fetch_geo(src, cats, proxy, tmp) {
 	return res;
 }
 
+// What the server says of the file before it is downloaded (curl -I, the
+// last response after redirects): ETag, Last-Modified, Content-Length.
+// null when it says none of them or cannot be asked.
+function head_validator(url, proxy) {
+	const p = fs.popen(curl_cmd(url, proxy, '-I -m 60') + ' 2>/dev/null', 'r');
+
+	if (!p)
+		return null;
+
+	const raw = replace(p.read('all') ?? '', '\r', '');
+
+	if (p.close() != 0)
+		return null;
+
+	const blocks = filter(split(raw, '\n\n'), (b) => match(b, /^HTTP\//));
+	const v = {};
+
+	for (let line in split(blocks[length(blocks) - 1] ?? '', '\n')) {
+		const m = match(line, /^([A-Za-z-]+):[ \t]*(.*)$/);
+		const k = m ? lc(m[1]) : null;
+
+		if (k == 'etag' || k == 'last-modified' || k == 'content-length')
+			v[k] = trim(m[2]);
+	}
+
+	return length(keys(v)) ? v : null;
+}
+
 // A source whose type was wrong took categories of the other kind: with the
 // type fixed, other sources may have to keep them instead (a Re:filter
 // geoip.dat added as geosite held "refilter" from its geosite.dat).
 let kind_fixed = false;
 
-function update_source(cfg, src, cats, state, now) {
+function update_source(cfg, src, cats, state, now, force) {
 	const st = state.geo[src.name] ??= {};
 	const tmp = `${TMP}/mayhem-geo-${src.name}.dat`;
-	let res = null, last = 'no download route', via = null;
+	let res = null, last = 'no download route', via = null, validator = null;
 
 	st.last_try = now;
+
+	// The file has not changed (the same headers as last time) and every
+	// category asked for is kept: no download. Asked the way the download
+	// goes; no headers, or no answer: downloaded as before.
+	if (!local_path(src.url)) {
+		for (let proxy in routes(cfg)) {
+			validator = head_validator(src.url, proxy);
+
+			if (validator) {
+				via = proxy ? 'xray' : 'direct';
+				break;
+			}
+		}
+
+		const old = src.index;
+		// (no index() here: the index of the source below has the name)
+		const kept = {};
+
+		for (let c in old?.copied ?? [])
+			kept[c] = true;
+
+		if (!force && validator && old && old.url == src.url && old.kind == src.kind &&
+		    sprintf('%J', old.validator) == sprintf('%J', validator) &&
+		    !length(filter(cats, (c) => !kept[c]))) {
+			st.last_ok = now;
+			st.via = via;
+			delete st.error;
+
+			return {
+				ok: true, via: via, categories: length(keys(old.categories ?? {})), copied: old.copied ?? [],
+				missing: filter(cats, (c) => old.categories?.[c] == null), changed: false, unchanged: true
+			};
+		}
+	}
 
 	for (let proxy in (local_path(src.url) ? [ null ] : routes(cfg))) {
 		try {
@@ -353,8 +415,12 @@ function update_source(cfg, src, cats, state, now) {
 	const changed_copied = sprintf('%J', copied) != sprintf('%J', sort(old?.copied ?? []));
 	const index = { kind: src.kind, url: src.url, size: res.bytes, categories: res.categories, copied: copied, updated: now };
 
+	if (validator)
+		index.validator = validator;
+
 	if (!old || old.url != src.url || old.size != res.bytes || changed_copied ||
-	    sprintf('%J', old.categories) != sprintf('%J', res.categories))
+	    sprintf('%J', old.categories) != sprintf('%J', res.categories) ||
+	    sprintf('%J', old.validator) != sprintf('%J', validator))
 		write_json(`${C.GEO_DIR}/${src.name}.json`, index);
 
 	st.last_ok = now;
@@ -430,7 +496,7 @@ function run_geo(cfg, state, name, force, again) {
 			continue;
 		}
 
-		const r = update_source(cfg, src, want[src.name] ?? [], state, now);
+		const r = update_source(cfg, src, want[src.name] ?? [], state, now, force);
 
 		r.name = src.name;
 		push(results, r);
