@@ -78,7 +78,7 @@ const CSS = `
 .mh-ping { display:inline-flex; align-items:center; gap:6px; }
 .mh-sel { position:relative; display:inline-flex; }
 .mh-sel::after { content:''; position:absolute; right:9px; top:50%; width:5px; height:5px; border:solid currentColor; border-width:0 1.5px 1.5px 0; transform:translateY(-75%) rotate(45deg); pointer-events:none; opacity:.8; }
-.mh-ghead .mh-ping select { margin:0; padding:0 22px 0 8px; -webkit-appearance:none; appearance:none; background-image:none; }
+span.mh-sel > select { margin:0; padding:0 22px 0 8px; -webkit-appearance:none; appearance:none; background-image:none; }
 .mh-ghead .mh-ping .btn { height:24px; margin:0; padding:0 8px; box-sizing:border-box; }.mh-widget-row { white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
 .mh-widget-row.mh-wrap { white-space:normal; }
 .mh-whead { display:flex; justify-content:space-between; align-items:baseline; gap:8px; }
@@ -1216,7 +1216,7 @@ return view.extend({
 			})
 		}, modes.map((m) => E('option', { 'value': m[0], 'selected': m[0] === mode ? '' : null }, m[1])));
 
-		const parts = [ sel ];
+		const parts = [ E('span', { 'class': 'mh-sel' }, sel) ];
 
 		if (pend)
 			parts.push(E('span', { 'class': 'mh-muted mh-small' }, _('applying…')));

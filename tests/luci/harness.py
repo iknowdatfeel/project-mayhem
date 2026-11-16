@@ -977,7 +977,7 @@ def main():
                 title = TRANSLATIONS.get('Server list', 'Server list')
                 if first != 'mh-ghead' or titles[:1] != [title] or titles.count(title) != 1:
                     raise RuntimeError('no title above the one server of the list: %s %s' % (first, titles))
-                if pg.query_selector('#mayhem-body .mh-list > .mh-ghead > select'):
+                if pg.query_selector('#mayhem-body .mh-list > .mh-ghead > .mh-sel > select'):
                     raise RuntimeError('a choice of the server with one server')
                 shot(pg, 'dashboard_one_server')
             finally:
@@ -1152,7 +1152,7 @@ def main():
             # whole by its rule, saved in one call with the rule. (The key
             # DE was deleted by an earlier step and is hidden on the page.)
             conf = os.path.join(FIX, 'uci', 'mayhem')
-            pg.select_option('#mayhem-body .mh-list > .mh-ghead > select', 'fallback')
+            pg.select_option('#mayhem-body .mh-list > .mh-ghead > .mh-sel > select', 'fallback')
             pg.wait_for_selector('.modal .mh-chain-list', timeout=5000)
             add = '.modal .mh-add >> nth=-1'
             pg.select_option(add, 'awg0')
