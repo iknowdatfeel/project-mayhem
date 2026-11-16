@@ -15,8 +15,7 @@ USE_PROCD=1
 start_service() {
 	local f rc
 
-	mkdir -m 0700 -p "$MAYHEM_RUN_DIR"
-	chmod 0700 "$MAYHEM_RUN_DIR" 2>/dev/null || true
+	mayhem_run_dir
 	f="$MAYHEM_RUN_DIR/applying.$$"
 	: > "$f"
 	if ! mayhem_lock start; then
@@ -88,8 +87,7 @@ mayhem_start() {
 	conflicts="$(mayhem_conflicts)"
 	if [ -n "$conflicts" ]; then
 		mayhem_log "not starting: another traffic interceptor is running ($conflicts)" err
-		mkdir -m 0700 -p "$MAYHEM_RUN_DIR"
-		chmod 0700 "$MAYHEM_RUN_DIR" 2>/dev/null || true
+		mayhem_run_dir
 		printf '{"ok":false,"errors":["another traffic interceptor is running: %s"]}\n' \
 			"$conflicts" > "$MAYHEM_RUN_DIR/status.json"
 		mayhem_restart_failed

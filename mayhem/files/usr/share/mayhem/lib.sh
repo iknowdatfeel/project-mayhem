@@ -8,6 +8,13 @@ mayhem_log() {
 	logger -t mayhem -p "daemon.${2:-info}" -- "$1"
 }
 
+# The run directory: server keys are in its files (xray.json, nodes.json),
+# so only root reads it. Everything that creates it goes through here.
+mayhem_run_dir() {
+	mkdir -p "$MAYHEM_RUN_DIR" || return 1
+	chmod 0700 "$MAYHEM_RUN_DIR" 2>/dev/null || true
+}
+
 # --- policy routing + nftables -----------------------------------------------
 
 mayhem_net_up() {
@@ -343,8 +350,7 @@ mayhem_tunnels_hold() {
 mayhem_hold_up() {
 	local run="$MAYHEM_RUN_DIR" d="$MAYHEM_HOLD_DIR" f
 
-	mkdir -p "$run"
-	chmod 0700 "$run" 2>/dev/null || true
+	mayhem_run_dir
 
 	if ! nft list table inet "$MAYHEM_NFT_TABLE" >/dev/null 2>&1; then
 		[ -s "$d/nft" ] || return 1
@@ -859,8 +865,7 @@ mayhem_conn_fold() {
 # when the new xray is up (xray.started). Reasons: config:<parts>, servers,
 # geo, memory, hang, manual.
 mayhem_restart_why() {
-	mkdir -p "$MAYHEM_RUN_DIR"
-	chmod 0700 "$MAYHEM_RUN_DIR" 2>/dev/null || true
+	mayhem_run_dir
 	echo "$(date +%s) $1" > "$MAYHEM_RUN_DIR/restart.why"
 }
 
@@ -1150,8 +1155,7 @@ mayhem_dnsmasq_hup() {
 mayhem_dns_servers() {
 	local f="$MAYHEM_DNS_SERVERS" new="$MAYHEM_DNS_SERVERS.new"
 
-	mkdir -p "$MAYHEM_RUN_DIR"
-	chmod 0700 "$MAYHEM_RUN_DIR" 2>/dev/null || true
+	mayhem_run_dir
 	mkdir -p "$(dirname "$MAYHEM_DNS_SERVERS")"
 
 	local src="$MAYHEM_RUN_DIR/dns.xray"
@@ -1295,8 +1299,7 @@ mayhem_lock() {
 	local fd i=0
 
 	fd="$(mayhem_lock_fd "$1")"
-	mkdir -p "$MAYHEM_RUN_DIR"
-	chmod 0700 "$MAYHEM_RUN_DIR" 2>/dev/null || true
+	mayhem_run_dir
 	# A lock directory of an older Mayhem (updated without a reboot).
 	[ -d "$MAYHEM_RUN_DIR/$1.lock" ] && rm -rf "${MAYHEM_RUN_DIR:?}/$1.lock"
 	eval "exec $fd>\"\$MAYHEM_RUN_DIR/\$1.lock\"" || return 1

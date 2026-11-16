@@ -155,7 +155,9 @@ trap cleanup EXIT
 
 start_mayhem() {
 	# $1 model file, or "uci" to read $MAYHEM_UCI_DIR
-	mkdir -p "$MAYHEM_RUN_DIR"
+	# The run directory as the init script makes it (root's only).
+	# shellcheck disable=SC2016 # expanded by the inner shell
+	sh -c '. "$MAYHEM_LIB_DIR/lib.sh"; mayhem_run_dir'
 
 	if [ "$1" = uci ]; then
 		uc "$FILES/usr/share/mayhem/gen.uc" --out "$MAYHEM_RUN_DIR" 2>/dev/null || { bad "generator"; return 1; }
@@ -389,6 +391,13 @@ EOF
 
 echo "== lists mode: only listed traffic reaches xray"
 if start_mayhem "$WORK/lists.json"; then
+	# Server keys stay root's; dnsmasq's files stay readable for dnsmasq.
+	perm="$(stat -c %a "$MAYHEM_RUN_DIR") $(stat -c %a "$MAYHEM_DNSMASQ_DIRS/mayhem.conf") $(stat -c %a "$MAYHEM_DNS_SERVERS")"
+	if [ "$perm" = "700 644 644" ]; then
+		ok "run directory 700, dnsmasq's files 644"
+	else
+		bad "permissions (run directory, dnsmasq file, servers file): $perm"
+	fi
 	expect "no rule -> kernel direct, past xray" 192.168.1.2 http://45.0.0.2:8080/
 	expect "domain -> proxy" 45.0.0.3 $(site youtube.test)
 	expect "subdomain -> proxy" 45.0.0.3 $(site www.youtube.test)
