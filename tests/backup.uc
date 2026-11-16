@@ -5,6 +5,7 @@
 'use strict';
 
 import { readfile } from 'fs';
+import { cursor } from 'uci';
 
 const plugin = loadfile(ARGV[0])()['luci.mayhem'];
 const call = (m, args) => plugin[m].call({ args: args });
@@ -38,5 +39,38 @@ expect('not a backup is refused', call('backup_import', { backup: { sections: []
 expect('unknown section type is refused',
 	call('backup_import', { backup: { mayhem_backup: 1, sections: [ { '.type': 'network', '.name': 'x' } ] } }).error != null);
 expect('a failed import changes nothing', sprintf('%J', lines(readfile(path))) == sprintf('%J', lines(before)));
+
+// A tunnel's own section (its name, kept off the server list) is not part of
+// a backup: importing one, or resetting the settings, leaves it alone.
+const tunnel = () => {
+	const c = cursor(getenv('MAYHEM_UCI_DIR'));
+
+	c.load('mayhem');
+
+	return c.get('mayhem', 'wg0') == 'tunnel' && c.get('mayhem', 'wg0', 'label') == 'Home VPN' &&
+		c.get('mayhem', 'wg0', 'server') == '0';
+};
+const tc = cursor(getenv('MAYHEM_UCI_DIR'));
+
+tc.load('mayhem');
+tc.set('mayhem', 'wg0', 'tunnel');
+tc.set('mayhem', 'wg0', 'label', 'Home VPN');
+tc.set('mayhem', 'wg0', 'server', '0');
+tc.commit('mayhem');
+
+expect('a tunnel section is in place', tunnel());
+expect('full backup restores next to a tunnel', call('backup_import', { backup: full }).ok === true);
+expect('the tunnel section stays after a full backup', tunnel());
+expect('backup without connections restores next to a tunnel', call('backup_import', { backup: bare }).kept_connections === true);
+expect('the tunnel section stays after a backup without connections', tunnel());
+
+if (getenv('MAYHEM_DEFAULTS')) {
+	expect('reset keeping connections', call('reset_config', { connections: true }).ok === true);
+	expect('the tunnel section stays after a reset keeping connections', tunnel());
+	expect('reset without connections', call('reset_config', { connections: false }).ok === true);
+	expect('the tunnel section stays after a reset without connections', tunnel());
+}
+else
+	expect('MAYHEM_DEFAULTS is set for the reset', false);
 
 exit(fails ? 1 : 0);

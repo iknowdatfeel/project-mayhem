@@ -1316,8 +1316,11 @@ function backup_import(b, no_reload) {
 		}
 	}
 
+	// Only what a backup carries is replaced: the router's other sections
+	// (a tunnel's name, "config tunnel") stay as they are.
 	for (let s in uci_sections_ordered(c))
-		c.delete('mayhem', s['.name']);
+		if (index(BACKUP_TYPES, s['.type']) >= 0)
+			c.delete('mayhem', s['.name']);
 
 	const put = (s) => {
 		let name = s['.name'];

@@ -1024,7 +1024,7 @@ cp "$ROOT/tests/uci/mayhem" "$OUT/backup-uci/mayhem"
 printf '#!/bin/sh\nexit 0\n' > "$OUT/bin/logger"
 chmod +x "$OUT/bin/logger"
 if out="$(PATH="$OUT/bin:$PATH" MAYHEM_UCI_DIR="$OUT/backup-uci" MAYHEM_RUN_DIR="$OUT/backup-run" \
-	uc "$ROOT/tests/backup.uc" "$ROOT/luci-app-mayhem/root/usr/share/rpcd/ucode/luci.mayhem" 2>&1)"; then
+	MAYHEM_DEFAULTS="$FILES/etc/config/mayhem" uc "$ROOT/tests/backup.uc" "$ROOT/luci-app-mayhem/root/usr/share/rpcd/ucode/luci.mayhem" 2>&1)"; then
 	ok "backup with and without connections"
 else
 	bad "backup: $out"
