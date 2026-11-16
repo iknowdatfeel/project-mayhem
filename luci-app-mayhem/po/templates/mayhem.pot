@@ -2141,10 +2141,6 @@ msgstr ""
 msgid "chosen: %s"
 msgstr ""
 
-#: htdocs/luci-static/resources/view/mayhem/dashboard.js
-msgid "click another server to switch to it"
-msgstr ""
-
 #: htdocs/luci-static/resources/mayhem/page/sections.js
 msgid "example.com matches the domain and its subdomains; full: is the exact name, keyword: a substring, regexp: a regular expression."
 msgstr ""
@@ -2195,10 +2191,6 @@ msgstr ""
 
 #: htdocs/luci-static/resources/view/mayhem/dashboard.js
 msgid "not servers of the list: they carry the traffic of their sections under Routing"
-msgstr ""
-
-#: htdocs/luci-static/resources/view/mayhem/dashboard.js
-msgid "the fastest of all servers; click one to choose it by hand"
 msgstr ""
 
 #: htdocs/luci-static/resources/mayhem/diag.js
