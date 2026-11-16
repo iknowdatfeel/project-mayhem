@@ -128,6 +128,15 @@ else
 	ok "router traffic through xray"
 fi
 
+# What reaches the router itself: the interception port and local ports.
+if ! out="$(uc "$ROOT/tests/input.uc" "$OUT/input.nft" 2>&1)"; then
+	bad "chain input: $out"
+elif command -v nft >/dev/null 2>&1 && ! out="$(nft -c -f "$OUT/input.nft" 2>&1)"; then
+	bad "chain input: nftables: $out"
+else
+	ok "chain input: interception port and local ports"
+fi
+
 # A call of the rpcd plugin in a process of its own (call.uc): the plugin
 # compiled once, the same answers as from the source.
 mkdir -p "$OUT/rpccache"

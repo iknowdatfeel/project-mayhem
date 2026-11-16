@@ -763,6 +763,45 @@ if start_mayhem uci; then
 	expect "manual choice is applied at start" 45.0.0.8 $(site youtube.test)
 	expect "local SOCKS port of the section" 45.0.0.8 -x socks5h://192.168.1.1:1080 http://45.0.0.2:8080/
 	expect "local HTTP proxy port of the section" 45.0.0.8 -x http://192.168.1.1:1080 http://45.0.0.2:8080/
+	# Not from another interface (the WAN), only from Mayhem's network.
+	if ip netns exec wan curl -s -m 4 -x socks5h://45.0.0.1:1080 http://45.0.0.2:8080/ >/dev/null 2>&1; then
+		bad "local port of the section answers on the WAN"
+	else
+		ok "local port of the section is closed on the WAN"
+	fi
+
+	# xray's interception port is not a port of the router: TCP is refused,
+	# a datagram never reaches xray.
+	got="$(ip netns exec client python3 - <<'PY'
+import socket
+s = socket.socket(); s.settimeout(4)
+try:
+    s.connect(('192.168.1.1', 12701)); print('open')
+except ConnectionRefusedError:
+    print('refused')
+except Exception as e:
+    print(type(e).__name__)
+PY
+)"
+	if [ "$got" = refused ]; then ok "interception port refuses TCP to the router"; else bad "TCP to the interception port: $got"; fi
+	tp_hits() {
+		ip netns exec router nft list chain inet mayhem input 2>/dev/null |
+			awk '/th dport 12701/ { for (i = 1; i < NF; i++) if ($i == "packets") print $(i + 1) }'
+	}
+	logged() { grep -c '192\.168\.1\.1:12701' "$MAYHEM_RUN_DIR/conn.log" 2>/dev/null || true; }
+	before="$(tp_hits)" seen="$(logged)"
+	ip netns exec client python3 -c "
+import socket
+s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+for i in range(3): s.sendto(b'hi', ('192.168.1.1', 12701))
+"
+	sleep 1
+	after="$(tp_hits)"
+	if [ -n "$after" ] && [ "${after:-0}" -gt "${before:-0}" ] && [ "$(logged)" = "$seen" ]; then
+		ok "interception port drops UDP to the router before xray"
+	else
+		bad "UDP to the interception port: counter $before -> $after, xray log $seen -> $(logged)"
+	fi
 
 	write_uci "	option select 'manual'
 	option selected 'B'" section

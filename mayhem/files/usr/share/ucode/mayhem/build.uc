@@ -637,6 +637,21 @@ function build_nft_text(S, v6, sets, tunnels, dns_redirect, fake_pool, kdef, cap
 
 	push(s, '\t}\n');
 
+	// What reaches the router itself. xray's interception port takes only
+	// what was intercepted: those packets keep their own destination, not
+	// one of the router's. A datagram sent to the port directly would be
+	// taken as intercepted and, sent direct, come back to the same port.
+	// The local SOCKS/HTTP ports of sections serve the router and the
+	// interfaces of Mayhem, not the WAN.
+	push(s, '\n\tchain input {\n');
+	push(s, '\t\ttype filter hook input priority filter; policy accept;\n');
+	push(s, `\t\tmeta l4proto { tcp, udp } th dport ${C.TPROXY_PORT} fib daddr type local counter reject\n`);
+
+	if (length(sets.local_ports ?? []))
+		push(s, `\t\tiifname != "lo" iifname != @ifaces meta l4proto { tcp, udp } th dport { ${join(', ', sets.local_ports)} } counter drop\n`);
+
+	push(s, '\t}\n');
+
 	push(s, '\n\tchain stale {\n');
 	push(s, '\t\ttype filter hook forward priority filter - 1; policy accept;\n');
 	push(s, `\t\tmeta mark & ${stale} == ${stale} meta l4proto tcp counter reject with tcp reset\n`);
@@ -2172,7 +2187,8 @@ export function build(model) {
 	const net_key = NC ? NC.base + sprintf('%J', {
 		tunnels: map(tunnels, (t) => [ t.name, t.index, t.device, t.v6, t.mark ?? null ]),
 		kdef: kdef_tun?.name, nftset: nftset ? true : false, default: default_name,
-		endpoints: [ endpoint4, endpoint6, endpoint_domains ]
+		endpoints: [ endpoint4, endpoint6, endpoint_domains ],
+		local_ports: sort(map(keys(local_ports), (p) => int(p)))
 	}) : null;
 	const net_entry = NC ? NC.get(net_slot) : null;
 	const net_hit = net_entry != null && net_entry.key == net_key ? net_entry : null;
@@ -2765,6 +2781,7 @@ export function build(model) {
 		endpoint4: endpoint4, endpoint6: endpoint6,
 		block4: sets.block4.items, block6: sets.block6.items,
 		direct4: sets.direct4.items, direct6: sets.direct6.items, direct_ports: sets.direct_ports.items,
+		local_ports: sort(map(keys(local_ports), (p) => int(p))),
 		dir_domains: gdir != null
 	}, tunnels, dns_redirect, fake ? C.FAKEDNS_POOL : null, kdef,
 		capture_all ? null : { px4: px4.items, px6: v6 ? px6.items : [] }, path_generation);
