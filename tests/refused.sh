@@ -56,7 +56,9 @@ exit 0
 EOF
 for c in logger pidof; do printf '#!/bin/sh\nexit 0\n' > "$T/bin/$c"; done
 for c in ip nft uci; do printf '#!/bin/sh\nexit 1\n' > "$T/bin/$c"; done
+# shellcheck disable=SC2016 # $1 and $STUB of the stand-ins
 printf '#!/bin/sh\necho "$1" >> "$STUB/sleeps"\nexit 0\n' > "$T/bin/sleep"
+# shellcheck disable=SC2016
 printf '#!/bin/sh\necho "$1" >> "$STUB/init"\nexit 0\n' > "$T/bin/init"
 chmod +x "$T/bin/"*
 

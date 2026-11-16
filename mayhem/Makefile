@@ -52,6 +52,9 @@ endef
 define Package/mayhem/prerm
 #!/bin/sh
 [ -n "$${IPKG_INSTROOT}" ] && exit 0
+# opkg runs it for an update too (PKG_UPGRADE=1): default_prerm stops the
+# service then, the autostart and the kill switch's hold stay.
+[ "$${PKG_UPGRADE}" = 1 ] && exit 0
 /etc/init.d/mayhem stop >/dev/null 2>&1
 /etc/init.d/mayhem disable >/dev/null 2>&1
 # Removed, not upgraded: the kill switch no longer holds the traffic.
@@ -65,6 +68,8 @@ endef
 define Package/mayhem/postrm
 #!/bin/sh
 [ -n "$${IPKG_INSTROOT}" ] && exit 0
+# An update (opkg, PKG_UPGRADE=1) keeps xray, the run directory and BBR.
+[ "$${PKG_UPGRADE}" = 1 ] && exit 0
 rm -f /usr/libexec/mayhem/xray
 rm -rf /var/run/mayhem
 # TCP back to the firmware's default (BBR was Mayhem's)
