@@ -104,10 +104,6 @@ msgstr "Мягкий лимит: приближаясь к нему, Xray чащ
 msgid "A tunnel is a network interface: AmneziaWG, WireGuard, OpenVPN or another one. A tunnel section sends its traffic into it, and a proxy section can use it as one of its servers."
 msgstr "Туннель — это сетевой интерфейс: AmneziaWG, WireGuard, OpenVPN или другой. Секция-туннель отправляет в него свой трафик, а прокси-секция может использовать его как один из своих серверов."
 
-#: htdocs/luci-static/resources/mayhem/tunnels.js
-msgid "AUTO and STUN dress the packets as STUN; NONE leaves them as they are."
-msgstr "AUTO и STUN маскируют пакеты под STUN; NONE оставляет как есть."
-
 #: htdocs/luci-static/resources/mayhem/page/sections.js
 msgid "Active server of the server list"
 msgstr "Активный сервер из списка"
@@ -828,14 +824,6 @@ msgstr "Установка WireGuard"
 msgid "Installing dnsmasq-full"
 msgstr "Установка dnsmasq-full"
 
-#: htdocs/luci-static/resources/mayhem/tunnels.js
-msgid "Installing phantun"
-msgstr "Установка phantun"
-
-#: htdocs/luci-static/resources/mayhem/tunnels.js
-msgid "Installing wg-obfuscator"
-msgstr "Установка wg-obfuscator"
-
 #: htdocs/luci-static/resources/mayhem/page/sections.js
 msgid "Interface"
 msgstr "Интерфейс"
@@ -968,10 +956,6 @@ msgstr "Основная секция"
 msgid "Main section: %s"
 msgstr "Основная секция: %s"
 
-#: htdocs/luci-static/resources/mayhem/tunnels.js
-msgid "Masking"
-msgstr "Маскировка"
-
 #: root/usr/share/luci/menu.d/luci-app-mayhem.json
 msgid "Mayhem"
 msgstr "Mayhem"
@@ -1076,10 +1060,6 @@ msgstr "Подписок пока нет: добавьте их кнопкой �
 msgid "No tunnels yet."
 msgstr "Туннелей пока нет."
 
-#: htdocs/luci-static/resources/mayhem/tunnels.js
-msgid "None"
-msgstr "Нет"
-
 #: htdocs/luci-static/resources/mayhem/page/sections.js
 msgid "Not a server key: %s"
 msgstr "Это не ключ сервера: %s"
@@ -1123,22 +1103,6 @@ msgstr "ОС"
 #: htdocs/luci-static/resources/mayhem/page/servers.js
 msgid "OS version"
 msgstr "Версия ОС"
-
-#: htdocs/luci-static/resources/mayhem/tunnels.js
-msgid "Obfuscation"
-msgstr "Обфускация"
-
-#: htdocs/luci-static/resources/mayhem/tunnels.js
-msgid "Obfuscation key"
-msgstr "Ключ обфускации"
-
-#: htdocs/luci-static/resources/mayhem/tunnels.js
-msgid "Obfuscator"
-msgstr "Обфускатор"
-
-#: htdocs/luci-static/resources/mayhem/tunnels.js
-msgid "Obfuscator server port"
-msgstr "Порт обфускатора на сервере"
 
 #: htdocs/luci-static/resources/mayhem/page/sections.js
 msgid "On: every server of a list gets the query together and the first good answer counts, which is faster when one of them is slow. Off: the next server only when the one before fails."
@@ -1223,22 +1187,6 @@ msgstr "Сначала вставьте ключ сервера."
 #: htdocs/luci-static/resources/mayhem/page/servers.js
 msgid "Paste a server key: vless://, vmess://, trojan://, ss://, hysteria2://, socks://, http(s)://, wireguard://, or an AmneziaVPN key (vpn://) or a WireGuard/AmneziaWG config. Several keys go one per line."
 msgstr "Вставьте ключ сервера: vless://, vmess://, trojan://, ss://, hysteria2://, socks://, http(s)://, wireguard://, ключ AmneziaVPN (vpn://) или конфиг WireGuard/AmneziaWG. Несколько ключей — по одному в строке."
-
-#: htdocs/luci-static/resources/mayhem/tunnels.js
-msgid "Phantun (wg-phantun)"
-msgstr "Phantun (wg-phantun)"
-
-#: htdocs/luci-static/resources/mayhem/page/components.js
-msgid "Phantun obfuscator (wg-phantun)"
-msgstr "Обфускатор Phantun (wg-phantun)"
-
-#: htdocs/luci-static/resources/mayhem/tunnels.js
-msgid "Phobos (wg-obfuscator)"
-msgstr "Phobos (wg-obfuscator)"
-
-#: htdocs/luci-static/resources/mayhem/page/components.js
-msgid "Phobos obfuscator (wg-obfuscator)"
-msgstr "Обфускатор Phobos (wg-obfuscator)"
 
 #: htdocs/luci-static/resources/view/mayhem/dashboard.js
 msgid "Ping time"
@@ -1656,10 +1604,6 @@ msgstr "Сетевой интерфейс туннеля. Если туннел�
 msgid "The network interface, its firewall zone and every Mayhem setting that names it are renamed. The tunnel reconnects."
 msgstr "Переименуются сетевой интерфейс, его зона файрвола и все настройки Mayhem, где он указан. Туннель переподключится."
 
-#: htdocs/luci-static/resources/mayhem/tunnels.js
-msgid "The obfuscator server port is a number from 1 to 65535"
-msgstr "Порт обфускатора — число от 1 до 65535"
-
 #: htdocs/luci-static/resources/mayhem/page/sections.js
 msgid "The object has no \"protocol\""
 msgstr "В объекте нет «protocol»"
@@ -1675,10 +1619,6 @@ msgstr "Провайдер ждёт HWID: включите «Отправлят�
 #: htdocs/luci-static/resources/mayhem/diag.js
 msgid "The router did not return a backup."
 msgstr "Роутер не вернул резервную копию."
-
-#: htdocs/luci-static/resources/mayhem/tunnels.js
-msgid "The same key as in the server's wg-obfuscator."
-msgstr "Тот же ключ, что у wg-obfuscator на сервере."
 
 #: htdocs/luci-static/resources/mayhem/page/sections.js
 msgid "The section name may only contain letters, digits and _"
@@ -1997,10 +1937,6 @@ msgstr "списков: %d"
 msgid "never"
 msgstr "никогда"
 
-#: htdocs/luci-static/resources/mayhem/tunnels.js
-msgid "phantun_server in front of WireGuard"
-msgstr "phantun_server перед WireGuard"
-
 #: htdocs/luci-static/resources/view/mayhem/dashboard.js
 msgid "pinned by hand"
 msgstr "закреплён вручную"
@@ -2042,10 +1978,6 @@ msgstr "Провайдера: удалённый DNS не отвечает"
 
 
 
-
-#: htdocs/luci-static/resources/mayhem/tunnels.js
-msgid "wg-obfuscator with the same key in front of WireGuard"
-msgstr "wg-obfuscator с тем же ключом перед WireGuard"
 
 #: htdocs/luci-static/resources/mayhem/page/servers.js
 msgid "No servers were deleted from this subscription."
@@ -2335,27 +2267,6 @@ msgstr "Переименовать подписку %s"
 #: htdocs/luci-static/resources/mayhem/page/servers.js
 msgid "Latin letters, digits and _. Its servers, the chain of the server list and the chosen server go along."
 msgstr "Латинские буквы, цифры и _. Серверы подписки, цепочка списка серверов и выбранный сервер сохраняются."
-
-msgid "the endpoint of the .conf"
-msgstr "Endpoint из .conf"
-
-msgid "Obfuscator server address"
-msgstr "Адрес сервера обфускатора"
-
-msgid "The endpoint of this config is 127.0.0.1, an obfuscator on the router: enter the address of the server here."
-msgstr "Endpoint этого конфига — 127.0.0.1, то есть обфускатор на роутере: укажите здесь адрес сервера."
-
-msgid "Empty: the endpoint of the .conf."
-msgstr "Пусто — Endpoint из .conf."
-
-msgid "The tunnel sends its UDP to the obfuscator on the router, which carries it to the server on this port; the server runs %s. The MTU of the tunnel goes down to leave room: 1380 with Phobos, 1428 with fake TCP."
-msgstr "Туннель отдаёт UDP обфускатору на роутере, а тот несёт его на сервер, на этот порт; на сервере нужен %s. MTU туннеля снижается, чтобы пакеты помещались: 1380 с Phobos, 1428 с фейк TCP."
-
-msgid "The endpoint of this config is 127.0.0.1: it was made for an obfuscator. Choose it below and enter the server address."
-msgstr "Endpoint этого конфига — 127.0.0.1: он сделан для обфускатора. Выберите обфускатор ниже и укажите адрес сервера."
-
-msgid "Enter the obfuscator server address: the endpoint of this config is the router itself"
-msgstr "Укажите адрес сервера обфускатора: Endpoint этого конфига — сам роутер"
 
 msgid "This config lets only %s through the tunnel (AllowedIPs): other addresses sent into it are dropped. For sites and all traffic the peer needs AllowedIPs = 0.0.0.0/0, ::/0."
 msgstr "Этот конфиг пропускает в туннель только %s (AllowedIPs): остальные адреса, отправленные в него, отбрасываются. Чтобы через туннель шли сайты и весь трафик, у пира должно быть AllowedIPs = 0.0.0.0/0, ::/0."

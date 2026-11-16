@@ -313,6 +313,91 @@ fi
 pool_tunnel_check
 pool_chain_check
 
+# The WireGuard obfuscators are gone: a tunnel that used one gets its server
+# and MTU back, the record and the fake TCP firewall zone go; a second run
+# changes nothing.
+mkdir -p "$OUT/uci-obfs"
+cat > "$OUT/uci-obfs/mayhem" <<'UCI'
+config pool 'pool'
+	option v '2'
+	option select 'auto'
+
+config obfs 'ob_wg0'
+	option iface 'wg0'
+	option host 'vpn.example.org'
+	option eport '51821'
+	option port '4567'
+	option lport '41820'
+	option mtu '-'
+
+config obfs 'ob_wg1'
+	option iface 'wg1'
+	option host '203.0.113.7'
+	option eport '51820'
+	option port '13255'
+	option lport '41821'
+	option mtu '1400'
+UCI
+cat > "$OUT/uci-obfs/network" <<'UCI'
+config interface 'wg0'
+	option proto 'wireguard'
+	option mtu '1428'
+
+config wireguard_wg0
+	option endpoint_host '127.0.0.1'
+	option endpoint_port '41820'
+
+config interface 'wg1'
+	option proto 'amneziawg'
+	option mtu '1380'
+
+config amneziawg_wg1
+	option endpoint_host '127.0.0.1'
+	option endpoint_port '41821'
+UCI
+cat > "$OUT/uci-obfs/firewall" <<'UCI'
+config zone
+	option name 'lan'
+
+config zone
+	option name 'mayhem_ft'
+	list device 'mhft+'
+
+config forwarding
+	option src 'mayhem_ft'
+	option dest 'wan'
+
+config forwarding
+	option src 'lan'
+	option dest 'wan'
+UCI
+if ! out="$(MAYHEM_UCI_DIR="$OUT/uci-obfs" uc "$FILES/usr/share/mayhem/migrate.uc" 2>&1)"; then
+	bad "obfuscator migration: $out"
+elif ! uc -e "
+	import { cursor } from 'uci';
+	const c = cursor('$OUT/uci-obfs');
+	const peer = (t) => { let p = null; c.foreach('network', t, (s) => { p ??= s; }); return p; };
+	const p0 = peer('wireguard_wg0'), p1 = peer('amneziawg_wg1');
+	let obfs = 0, zones = [], fwds = [];
+	c.foreach('mayhem', 'obfs', () => { obfs++; });
+	c.foreach('firewall', 'zone', (z) => { push(zones, z.name); });
+	c.foreach('firewall', 'forwarding', (f) => { push(fwds, f.src); });
+	exit((p0.endpoint_host == 'vpn.example.org' && p0.endpoint_port == '51821' &&
+		p1.endpoint_host == '203.0.113.7' && p1.endpoint_port == '51820' &&
+		c.get('network', 'wg0', 'mtu') == null && c.get('network', 'wg1', 'mtu') == '1400' &&
+		obfs == 0 && join(',', zones) == 'lan' && join(',', fwds) == 'lan') ? 0 : 1);
+" 2>/dev/null; then
+	bad "obfuscator migration: $(cat "$OUT/uci-obfs/mayhem" "$OUT/uci-obfs/network" "$OUT/uci-obfs/firewall")"
+else
+	cp -R "$OUT/uci-obfs" "$OUT/uci-obfs-1"
+	if ! out="$(MAYHEM_UCI_DIR="$OUT/uci-obfs" uc "$FILES/usr/share/mayhem/migrate.uc" 2>&1)" || [ "$out" != "nothing to do" ] ||
+		! diff -r "$OUT/uci-obfs-1" "$OUT/uci-obfs" >/dev/null; then
+		bad "obfuscator migration runs twice: $out"
+	else
+		ok "obfuscator migration: endpoint and MTU back, record and zone gone"
+	fi
+fi
+
 # WireGuard/AmneziaWG configs and AmneziaVPN keys
 if out="$(uc "$ROOT/tests/awg.uc" "$ROOT/tests/awg/client.conf" 2>&1)"; then
 	printf '%s\n' "$out"

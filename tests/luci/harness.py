@@ -749,7 +749,7 @@ def main():
                 raise RuntimeError('no component table or automatic update')
             shot(pg, 'components')
             text = pg.inner_text('.mh-sheet table')
-            if any(name in text for name in ('Phobos', 'Phantun', 'phantun', 'WireGuard')):
+            if 'obfuscator' in text.lower() or 'WireGuard' in text:
                 raise RuntimeError('removed components are still offered: %s' % text)
 
         def settings_tabs(pg):
