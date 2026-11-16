@@ -25,6 +25,64 @@ if (c.get('mayhem', 'settings', 'probe_url') == 'https://www.gstatic.com/generat
 	print('the server check URL is now plain HTTP\n');
 }
 
+// The WireGuard obfuscators are gone. A tunnel that used one
+// talked to it at 127.0.0.1 and had its MTU lowered; "config obfs" kept the
+// server (host, eport) and the tunnel's own MTU ('-': none). They go back to
+// the tunnel, the record goes, and so do the firewall zone of the fake TCP
+// devices and its forwarding.
+let obfs_gone = 0;
+const obfs = [], fw_gone = [];
+
+c.load('network');
+c.load('firewall');
+c.foreach('mayhem', 'obfs', (rec) => { push(obfs, rec); });
+c.foreach('firewall', 'zone', (z) => {
+	if (z.name == 'mayhem_ft')
+		push(fw_gone, z['.name']);
+});
+c.foreach('firewall', 'forwarding', (f) => {
+	if (f.src == 'mayhem_ft')
+		push(fw_gone, f['.name']);
+});
+
+for (let rec in obfs) {
+	const iface = rec.iface;
+	const proto = iface ? c.get('network', iface, 'proto') : null;
+
+	if (proto) {
+		let peer = null;
+
+		c.foreach('network', `${proto}_${iface}`, (p) => { peer ??= p; });
+
+		if (peer && peer.endpoint_host == '127.0.0.1' && rec.host) {
+			c.set('network', peer['.name'], 'endpoint_host', rec.host);
+
+			if (rec.eport)
+				c.set('network', peer['.name'], 'endpoint_port', rec.eport);
+		}
+
+		if (rec.mtu == '-')
+			c.delete('network', iface, 'mtu');
+		else if (rec.mtu != null)
+			c.set('network', iface, 'mtu', rec.mtu);
+	}
+
+	c.delete('mayhem', rec['.name']);
+	obfs_gone++;
+	print(`tunnel "${iface}": no obfuscator, its server is the endpoint again\n`);
+}
+
+for (let sid in fw_gone) {
+	c.delete('firewall', sid);
+	obfs_gone++;
+}
+
+if (obfs_gone) {
+	c.commit('mayhem');
+	c.commit('network');
+	c.commit('firewall');
+}
+
 // 0.22: one server list. A subscription is no longer a section of its own
 // (its "select" is now the rule it picks a server by when the list's chain
 // names it), and the main section is always the server list: a former main

@@ -19,6 +19,7 @@ config settings 'settings'
 	# restarts), traffic waits for them; 0 = it goes direct meanwhile and
 	# comes back by itself
 	option killswitch '0'
+	option killswitch_hold '0'
 	# prefer_ipv4 | prefer_ipv6 | ipv4_only | ipv6_only
 	option ip_family 'prefer_ipv4'
 	# debug | info | warning | error | none

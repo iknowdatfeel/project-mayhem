@@ -128,6 +128,15 @@ else
 	ok "router traffic through xray"
 fi
 
+# What reaches the router itself: the interception port and local ports.
+if ! out="$(uc "$ROOT/tests/input.uc" "$OUT/input.nft" 2>&1)"; then
+	bad "chain input: $out"
+elif command -v nft >/dev/null 2>&1 && ! out="$(nft -c -f "$OUT/input.nft" 2>&1)"; then
+	bad "chain input: nftables: $out"
+else
+	ok "chain input: interception port and local ports"
+fi
+
 # A call of the rpcd plugin in a process of its own (call.uc): the plugin
 # compiled once, the same answers as from the source.
 mkdir -p "$OUT/rpccache"
@@ -177,6 +186,18 @@ sub_check b64.txt '"limit": true'
 sub_check plain.txt '"name": "US"'
 sub_check xray.json '"name": "NL xray"'
 sub_check clash.yaml 'not supported'
+# A name only from a string with something in it (remarks "", a number, an
+# object, a blank name): "server N" instead.
+sub_check names.json '"name": "server 1"'
+sub_check names.json '"name": "server 2"'
+sub_check names.json '"name": "server 3"'
+sub_check names.json '"name": "Named"'
+# geosite:/geoip: lines of a rule list are skipped with their own warning.
+if out="$(uc "$ROOT/tests/listgeo.uc" 2>&1)"; then
+	ok "geo lines of a rule list"
+else
+	bad "geo lines of a rule list: $out"
+fi
 # nftset support of dnsmasq: a plain build says "no-nftset" (OpenWrt's
 # dnsmasq), which must not count, or dnsmasq refuses Mayhem's config.
 if uc "$ROOT/tests/nftset.uc" 2>/dev/null; then
@@ -312,6 +333,91 @@ else
 fi
 pool_tunnel_check
 pool_chain_check
+
+# The WireGuard obfuscators are gone: a tunnel that used one gets its server
+# and MTU back, the record and the fake TCP firewall zone go; a second run
+# changes nothing.
+mkdir -p "$OUT/uci-obfs"
+cat > "$OUT/uci-obfs/mayhem" <<'UCI'
+config pool 'pool'
+	option v '2'
+	option select 'auto'
+
+config obfs 'ob_wg0'
+	option iface 'wg0'
+	option host 'vpn.example.org'
+	option eport '51821'
+	option port '4567'
+	option lport '41820'
+	option mtu '-'
+
+config obfs 'ob_wg1'
+	option iface 'wg1'
+	option host '203.0.113.7'
+	option eport '51820'
+	option port '13255'
+	option lport '41821'
+	option mtu '1400'
+UCI
+cat > "$OUT/uci-obfs/network" <<'UCI'
+config interface 'wg0'
+	option proto 'wireguard'
+	option mtu '1428'
+
+config wireguard_wg0
+	option endpoint_host '127.0.0.1'
+	option endpoint_port '41820'
+
+config interface 'wg1'
+	option proto 'amneziawg'
+	option mtu '1380'
+
+config amneziawg_wg1
+	option endpoint_host '127.0.0.1'
+	option endpoint_port '41821'
+UCI
+cat > "$OUT/uci-obfs/firewall" <<'UCI'
+config zone
+	option name 'lan'
+
+config zone
+	option name 'mayhem_ft'
+	list device 'mhft+'
+
+config forwarding
+	option src 'mayhem_ft'
+	option dest 'wan'
+
+config forwarding
+	option src 'lan'
+	option dest 'wan'
+UCI
+if ! out="$(MAYHEM_UCI_DIR="$OUT/uci-obfs" uc "$FILES/usr/share/mayhem/migrate.uc" 2>&1)"; then
+	bad "obfuscator migration: $out"
+elif ! uc -e "
+	import { cursor } from 'uci';
+	const c = cursor('$OUT/uci-obfs');
+	const peer = (t) => { let p = null; c.foreach('network', t, (s) => { p ??= s; }); return p; };
+	const p0 = peer('wireguard_wg0'), p1 = peer('amneziawg_wg1');
+	let obfs = 0, zones = [], fwds = [];
+	c.foreach('mayhem', 'obfs', () => { obfs++; });
+	c.foreach('firewall', 'zone', (z) => { push(zones, z.name); });
+	c.foreach('firewall', 'forwarding', (f) => { push(fwds, f.src); });
+	exit((p0.endpoint_host == 'vpn.example.org' && p0.endpoint_port == '51821' &&
+		p1.endpoint_host == '203.0.113.7' && p1.endpoint_port == '51820' &&
+		c.get('network', 'wg0', 'mtu') == null && c.get('network', 'wg1', 'mtu') == '1400' &&
+		obfs == 0 && join(',', zones) == 'lan' && join(',', fwds) == 'lan') ? 0 : 1);
+" 2>/dev/null; then
+	bad "obfuscator migration: $(cat "$OUT/uci-obfs/mayhem" "$OUT/uci-obfs/network" "$OUT/uci-obfs/firewall")"
+else
+	cp -R "$OUT/uci-obfs" "$OUT/uci-obfs-1"
+	if ! out="$(MAYHEM_UCI_DIR="$OUT/uci-obfs" uc "$FILES/usr/share/mayhem/migrate.uc" 2>&1)" || [ "$out" != "nothing to do" ] ||
+		! diff -r "$OUT/uci-obfs-1" "$OUT/uci-obfs" >/dev/null; then
+		bad "obfuscator migration runs twice: $out"
+	else
+		ok "obfuscator migration: endpoint and MTU back, record and zone gone"
+	fi
+fi
 
 # WireGuard/AmneziaWG configs and AmneziaVPN keys
 if out="$(uc "$ROOT/tests/awg.uc" "$ROOT/tests/awg/client.conf" 2>&1)"; then
@@ -528,9 +634,9 @@ elif ! uc -e "
 elif ! uc -e "
 	const x = json(require('fs').readfile('$OUT/subs/xray.json'));
 	const b = x.burstObservatory;
-	exit((x.observatory == null && b?.pingConfig?.sampling == 1 && length(b.subjectSelector) > 0) ? 0 : 1);
+	exit((x.observatory == null && b?.pingConfig?.sampling == 3 && length(b.subjectSelector) > 0) ? 0 : 1);
 " 2>/dev/null; then
-	bad "model subs: servers are not checked one at a time (burstObservatory)"
+	bad "model subs: servers are not checked one at a time with the last three kept (burstObservatory)"
 elif [ "$(wc -l < "$OUT/lists/xray.json")" != 1 ]; then
 	bad "model lists: xray.json is not compact"
 elif ! uc -e "
@@ -666,6 +772,28 @@ else
 	bad "global mode, excluded domains in the kernel: got $got, want 1 2 / 1 2 / 0 0"
 fi
 
+# No DNS servers from the provider yet (a boot before the WAN is up): the
+# public ones, and status.json tells the scheduler to apply the provider's
+# when they come. With them: no such mark.
+ispdns() {
+	# $1 name, $2 wan_dns as JSON; prints "flag warning"
+	cat > "$OUT/ispdns-$1.json" <<JSON
+{ "settings": { "mode": "lists", "interface": ["br-lan"] },
+  "dns": { "remote": ["https://1.1.1.1/dns-query"] },
+  "sections": [ { ".name": "main", "type": "proxy", "enabled": "1", "link": "socks://1.2.3.4:1080", "domain": ["a.test"] } ],
+  "runtime": { "wan_dns": $2, "ipv6": false } }
+JSON
+	mkdir -p "$OUT/ispdns-$1"
+	uc "$FILES/usr/share/mayhem/gen.uc" --model "$OUT/ispdns-$1.json" --out "$OUT/ispdns-$1" 2>/dev/null || { echo fail; return; }
+	echo "$(grep -c '"isp_dns_fallback": true' "$OUT/ispdns-$1/status.json") $(grep -c 'no DNS servers received from the provider' "$OUT/ispdns-$1/status.json")"
+}
+got="$(ispdns none '[]') / $(ispdns isp '["192.168.100.1"]')"
+if [ "$got" = "1 1 / 0 0" ]; then
+	ok "no provider DNS yet: the public ones, marked for the scheduler"
+else
+	bad "no provider DNS: got $got, want 1 1 / 0 0"
+fi
+
 # Firmware version, target and package arch for the AmneziaWG builds.
 # `ubus call system board` has no arch, so it must come from the release file.
 mkdir -p "$OUT/fw/bin"
@@ -716,12 +844,21 @@ if command -v shellcheck >/dev/null 2>&1; then
 	if out="$(shellcheck -s sh -f gcc -e SC1091,SC2034,SC3043,SC2086,SC2046,SC2317,SC2329 \
 		"$FILES/usr/bin/mayhem" "$FILES/usr/libexec/mayhem/xray-run" "$FILES/usr/libexec/mayhem/scheduler" \
 		"$FILES/etc/uci-defaults/90-mayhem" "$ROOT/tests/netns.sh" "$ROOT/tests/build-ucode.sh" "$ROOT/tests/health.sh" "$ROOT/tests/tunsync.sh" "$ROOT/tests/nftkeep.sh" "$ROOT/tests/scheduler.sh" "$ROOT/tests/serverlist.sh" "$ROOT/tests/conns.sh" "$ROOT/tests/bbr.sh" \
+		"$ROOT/tests/inodes.sh" "$ROOT/tests/applying.sh" "$ROOT/tests/prerelease.sh" "$ROOT/tests/select.sh" "$ROOT/tests/metrics.sh" "$ROOT/tests/netgen.sh" "$ROOT/tests/refused.sh" "$ROOT/tests/install.sh" "$ROOT/tests/pkgscripts.sh" "$ROOT/tests/ksrestart.sh" "$ROOT/tests/wake.sh" "$ROOT/tests/dnsup.sh" "$ROOT/tests/ispdns.sh" "$ROOT/tests/locks.sh" "$ROOT/tests/fetch.sh" "$ROOT/tests/stopped.sh" "$ROOT/tests/geohead.sh" \
 		"$FILES/usr/share/mayhem/lib.sh" "$FILES/usr/share/mayhem/const.sh" "$ROOT/install.sh" 2>&1)"; then
 		ok "shellcheck"
 	else
 		bad "shellcheck: $out"
 	fi
 fi
+
+for sh_file in "$ROOT/tests/inodes.sh" "$ROOT/tests/applying.sh" "$ROOT/tests/prerelease.sh" "$ROOT/tests/select.sh"; do
+	if sh -n "$sh_file" 2>/dev/null; then
+		ok "syntax $(basename "$sh_file")"
+	else
+		bad "syntax $(basename "$sh_file")"
+	fi
+done
 
 if command -v node >/dev/null 2>&1; then
 	for f in "$ROOT"/luci-app-mayhem/htdocs/luci-static/resources/view/mayhem/*.js "$ROOT"/luci-app-mayhem/htdocs/luci-static/resources/mayhem/*.js "$ROOT"/luci-app-mayhem/htdocs/luci-static/resources/mayhem/page/*.js "$ROOT"/luci-app-mayhem/htdocs/luci-static/resources/mayhem/dash/*.js; do
@@ -885,16 +1022,90 @@ else
 	bad "TCP BBR: $(printf '%s' "$out" | grep -v '^ok')"
 fi
 
+# Inodes isolation: working and running files never share inodes
+if out="$(UCODE="$UCODE" sh "$ROOT/tests/inodes.sh" 2>&1)"; then
+	ok "inodes: state files isolation"
+else
+	bad "inodes: $(printf '%s' "$out" | grep -v '^ok')"
+fi
+
+# Applying indicator: live process tracking and cleanup
+if out="$(UCODE="$UCODE" sh "$ROOT/tests/applying.sh" 2>&1)"; then
+	ok "applying indicator: process tracking and cleanup"
+else
+	bad "applying indicator: $(printf '%s' "$out" | grep -v '^ok')"
+fi
+
+# Pre-release versions: -exp and _pre SemVer ordering
+if out="$(sh "$ROOT/tests/prerelease.sh" 2>&1)"; then
+	ok "prerelease version comparison"
+else
+	bad "prerelease: $(printf '%s' "$out" | grep -v '^ok')"
+fi
+
+# A server chosen on the dashboard and a fallback chain, through the real
+# rpcd methods: in place for proxies (the new path generation goes into the
+# rules), a reload for tunnels and chains.
+if out="$(UCODE="$UCODE" sh "$ROOT/tests/select.sh" 2>&1)"; then
+	ok "server choice on the dashboard: in place or with a reload, chains"
+else
+	bad "server choice: $out"
+fi
+
 # Backup and restore of the config, with and without subscriptions and keys.
 mkdir -p "$OUT/backup-uci" "$OUT/bin"
 cp "$ROOT/tests/uci/mayhem" "$OUT/backup-uci/mayhem"
 printf '#!/bin/sh\nexit 0\n' > "$OUT/bin/logger"
 chmod +x "$OUT/bin/logger"
 if out="$(PATH="$OUT/bin:$PATH" MAYHEM_UCI_DIR="$OUT/backup-uci" MAYHEM_RUN_DIR="$OUT/backup-run" \
-	uc "$ROOT/tests/backup.uc" "$ROOT/luci-app-mayhem/root/usr/share/rpcd/ucode/luci.mayhem" 2>&1)"; then
+	MAYHEM_DEFAULTS="$FILES/etc/config/mayhem" uc "$ROOT/tests/backup.uc" "$ROOT/luci-app-mayhem/root/usr/share/rpcd/ucode/luci.mayhem" 2>&1)"; then
 	ok "backup with and without connections"
 else
 	bad "backup: $out"
+fi
+
+# Diagnostics: flow offloading in the firewall is a warning.
+mkdir -p "$OUT/offload-uci" "$OUT/offload-run"
+cp "$ROOT/tests/uci/mayhem" "$OUT/offload-uci/mayhem"
+if out="$(PATH="$OUT/bin:$PATH" MAYHEM_UCI_DIR="$OUT/offload-uci" MAYHEM_RUN_DIR="$OUT/offload-run" \
+	uc "$ROOT/tests/offload.uc" "$ROOT/luci-app-mayhem/root/usr/share/rpcd/ucode/luci.mayhem" 2>&1)"; then
+	ok "diagnostics: flow offloading warning"
+else
+	bad "diagnostics, flow offloading: $out"
+fi
+
+# The dashboard's polls carry no server keys; server_link gives one.
+mkdir -p "$OUT/dash-run"
+if out="$(PATH="$OUT/bin:$PATH" MAYHEM_RUN_DIR="$OUT/dash-run" MAYHEM_UCI_DIR="$OUT/backup-uci" \
+	uc "$ROOT/tests/dashlink.uc" "$ROOT/luci-app-mayhem/root/usr/share/rpcd/ucode/luci.mayhem" 2>&1)"; then
+	ok "dashboard without server keys, server_link"
+else
+	bad "dashboard keys: $out"
+fi
+
+# A backup bigger than one argument may be (128 KB) through call.uc: the
+# arguments come in a file, which is gone after the call.
+mkdir -p "$OUT/bigbk-uci" "$OUT/bigbk-run"
+cp "$ROOT/tests/uci/mayhem" "$OUT/bigbk-uci/mayhem"
+PATH="$OUT/bin:$PATH" MAYHEM_UCI_DIR="$OUT/bigbk-uci" MAYHEM_RUN_DIR="$OUT/bigbk-run" uc -e "
+	const p = loadfile(ARGV[0])()['luci.mayhem'];
+	const b = p.backup_export.call({ args: { connections: true } });
+	const big = [];
+	for (let i = 0; i < 20000; i++) push(big, sprintf('d%05d.example.com', i));
+	for (let s in b.sections)
+		if (s['.type'] == 'section') { s.domain = big; break; }
+	require('fs').writefile(ARGV[1], sprintf('%J', { backup: b }));
+" "$ROOT/luci-app-mayhem/root/usr/share/rpcd/ucode/luci.mayhem" "$OUT/bigbk-run/call.json" 2>/dev/null
+size="$(wc -c < "$OUT/bigbk-run/call.json" 2>/dev/null || echo 0)"
+out="$(PATH="$OUT/bin:$PATH" MAYHEM_UCI_DIR="$OUT/bigbk-uci" MAYHEM_RUN_DIR="$OUT/bigbk-run" \
+	MAYHEM_RPC_PLUGIN="$ROOT/luci-app-mayhem/root/usr/share/rpcd/ucode/luci.mayhem" MAYHEM_RPC_CACHE="$OUT/rpccache/bk" \
+	MAYHEM_RPC_MODULES="$FILES/usr/share/ucode/mayhem" \
+	uc "$ROOT/luci-app-mayhem/root/usr/share/mayhem-luci/call.uc" backup_import "@$OUT/bigbk-run/call.json" 2>&1)"
+if [ "$size" -gt 307200 ] && printf '%s' "$out" | grep -q '"ok": true' && [ ! -e "$OUT/bigbk-run/call.json" ] &&
+   grep -q "d19999.example.com" "$OUT/bigbk-uci/mayhem"; then
+	ok "backup of $((size / 1024)) KB through call.uc, its file gone"
+else
+	bad "big backup through call.uc ($size bytes): $out"
 fi
 
 # Sections limited to devices: xray rules by source address (a MAC by its
@@ -1019,25 +1230,6 @@ fi
 # TCP with the process's own sockets.
 mkdir -p "$OUT/probe-uci" "$OUT/probe-bin"
 cp "$ROOT/tests/luci/uci/network" "$OUT/probe-uci/"
-cat >> "$OUT/probe-uci/network" <<'EOF'
-
-config interface 'wg9'
-	option proto 'wireguard'
-	list addresses '10.8.9.2/32'
-
-config wireguard_wg9
-	option public_key 'Zm9vYmFyZm9vYmFyZm9vYmFyZm9vYmFyZm9vYmFyMTI='
-	option endpoint_host '127.0.0.1'
-	option endpoint_port '41820'
-EOF
-cat > "$OUT/probe-uci/mayhem" <<'EOF'
-config obfs 'ob_wg9'
-	option iface 'wg9'
-	option kind 'phobos'
-	option host '10.0.0.1'
-	option port '4567'
-	option lport '41820'
-EOF
 cat > "$OUT/probe-bin/ping" <<'EOF'
 #!/bin/sh
 echo "ping $*" >> "$FAKE_LOG"
@@ -1080,24 +1272,99 @@ else
 	bad "warm: $(printf '%s' "$out" | grep -v '^ok')"
 fi
 
-# WireGuard obfuscation set in the tunnel's dialog, and the service that runs
-# the obfuscators.
-mkdir -p "$OUT/obfs-uci" "$OUT/obfs-bin" "$OUT/obfs-run"
-cp "$ROOT/tests/luci/uci/network" "$ROOT/tests/luci/uci/firewall" "$ROOT/tests/uci/mayhem" "$OUT/obfs-uci/"
-printf '#!/bin/sh\nexit 0\n' > "$OUT/obfs-bin/wg-obfuscator"
-cp "$OUT/obfs-bin/wg-obfuscator" "$OUT/obfs-bin/phantun_client"
-chmod +x "$OUT/obfs-bin/wg-obfuscator" "$OUT/obfs-bin/phantun_client"
-if out="$(MAYHEM_UCI_DIR="$OUT/obfs-uci" MAYHEM_RUN_DIR="$OUT/obfs-run" MAYHEM_WG_OBFUSCATOR="$OUT/obfs-bin/wg-obfuscator" \
-	MAYHEM_PHANTUN="$OUT/obfs-bin/phantun_client" uc "$ROOT/tests/obfs.uc" "$ROOT/luci-app-mayhem/root/usr/share/rpcd/ucode/luci.mayhem" 2>&1)"; then
-	ok "WireGuard obfuscation: Phobos and fake TCP, endpoint, MTU, firewall zone"
+# xray's metrics endpoint: a hung one costs the deadline, chunks are read.
+if out="$(UCODE="$UCODE" sh "$ROOT/tests/metrics.sh" 2>&1)"; then
+	case "$out" in skip:*) printf 'skip %s\n' "metrics endpoint: ${out#skip: }" ;;
+	*) ok "metrics endpoint: read with a deadline, plain and in chunks" ;; esac
 else
-	bad "obfuscation: $out"
+	bad "metrics: $(printf '%s' "$out" | grep -v '^ok')"
 fi
 
-if out="$(sh "$ROOT/tests/obfs-svc.sh" 2>&1)"; then
-	ok "obfuscation service: wg-obfuscator with a config file, phantun with its TUN device"
+# Names of geo data that are not domain names stay out of dnsmasq's files,
+# and a file dnsmasq refuses never replaces the one it has.
+if out="$(uc "$ROOT/tests/badnames.uc" 2>&1)"; then
+	ok "geo names that are not domain names are skipped"
 else
-	bad "obfuscation service: $out"
+	bad "bad geo names: $out"
+fi
+if out="$(sh "$ROOT/tests/dnsup.sh" 2>&1)"; then
+	ok "dnsmasq's file: tested before it goes in"
+else
+	bad "dnsmasq's file: $(printf '%s' "$out" | grep -v '^ok')"
+fi
+if out="$(sh "$ROOT/tests/ispdns.sh" 2>&1)"; then
+	ok "the provider's DNS servers: waited for at boot, applied when they come later"
+else
+	bad "the provider's DNS servers: $(printf '%s' "$out" | grep -v '^ok')"
+fi
+
+# Locks: no two critical parts at once, no lock taken from a live owner.
+if out="$(sh "$ROOT/tests/locks.sh" 2>&1)"; then
+	ok "locks: starts one at a time, folds of the connection log too"
+else
+	bad "locks: $(printf '%s' "$out" | grep -v '^ok')"
+fi
+
+# Downloads with time limits: a hung connection does not hold an update.
+if out="$(sh "$ROOT/tests/fetch.sh" 2>&1)"; then
+	ok "downloads: connect timeout and time limit"
+else
+	bad "downloads: $(printf '%s' "$out" | grep -v '^ok')"
+fi
+
+# "Stop" on the dashboard holds until Mayhem is started again.
+if out="$(UCODE="$UCODE" sh "$ROOT/tests/stopped.sh" 2>&1)"; then
+	ok "stop holds: saved changes do not start Mayhem again"
+else
+	bad "stop holds: $out"
+fi
+
+# Geo data over HTTP: an unchanged file is not downloaded again.
+if out="$(UCODE="$UCODE" sh "$ROOT/tests/geohead.sh" 2>&1)"; then
+	ok "geo update: an unchanged file is not downloaded"
+else
+	bad "geo update by headers: $(printf '%s' "$out" | grep -v '^ok')"
+fi
+
+# An idle tunnel is woken inside its AllowedIPs.
+if out="$(sh "$ROOT/tests/wake.sh" 2>&1)"; then
+	ok "tunnel check: the wake-up ping goes into the AllowedIPs"
+else
+	bad "tunnel wake-up: $(printf '%s' "$out" | grep -v '^ok')"
+fi
+
+# The kill switch through a restart or an update: the interception stays.
+if out="$(sh "$ROOT/tests/ksrestart.sh" 2>&1)"; then
+	ok "kill switch: restart and update keep the interception, stop removes it"
+else
+	bad "kill switch on restart: $(printf '%s' "$out" | grep -v '^ok')"
+fi
+
+# The package scripts: an update through opkg disables and removes nothing.
+if out="$(sh "$ROOT/tests/pkgscripts.sh" 2>&1)"; then
+	ok "package scripts: nothing removed on update"
+else
+	bad "package scripts: $(printf '%s' "$out" | grep -v '^ok')"
+fi
+
+# The installer after a failed step and xray-install without room on the flash.
+if out="$(sh "$ROOT/tests/install.sh" 2>&1)"; then
+	ok "installer and xray-install: failures leave the service and xray as they were"
+else
+	bad "installer: $(printf '%s' "$out" | grep -v '^ok')"
+fi
+
+# Servers xray refuses: left out of the build, one by one into running xray,
+# noted at a failed start; failed starts wait longer each time.
+if out="$(uc "$ROOT/tests/refused.uc" 2>&1)"; then
+	ok "refused servers are left out of the build"
+else
+	bad "refused servers: $out"
+fi
+if out="$(UCODE="$UCODE" sh "$ROOT/tests/refused.sh" 2>&1)"; then
+	ok "refused servers: live update, xray-run, failed starts"
+else
+	bad "refused servers: $(printf '%s' "$out" | grep -v '^ok')"
 fi
 
 # Servers or remote DNS that stop answering: direct and back, or the kill switch.
@@ -1179,6 +1446,14 @@ if out="$(sh "$ROOT/tests/nftkeep.sh" 2>&1)"; then
 	ok "reload: addresses dnsmasq put into the sets stay ($(printf '%s' "$out" | tail -n 1))"
 else
 	bad "nft sets kept: $(printf '%s' "$out" | grep -v '^ok')"
+fi
+
+# A server chosen by hand: the new path generation goes into the running rules.
+if out="$(UCODE="$UCODE" sh "$ROOT/tests/netgen.sh" 2>&1)"; then
+	case "$out" in skipped:*) printf 'skip %s\n' "path generation in place: ${out#skipped: }" ;;
+	*) ok "path generation in place: old connections reset, sets kept" ;; esac
+else
+	bad "path generation: $(printf '%s' "$out" | grep -v '^ok')"
 fi
 
 # What dnsmasq asks while the remote DNS is down: names with fake addresses

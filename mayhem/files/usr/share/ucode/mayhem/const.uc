@@ -2,9 +2,9 @@
 // (tests/run.sh checks that both files agree). Paths can be overridden from
 // the environment for off-device tests.
 
-export const UCI_DIR = getenv('MAYHEM_UCI_DIR');
-
 'use strict';
+
+export const UCI_DIR = getenv('MAYHEM_UCI_DIR');
 
 export const TPROXY_PORT = 12701;
 export const DNS_PORT = 12753;

@@ -17,15 +17,18 @@
 // A section or the DNS that went direct before the switch was turned on is
 // put back at once.
 //
-// The server in use is checked every run (a failed check is asked again at
-// once). When it does not answer, the other servers are checked at once, in
-// parallel, those xray saw working first, and the fastest that answers takes
-// over without waiting for xray's own checks, which come minutes apart:
+// Every section is checked every run, all sections at once: the server in
+// use, or for a plain automatic choice its own path (sec-<section>, through
+// the same balancer as the traffic; xray is asked which server that is only
+// when it fails). A failed check is asked again at once, together with the
+// other servers of the section, those xray saw working first, and the
+// fastest that answers takes over without waiting for xray's own checks,
+// which come minutes apart:
 //   automatic choice   - the server that answers is pinned in the balancer
 //                        until xray's checks no longer pick the dead one;
-//   pinned by hand     - the server that answers stands in for the pinned
-//                        one until that one answers again;
-//   fallback chain     - fallback.uc moves the chain on.
+//   pinned by hand     - for a manually selected server (override / manual),
+//                        substitution by another server is not performed;
+//   fallback chain     - mayhem.fallback (run first) moves the chain on.
 // A section is "down" (direct) only when the server in use failed two runs
 // in a row and no other server answered either. A server is checked through
 // the helper proxy with its own tag as the user (mayhem.check). While a
@@ -35,8 +38,10 @@
 'use strict';
 
 import * as fs from 'fs';
-import { RUN_DIR, API_PORT, METRICS_PORT, HELPER_PORT, HELPER_PASS, DEFAULT_PROBE_URL } from 'mayhem.const';
+import { RUN_DIR, API_PORT, HELPER_PORT, HELPER_PASS, DEFAULT_PROBE_URL } from 'mayhem.const';
 import * as check from 'mayhem.check';
+import * as metrics from 'mayhem.metrics';
+import * as fallback from 'mayhem.fallback';
 
 const XRAY = getenv('MAYHEM_XRAY_BIN') ?? '/usr/libexec/mayhem/xray';
 const LIB = getenv('MAYHEM_LIB_DIR') ?? '/usr/share/mayhem';
@@ -81,6 +86,36 @@ function log(msg, level) {
 	system(`logger -t mayhem -p daemon.${level ?? 'info'} -- ${q(msg)}`);
 }
 
+function is_applying() {
+	const now = time();
+
+	for (let f in fs.glob(`${RUN_DIR}/applying.*`) ?? []) {
+		const st = fs.stat(f);
+
+		if (!st)
+			continue;
+
+		const m = match(f, /applying\.([0-9]+)$/);
+		if (m) {
+			const apid = m[1];
+			if (!fs.stat(`/proc/${apid}`)) {
+				fs.unlink(f);
+				continue;
+			}
+		}
+
+		if (now - st.mtime < 300)
+			return true;
+
+		fs.unlink(f);
+	}
+
+	return false;
+}
+
+if (is_applying())
+	exit(0);
+
 const state = read_json('nodes.json');
 const pid = trim(fs.readfile(`${RUN_DIR}/xray.pid`) ?? '');
 
@@ -88,17 +123,43 @@ if (!state || !fs.access(`${RUN_DIR}/active`) || pid == '')
 	exit(0);
 
 // One check at a time: the scheduler's and one started by a choice on the
-// dashboard may meet. A lock left by a process that is gone is taken over.
+// dashboard may meet. A lock left by a process that is gone is removed and
+// taken again - only while it still names that process (two checks must not
+// both take it); one without a pid yet is being taken (10 s to write it).
 const LOCK = `${RUN_DIR}/health.lock`;
 
-if (!fs.mkdir(LOCK)) {
-	const owner = trim(fs.readfile(`${LOCK}/pid`) ?? '');
+function lock() {
+	const me = split(fs.readfile('/proc/self/stat') ?? '', ' ')[0];
 
-	if (owner != '' && fs.access(`/proc/${owner}`))
-		exit(0);
+	for (let i = 0; i < 5; i++) {
+		if (fs.mkdir(LOCK)) {
+			fs.writefile(`${LOCK}/pid`, `${me}\n`);
+			return true;
+		}
+
+		const owner = trim(fs.readfile(`${LOCK}/pid`) ?? '');
+		const st = fs.stat(LOCK);
+
+		if (!st)
+			continue;
+
+		if ((owner != '' && !fs.access(`/proc/${owner}`)) || (owner == '' && time() - st.mtime > 10)) {
+			if (trim(fs.readfile(`${LOCK}/pid`) ?? '') == owner) {
+				fs.unlink(`${LOCK}/pid`);
+				fs.rmdir(LOCK);
+			}
+
+			continue;
+		}
+
+		return false;
+	}
+
+	return false;
 }
 
-fs.writefile(`${LOCK}/pid`, `${fs.readfile('/proc/self/stat') ? split(fs.readfile('/proc/self/stat'), ' ')[0] : ''}\n`);
+if (!lock())
+	exit(0);
 
 function unlock() {
 	fs.unlink(`${LOCK}/pid`);
@@ -122,27 +183,40 @@ if (type(h.dns) != 'object')
 
 const url = match(state.probe_url ?? '', /^https?:\/\//) ? state.probe_url : DEFAULT_PROBE_URL;
 
-// GET of the check URL through the helper proxy as user `user`: a server
-// tag, or sec-<section> for the section's own path.
-function works(user) {
-	return check.works(user, url, 6);
-}
+// GETs of the check URL through the helper proxy as user <server tag>, or
+// sec-<section> for the section's own path. Every section at once (FIRST
+// seconds); those that failed are asked again together with the servers
+// that may take over, again all at once (AGAIN seconds). A dead server costs
+// both once per run, not a sum per section and per step.
+const FIRST = 5, AGAIN = 4;
 
-function bo(bal, tag) {
+function bo(bal, tag, sn) {
+	if (is_applying())
+		return false;
+
+	if (sn) {
+		const cur_h = read_json('health.json');
+		if ((cur_h?.sections?.[sn]?.picked ?? 0) >= started)
+			return false;
+	}
+
 	return system(`${XRAY} api bo --server=127.0.0.1:${API_PORT} -b ${q(bal)} ${tag ? q(tag) : '-r'} >/dev/null 2>&1`) == 0;
 }
 
 let obs = null;
+let warm_seen = null;
 
+// What the dashboard's URL test saw a moment ago (mayhem.check), once per run.
+function warm() {
+	warm_seen ??= check.warm_recent();
+
+	return warm_seen;
+}
+
+// What xray's own checks saw, read once per run (2 s at most: a hung xray
+// must not hold the scheduler).
 function observatory() {
-	if (obs == null) {
-		try {
-			obs = json(command(`curl -s -m 3 http://127.0.0.1:${METRICS_PORT}/debug/vars`))?.observatory ?? {};
-		}
-		catch (e) {
-			obs = {};
-		}
-	}
+	obs ??= metrics.observatory(2000);
 
 	return obs;
 }
@@ -168,8 +242,9 @@ function xray_choice(bal) {
 	return ov ?? sel;
 }
 
-// The server a section uses when nothing goes direct.
-function in_use(sn, s) {
+// The server a section uses when nothing goes direct, as far as it is known
+// without asking xray: null for a plain automatic choice.
+function known_in_use(sn, s) {
 	const tags = map(s.nodes, (n) => n.tag);
 
 	if (s.mode == 'fallback') {
@@ -178,11 +253,19 @@ function in_use(sn, s) {
 		return index(tags, now) >= 0 ? now : s.selected;
 	}
 
-	if (s.mode == 'manual')
-		return s.selected;
+	if (s.mode == 'manual' || s.mode == 'single')
+		return s.selected ?? tags[0];
 
-	if (s.override)
-		return s.override;
+	return s.override ?? null;
+}
+
+// The server a section uses when nothing goes direct.
+function in_use(sn, s) {
+	const tags = map(s.nodes, (n) => n.tag);
+	const known = known_in_use(sn, s);
+
+	if (known != null)
+		return known;
 
 	// What xray's balancer takes now. Guessed from the observatory, it was
 	// at times another server than xray's (delays close to each other), and
@@ -218,9 +301,9 @@ function members(s) {
 	return map(s.nodes, (n) => n.tag);
 }
 
-// The fastest of these that answers, all checked at once; null when none.
-function fastest(users) {
-	const ms = check.works_many(users, url, 6);
+// The fastest of these that answered (ms: what the checks gave); null when
+// none did.
+function fastest(users, ms) {
 	let best = null;
 
 	for (let u in users)
@@ -232,12 +315,17 @@ function fastest(users) {
 
 // Other servers of the section to try, at most n: those xray saw working
 // first (fastest first), then the rest in the section's order.
+// Those that answered the dashboard's URL test a moment ago come before
+// all, by its numbers; those that just failed it go last.
 function candidates(s, skip, n) {
 	const o = observatory();
+	const w = warm();
 	const all = filter(members(s), (t) => index(skip, t) < 0);
-	const seen = sort(filter(all, (t) => o[t]?.alive == true), (a, b) => (o[a].delay ?? 0) - (o[b].delay ?? 0));
+	const fresh = sort(filter(all, (t) => type(w[t]) == 'int'), (a, b) => w[a] - w[b]);
+	const seen = sort(filter(all, (t) => o[t]?.alive == true && index(fresh, t) < 0 && w[t] !== false), (a, b) => (o[a].delay ?? 0) - (o[b].delay ?? 0));
+	const rest = filter(all, (t) => index(fresh, t) < 0 && index(seen, t) < 0);
 
-	return slice([ ...seen, ...filter(all, (t) => index(seen, t) < 0) ], 0, n);
+	return slice([ ...fresh, ...seen, ...filter(rest, (t) => w[t] !== false), ...filter(rest, (t) => w[t] === false) ], 0, n);
 }
 
 // The server xray's automatic choice takes by itself: the fastest it saw
@@ -266,20 +354,20 @@ function restore(sn, s, tag, pin) {
 		fb[sn] = tag;
 		write('fallback.json', sprintf('%J\n', fb));
 
-		return bo(bal, tag);
+		return bo(bal, tag, sn);
 	}
 
 	if (s.mode == 'manual')
-		return bo(bal, s.selected);
+		return bo(bal, s.selected, sn);
 
 	if (pin && !s.override && s.mode == 'auto') {
 		const o = observatory();
 
 		if (!length(filter(map(s.nodes, (n) => n.tag), (t) => o[t]?.alive == true)))
-			return bo(bal, tag) ? 'pinned' : false;
+			return bo(bal, tag, sn) ? 'pinned' : false;
 	}
 
-	return bo(bal, s.override);
+	return bo(bal, s.override, sn);
 }
 
 // What makes the balancer change behind our back: a choice on the
@@ -287,6 +375,64 @@ function restore(sn, s, tag, pin) {
 const mark = (s) => `${state.generated ?? ''} ${s.selected ?? ''} ${s.override ?? ''}`;
 
 const names = (s, tags) => join(', ', map(tags, (t) => filter(s.nodes, (n) => n.tag == t)[0]?.name ?? t));
+
+// --- remote DNS ------------------------------------------------------------------
+
+// A DNS query for the check URL's host, in the wire format (RFC 8484 GET).
+function doh_query() {
+	const host = match(url, /^https?:\/\/([^/:]+)/)?.[1] ?? 'www.gstatic.com';
+	let q = '\0\0\x01\0\0\x01\0\0\0\0\0\0';
+
+	for (let l in split(host, '.'))
+		if (length(l))
+			q += chr(length(l)) + l;
+
+	q += '\0\0\x01\0\x01';
+
+	return replace(replace(replace(b64enc(q), /\+/g, '-'), /\//g, '_'), /=+$/, '');
+}
+
+// The check of one remote DNS server as a shell line that prints "<i>
+// <answer>" (200: it answered); null: cannot tell from here (the path
+// decides, and that is the section's).
+function dns_check_cmd(i, srv, via) {
+	if (match(srv.address, /^https:\/\//)) {
+		const proxy = via ? `-x ${q(`socks5h://${via}:${HELPER_PASS}@127.0.0.1:${HELPER_PORT}`)}` : '';
+		const sep = index(srv.address, '?') >= 0 ? '&' : '?';
+
+		return `echo "${i} $(curl -s -o /dev/null -m 6 ${proxy} -H 'accept: application/dns-message' -w '%{http_code}' ${q(srv.address + sep + 'dns=' + doh_query())} 2>/dev/null)"`;
+	}
+
+	// UDP or TCP through a server: the helper proxy carries neither.
+	if (via || (srv.port && srv.port != 53))
+		return null;
+
+	const host = match(url, /^https?:\/\/([^/:]+)/)?.[1] ?? 'www.gstatic.com';
+
+	return `if nslookup ${q(host)} ${q(srv.host)} 2>/dev/null | grep -q '^Name:'; then echo "${i} 200"; else echo "${i} 000"; fi`;
+}
+
+// Every remote DNS server at once, in the background while the sections
+// are checked: null when there is nothing to check, else the pipe to read.
+function dns_start(dc) {
+	let cmd = '';
+
+	for (let i, srv in dc.servers ?? []) {
+		const c = dns_check_cmd(i, srv, dc.via);
+
+		if (c != null)
+			cmd += `( ${c} ) & `;
+	}
+
+	return cmd == '' ? null : fs.popen(`${cmd}wait`, 'r');
+}
+
+const dc = state.dns_check;
+const dns_job = (dc && !ks) ? dns_start(dc) : null;
+
+// What each section is checked with in this run: { user, cur } while it
+// works (cur null: not known yet), { down } while it goes direct.
+const plan = {};
 
 for (let sn in keys(state.sections ?? {})) {
 	const s = state.sections[sn];
@@ -312,121 +458,216 @@ for (let sn in keys(state.sections ?? {})) {
 	// Another server put in for a pinned one by an older Mayhem: the pinned
 	// one again.
 	if (hs.stand_in) {
-		if (!s.override || bo(bal, s.override))
+		if (!s.override || bo(bal, s.override, sn))
 			delete hs.stand_in;
 	}
 
-	if (!hs.down) {
-		// A server pinned on the way back from direct is let go once xray's
-		// checks see a working server; one pinned in place of servers that
-		// stopped answering (avoid) once xray's own choice is none of them.
-		if (hs.pinned) {
-			const o = observatory();
-			const best = observed_best(s);
+	if (hs.down) {
+		plan[sn] = { down: true };
+		continue;
+	}
 
-			if (index(map(s.nodes, (n) => n.tag), hs.pinned) < 0) {
+	// A server pinned on the way back from direct is let go once xray's
+	// checks see a working server; one pinned in place of servers that
+	// stopped answering (avoid) once xray's own choice is none of them.
+	if (hs.pinned) {
+		const o = observatory();
+		const best = observed_best(s);
+
+		if (index(map(s.nodes, (n) => n.tag), hs.pinned) < 0) {
+			delete hs.pinned;
+			delete hs.avoid;
+		}
+		else if (hs.avoid ? (best != null && index(hs.avoid, best) < 0) : length(filter(s.nodes, (n) => o[n.tag]?.alive == true))) {
+			if (bo(bal, s.override, sn)) {
 				delete hs.pinned;
 				delete hs.avoid;
+				delete hs.pin_mark;
 			}
-			else if (hs.avoid ? (best != null && index(hs.avoid, best) < 0) : length(filter(s.nodes, (n) => o[n.tag]?.alive == true))) {
-				if (bo(bal, s.override)) {
-					delete hs.pinned;
-					delete hs.avoid;
-					delete hs.pin_mark;
-				}
-			}
-			// A reload put new balancers in: the pin goes in again.
-			else if (hs.pin_mark != null && hs.pin_mark != mark(s) && bo(bal, hs.pinned))
-				hs.pin_mark = mark(s);
 		}
+		// A reload put new balancers in: the pin goes in again.
+		else if (hs.pin_mark != null && hs.pin_mark != mark(s) && bo(bal, hs.pinned, sn))
+			hs.pin_mark = mark(s);
+	}
 
-		const cur = hs.pinned ?? in_use(sn, s);
+	// A plain automatic choice is checked through its own path: the helper's
+	// sec-<section> goes through the same balancer as the traffic. Which
+	// server that is xray is asked only when it fails (`xray api bi` is an
+	// xray process of its own, ~30 MB for a moment).
+	const cur = hs.pinned ?? known_in_use(sn, s);
 
-		if (works(cur)) {
-			hs.fails = 0;
+	plan[sn] = { cur: cur, user: cur ?? `sec-${sn}` };
+}
+
+// 1. Every section that works, at once.
+const asked = map(filter(keys(plan), (sn) => !plan[sn].down), (sn) => plan[sn].user);
+const first = check.works_many(asked, url, FIRST);
+
+// Fallback chains move along (mayhem.fallback), in the same process: with
+// the answers above for the servers they use now, and the observatory read
+// once. Their word on a chain counts below, nothing is asked twice.
+const fb = fallback.run({ obs: observatory(), asked: asked, first: first });
+
+for (let sn, p in plan) {
+	const s = state.sections[sn];
+
+	if (p.down || s.mode != 'fallback')
+		continue;
+
+	const v = fb?.verdict?.[sn];
+
+	if (v)
+		plan[sn] = { cur: v.cur, user: v.cur, ok: v.ok, checked: true };
+	// The chain went back to a server earlier in it: that one is checked.
+	else if (known_in_use(sn, s) != p.cur)
+		plan[sn] = { cur: known_in_use(sn, s), user: null };
+}
+
+// 2. Those that failed: the server in use once more, with the servers that
+// may take over; and the tries of the sections that are down. At once.
+const again = [];
+
+for (let sn, p in plan) {
+	const s = state.sections[sn];
+	const hs = h.sections[sn];
+
+	if (p.down) {
+		// Those xray saw working first, then the rest in turn: one server
+		// xray saw working, the others in turn, so every server gets its
+		// try within a few runs.
+		const o = observatory();
+		const all = members(s);
+		const seen = sort(filter(all, (t) => o[t]?.alive == true), (a, b) => (o[a].delay ?? 0) - (o[b].delay ?? 0));
+		const rest = filter(all, (t) => index(seen, t) < 0);
+		let taken = 0;
+
+		p.tries = slice(seen, 0, 1);
+
+		for (let i = 0; length(p.tries) < TRIES && i < length(rest); i++, taken++)
+			push(p.tries, rest[((hs.next ?? 0) + i) % length(rest)]);
+
+		hs.next = ((hs.next ?? 0) + taken) % (length(rest) || 1);
+		push(again, ...p.tries);
+		continue;
+	}
+
+	if (p.checked)
+		continue;
+
+	if (first[p.user] != null) {
+		p.ok = true;
+		continue;
+	}
+
+	p.cur ??= in_use(sn, s);
+	push(again, p.cur);
+
+	// Automatic choice and chains: another server that answers takes over
+	// at once - xray checks each server once per interval, minutes apart,
+	// and keeps the dead one until then.
+	if (s.mode != 'manual' && s.mode != 'single') {
+		p.cands = candidates(s, [ p.cur ], TRIES);
+		push(again, ...p.cands);
+	}
+}
+
+const second = length(again) ? check.works_many(uniq(again), url, AGAIN) : {};
+
+// 3. What each section does with the answers.
+for (let sn, p in plan) {
+	const s = state.sections[sn];
+	const bal = s.balancer ?? `bal-${sn}`;
+	const hs = h.sections[sn];
+
+	if (p.down) {
+		// The first in the order of the tries that answers.
+		const good = filter(p.tries, (t) => second[t] != null)[0];
+
+		hs.checked = time();
+		hs.ok = false;
+
+		if (good) {
+			const r = restore(sn, s, good, true);
+
+			if (r) {
+				log(`section ${sn}: ${names(s, [ good ])} answers again, its traffic goes through the servers`);
+				h.sections[sn] = { down: false, fails: 0 };
+
+				if (r == 'pinned')
+					h.sections[sn].pinned = good;
+			}
+
 			continue;
 		}
 
-		hs.fails++;
+		// Still down, but someone pointed the balancer elsewhere meanwhile.
+		if (hs.mark != mark(s) && bo(bal, 'direct', sn))
+			hs.mark = mark(s);
 
-		// Automatic choice and chains: another server that answers takes
-		// over at once - xray checks each server once per interval, minutes
-		// apart, and keeps the dead one until then.
-		if (s.mode != 'manual' && s.mode != 'single') {
-			const other = fastest(candidates(s, [ cur ], TRIES));
+		continue;
+	}
 
-			if (other) {
-				if (s.mode == 'auto') {
-					if (bo(bal, other)) {
-						hs.pinned = other;
-						hs.avoid = uniq([ ...(hs.avoid ?? []), cur ]);
-						hs.pin_mark = mark(s);
-						log(`section ${sn}: ${names(s, [ cur ])} does not answer, now ${names(s, [ other ])}`, 'warn');
-					}
-				}
-				// A chain: fallback.uc moves it on to a server that answers.
+	// What the dashboard shows: does the traffic of the section get through
+	// now, by the logic of its mode (the server chosen by hand; the chain's
+	// server; the automatic choice's own path) - not a guess of the page.
+	hs.checked = time();
 
-				hs.fails = 0;
-				continue;
-			}
-		}
-
-		if (hs.fails < FAILS || ks)
-			continue;
-
-		if (!bo(bal, 'direct')) {
-			log(`section ${sn}: its servers do not answer, but xray did not take "direct"`, 'warn');
-			continue;
-		}
-
-		hs.down = true;
+	if (p.ok || second[p.cur] != null) {
 		hs.fails = 0;
-		hs.since = time();
-		delete hs.pinned;
-		delete hs.avoid;
-		hs.mark = mark(s);
-		hs.next = 0;
-		log(`section ${sn}: no server answers (${names(s, members(s))}), its traffic goes direct until one does`, 'warn');
+		hs.ok = true;
+		delete hs.waiting;
 		continue;
 	}
 
-	// Down: try the servers, those xray saw working first, then the rest
-	// in turn.
-	const o = observatory();
-	const all = members(s);
-	const seen = sort(filter(all, (t) => o[t]?.alive == true), (a, b) => (o[a].delay ?? 0) - (o[b].delay ?? 0));
-	const rest = filter(all, (t) => index(seen, t) < 0);
-	// One server xray saw working, the others in turn: every server gets
-	// its try within a few runs.
-	const tries = slice(seen, 0, 1);
-	let taken = 0;
+	hs.fails++;
+	hs.ok = false;
 
-	for (let i = 0; length(tries) < TRIES && i < length(rest); i++, taken++)
-		push(tries, rest[((hs.next ?? 0) + i) % length(rest)]);
+	const other = p.cands ? fastest(p.cands, second) : null;
 
-	hs.next = ((hs.next ?? 0) + taken) % (length(rest) || 1);
-
-	// All at once; the first in the order above that answers.
-	const ms = check.works_many(tries, url, 6);
-	const good = filter(tries, (t) => ms[t] != null)[0];
-
-	if (good) {
-		const r = restore(sn, s, good, true);
-
-		if (r) {
-			log(`section ${sn}: ${names(s, [ good ])} answers again, its traffic goes through the servers`);
-			h.sections[sn] = { down: false, fails: 0 };
-
-			if (r == 'pinned')
-				h.sections[sn].pinned = good;
+	if (other) {
+		if (s.mode == 'auto') {
+			if (bo(bal, other, sn)) {
+				hs.pinned = other;
+				hs.avoid = uniq([ ...(hs.avoid ?? []), p.cur ]);
+				hs.pin_mark = mark(s);
+				log(`section ${sn}: ${names(s, [ p.cur ])} does not answer, now ${names(s, [ other ])}`, 'warn');
+			}
 		}
+		// A chain: fallback.uc moves it on to a server that answers.
+
+		hs.fails = 0;
+		delete hs.waiting;
+		continue;
+	}
+
+	// With the kill switch the section never goes direct: after as many
+	// failed checks in a row as would send it there, its traffic waits for
+	// the servers - what the dashboard tells (one failed check is not that).
+	if (ks) {
+		if (hs.fails >= FAILS)
+			hs.waiting = true;
 
 		continue;
 	}
 
-	// Still down, but someone pointed the balancer elsewhere meanwhile.
-	if (hs.mark != mark(s) && bo(bal, 'direct'))
-		hs.mark = mark(s);
+	delete hs.waiting;
+
+	if (hs.fails < FAILS)
+		continue;
+
+	if (!bo(bal, 'direct', sn)) {
+		log(`section ${sn}: its servers do not answer, but xray did not take "direct"`, 'warn');
+		continue;
+	}
+
+	hs.down = true;
+	hs.fails = 0;
+	hs.since = time();
+	delete hs.pinned;
+	delete hs.avoid;
+	hs.mark = mark(s);
+	hs.next = 0;
+	log(`section ${sn}: no server answers (${names(s, members(s))}), its traffic goes direct until one does`, 'warn');
 }
 
 // Sections that are gone.
@@ -434,42 +675,6 @@ for (let sn in keys(h.sections))
 	if (!state.sections?.[sn])
 		delete h.sections[sn];
 
-// --- remote DNS ------------------------------------------------------------------
-
-// A DNS query for the check URL's host, in the wire format (RFC 8484 GET).
-function doh_query() {
-	const host = match(url, /^https?:\/\/([^/:]+)/)?.[1] ?? 'www.gstatic.com';
-	let q = '\0\0\x01\0\0\x01\0\0\0\0\0\0';
-
-	for (let l in split(host, '.'))
-		if (length(l))
-			q += chr(length(l)) + l;
-
-	q += '\0\0\x01\0\x01';
-
-	return replace(replace(replace(b64enc(q), /\+/g, '-'), /\//g, '_'), /=+$/, '');
-}
-
-// null: cannot tell from here (the path decides, and that is the section's).
-function dns_works(srv, via) {
-	if (match(srv.address, /^https:\/\//)) {
-		const proxy = via ? `-x ${q(`socks5h://${via}:${HELPER_PASS}@127.0.0.1:${HELPER_PORT}`)}` : '';
-		const sep = index(srv.address, '?') >= 0 ? '&' : '?';
-		const code = int(trim(command(`curl -s -o /dev/null -m 6 ${proxy} -H 'accept: application/dns-message' -w '%{http_code}' ${q(srv.address + sep + 'dns=' + doh_query())} 2>/dev/null`)));
-
-		return code == 200;
-	}
-
-	// UDP or TCP through a server: the helper proxy carries neither.
-	if (via || (srv.port && srv.port != 53))
-		return null;
-
-	const host = match(url, /^https?:\/\/([^/:]+)/)?.[1] ?? 'www.gstatic.com';
-
-	return system(`nslookup ${q(host)} ${q(srv.host)} 2>/dev/null | grep -q '^Name:'`) == 0;
-}
-
-const dc = state.dns_check;
 const d = h.dns;
 let dns_changed = false;
 
@@ -486,19 +691,16 @@ if (!dc || ks) {
 else {
 	let ok = false, known = false;
 
-	for (let srv in dc.servers ?? []) {
-		const r = dns_works(srv, dc.via);
+	for (let l in split(dns_job?.read('all') ?? '', '\n')) {
+		const m = match(l, /^[0-9]+ ([0-9]+)/);
 
-		if (r == null)
-			continue;
-
-		known = true;
-
-		if (r) {
-			ok = true;
-			break;
+		if (m) {
+			known = true;
+			ok ||= m[1] == '200';
 		}
 	}
+
+	dns_job?.close();
 
 	if (!known || ok) {
 		if (d.down) {

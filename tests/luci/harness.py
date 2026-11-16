@@ -158,12 +158,21 @@ def ucode(script, *args):
     return json.loads(out.stdout)
 
 
-# Set by a test to show the router as one without subscriptions.
-HIDE = {'subscription': False}
+# Set by a test to show the router as one without subscriptions, with one
+# server of a subscription in the server list, or with a second subscription.
+HIDE = {'subscription': False, 'one_server': False, 'two_subs': False, 'ks': None}
+
+
+# Subscriptions added (and deleted again) in this session, as rpcd keeps the
+# session's changes: a page that loads again after a save sees them.
+STAGED = {}
 
 
 def uci_get(config):
     values = ucode(os.path.join(os.path.dirname(__file__), 'uci_get.uc'), os.path.join(FIX, 'uci'), config)
+    if config == 'mayhem':
+        for name, sec in STAGED.items():
+            values[name] = dict(sec, **{'.index': 1000 + len(values)})
     if config == 'mayhem' and HIDE['subscription']:
         values = {k: v for k, v in values.items() if v.get('.type') != 'subscription'}
         for v in values.values():
@@ -199,13 +208,35 @@ def call(obj, method, args):
             imports.append(args or {})
         if method in SIDE_EFFECTS:
             return {'started': True} if method in ('system_install', 'data_update') else {'ok': True}
-        return ucode(os.path.join(os.path.dirname(__file__), 'rpc.uc'), PLUGIN, method, json.dumps(args or {}))
+        out = ucode(os.path.join(os.path.dirname(__file__), 'rpc.uc'), PLUGIN, method, json.dumps(args or {}))
+        if method == 'dashboard' and HIDE['one_server']:
+            for s in out.get('sections') or []:
+                if s.get('name') == 'pool':
+                    s['nodes'] = [n for n in s.get('nodes') or [] if n.get('source') not in (None, 'link', 'json', 'interface')][:1]
+        if method == 'dashboard' and HIDE['ks']:
+            # the kill switch on, Mayhem running, the main section's server
+            # failed a check ('flaky') or its traffic waits for it ('waiting')
+            out.update(killswitch=True, enabled=True, running=True, held=False)
+            for x in out.get('sections') or []:
+                if x.get('name') == 'pool':
+                    x.update(reachable=False, down=False, waiting=HIDE['ks'] == 'waiting')
+                if x.get('tunnel'):
+                    x['tunnel']['state'] = 'up'
+        if method == 'dashboard' and HIDE['two_subs']:
+            first = next((x for x in out.get('subscriptions') or [] if x.get('enabled')), None)
+            if first:
+                out['subscriptions'].append(dict(first, name='othersub', nodes=0))
+        return out
 
     if obj == 'uci':
         if method == 'get':
             return {'values': uci_get(args['config'])}
         if method in ('set', 'add', 'delete'):
             uci_writes.append((method, args))
+        if method == 'add' and args.get('config') == 'mayhem' and args.get('type') == 'subscription' and args.get('name'):
+            STAGED[args['name']] = dict(args.get('values') or {}, **{'.type': 'subscription', '.name': args['name'], '.anonymous': False})
+        if method == 'delete' and args.get('config') == 'mayhem' and not args.get('option') and not args.get('options'):
+            STAGED.pop(args.get('section'), None)
         if method == 'changes':
             return {'changes': {}}
         return {}
@@ -523,23 +554,12 @@ def main():
             pg.wait_for_selector('.modal textarea', timeout=5000)
             shot(pg, 'sections_import')
             close_modal(pg)
-            # the tunnel's dialog: its .conf and the obfuscator to choose;
-            # Phobos shows the key and masking, the missing binary an install button
+            # the tunnel's dialog: its .conf
             edit = pg.locator('.mh-sheet-body div[data-tab="device"] button:has-text("Edit"), .mh-sheet-body div[data-tab="device"] button:has-text("Изменить")')
             if edit.count():
                 edit.first.click()
                 pg.wait_for_selector('.modal textarea', timeout=5000)
-                sel = pg.locator('.modal select').first
-                sel.select_option('phobos')
-                pg.wait_for_timeout(300)
-                if not pg.locator('.modal input[type="password"]').is_visible():
-                    raise RuntimeError('no key field for Phobos')
-                shot(pg, 'tunnel_obfs_phobos')
-                sel.select_option('faketcp')
-                pg.wait_for_timeout(300)
-                if pg.locator('.modal input[type="password"]').is_visible():
-                    raise RuntimeError('the key field is shown for fake TCP')
-                shot(pg, 'tunnel_obfs_faketcp')
+                shot(pg, 'tunnel_edit')
                 close_modal(pg)
 
         def settings_tool(pg, tab):
@@ -658,6 +678,29 @@ def main():
             pg.wait_for_timeout(300)
             shot(pg, 'servers_subscriptions')
             open_modals(pg, '[data-tab="subscription"]')
+            # a saved subscription is renamed with its pencil, not in its window
+            pg.query_selector_all('[data-tab="subscription"] .cbi-section-table-row .cbi-button-edit')[0].click()
+            pg.wait_for_selector('.modal', timeout=5000)
+            if pg.query_selector('.modal [data-name="_name"] input'):
+                raise RuntimeError('a saved subscription offers a name in its window')
+            close_modal(pg)
+            # a new one: its window has the name, which can be changed
+            pg.fill('.cbi-section-create-name', 'https://sub.example.org/abc')
+            pg.click('.cbi-section-create .cbi-button-add')
+            pg.wait_for_selector('.modal [data-name="_name"] input', timeout=5000)
+            name = pg.query_selector('.modal [data-name="_name"] input')
+            if not name.input_value().startswith('sub_'):
+                raise RuntimeError('a new subscription has no name to edit: %r' % name.input_value())
+            name.fill('mysub2')
+            w = len(uci_writes)
+            pg.click('.modal .cbi-button-positive')
+            pg.wait_for_timeout(1500)
+            added = [a for m, a in uci_writes[w:] if m == 'add' and a.get('type') == 'subscription']
+            gone = [a for m, a in uci_writes[w:] if m == 'delete' and str(a.get('section', '')).startswith('sub_')]
+            if not any(a.get('name') == 'mysub2' and 'sub.example.org' in str(a.get('values', {}).get('url')) for a in added):
+                raise RuntimeError('the name typed for a new subscription was not taken: %s' % uci_writes[w:])
+            if any(str(a.get('name', '')).startswith('sub_') for a in added) and not gone:
+                raise RuntimeError('the subscription stays under its old name too: %s' % uci_writes[w:])
             if pg.query_selector('[data-name="mux"]'):
                 raise RuntimeError('multiplexing is still in the server list')
 
@@ -725,7 +768,7 @@ def main():
                 raise RuntimeError('no component table or automatic update')
             shot(pg, 'components')
             text = pg.inner_text('.mh-sheet table')
-            if any(name in text for name in ('Phobos', 'Phantun', 'phantun', 'WireGuard')):
+            if 'obfuscator' in text.lower() or 'WireGuard' in text:
                 raise RuntimeError('removed components are still offered: %s' % text)
 
         def settings_tabs(pg):
@@ -840,6 +883,38 @@ def main():
                 raise RuntimeError('the main section can still be chosen on the dashboard')
             if not pg.query_selector('#mayhem-body .mh-ghead .mh-bar'):
                 raise RuntimeError('no subscription traffic on the dashboard')
+            # one box of information above the buttons, as wide as they are
+            if pg.query_selector('#mayhem-body .mh-a-conn, #mayhem-body .mh-a-sys'):
+                raise RuntimeError('the connection or system box is still on the dashboard')
+            info = pg.eval_on_selector('#mayhem-body .mh-a-info', 'e => e.getBoundingClientRect().toJSON()')
+            side = pg.eval_on_selector('#mayhem-body .mh-a-side', 'e => e.getBoundingClientRect().toJSON()')
+            if side['top'] < info['bottom'] or abs(info['width'] - side['width']) > 1:
+                raise RuntimeError('the information is not above the buttons with their width: %s %s' % (info, side))
+            title = pg.inner_text('#mayhem-body .mh-a-info .mh-whead .mh-title').strip()
+            if title != TRANSLATIONS.get('Information', 'Information'):
+                raise RuntimeError('the title of the information box: %r' % title)
+            labels = [x.rstrip(': ') for x in pg.eval_on_selector_all('#mayhem-body .mh-a-info .mh-widget-row > .mh-muted', 'es => es.map(e => e.textContent)')]
+            want = [TRANSLATIONS.get(x, x) for x in ('Server', 'Ping time', 'External IP', 'Location', 'Mayhem version', 'Xray version', 'Memory use')]
+            if [x for x in labels if x != TRANSLATIONS.get('DNS', 'DNS')] != want:
+                raise RuntimeError('the rows of the information box: %s' % labels)
+            # the speed in the head of the list, down in and up out
+            speed = pg.inner_text('#mayhem-body .mh-list .mh-ghead .mh-speed')
+            if '↓' not in speed or '↑' not in speed:
+                raise RuntimeError('no speed in the head of the server list: %r' % speed)
+            # one subscription: its update is the button of the list, not of its group
+            if pg.locator('#mayhem-body .mh-list .mh-ghead .mh-subs-all').count() != 1:
+                raise RuntimeError('no button that updates all subscriptions in the head of the list')
+            if pg.locator('#mayhem-body .mh-group .mh-ghead > .btn').count():
+                raise RuntimeError('a subscription has its own update button while it is the only one')
+            n = len(calls)
+            pg.click('#mayhem-body .mh-subs-all')
+            pg.wait_for_timeout(1500)
+            if 'luci.mayhem.sub_update' not in calls[n:]:
+                raise RuntimeError('the button of the list did not update the subscription: %s' % calls[n:])
+            # the button of the server pages adds a connection, whatever there is
+            nav = pg.inner_text('#mayhem-body .mh-navbtn >> nth=0').strip()
+            if nav != TRANSLATIONS.get('Add connection', 'Add connection'):
+                raise RuntimeError('the button of the server pages: %r' % nav)
             if not DEMO:  # a screenshot shows the demo delays, not failed checks
                 pg.click('#mayhem-body .mh-side button >> nth=0')
                 pg.wait_for_timeout(1500)
@@ -853,6 +928,65 @@ def main():
                     raise RuntimeError('ICMP did not go as one call per section: %s' % got)
             else:
                 pg.wait_for_timeout(4500)  # two polls: the speed widget has numbers
+
+        def one_server(pg):
+            # One server of a subscription in the list: nothing to choose,
+            # but the list keeps its title above the subscription.
+            HIDE['one_server'] = True
+            try:
+                pg.reload()
+                pg.wait_for_selector('#mayhem-body .mh-list .mh-tile', timeout=15000)
+                if pg.locator('#mayhem-body .mh-list .mh-tile').count() != 1:
+                    raise RuntimeError('more than one server in the list of one')
+                first = pg.eval_on_selector('#mayhem-body .mh-list', 'e => e.firstElementChild.className')
+                titles = pg.eval_on_selector_all('#mayhem-body .mh-list .mh-title', 'es => es.map(e => e.textContent)')
+                title = TRANSLATIONS.get('Server list', 'Server list')
+                if first != 'mh-ghead' or titles[:1] != [title] or titles.count(title) != 1:
+                    raise RuntimeError('no title above the one server of the list: %s %s' % (first, titles))
+                if pg.query_selector('#mayhem-body .mh-list > .mh-ghead select'):
+                    raise RuntimeError('a choice of the server with one server')
+                shot(pg, 'dashboard_one_server')
+            finally:
+                HIDE['one_server'] = False
+                pg.reload()
+                pg.wait_for_selector('#mayhem-body .mh-tile', timeout=15000)
+
+        def two_subs(pg):
+            # Several subscriptions: each has its own update button, and the
+            # one of the list updates them all.
+            HIDE['two_subs'] = True
+            try:
+                pg.reload()
+                pg.wait_for_selector('#mayhem-body .mh-subs-all', timeout=15000)
+                own = pg.locator('#mayhem-body .mh-group .mh-ghead > .btn').count()
+                if own != 2:
+                    raise RuntimeError('subscriptions with their own update button: %d of 2' % own)
+                n = len(calls)
+                pg.click('#mayhem-body .mh-subs-all')
+                pg.wait_for_timeout(2500)
+                if calls[n:].count('luci.mayhem.sub_update') != 2:
+                    raise RuntimeError('the button of the list did not update every subscription: %s' % calls[n:])
+            finally:
+                HIDE['two_subs'] = False
+                pg.reload()
+                pg.wait_for_selector('#mayhem-body .mh-tile', timeout=15000)
+
+        def ks_banner(pg):
+            # The kill switch line only when the router holds the traffic:
+            # not for one failed check of the server.
+            try:
+                seen = {}
+                for mode in ('flaky', 'waiting'):
+                    HIDE['ks'] = mode
+                    pg.reload()
+                    pg.wait_for_selector('#mayhem-body .mh-tile', timeout=15000)
+                    seen[mode] = pg.locator('#mayhem-body .mh-alert.mh-box--warn').count()
+                if seen != {'flaky': 0, 'waiting': 1}:
+                    raise RuntimeError('the kill switch line: %s' % seen)
+            finally:
+                HIDE['ks'] = None
+                pg.reload()
+                pg.wait_for_selector('#mayhem-body .mh-tile', timeout=15000)
 
         def conns_modal(pg):
             # the connections of the fixture (run.sh): names, servers, counts
@@ -1072,7 +1206,7 @@ def main():
                 raise RuntimeError('the address keeps a page after closing: %s' % pg.url)
 
         pages = [
-            ('mayhem/dashboard', [('buttons', dashboard_buttons), ('active connections', conns_modal), ('logs dialog', logs_dialog), ('run diagnostics', run_diag),
+            ('mayhem/dashboard', [('buttons', dashboard_buttons), ('one server in the list', one_server), ('several subscriptions', two_subs), ('kill switch line', ks_banner), ('active connections', conns_modal), ('logs dialog', logs_dialog), ('run diagnostics', run_diag),
                                   ('edit a server', edit_server), ('delete a server', delete_server), ('choose how', choose_mode), ('chain of the list', list_chain),
                                   ('delete a tunnel', delete_tunnel), ('services', services_badge), ('pages in a window', nav_pages)]),
             ('mayhem/dashboard#settings', [('sections tab', lambda pg: shot(pg, 'routing_sections')), ('main section', main_section),

@@ -18,7 +18,23 @@
 // component updates. Checks, diagnostics, logs and the service controls sit
 // together at the side. The main section is chosen in the connection box.
 
-const callDashboard = rpc.declare({ object: 'luci.mayhem', method: 'dashboard', expect: { '': {} } });
+const callDashboard = rpc.declare({ object: 'luci.mayhem', method: 'dashboard', params: [ 'warm' ], expect: { '': {} } });
+const callServerLink = rpc.declare({ object: 'luci.mayhem', method: 'server_link', params: [ 'section', 'tag' ], expect: { '': {} } });
+
+// What changes at every poll without changing what the page shows but its
+// numbers: traffic, memory, the time. A poll with only these new updates the
+// widgets in place instead of building every tile again.
+const VOLATILE = { time: true, totals: true, traffic: true, rss_kb: true, rss_total_kb: true, mem_trim: true, warm: true };
+
+// The hint of a server's tile: where it is and its traffic.
+function tileTitle(n) {
+	return '%s · ↓ %s ↑ %s'.format(n.iface ? _('Interface %s').format(n.iface) : mh.ipText('%s:%s'.format(n.address || '?', n.port || '?')),
+		mh.bytes(n.down), mh.bytes(n.up));
+}
+
+function signature(d) {
+	return JSON.stringify(d, (k, v) => (VOLATILE[k] || ((k === 'up' || k === 'down') && typeof v === 'number')) ? undefined : v);
+}
 const callAction = rpc.declare({ object: 'luci.mayhem', method: 'action', params: [ 'name' ], expect: { '': {} } });
 const callSelect = rpc.declare({ object: 'luci.mayhem', method: 'select_node', params: [ 'section', 'tag' ], expect: { '': {} } });
 const callSubUpdate = rpc.declare({ object: 'luci.mayhem', method: 'sub_update', params: [ 'name' ], expect: { '': {} } });
@@ -53,9 +69,12 @@ const CSS = `
 .mh-del:hover { color:var(--error-color-medium, red); }
 .mh-head { display:flex; align-items:center; justify-content:space-between; gap:10px; flex-wrap:wrap; }
 .mh-head .mh-grow { flex:1 1 auto; }
-.mh-layout { display:grid; grid-template-columns:1fr 1fr 240px; grid-template-rows:auto 1fr; grid-template-areas:"conn sys side" "servers servers side"; grid-gap:10px; align-items:start; }
-.mh-a-conn { grid-area:conn; align-self:stretch; min-width:0; } .mh-a-sys { grid-area:sys; align-self:stretch; min-width:0; } .mh-a-side { grid-area:side; } .mh-a-servers { grid-area:servers; }
-@media (max-width: 900px) { .mh-layout { grid-template-columns:1fr; grid-template-rows:none; grid-template-areas:"conn" "sys" "side" "servers"; } }
+.mh-layout { display:grid; grid-template-columns:1fr 240px; grid-template-rows:auto 1fr; grid-template-areas:"servers info" "servers side"; grid-gap:10px; align-items:start; }
+.mh-a-info { grid-area:info; min-width:0; } .mh-a-side { grid-area:side; } .mh-a-servers { grid-area:servers; min-width:0; }
+.mh-a-info .mh-widget-row { white-space:normal; overflow-wrap:anywhere; }
+@media (max-width: 900px) { .mh-layout { grid-template-columns:1fr; grid-template-rows:none; grid-template-areas:"info" "side" "servers"; } }
+.mh-gextra { display:inline-flex; align-items:center; gap:4px 12px; flex-wrap:wrap; margin-left:auto; }
+.mh-speed { white-space:nowrap; }
 .mh-widget-row { white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
 .mh-widget-row.mh-wrap { white-space:normal; }
 .mh-whead { display:flex; justify-content:space-between; align-items:baseline; gap:8px; }
@@ -178,17 +197,7 @@ return view.extend({
 	// With the URL test the page waits for its last numbers too, so the
 	// servers have real ones from the first look.
 	load() {
-		return callDashboard().then((d) => {
-			const m = checks.known(d.ping_method) ? d.ping_method : 'url';
-
-			if (m !== 'url' || !d.running)
-				return d;
-
-			return checks.load().then((w) => {
-				d.warm = w;
-				return d;
-			}, () => d);
-		});
+		return callDashboard(true);
 	},
 
 	update(d) {
@@ -207,8 +216,67 @@ return view.extend({
 			};
 		}
 
+		// Only the numbers changed: the widgets in place (open lists, a
+		// selection, a hint under the pointer stay).
+		const live = this.data && this.drawnSig === signature(d);
+
 		this.data = d;
-		this.redraw();
+
+		if (live)
+			this.redrawLive();
+		else
+			this.redraw();
+	},
+
+	redrawLive() {
+		const swap = (cls, el) => {
+			const old = document.querySelector('#mayhem-body .' + cls);
+
+			if (!old)
+				return false;
+
+			el.classList.add(cls);
+			old.replaceWith(el);
+			return true;
+		};
+
+		if (!swap('mh-a-info', this.renderInfo(this.data))) {
+			this.redraw();
+			return;
+		}
+
+		// The speed in the head of the server list.
+		swap('mh-speed', this.renderSpeed(this.data));
+
+		// The traffic of the tunnels and of the servers changes too: their
+		// rows and the hints of the tiles in place.
+		const body = document.getElementById('mayhem-body');
+		const tuns = {}, nodes = {};
+
+		for (const s of (this.data.sections || [])) {
+			if (s.type === 'interface')
+				tuns[s.name] = s;
+
+			for (const n of (s.nodes || []))
+				nodes[n.tag] = n;
+		}
+
+		if (!body)
+			return;
+
+		body.querySelectorAll('[data-mh-tun]').forEach((el) => {
+			const s = tuns[el.getAttribute('data-mh-tun')];
+
+			if (s)
+				el.replaceWith(this.renderTunnel(s, this.data.time));
+		});
+
+		body.querySelectorAll('[data-mh-tile]').forEach((el) => {
+			const n = nodes[el.getAttribute('data-mh-tile')];
+
+			if (n)
+				el.setAttribute('title', tileTitle(n));
+		});
 	},
 
 	// Deleted servers leave the page at once: the router reloads in the
@@ -257,32 +325,84 @@ return view.extend({
 		const focus = document.activeElement;
 
 		// An open drop-down list would close under the user's hand.
-		if (body && focus && focus.tagName === 'SELECT' && body.contains(focus))
+		if (body && focus && focus.tagName === 'SELECT' && body.contains(focus)) {
+			if (!focus._mh_blur_bound) {
+				focus._mh_blur_bound = true;
+				focus.addEventListener('blur', () => {
+					focus._mh_blur_bound = false;
+					this.redraw();
+				}, { once: true });
+			}
 			return;
+		}
 
-		if (body)
+		if (body) {
 			body.replaceChildren(...this.renderBody(this.data));
+			this.drawnSig = signature(this.data);
+		}
 	},
 
-	refresh() {
-		return callDashboard().then((d) => this.update(d));
+	// warm: the URL test of the servers comes with the data (one call).
+	refresh(warm) {
+		return callDashboard(warm ? true : false).then((d) => {
+			const w = d.warm;
+
+			delete d.warm;
+			this.update(d);
+
+			if (w !== undefined)
+				checks.takeWarm(w);
+		});
 	},
 
 	act(name) {
-		return callAction(name).then(() => this.refresh());
+		// The kill switch off: the yellow line goes at once, the router
+		// reloads in the background.
+		if (name === 'ks_off' && this.data) {
+			this.data.killswitch = false;
+			this.redraw();
+		}
+
+		return callAction(name).then((r) => {
+			if (r && r.error)
+				ui.addNotification(null, E('p', r.error), 'error');
+		}, (e) => {
+			ui.addNotification(null, E('p', e.message || String(e)), 'error');
+		}).then(() => this.refresh().catch(() => {}));
 	},
 
 	select(section, tag) {
+		this.pendingSel = this.pendingSel || {};
+		this.pendingSel[section] = { mode: tag ? 'manual' : 'auto', tag: tag, time: Date.now() };
+
+		const s = this.data?.sections?.[section];
+		if (s) {
+			if (tag) {
+				s.active = tag;
+				s.pinned = tag;
+			}
+			else {
+				delete s.pinned;
+			}
+		}
+		this.redraw();
+
 		return callSelect(section, tag).then((r) => {
-			if (r.error)
+			if (r.error) {
+				delete this.pendingSel[section];
+				this.redraw();
 				ui.addNotification(null, E('p', r.error), 'error');
+			}
 
-			return this.refresh();
-		}).then(() => {
-			const main = mh.mainServer(this.data).section;
+			return this.refresh().then(() => {
+				const main = mh.mainServer(this.data).section;
 
-			if (main && section === main.name)
-				checks.checkConnection();
+				if (main && section === main.name)
+					checks.checkConnection(true);
+			});
+		}).catch(() => {
+			delete this.pendingSel[section];
+			this.redraw();
 		});
 	},
 
@@ -334,18 +454,20 @@ return view.extend({
 		if (n.iface && (n.tproto === 'amneziawg' || n.tproto === 'wireguard'))
 			return tunnels.editDialog(n.iface, () => window.setTimeout(() => this.refresh(), 3000));
 
-		if (!n.link)
+		if (!n.has_link)
 			return this.renameDialog(section, n);
 
-		return callParseOne(n.link).then((r) => {
-			linkedit.dialog(n.link, r.outbound, n.name, (link) => callServerEdit(n.usec || section, n.link, link, n.tag).then((res) => {
+		// The key is asked for when the editor opens: the polled data does
+		// not carry the keys of all servers.
+		return callServerLink(section, n.tag).then((k) => k.link ? callParseOne(k.link).then((r) => {
+			linkedit.dialog(k.link, r.outbound, n.name, (link) => callServerEdit(n.usec || section, k.link, link, n.tag).then((res) => {
 				if (res.error)
 					return res.error;
 
 				window.setTimeout(() => this.refresh(), 2000);
 				return null;
 			}));
-		});
+		}) : this.renameDialog(section, n));
 	},
 
 	// The bin of a server, after a question. It is gone from the page at once.
@@ -432,17 +554,32 @@ return view.extend({
 
 		// The badge opens the state of each service.
 		const services = () => {
-			const xray = !d.xray ? [ _('Not installed'), 'mh-fail' ]
-				: d.running ? [ _('Works'), 'mh-ok' ] : [ _('Does not work'), 'mh-fail' ];
+			let xrayText = _('Does not work');
+			let xrayClass = 'mh-fail';
+
+			if (!d.xray) {
+				xrayText = _('Not installed');
+			} else if (d.running) {
+				xrayText = _('Works');
+				xrayClass = 'mh-ok';
+				if (d.xray_started && d.xray_started.why)
+					xrayText += ' (' + d.xray_started.why + ')';
+			}
+			const xray = [ xrayText, xrayClass ];
 			const row = (name, v) => E('div', { 'class': 'mh-svc-row' }, [
 				E('span', name), E('span', { 'class': v[1] }, v[0])
 			]);
 
-			return E('div', { 'class': 'mh-svc' }, [
+			const rows = [
 				row('Mayhem', [ st[1], st[0].replace('mh-pill--', 'mh-').replace('mh-off', 'mh-muted') ]),
 				row('Xray', xray),
 				row('Dnsmasq', d.dnsmasq ? [ _('Works'), 'mh-ok' ] : [ _('Does not work'), 'mh-fail' ])
-			]);
+			];
+
+			if (d.mem_trim && d.mem_trim.freed_kb)
+				rows.push(row(_('Memory trim'), [ d.mem_trim.freed_kb + ' KiB', 'mh-muted' ]));
+
+			return E('div', { 'class': 'mh-svc' }, rows);
 		};
 
 		return E('div', { 'class': 'mh-top' }, [
@@ -471,7 +608,7 @@ return view.extend({
 				(note && typeof note === 'object') ? note : note ? E('span', { 'class': 'mh-muted mh-small' }, note) : '' ])
 		].concat(rows.map((r) => E('div', { 'class': 'mh-widget-row' + (r[4] ? ' mh-wrap' : ''), 'title': (typeof (r[3] || r[1]) === 'string') ? r[0] + ': ' + (r[3] || r[1]) : null }, [
 			E('span', { 'class': 'mh-muted' }, r[0] + ': '),
-			E('span', { 'class': r[2] || '' }, r[1])
+			E('span', Object.assign({ 'class': r[2] || '' }, r[5] ? { 'id': r[5] } : {}), r[1])
 		]))));
 	},
 
@@ -501,9 +638,10 @@ return view.extend({
 		return [ _('Server'), m.node ? m.node.name : '—' ];
 	},
 
-	connectionRows(d, working) {
+	// The connection of the main traffic: its server, ping, external IP and
+	// location.
+	connectionRows(d) {
 		const c = checks.conn;
-		const sp = this.speed && working ? this.speed : null;
 		const rows = [
 			this.serverRow(d)
 		];
@@ -511,23 +649,19 @@ return view.extend({
 		if (d.dns_down)
 			rows.push([ _('DNS'), _('Provider\'s: the remote DNS does not answer'), 'mh-warn' ]);
 
-		rows.push(
-			[ _('Incoming'), sp ? rate(sp.down) : '—' ],
-			[ _('Outgoing'), sp ? rate(sp.up) : '—' ]
-		);
 		const wait = '…';
 
 		if (!c) {
-			rows.push([ _('Ping time'), '—' ], [ _('External IP'), '—' ], [ _('Location'), '—' ]);
+			rows.push([ _('Ping time'), '—', '', null, false, 'mh-conn-ping' ], [ _('External IP'), '—' ], [ _('Location'), '—' ]);
 			return rows;
 		}
 
 		if (c.ms != null)
-			rows.push([ _('Ping time'), _('%d ms').format(c.ms), latencyClass(c.ms, c.method) ]);
+			rows.push([ _('Ping time'), _('%d ms').format(c.ms), latencyClass(c.ms, c.method), null, false, 'mh-conn-ping' ]);
 		else if (c.method === 'tcp' && c.pingError === 'UDP protocol')
-			rows.push([ _('Ping time'), 'N/A', 'mh-muted', c.pingError ]);
+			rows.push([ _('Ping time'), 'N/A', 'mh-muted', c.pingError, false, 'mh-conn-ping' ]);
 		else
-			rows.push([ _('Ping time'), c.busy ? wait : _('No answer'), c.busy ? 'mh-muted' : 'mh-fail', c.pingError ]);
+			rows.push([ _('Ping time'), c.busy ? wait : _('No answer'), c.busy ? 'mh-muted' : 'mh-fail', c.pingError, false, 'mh-conn-ping' ]);
 
 		const x = c.exit || {};
 
@@ -546,27 +680,72 @@ return view.extend({
 		return rows;
 	},
 
-	// The connection, the system and all the buttons in one row; the state of
-	// the service is the badge at the top.
-	renderWidgets(d) {
-		const working = d.running && d.active;
+	// One box above the buttons: the connection, then the versions and the
+	// memory; the router and its OS are in the diagnostics.
+	renderInfo(d) {
+		const box = this.widget(_('Information'), this.connectionRows(d).concat([
+			[ _('Mayhem version'), d.version || '—' ],
+			[ _('Xray version'), d.xray || '—' ],
+			// xray's data, as the watchdog counts it; with its code, in the hint.
+			[ _('Memory use'), d.rss_kb ? mh.bytes(d.rss_kb * 1024) : '—', '',
+				d.rss_total_kb ? _('%s with the code of xray').format(mh.bytes(d.rss_total_kb * 1024)) : null ]
+		]));
 
-		return [
-			this.widget(_('Connection state'), this.connectionRows(d, working)),
-			this.widget(_('System'), [
-				[ _('Router'), d.model || '—' ],
-				[ _('OS'), d.system || '—' ],
-				[ 'Mayhem', d.version || '—' ],
-				[ 'Xray', d.xray || '—' ],
-				// xray's data, as the watchdog counts it; with its code, in the hint.
-				[ _('Memory use'), d.rss_kb ? mh.bytes(d.rss_kb * 1024) : '—', '',
-					d.rss_total_kb ? _('%s with the code of xray').format(mh.bytes(d.rss_total_kb * 1024)) : null ]
-			])
-		];
+		box.classList.add('mh-a-info');
+		return box;
+	},
+
+	// The traffic of the moment: down is what comes in, up what goes out.
+	renderSpeed(d) {
+		const sp = this.speed && d.running && d.active ? this.speed : null;
+
+		return E('span', { 'class': 'mh-speed mh-small' }, [
+			E('span', { 'title': _('Incoming') }, '↓ ' + (sp ? rate(sp.down) : '—')), '  ',
+			E('span', { 'title': _('Outgoing') }, '↑ ' + (sp ? rate(sp.up) : '—'))
+		]);
+	},
+
+	// The enabled subscriptions: one button in the head of the list updates
+	// them all; with several, each has its own too.
+	enabledSubs() {
+		return ((this.data || {}).subscriptions || []).filter((s) => s.enabled).map((s) => s.name);
 	},
 
 	// Configuration errors stop xray: they stay in sight. Warnings are on the
 	// diagnostics page.
+	// KillSwitch is on, but the traffic has no way out: Mayhem is off and
+	// holds it, xray is down, a tunnel it waits for is down, or the main
+	// section's servers do not answer and its traffic waits for them. A
+	// yellow line with the way out.
+	killSwitchStuck(d) {
+		const main = mh.mainServer(d).section;
+
+		// The main section by the checks of the router, which follow its mode:
+		// the server chosen by hand, the chain's server, the automatic
+		// choice's own path - never the number of another server on the page.
+		// Only when the router holds its traffic: one failed check, or one
+		// that another server took over from, is not that.
+		return !!d.killswitch && !!(d.held || (d.enabled && !d.running) ||
+			(d.sections || []).some((s) => s.tunnel && s.tunnel.state === 'held') ||
+			(main && (main.down || main.waiting)));
+	},
+
+	renderKillSwitch(d) {
+		this.ksShown = this.killSwitchStuck(d);
+
+		if (!this.ksShown)
+			return '';
+
+		return E('div', { 'class': 'mh-box mh-box--warn mh-alert mh-warn' }, [
+			mh.icon('alert'),
+			E('div', [
+				E('b', _('No connection through the proxy or tunnel, KillSwitch holds the traffic')),
+				E('div', { 'class': 'mh-muted mh-small' }, _('Traffic that goes through VPN waits instead of going direct. Turn off KillSwitch to let it go direct until the connection is back.'))
+			]),
+			mh.button({ icon: 'x', cls: 'cbi-button-negative', text: _('Turn off KillSwitch'), click: ui.createHandlerFn(this, 'act', 'ks_off') })
+		]);
+	},
+
 	renderAlert(d) {
 		const errors = ((d.status || {}).errors || []).slice();
 
@@ -609,27 +788,77 @@ return view.extend({
 			const label = p.method === 'url' ? '' : p.method.toUpperCase() + ' ';
 
 			if (p.pending)
-				return E('span', { 'class': 'mh-muted', 'title': _('Checking…') }, label + '…');
+				return E('span', { 'class': 'mh-muted', 'data-mh-lat': n.tag, 'title': _('Checking…') }, label + '…');
 
 			if (p.method === 'tcp' && p.value === 'UDP protocol')
-				return E('span', { 'class': 'mh-muted', 'title': p.value }, label + 'N/A');
+				return E('span', { 'class': 'mh-muted', 'data-mh-lat': n.tag, 'title': p.value }, label + 'N/A');
 
 			if (typeof p.value === 'string')
-				return E('span', { 'class': 'mh-fail', 'title': p.value }, label + _('No answer'));
+				return E('span', { 'class': 'mh-fail', 'data-mh-lat': n.tag, 'title': p.value }, label + _('No answer'));
 
-			return E('span', { 'class': latencyClass(p.value, p.method) }, label + _('%d ms').format(p.value));
+			return E('span', { 'class': latencyClass(p.value, p.method), 'data-mh-lat': n.tag }, label + _('%d ms').format(p.value));
 		}
 
 		if (n.alive === false)
-			return E('span', { 'class': 'mh-fail' }, _('No answer'));
+			return E('span', { 'class': 'mh-fail', 'data-mh-lat': n.tag }, _('No answer'));
 
 		if (this.latencyPending(n))
-			return E('span', { 'class': 'mh-muted', 'title': _('Checking…') }, '…');
+			return E('span', { 'class': 'mh-muted', 'data-mh-lat': n.tag, 'title': _('Checking…') }, '…');
 
 		if (n.delay == null)
-			return E('span', { 'class': 'mh-muted' }, 'N/A');
+			return E('span', { 'class': 'mh-muted', 'data-mh-lat': n.tag }, 'N/A');
 
-		return E('span', { 'class': latencyClass(n.delay) }, _('%d ms').format(n.delay));
+		return E('span', { 'class': latencyClass(n.delay), 'data-mh-lat': n.tag }, _('%d ms').format(n.delay));
+	},
+
+	updateLatency(tag) {
+		const els = document.querySelectorAll(`[data-mh-lat="${tag}"]`);
+		const n = this.findNode(tag);
+		let updated = false;
+
+		if (n) {
+			els.forEach((el) => {
+				el.replaceWith(this.latency(n));
+				updated = true;
+			});
+		}
+
+		if (checks.conn && checks.conn.tag === tag) {
+			const connPing = document.getElementById('mh-conn-ping');
+			if (connPing) {
+				const p = checks.probes[tag];
+				const c = checks.conn;
+				if (p) {
+					if (p.pending) {
+						connPing.className = 'mh-muted';
+						connPing.textContent = '…';
+					} else if (p.method === 'tcp' && p.value === 'UDP protocol') {
+						connPing.className = 'mh-muted';
+						connPing.textContent = 'N/A';
+					} else if (typeof p.value === 'string') {
+						connPing.className = 'mh-fail';
+						connPing.textContent = _('No answer');
+					} else if (p.value != null) {
+						connPing.className = latencyClass(p.value, p.method);
+						connPing.textContent = _('%d ms').format(p.value);
+					}
+				} else if (c && c.ms != null) {
+					connPing.className = latencyClass(c.ms, c.method);
+					connPing.textContent = _('%d ms').format(c.ms);
+				}
+				updated = true;
+			}
+		}
+
+		return updated;
+	},
+
+	findNode(tag) {
+		for (const s of (this.data?.sections || []))
+			for (const n of (s.nodes || []))
+				if (n.tag === tag)
+					return n;
+		return null;
 	},
 
 	latencyPending(n) {
@@ -671,8 +900,8 @@ return view.extend({
 
 		const attrs = {
 			'class': 'mh-tile' + (active ? ' mh-tile--active' : '') + (pick ? ' mh-tile--pick' : '') + (chosen ? ' mh-tile--chosen' : ''),
-			'title': '%s · ↓ %s ↑ %s'.format(n.iface ? _('Interface %s').format(n.iface) : mh.ipText('%s:%s'.format(n.address || '?', n.port || '?')),
-				mh.bytes(n.down), mh.bytes(n.up))
+			'data-mh-tile': n.tag,
+			'title': tileTitle(n)
 		};
 
 		if (pick)
@@ -683,7 +912,7 @@ return view.extend({
 				pos >= 0 ? E('span', { 'class': 'mh-chain-no', 'title': _('Place in the fallback chain') }, String(pos + 1)) : '',
 				E('b', n.name),
 				E('button', {
-					'class': 'mh-ren', 'title': ((n.link && n.usec) || n.iface) ? _('Edit') : _('Rename'),
+					'class': 'mh-ren', 'title': ((n.has_link && n.usec) || n.iface) ? _('Edit') : _('Rename'),
 					'click': (ev) => {
 						ev.stopPropagation();
 						this.editServer(s.name, n);
@@ -750,10 +979,11 @@ return view.extend({
 		else if (info.hwid && info.hwid.not_supported)
 			parts.push(E('span', { 'class': 'mh-warn mh-small' }, _('The provider expects an HWID: turn on "Send device data"')));
 
-		parts.push(mh.button({
-			icon: 'refresh', text: _('Update'), busy: this.busy['subs:' + sub.name],
-			click: ui.createHandlerFn(this, 'updateSubs', 'subs:' + sub.name, [ sub.name ])
-		}));
+		if (this.enabledSubs().length > 1)
+			parts.push(mh.button({
+				icon: 'refresh', text: _('Update'), busy: this.busy['subs:' + sub.name],
+				click: ui.createHandlerFn(this, 'updateSubs', 'subs:' + sub.name, [ sub.name ])
+			}));
 
 		return E('div', { 'class': 'mh-ghead' }, parts);
 	},
@@ -844,7 +1074,7 @@ return view.extend({
 			}
 
 			// In the list: a group of its one box; elsewhere a box of its own.
-			const box = E('div', { 'class': pool ? 'mh-group' : 'mh-box mh-section' }, [
+			const box = E('div', { 'class': pool ? 'mh-group' + (src === 'link' ? ' mh-group--own' : '') : 'mh-box mh-section' }, [
 				head,
 				by[src].length ? E('div', { 'class': 'mh-grid' }, by[src].map((n) => this.tile(s, n)))
 					: E('div', { 'class': 'mh-muted mh-small' }, _('Add servers with the "Add connection" button.'))
@@ -898,6 +1128,15 @@ return view.extend({
 	// The server list: one box, its title and how it picks the server on top,
 	// then its groups (keys and tunnels, every subscription).
 	listBox(s, groups) {
+		// One server: nothing to choose, no row for the choice; the list's
+		// title on top unless the group of its own keys already has it.
+		if ((s.nodes || []).length <= 1 && !this.pendingSel[s.name]) {
+			const own = groups.some((g) => g.classList.contains('mh-group--own'));
+			const head = own ? [] : [ E('div', { 'class': 'mh-ghead' }, [ E('span', { 'class': 'mh-title' }, _('Server list')) ]) ];
+
+			return E('div', { 'class': 'mh-box mh-section mh-list' }, head.concat(groups));
+		}
+
 		const bar = this.chooseBar(s);
 		const head = E('div', { 'class': 'mh-ghead' }, [ E('span', { 'class': 'mh-title' }, _('Server choice')) ].concat(Array.from(bar.childNodes)));
 
@@ -1068,7 +1307,7 @@ return view.extend({
 		side.push(E('div', { 'class': 'mh-side-gap' }));
 		side.push(this.navButton('servers', d.has_connections ? 'logs' : 'plus',
 			d.has_connections ? 'cbi-button-neutral mh-navbtn' : 'cbi-button-add mh-navbtn',
-			d.has_connections ? _('Connection list') : _('Add connection')));
+			_('Add connection')));
 		side.push(this.navButton('settings', 'settings', 'cbi-button mh-navbtn'));
 		side.push(E('div', { 'class': 'mh-side-gap' }));
 
@@ -1089,7 +1328,7 @@ return view.extend({
 
 		info.push('↓ %s ↑ %s'.format(mh.bytes(s.traffic.down), mh.bytes(s.traffic.up)));
 
-		return E('div', { 'class': 'mh-tunrow mh-head' }, [
+		return E('div', { 'class': 'mh-tunrow mh-head', 'data-mh-tun': s.name }, [
 			E('div', { 'class': 'mh-grow' }, [
 				E('b', s.name), ' ',
 				E('span', { 'class': 'mh-muted mh-small' }, _('Tunnel') + ' · ' + info.join(' · '))
@@ -1150,17 +1389,36 @@ return view.extend({
 				])
 			].concat(tunnels.map((t) => this.renderTunnel(t, d.time)))));
 
-		// The connection and the system on top, the servers under them, the
-		// column of buttons at the side all the way down.
-		const [ conn, sys ] = this.renderWidgets(d);
+		// The head of the list: the speed and, with subscriptions, the button
+		// that updates them all.
+		const lhead = list.querySelector('.mh-ghead');
+
+		if (lhead) {
+			const subs = this.enabledSubs();
+			const extra = [ this.renderSpeed(d) ];
+
+			if (subs.length) {
+				const all = mh.button({
+					icon: 'refresh', text: _('Update'), busy: this.busy['subs:*'],
+					click: ui.createHandlerFn(this, 'updateSubs', 'subs:*', subs)
+				});
+
+				all.setAttribute('title', _('Update all subscriptions'));
+				all.classList.add('mh-subs-all');
+				extra.push(all);
+			}
+
+			lhead.appendChild(E('span', { 'class': 'mh-gextra' }, extra));
+		}
+
+		// The servers on the left; on the right the information and the column
+		// of buttons under it, of the same width.
 		const side = this.renderSide(d);
 
-		conn.classList.add('mh-a-conn');
-		sys.classList.add('mh-a-sys');
 		side.classList.add('mh-a-side');
 
-		return [ this.renderTop(d), this.renderAlert(d), E('div', { 'class': 'mh-layout' }, [
-			conn, sys, side,
+		return [ this.renderTop(d), this.renderKillSwitch(d), this.renderAlert(d), E('div', { 'class': 'mh-layout' }, [
+			this.renderInfo(d), side,
 			E('div', { 'class': 'mh-stack mh-a-servers' }, boxes)
 		]) ];
 	},
@@ -1170,6 +1428,25 @@ return view.extend({
 		this.hideGone(d);
 		checks.bind(this);
 		chain.bind(this);
+
+		if (!this._services_bound) {
+			this._services_bound = true;
+			document.addEventListener('click', (ev) => {
+				if (this.showServices) {
+					const pill = document.querySelector('.mh-pill-wrap');
+					if (pill && !pill.contains(ev.target)) {
+						this.showServices = false;
+						this.redraw();
+					}
+				}
+			});
+			document.addEventListener('keydown', (ev) => {
+				if (ev.key === 'Escape' && this.showServices) {
+					this.showServices = false;
+					this.redraw();
+				}
+			});
+		}
 
 		if (checks.known(d.ping_method))
 			checks.method = d.ping_method;
@@ -1204,7 +1481,7 @@ return view.extend({
 
 			polling = true;
 
-			return this.refresh().then(() => (checks.method === 'url' && this.data && this.data.running) ? checks.pollWarm(false) : null)
+			return this.refresh(checks.method === 'url' && this.data && this.data.running)
 				.catch(() => {}).finally(() => { polling = false; });
 		}, 3);
 

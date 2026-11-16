@@ -47,8 +47,16 @@ if [ -z "$(uci -q get mayhem.settings.uhttpd_tuned)" ] && uci -q get uhttpd.main
 	if [ -z "$ka" ] || [ "$ka" = 20 ]; then
 		uci set uhttpd.main.http_keepalive='0'
 		uci commit uhttpd
-		# later: an update from LuCI is still talking to uhttpd now
-		( sleep 10; /etc/init.d/uhttpd restart ) >/dev/null 2>&1 </dev/null &
+		# later: do not restart uhttpd while installer is active (one whose
+		# process is gone, killed, left its pid behind: it holds nothing)
+		(
+			while ipid="$(cat "${MAYHEM_RUN_DIR:-/var/run/mayhem}/install.pid" 2>/dev/null)" &&
+				[ -n "$ipid" ] && kill -0 "$ipid" 2>/dev/null; do
+				sleep 2
+			done
+			sleep 10
+			/etc/init.d/uhttpd restart
+		) >/dev/null 2>&1 </dev/null &
 	fi
 
 	uci set mayhem.settings.uhttpd_tuned='1'
@@ -59,6 +67,15 @@ uci commit mayhem
 # TCP BBR when its module is there (an update through the package manager:
 # the installer also installs the module).
 /usr/bin/mayhem bbr --no-install >/dev/null 2>&1
+
+# The kill switch while Mayhem does not run: from the boot on, whatever
+# Mayhem's own autostart is (it does nothing with the kill switch off).
+/etc/init.d/mayhem-hold enable >/dev/null 2>&1
+
+# The WireGuard obfuscators are gone: their service and binaries too
+# (migrate.uc gives their tunnels back the server's endpoint).
+ubus call service delete '{"name":"mayhem-obfs"}' >/dev/null 2>&1
+rm -f /etc/rc.d/*mayhem-obfs /usr/libexec/mayhem/wg-obfuscator /usr/libexec/mayhem/phantun_client
 
 # Older configurations: the server list (0.12) and what comes after.
 ucode /usr/share/mayhem/migrate.uc >/dev/null 2>&1

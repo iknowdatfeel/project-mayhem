@@ -71,5 +71,12 @@ for (let c in refused) {
 	}
 }
 
-print(`links: ${length(cases) + length(refused) - failed}/${length(cases) + length(refused)} ok\n`);
+const plus_link = `vless://${UUID}@example.com:443?type=tcp&security=reality&sni=www.microsoft.com&fp=chrome&pbk=SbVKOEMjK0sIlbwg4akyBg5mL5KZwwB-ed4eEE7YnRc&sid=6ba85179e30d4fc2&flow=xtls-rprx-vision#NL+Server+Name%20Test`;
+const parsed_name = parse_link(plus_link).name;
+if (parsed_name != 'NL Server Name Test') {
+	failed++;
+	print(`FAIL link name: expected "NL Server Name Test", got "${parsed_name}"\n`);
+}
+
+print(`links: ${length(cases) + length(refused) + 1 - failed}/${length(cases) + length(refused) + 1} ok\n`);
 exit(failed ? 1 : 0);

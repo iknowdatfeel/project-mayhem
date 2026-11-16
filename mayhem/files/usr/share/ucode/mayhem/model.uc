@@ -230,7 +230,9 @@ function runtime(sections) {
 		// the servers fallback chains use now (fallback.uc): { section: tag }
 		fallback: fallback_now(),
 		dnsmasq_servers: dnsmasq_servers(),
-		leases: leases()
+		leases: leases(),
+		// servers xray refused: { tag: { name, error, at } } (live.uc, xray-run)
+		refused: read_json(`${RUN_DIR}/refused.json`) ?? {}
 	};
 }
 
@@ -438,6 +440,30 @@ function geo_domains(sections, sources, all, split, both) {
 	return out;
 }
 
+function list_stamps(sections) {
+	const out = {};
+
+	for (let sec in sections) {
+		if (!is_true(sec.enabled ?? '1'))
+			continue;
+
+		for (let u in entries(sec.list_url)) {
+			const p = `${LISTS_DIR}/${list_key(u)}.lst`;
+			const st = stat(p);
+			if (st)
+				out[u] = `${st.size}-${st.mtime}`;
+		}
+
+		for (let f in entries(sec.list_file)) {
+			const st = stat(f);
+			if (st)
+				out[f] = `${st.size}-${st.mtime}`;
+		}
+	}
+
+	return out;
+}
+
 // Contents of the rule lists that sections use, keyed by URL or path.
 function lists(sections) {
 	const out = {};
@@ -446,11 +472,17 @@ function lists(sections) {
 		if (!is_true(sec.enabled ?? '1'))
 			continue;
 
-		for (let u in entries(sec.list_url))
-			out[u] ??= readfile(`${LISTS_DIR}/${list_key(u)}.lst`);
+		for (let u in entries(sec.list_url)) {
+			let t = readfile(`${LISTS_DIR}/${list_key(u)}.lst`);
+			if (t != null)
+				out[u] ??= replace(t, /^\xef\xbb\xbf/, '');
+		}
 
-		for (let f in entries(sec.list_file))
-			out[f] ??= readfile(f);
+		for (let f in entries(sec.list_file)) {
+			let t = readfile(f);
+			if (t != null)
+				out[f] ??= replace(t, /^\xef\xbb\xbf/, '');
+		}
 	}
 
 	return out;
@@ -542,7 +574,7 @@ function pool_section(c) {
 
 // both: also the geo domains for the other choice of the server list, a
 // kernel tunnel or a proxy (geo.wide, geo.narrow).
-function load_model(both) {
+function load_model(both, lazy) {
 	const c = cursor(UCI_DIR);
 
 	c.load('mayhem');
@@ -662,14 +694,47 @@ function load_model(both) {
 			geo_files[f] = `${st.size}-${st.mtime}`;
 	}
 
-	return {
+	const geo = {
+		sources: sources,
+		files: geo_files
+	};
+
+	let lists_data = null;
+	let res;
+	const ensure_lists = function() {
+		if (lists_data == null) {
+			lists_data = lists(sections);
+			if (res)
+				res.lists = lists_data;
+		}
+		return lists_data;
+	};
+
+	const ensure_geo = function(need_both) {
+		if (geo.cidrs)
+			return geo;
+		geo.cidrs = geo_cidrs(sections, sources);
+		const doms = geo_domains(sections, sources, kernel_rest, settings.mode != 'global', need_both ?? both);
+		for (let k in doms)
+			geo[k] = doms[k];
+		if (res)
+			res.geo = geo;
+		return geo;
+	};
+
+	if (!lazy) {
+		ensure_geo(both);
+		ensure_lists();
+	}
+
+	res = {
 		subscriptions: subscriptions,
 		subs_new: subs_new,
-		geo: {
-			sources: sources, files: geo_files, cidrs: geo_cidrs(sections, sources),
-			...geo_domains(sections, sources, kernel_rest, settings.mode != 'global', both)
-		},
-		lists: lists(sections),
+		geo: geo,
+		lists: lists_data,
+		lists_stamps: list_stamps(sections),
+		ensure_geo: ensure_geo,
+		ensure_lists: ensure_lists,
 		settings: settings,
 		tunnel_labels: tunnel_labels,
 		aliases: aliases,
@@ -680,6 +745,8 @@ function load_model(both) {
 		sections: sections,
 		runtime: runtime(sections)
 	};
+
+	return res;
 }
 
 return { load_model, runtime, own_servers };

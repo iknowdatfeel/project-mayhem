@@ -8,6 +8,13 @@ mayhem_log() {
 	logger -t mayhem -p "daemon.${2:-info}" -- "$1"
 }
 
+# The run directory: server keys are in its files (xray.json, nodes.json),
+# so only root reads it. Everything that creates it goes through here.
+mayhem_run_dir() {
+	mkdir -p "$MAYHEM_RUN_DIR" || return 1
+	chmod 0700 "$MAYHEM_RUN_DIR" 2>/dev/null || true
+}
+
 # --- policy routing + nftables -----------------------------------------------
 
 mayhem_net_up() {
@@ -64,9 +71,28 @@ mayhem_nft_kept() {
 	done
 
 	sed -n 's/^\tset \([A-Za-z0-9_]*_d[46]\) {$/\1/p' "$MAYHEM_RUN_DIR/nft.conf" > "$MAYHEM_RUN_DIR/nft.dynsets"
+	[ -s "$MAYHEM_RUN_DIR/nft.dynsets" ] || return 0
+
+	# The sets whose nftset= lines changed between the old and the new file
+	# (or all of them without an old one): one pass of awk over each file.
+	[ -f "$new" ] || new=/dev/null
+	awk -v t="$MAYHEM_NFT_TABLE" -v have_old="$([ -n "$old" ] && echo 1)" '
+		FILENAME == ARGV[1] { if ($0 != "") { set[$0] = 1; order[++n] = $0 } next }
+		{
+			for (s in set)
+				if (index($0, "#" t "#" s) > 0) {
+					if (FILENAME == ARGV[2]) a[s] = a[s] "\n" $0
+					else b[s] = b[s] "\n" $0
+				}
+		}
+		END {
+			for (i = 1; i <= n; i++)
+				if (have_old != 1 || a[order[i]] != b[order[i]])
+					print order[i]
+		}' "$MAYHEM_RUN_DIR/nft.dynsets" "${old:-/dev/null}" "$new" > "$MAYHEM_RUN_DIR/nft.changed"
 
 	while read -r set; do
-		if [ -z "$old" ] || [ "$(grep -F "#$MAYHEM_NFT_TABLE#$set" "$old" | md5sum)" != "$(grep -F "#$MAYHEM_NFT_TABLE#$set" "$new" 2>/dev/null | md5sum)" ]; then
+		if grep -qx -F "$set" "$MAYHEM_RUN_DIR/nft.changed"; then
 			echo "$set" >> "$MAYHEM_RUN_DIR/nft.emptied"
 			continue
 		fi
@@ -78,9 +104,14 @@ mayhem_nft_kept() {
 				end = sub(/\}.*/, "")
 				n = split($0, e, ",")
 				for (i = 1; i <= n; i++) {
-					split(e[i], w, " ")
-					if (w[1] != "")
-						a[++k] = w[1]
+					m = split(e[i], w, " ")
+					if (w[1] != "") {
+						ex = ""
+						for (j = 2; j < m; j++)
+							if (w[j] == "expires" && w[j + 1] != "")
+								ex = " expires " w[j + 1]
+						a[++k] = w[1] ex
+					}
 				}
 				if (end)
 					on = 0
@@ -101,6 +132,17 @@ mayhem_ip_rule_has() {
 	ip -"$1" rule show 2>/dev/null | grep -qE "fwmark $MAYHEM_FWMARK(/$MAYHEM_FWMARK)? lookup $MAYHEM_RT_TABLE( |\$)"
 }
 
+# Atomically append restart marker to xray.key via a temporary file,
+# ensuring running.xray.key is never modified even if created from a shared source.
+mayhem_mark_restart() {
+	local tmp="$MAYHEM_RUN_DIR/xray.key.tmp.$$"
+	{
+		cat "$MAYHEM_RUN_DIR/xray.key" 2>/dev/null
+		echo "restart $(date +%s)"
+	} > "$tmp"
+	mv -f "$tmp" "$MAYHEM_RUN_DIR/xray.key"
+}
+
 # Reload while xray works: new firewall rules and tunnel routes go in place
 # without restarting xray (a new section, a tunnel chosen as the main server).
 mayhem_net_refresh() {
@@ -116,7 +158,7 @@ mayhem_net_refresh() {
 			[ -s "$MAYHEM_RUN_DIR/nft.emptied" ] && grep -q 'nftset=' "$MAYHEM_RUN_DIR/dnsmasq.conf" 2>/dev/null && mayhem_dnsmasq_hup
 		else
 			mayhem_log "could not change the firewall rules, restarting xray" warn
-			echo "restart $(date +%s)" >> "$MAYHEM_RUN_DIR/xray.key"
+			mayhem_mark_restart
 			return 1
 		fi
 	fi
@@ -130,6 +172,56 @@ mayhem_net_refresh() {
 	# xray from now on.
 	mayhem_dns_servers xray
 
+	return 0
+}
+
+# A server chosen by hand without a restart: the path generation of
+# nodes.json goes into the running rules, so connections of the old one are
+# reset (chain stale) and devices reconnect through the new server at once.
+# Only the chain prerouting carries the generation: it is swapped in one
+# transaction, the sets keep what dnsmasq put in them. The files follow only
+# once the kernel has it. Run under mayhem_lock start (no reload meanwhile).
+mayhem_net_generation() {
+	local run="$MAYHEM_RUN_DIR" gen hex f tx="$MAYHEM_RUN_DIR/nft.gen.$$"
+
+	[ -f "$run/active" ] && [ -f "$run/running.nft.conf" ] || return 1
+	gen="$(sed -n 's/.*"generation": *\([1-3]\).*/\1/p' "$run/nodes.json" 2>/dev/null | head -n 1)"
+	[ -n "$gen" ] || return 1
+	hex="$(printf '0x%x' $((gen << 28)))"
+
+	for f in running.nft.conf nft.conf; do
+		[ -f "$run/$f" ] || continue
+		sed -e "s/ct mark & 0x30000000 != 0x[0-9a-fA-F]*/ct mark \\& 0x30000000 != $hex/g" \
+			-e "s/ct mark set ct mark & 0xcfffffff | 0x[0-9a-fA-F]*/ct mark set ct mark \\& 0xcfffffff | $hex/g" \
+			"$run/$f" > "$tx.$f" || { rm -f "$tx".*; return 1; }
+	done
+
+	# Nothing to do: the kernel has it already.
+	if cmp -s "$tx.running.nft.conf" "$run/running.nft.conf"; then
+		rm -f "$tx".*
+		return 0
+	fi
+
+	{
+		echo "flush chain inet $MAYHEM_NFT_TABLE prerouting"
+		echo "table inet $MAYHEM_NFT_TABLE {"
+		awk '/^\tchain prerouting \{$/ { on = 1 } on { print } on && /^\t\}$/ { exit }' "$tx.running.nft.conf"
+		echo "}"
+	} > "$tx"
+
+	# IPv6 lines only where IPv6 is intercepted (mayhem_net_up).
+	mayhem_ip_rule_has 6 || sed -i '/meta nfproto ipv6/d' "$tx"
+
+	if ! grep -q 'chain prerouting' "$tx" || ! nft -f "$tx" 2>/dev/null; then
+		rm -f "$tx" "$tx".*
+		return 1
+	fi
+
+	for f in running.nft.conf nft.conf; do
+		[ -f "$tx.$f" ] && mv -f "$tx.$f" "$run/$f"
+	done
+
+	rm -f "$tx"
 	return 0
 }
 
@@ -160,6 +252,193 @@ mayhem_killswitch() {
 	grep -q '^MAYHEM_KILLSWITCH=1$' "$MAYHEM_RUN_DIR/env" 2>/dev/null
 }
 
+# --- kill switch while Mayhem does not run ---------------------------------------
+# With the kill switch and its option "hold while Mayhem is off" on
+# (settings.killswitch_hold), the traffic Mayhem sends through a proxy or a
+# tunnel also waits while Mayhem itself is stopped or turned off, and from
+# the boot of the router on: Mayhem's rules stay with nothing behind them
+# (what would go to xray is refused, a tunnel section's traffic goes
+# nowhere, the names xray resolves get no answer), while exclusions and
+# blocking work as with Mayhem on. It ends when Mayhem starts again or the
+# kill switch is turned off (Settings, the dashboard, `mayhem killswitch
+# off`). The rules for a boot are kept on flash (MAYHEM_HOLD_DIR), written
+# only when they change.
+
+# Does the kill switch hold the traffic while Mayhem is off? Its own option
+# (settings.killswitch_hold), only with the kill switch on - the user's word
+# now, not the last generated one.
+mayhem_hold_on() {
+	[ "${MAYHEM_KS:-$(uci -q get mayhem.settings.killswitch)}" = 1 ] &&
+		[ "${MAYHEM_KS_HOLD:-$(uci -q get mayhem.settings.killswitch_hold)}" = 1 ]
+}
+
+# Is Mayhem running (procd has its instances, or xray-run is alive)?
+mayhem_running() {
+	local pid
+
+	pid="$(cat "$MAYHEM_RUN_DIR/xray-run.pid" 2>/dev/null)"
+	[ -n "$pid" ] && kill -0 "$pid" 2>/dev/null && return 0
+	"${MAYHEM_INIT:-/etc/init.d/mayhem}" running >/dev/null 2>&1
+}
+
+# The rules of the last generated configuration to flash, for a hold after a
+# boot; with the kill switch off, the copy goes. The path generation of the
+# moment does not matter for a hold: kept as generation 1, so a server chosen
+# by hand writes nothing.
+mayhem_hold_save() {
+	local d="$MAYHEM_HOLD_DIR" run="$MAYHEM_RUN_DIR" f src
+
+	[ -n "$d" ] || return 1
+
+	if ! mayhem_hold_on; then
+		rm -rf "$d"
+		return 0
+	fi
+
+	[ -s "$run/nft.conf" ] || return 1
+	mkdir -p "$d" && chmod 0700 "$d" || return 1
+
+	sed -e 's/ct mark & 0x30000000 != 0x[0-9a-fA-F]*/ct mark \& 0x30000000 != 0x10000000/g' \
+		-e 's/ct mark set ct mark & 0xcfffffff | 0x[0-9a-fA-F]*/ct mark set ct mark \& 0xcfffffff | 0x10000000/g' \
+		"$run/nft.conf" > "$run/hold.nft" || return 1
+	grep '^MAYHEM_IPV6=' "$run/env" > "$run/hold.env" 2>/dev/null
+
+	for f in nft dnsmasq.conf dns.xray tunnels env; do
+		case "$f" in
+			nft) src="$run/hold.nft" ;;
+			env) src="$run/hold.env" ;;
+			*) src="$run/$f" ;;
+		esac
+
+		if [ ! -f "$src" ]; then
+			rm -f "$d/$f"
+		elif ! cmp -s "$src" "$d/$f"; then
+			cp "$src" "$d/$f.tmp" && mv -f "$d/$f.tmp" "$d/$f"
+		fi
+	done
+
+	rm -f "$run/hold.nft" "$run/hold.env"
+	return 0
+}
+
+# Tunnel sections in kernel mode while held: their traffic goes nowhere, also
+# when the tunnel itself works (it is Mayhem that sends traffic into it).
+mayhem_tunnels_hold() {
+	local name dev mark table v6 bal
+
+	[ -s "$MAYHEM_RUN_DIR/tunnels" ] || return 0
+
+	while read -r name dev mark table v6 bal; do
+		[ "$mark" = - ] && continue
+		mayhem_tun_rule_has 4 "$mark" "$table" ||
+			ip rule add fwmark "$mark/$MAYHEM_TUN_MASK" table "$table" priority "$MAYHEM_TUN_RULE_PRIO"
+		ip route replace blackhole default table "$table" 2>/dev/null
+
+		if [ "$v6" = 1 ]; then
+			mayhem_tun_rule_has 6 "$mark" "$table" ||
+				ip -6 rule add fwmark "$mark/$MAYHEM_TUN_MASK" table "$table" priority "$MAYHEM_TUN_RULE_PRIO"
+			ip -6 route replace blackhole default table "$table" 2>/dev/null
+		fi
+
+		echo held > "$MAYHEM_RUN_DIR/tunnel.$name"
+	done < "$MAYHEM_RUN_DIR/tunnels"
+}
+
+# The hold: with the rules in the kernel (a stop), or from the copy on flash
+# (a boot, Mayhem turned off). 1 when there is nothing to hold with: the
+# kill switch was turned on, but Mayhem has not run with it yet.
+mayhem_hold_up() {
+	local run="$MAYHEM_RUN_DIR" d="$MAYHEM_HOLD_DIR" f
+
+	mayhem_run_dir
+
+	if ! nft list table inet "$MAYHEM_NFT_TABLE" >/dev/null 2>&1; then
+		[ -s "$d/nft" ] || return 1
+
+		cp "$d/nft" "$run/nft.conf" || return 1
+
+		for f in dnsmasq.conf dns.xray tunnels; do
+			rm -f "$run/$f"
+			[ -f "$d/$f" ] && cp "$d/$f" "$run/$f"
+		done
+
+		if ! ( MAYHEM_IPV6=0; [ -f "$d/env" ] && . "$d/env"; mayhem_net_up ); then
+			mayhem_log "kill switch: the rules could not be put in place, traffic is not held" err
+			return 1
+		fi
+
+		cp "$run/nft.conf" "$run/running.nft.conf"
+	fi
+
+	mayhem_tunnels_hold
+
+	# dnsmasq: Mayhem's file, and the names xray resolves sent to it (they
+	# get no answer); the provider's servers for the rest.
+	mayhem_dns_up hold
+	mayhem_dns_servers xray
+
+	rm -f "$run/active" "$run/health.json" "$run/dns.degraded"
+	: > "$run/held"
+	return 0
+}
+
+# The end of a hold (the kill switch was turned off while Mayhem is off):
+# everything goes back to how it is without Mayhem.
+mayhem_hold_release() {
+	mayhem_dns_down
+	mayhem_net_down
+	rm -f "$MAYHEM_RUN_DIR/held"
+	[ -n "$MAYHEM_HOLD_DIR" ] && rm -rf "$MAYHEM_HOLD_DIR"
+	return 0
+}
+
+# What the stop of the service leaves: with the kill switch, a hold; without
+# it, everything as it is without Mayhem. A restart without the kill switch
+# keeps Mayhem's file in dnsmasq (see stop_service).
+mayhem_service_stop() {
+	if mayhem_hold_on && mayhem_hold_save && mayhem_hold_up; then
+		mayhem_log "stopped; the kill switch holds the traffic of proxies and tunnels until Mayhem starts or the kill switch is turned off"
+	elif mayhem_killswitch && { [ "${MAYHEM_RESTART:-0}" = 1 ] || [ "${PKG_UPGRADE:-0}" = 1 ]; }; then
+		# A restart, or an update through opkg (its default_prerm stops the
+		# service): with the kill switch the interception and dnsmasq stay as
+		# they are, the traffic waits for the new xray instead of going
+		# direct. "mayhem stop" still removes them.
+		mayhem_log "stopped for a restart; the kill switch keeps the traffic waiting for xray"
+	else
+		if [ "${MAYHEM_RESTART:-0}" = 1 ]; then
+			mayhem_dns_servers isp
+		else
+			mayhem_dns_down
+		fi
+
+		mayhem_net_down
+		rm -f "$MAYHEM_RUN_DIR/held"
+	fi
+
+	# Nothing is redirected to xray from here on, also before xray-run sees it go.
+	rm -f "$MAYHEM_RUN_DIR/health.json" "$MAYHEM_RUN_DIR/dns.degraded" "$MAYHEM_RUN_DIR/active"
+}
+
+# Mayhem does not run (turned off, stopped, a boot with it off) and the
+# configuration changed, or an interface came up: the hold goes up, is
+# brought up to date (the provider's DNS servers), or ends. Mayhem that runs
+# looks after itself.
+mayhem_hold_sync() {
+	mayhem_lock start || return 1
+
+	if mayhem_running; then
+		:
+	elif mayhem_hold_on; then
+		mayhem_hold_up ||
+			mayhem_log "kill switch: no rules to hold the traffic with yet, Mayhem has not run with the kill switch on" warn
+	elif [ -f "$MAYHEM_RUN_DIR/held" ] || [ -d "$MAYHEM_HOLD_DIR" ]; then
+		mayhem_hold_release
+		mayhem_log "kill switch turned off: traffic goes direct while Mayhem is off"
+	fi
+
+	mayhem_unlock start
+}
+
 # --- tunnel sections ---------------------------------------------------------
 # $MAYHEM_RUN_DIR/tunnels: "section device mark table v6 [bal]" per line. In kernel
 # mode, marked packets use the section's routing table, which holds a default
@@ -172,10 +451,13 @@ mayhem_tunnels_up() {
 
 	[ -s "$MAYHEM_RUN_DIR/tunnels" ] || return 0
 
+	# A hold of the kill switch may have put the rules in already.
 	while read -r name dev mark table v6 bal; do
 		[ "$mark" = - ] && continue
-		ip rule add fwmark "$mark/$MAYHEM_TUN_MASK" table "$table" priority "$MAYHEM_TUN_RULE_PRIO"
-		[ "$v6" = 1 ] && ip -6 rule add fwmark "$mark/$MAYHEM_TUN_MASK" table "$table" priority "$MAYHEM_TUN_RULE_PRIO"
+		mayhem_tun_rule_has 4 "$mark" "$table" ||
+			ip rule add fwmark "$mark/$MAYHEM_TUN_MASK" table "$table" priority "$MAYHEM_TUN_RULE_PRIO"
+		[ "$v6" = 1 ] && { mayhem_tun_rule_has 6 "$mark" "$table" ||
+			ip -6 rule add fwmark "$mark/$MAYHEM_TUN_MASK" table "$table" priority "$MAYHEM_TUN_RULE_PRIO"; }
 	done < "$MAYHEM_RUN_DIR/tunnels"
 
 	rm -f "$MAYHEM_RUN_DIR"/tunnel.*
@@ -255,6 +537,33 @@ mayhem_tunnels_down() {
 
 # Seconds since the newest WireGuard/AmneziaWG handshake of device $1; empty
 # for other kinds of devices (they count as working while the link is up).
+# "4 ADDR" or "6 ADDR": where to send a packet that wakes tunnel $1. Any
+# IPv4 address (0.0.0.0/0): 1.1.1.1; else the first address of its first
+# IPv4 subnet; without IPv4, 2606:4700:4700::1111 for ::/0, else the first
+# address of its first IPv6 subnet.
+mayhem_wake_addr() {
+	local out
+
+	out="$(awg show "$1" allowed-ips 2>/dev/null)" || out="$(wg show "$1" allowed-ips 2>/dev/null)" || out=""
+	printf '%s\n' "$out" | awk '
+		{
+			for (i = 2; i <= NF; i++) {
+				a = $i
+				if (a == "0.0.0.0/0") any4 = 1
+				else if (a == "::/0") any6 = 1
+				else if (a ~ /^[0-9.]+\/[0-9]+$/) { if (f4 == "") f4 = a }
+				else if (a ~ /:/ && a ~ /\//) { if (f6 == "") f6 = a }
+			}
+		}
+		END {
+			if (any4) print "4 1.1.1.1"
+			else if (f4 != "") { sub(/\/.*/, "", f4); print "4 " f4 }
+			else if (any6) print "6 2606:4700:4700::1111"
+			else if (f6 != "") { sub(/\/.*/, "", f6); print "6 " f6 }
+			else print "4 1.1.1.1"
+		}'
+}
+
 mayhem_handshake_age() {
 	local out now newest
 
@@ -279,9 +588,13 @@ mayhem_tunnel_ok() {
 	[ -z "$age" ] && return 0
 	[ "$age" -le 180 ] && return 0
 
-	# An idle tunnel does not handshake: send something through it and look again.
-	ping -c 1 -W 2 -I "$dev" 1.1.1.1 >/dev/null 2>&1
-	sleep 3
+	# An idle tunnel does not handshake: send something through it and look
+	# again. To an address its AllowedIPs take (WireGuard drops the rest).
+	set -- $(mayhem_wake_addr "$dev")
+	if ping "-$1" -c 1 -W 2 -I "$dev" "$2" >/dev/null 2>&1; then
+		return 0
+	fi
+	sleep 2
 	age="$(mayhem_handshake_age "$dev")"
 	[ -n "$age" ] && [ "$age" -le 180 ]
 }
@@ -369,35 +682,61 @@ mayhem_watchdog_note() {
 # "Download through Xray" switch); empty otherwise. Callers fall back to a
 # direct download when it does not work, e.g. while xray is stopped.
 mayhem_download_proxy() {
-	local sec
+	local sec nodes="$MAYHEM_RUN_DIR/nodes.json" health="$MAYHEM_RUN_DIR/health.json"
 
 	[ "$(uci -q get mayhem.geo.via_xray)" = 0 ] && return 0
 	[ -z "$(uci -q get mayhem.geo.via_xray)" ] && [ "$(uci -q get mayhem.geo.update_via)" = direct ] && return 0
+	[ -f "$nodes" ] || return 0
 
-	sec="$(grep -o '"default_section": *"[A-Za-z0-9_]*"' "$MAYHEM_RUN_DIR/nodes.json" 2>/dev/null | head -n 1 | sed 's/.*"\([A-Za-z0-9_]*\)"$/\1/')"
-	[ -n "$sec" ] && echo "socks5h://sec-$sec:mayhem@127.0.0.1:$MAYHEM_HELPER_PORT"
+	sec="$(grep -o '"default_section": *"[A-Za-z0-9_]*"' "$nodes" 2>/dev/null | head -n 1 | sed 's/.*"\([A-Za-z0-9_]*\)"$/\1/')"
+	[ -n "$sec" ] || return 0
+
+	# Check that the section does not use a kernel tunnel and is not down
+	if command -v jsonfilter >/dev/null 2>&1; then
+		[ "$(jsonfilter -i "$nodes" -e "@.sections['$sec'].type" 2>/dev/null)" = "interface" ] && return 0
+		[ -f "$health" ] && [ "$(jsonfilter -i "$health" -e "@.sections['$sec'].down" 2>/dev/null)" = "true" ] && return 0
+	else
+		grep -q "\"$sec\":[^{]*{[^}]*\"type\": *\"interface\"" "$nodes" 2>/dev/null && return 0
+		[ -f "$health" ] && grep -q "\"$sec\":[^{]*{[^}]*\"down\": *true" "$health" 2>/dev/null && return 0
+	fi
+
+	echo "socks5h://sec-$sec:mayhem@127.0.0.1:$MAYHEM_HELPER_PORT"
 }
 
 # Once a day, half an hour into the nightly update hour: Mayhem's own update
 # when it is turned on. It runs apart from the scheduler, in a session of its
 # own: the installer stops and starts the service.
 mayhem_auto_update() {
-	local hour day stamp="$MAYHEM_RUN_DIR/auto-update.day"
+	local hour day stamp="$MAYHEM_RUN_DIR/auto-update.day" ipid cli="${MAYHEM_CLI:-/usr/bin/mayhem}"
 
 	[ "$(uci -q get mayhem.settings.auto_update)" = 1 ] || return 0
 	hour="$(uci -q get mayhem.geo.update_hour)"
 	[ "$(date +%H)" -eq "${hour:-4}" ] 2>/dev/null && [ "$(date +%M)" -ge 30 ] || return 0
 
+	# An install that runs; one whose process is gone (a power cut, a kill)
+	# left its pid behind and no longer holds the update off.
+	if [ -e "$MAYHEM_RUN_DIR/install.pid" ]; then
+		ipid="$(cat "$MAYHEM_RUN_DIR/install.pid" 2>/dev/null)"
+		case "$ipid" in ''|*[!0-9]*) ipid="" ;; esac
+		[ -n "$ipid" ] && kill -0 "$ipid" 2>/dev/null && return 0
+		rm -f "$MAYHEM_RUN_DIR/install.pid"
+	fi
+
 	day="$(date +%Y%m%d)"
 	[ "$(cat "$stamp" 2>/dev/null)" = "$day" ] && return 0
-	echo "$day" > "$stamp"
 
-	[ -e "$MAYHEM_RUN_DIR/install.pid" ] && return 0
+	# The day is stamped by the update itself, after it asked for the latest
+	# release (a slow network): one that still runs is not started again.
+	ipid="$(cat "$MAYHEM_RUN_DIR/auto-update.pid" 2>/dev/null)"
+	case "$ipid" in
+		''|*[!0-9]*) ;;
+		*) kill -0 "$ipid" 2>/dev/null && return 0 ;;
+	esac
 
 	if command -v setsid >/dev/null 2>&1; then
-		setsid /usr/bin/mayhem auto-update >"$MAYHEM_RUN_DIR/auto-update.log" 2>&1 </dev/null &
+		setsid "$cli" auto-update >"$MAYHEM_RUN_DIR/auto-update.log" 2>&1 </dev/null &
 	else
-		( /usr/bin/mayhem auto-update >"$MAYHEM_RUN_DIR/auto-update.log" 2>&1 </dev/null & )
+		( "$cli" auto-update >"$MAYHEM_RUN_DIR/auto-update.log" 2>&1 </dev/null & )
 	fi
 }
 
@@ -454,8 +793,15 @@ mayhem_conn_fold() {
 	local f="$MAYHEM_RUN_DIR/conn.log" m="$MAYHEM_RUN_DIR/conn.names" size
 
 	[ -f "$f" ] && [ ! -L "$f" ] || return 0
+
+	# The scheduler and the dashboard fold at once: one after the other, each
+	# with a file of its own.
+	mayhem_lock conn 30 || return 0
 	size="$(wc -c < "$f" 2>/dev/null)"
-	[ "${size:-0}" -gt 0 ] || return 0
+	if [ "${size:-0}" -le 0 ]; then
+		mayhem_unlock conn
+		return 0
+	fi
 
 	{ [ -f "$m" ] && cat "$m"; head -c "$size" "$f"; } | awk -v max="${MAYHEM_CONN_NAMES:-3000}" '
 		function put(kind, key, line) {
@@ -507,11 +853,25 @@ mayhem_conn_fold() {
 			for (i = 1; i <= n; i++)
 				if (i in out)
 					print out[i]
-		}' > "$m.new" && mv -f "$m.new" "$m"
+		}' > "$m.new.$$" && mv -f "$m.new.$$" "$m"
+	rm -f "$m.new.$$"
 
 	# What xray wrote meanwhile stays.
-	tail -c +"$((size + 1))" "$f" > "$f.t" 2>/dev/null && cat "$f.t" > "$f"
-	rm -f "$f.t"
+	tail -c +"$((size + 1))" "$f" > "$f.t.$$" 2>/dev/null && cat "$f.t.$$" > "$f"
+	rm -f "$f.t.$$"
+	mayhem_unlock conn
+
+	local watch="$MAYHEM_RUN_DIR/conn.watch"
+	if [ -f "$watch" ]; then
+		local now wtime
+		now="$(date +%s)"
+		wtime="$(cat "$watch" 2>/dev/null || echo 0)"
+		if [ "$(( now - wtime ))" -ge 60 ]; then
+			ln -sfn /dev/null "$f"
+			[ -n "$(cat "$MAYHEM_RUN_DIR/xray.pid" 2>/dev/null)" ] &&
+				"$MAYHEM_XRAY_BIN" api restartlogger --server="127.0.0.1:$MAYHEM_API_PORT" >/dev/null 2>&1
+		fi
+	fi
 	return 0
 }
 
@@ -520,7 +880,7 @@ mayhem_conn_fold() {
 # when the new xray is up (xray.started). Reasons: config:<parts>, servers,
 # geo, memory, hang, manual.
 mayhem_restart_why() {
-	mkdir -p "$MAYHEM_RUN_DIR"
+	mayhem_run_dir
 	echo "$(date +%s) $1" > "$MAYHEM_RUN_DIR/restart.why"
 }
 
@@ -530,7 +890,7 @@ mayhem_restart_reason() {
 	local pid why
 
 	pid="$(cat "$MAYHEM_RUN_DIR/xray.pid" 2>/dev/null)"
-	[ -n "$pid" ] && kill -0 "$pid" 2>/dev/null || return 0
+	[ -n "$pid" ] && { [ ! -f "/proc/$pid/cmdline" ] || grep -q -F "xray" "/proc/$pid/cmdline" 2>/dev/null; } && kill -0 "$pid" 2>/dev/null || return 0
 
 	why="$(ucode "$MAYHEM_LIB_DIR/why.uc" 2>/dev/null)"
 
@@ -570,9 +930,43 @@ mayhem_xray_started() {
 }
 
 # xray quit before it listened: its error message (xray run -test, only now).
+# xray's own words on a config it does not take, for the dashboard. Once per
+# config: while running.xray.json is the same (its checksum next to
+# xray.error), the next failed start does not test it again.
 mayhem_xray_error() {
+	local sum
+
+	sum="$(md5sum "$MAYHEM_RUN_DIR/running.xray.json" 2>/dev/null | cut -d ' ' -f 1)"
+	if [ -n "$sum" ] && [ -f "$MAYHEM_RUN_DIR/xray.error" ] &&
+	   [ "$(cat "$MAYHEM_RUN_DIR/xray.error.sum" 2>/dev/null)" = "$sum" ]; then
+		return 0
+	fi
+
 	"$MAYHEM_XRAY_BIN" run -test -c "$MAYHEM_RUN_DIR/running.xray.json" 2>&1 |
 		grep -v -e '^Xray ' -e '^A unified platform' -e 'Reading config' -e 'deprecated' | tail -n 3 | cut -c 1-400 > "$MAYHEM_RUN_DIR/xray.error"
+	echo "$sum" > "$MAYHEM_RUN_DIR/xray.error.sum"
+}
+
+# A server xray refused at start: $1 its tag, $2 xray's words. Into
+# refused.json ({ tag: { name, error, at } }, the name from nodes.json);
+# 1 when it is there already.
+mayhem_refused_add() {
+	# shellcheck disable=SC2016 # ucode code, not shell
+	ucode -e '
+		const fs = require("fs");
+		const dir = ARGV[0], tag = ARGV[1], err = ARGV[2];
+		const rd = (f) => { try { return json(fs.readfile(`${dir}/${f}`) ?? ""); } catch (e) { return null; } };
+		let all = rd("refused.json");
+		if (type(all) != "object") all = {};
+		if (all[tag]) exit(1);
+		let name = tag;
+		for (let sn, sec in rd("nodes.json")?.sections ?? {})
+			for (let nd in sec?.nodes ?? [])
+				if (nd.tag == tag) name = nd.name ?? tag;
+		all[tag] = { name: name, error: substr(err, 0, 400), at: time() };
+		fs.writefile(`${dir}/refused.json.tmp`, sprintf("%J\n", all));
+		fs.rename(`${dir}/refused.json.tmp`, `${dir}/refused.json`);
+	' "$MAYHEM_RUN_DIR" "$1" "$2"
 }
 
 # Memory xray's heap freed (closed connections, a burst of blocked ones) goes
@@ -580,12 +974,19 @@ mayhem_xray_error() {
 # grows or every two minutes. Once a minute: with more than 8 MiB freed but
 # kept (HeapIdle - HeapReleased), a collection is started at once through
 # xray's metrics port (pprof's "gc=1"), and Go hands the pages back.
+# $1 (from the scheduler): what /debug/vars said, empty when xray did not
+# answer; without it asked here.
 mayhem_mem_trim() {
 	local vars idle rel
 
 	[ -f "$MAYHEM_RUN_DIR/active" ] || return 0
 
-	vars="$(curl -s -m 5 "http://127.0.0.1:$MAYHEM_METRICS_PORT/debug/vars" 2>/dev/null)" || return 0
+	if [ "$#" -gt 0 ]; then
+		vars="$1"
+		[ -n "$vars" ] || return 0
+	else
+		vars="$(curl -s -m 5 "http://127.0.0.1:$MAYHEM_METRICS_PORT/debug/vars" 2>/dev/null)" || return 0
+	fi
 	idle="$(printf '%s' "$vars" | grep -o '"HeapIdle": *[0-9]*' | head -n 1 | grep -o '[0-9]*$')"
 	rel="$(printf '%s' "$vars" | grep -o '"HeapReleased": *[0-9]*' | head -n 1 | grep -o '[0-9]*$')"
 
@@ -602,25 +1003,31 @@ mayhem_mem_trim() {
 # (and past the kill switch). Without xray-run, xray itself is stopped and
 # procd starts it again.
 mayhem_xray_swap() {
-	local runner
+	local runner target="$1"
 
 	runner="$(cat "$MAYHEM_RUN_DIR/xray-run.pid" 2>/dev/null)"
 
-	if [ -n "$runner" ] && kill -0 "$runner" 2>/dev/null; then
+	if [ -n "$runner" ] && { [ ! -f "/proc/$runner/cmdline" ] || grep -q -F "xray-run" "/proc/$runner/cmdline" 2>/dev/null; } && kill -0 "$runner" 2>/dev/null; then
 		kill -HUP "$runner"
-	else
-		kill -TERM "$1"
+	elif [ -n "$target" ] && { [ ! -f "/proc/$target/cmdline" ] || grep -q -F "xray" "/proc/$target/cmdline" 2>/dev/null; }; then
+		kill -TERM "$target"
 	fi
 }
 
+# $1 (from the scheduler, which asks /debug/vars once a minute): 1 when xray
+# answered on its metrics port, 0 when it did not; without it the watchdog
+# asks itself.
 mayhem_watchdog() {
-	local pid rss total pct limit n gml
+	local pid rss total pct limit n gml answered="${1:-}"
 
 	[ "${MAYHEM_WATCHDOG:-$(uci -q get mayhem.settings.watchdog)}" = 0 ] && return 0
 
 	pid="$(cat "$MAYHEM_RUN_DIR/xray.pid" 2>/dev/null)"
 
 	if [ -n "$pid" ] && [ -d "/proc/$pid" ]; then
+		if [ -f "/proc/$pid/cmdline" ] && ! grep -q -F "xray" "/proc/$pid/cmdline" 2>/dev/null; then
+			return 0
+		fi
 		# RssAnon: the memory xray took. VmRSS also counts ~20 MB of its own
 		# code read from flash, which the kernel drops and reads again.
 		rss="$(awk '/^RssAnon:/ { print $2 }' "/proc/$pid/status" 2>/dev/null)"
@@ -660,7 +1067,8 @@ mayhem_watchdog() {
 			# process that is gone does not carry over.
 			if ! kill -0 "$pid" 2>/dev/null; then
 				rm -f "$MAYHEM_RUN_DIR/watchdog.hang"
-			elif curl -s -o /dev/null -m 5 "http://127.0.0.1:$MAYHEM_METRICS_PORT/debug/vars" 2>/dev/null; then
+			elif [ "$answered" = 1 ] || { [ -z "$answered" ] &&
+			     curl -s -o /dev/null -m 5 "http://127.0.0.1:$MAYHEM_METRICS_PORT/debug/vars" 2>/dev/null; }; then
 				rm -f "$MAYHEM_RUN_DIR/watchdog.hang"
 			else
 				n=1
@@ -679,7 +1087,7 @@ mayhem_watchdog() {
 					mayhem_xray_swap "$pid"
 					sleep 5
 					# A stopped or wedged process may ignore TERM.
-					kill -0 "$pid" 2>/dev/null && kill -KILL "$pid"
+					[ -n "$pid" ] && { [ ! -f "/proc/$pid/cmdline" ] || grep -q -F "xray" "/proc/$pid/cmdline" 2>/dev/null; } && kill -0 "$pid" 2>/dev/null && kill -KILL "$pid"
 				fi
 			fi
 		fi
@@ -746,6 +1154,69 @@ mayhem_isp_dns() {
 	done
 }
 
+# The provider's DNS servers as the generator takes them (model.uc wan_dns,
+# build.uc): one address a line, none while the WAN has not got them.
+mayhem_isp_dns_list() {
+	local f files="${MAYHEM_RESOLV_AUTO:-/tmp/resolv.conf.d/resolv.conf.auto /tmp/resolv.conf.auto}" out
+
+	for f in $files; do
+		out="$(awk '$1 == "nameserver" { ip = $2; sub(/[#%].*/, "", ip)
+			if (ip ~ /^[0-9a-fA-F.:]+$/ && ip ~ /[.:]/ && ip !~ /^(127\.|::1$)/) print ip }' "$f" 2>/dev/null)"
+		if [ -n "$out" ]; then
+			echo "$out"
+			return 0
+		fi
+	done
+}
+
+# At boot the WAN often comes up after Mayhem's turn: a configuration built
+# then has the public DNS servers instead of the provider's, and procd takes
+# the triggers of the service (the WAN's "up") only once its start is done.
+# Wait for the provider's servers only when they are what the start needs:
+# Mayhem turned on and no domestic DNS of the user's own.
+mayhem_isp_dns_pending() {
+	[ "$(uci -q get mayhem.settings.enabled)" = 1 ] || return 1
+	[ -z "$(uci -q get mayhem.dns.domestic)" ] || return 1
+	[ -z "$(mayhem_isp_dns_list)" ]
+}
+
+# $1: at most so many seconds. 0: they are there.
+mayhem_isp_dns_wait() {
+	local left="${1:-60}"
+
+	while [ "$left" -gt 0 ]; do
+		[ -n "$(mayhem_isp_dns_list)" ] && return 0
+		sleep 1
+		left=$((left - 1))
+	done
+
+	[ -n "$(mayhem_isp_dns_list)" ]
+}
+
+# The scheduler, every minute: a configuration built while the WAN had no
+# DNS servers (a boot that waited in vain, a reload while the internet was
+# down) gets the provider's ones when they are there again - even when the
+# WAN's "up" was missed. Once for each build of the configuration, at most
+# once in 5 minutes: a build that keeps the public servers does not loop.
+mayhem_isp_dns_catchup() {
+	local st="$MAYHEM_RUN_DIR/status.json" stamp="$MAYHEM_RUN_DIR/isp-dns.retry" gen now last
+
+	[ -f "$MAYHEM_RUN_DIR/active" ] || return 0
+	grep -q '"isp_dns_fallback":[[:space:]]*true' "$st" 2>/dev/null || return 0
+	[ -n "$(mayhem_isp_dns_list)" ] || return 0
+
+	gen="$(sed -n 's/.*"generated":[[:space:]]*\([0-9][0-9]*\).*/\1/p' "$st" | head -n 1)"
+	now="$(date +%s)"
+	set -- $(cat "$stamp" 2>/dev/null)
+	last="${2:-0}"
+	[ "${1:-}" = "$gen" ] && return 0
+	[ $((now - last)) -lt 300 ] 2>/dev/null && return 0
+
+	echo "$gen $now" > "$stamp"
+	mayhem_log "the provider's DNS servers are there now: applying them instead of the public ones" notice
+	"${MAYHEM_INIT:-/etc/init.d/mayhem}" reload
+}
+
 mayhem_dnsmasq_hup() {
 	local pids
 
@@ -762,7 +1233,8 @@ mayhem_dnsmasq_hup() {
 mayhem_dns_servers() {
 	local f="$MAYHEM_DNS_SERVERS" new="$MAYHEM_DNS_SERVERS.new"
 
-	mkdir -p "$MAYHEM_RUN_DIR" "$(dirname "$MAYHEM_DNS_SERVERS")"
+	mayhem_run_dir
+	mkdir -p "$(dirname "$MAYHEM_DNS_SERVERS")"
 
 	local src="$MAYHEM_RUN_DIR/dns.xray"
 
@@ -795,17 +1267,56 @@ mayhem_dns_servers() {
 }
 
 # Puts Mayhem's file into dnsmasq's conf-dir; restarts dnsmasq only when the
-# file is new or changed (tunnel domains, first start).
+# file is new or changed (tunnel domains, first start). $1 "hold": for the
+# kill switch while Mayhem does not run.
+# dnsmasq's own check of Mayhem's new file; its words go to the log and to
+# the errors of status.json for the dashboard.
+mayhem_dnsmasq_test() {
+	local out
+
+	command -v "${MAYHEM_DNSMASQ_BIN:-dnsmasq}" >/dev/null 2>&1 || return 0
+	out="$("${MAYHEM_DNSMASQ_BIN:-dnsmasq}" --test --conf-file="$MAYHEM_RUN_DIR/dnsmasq.conf" 2>&1)" && return 0
+
+	out="$(printf '%s' "$out" | tail -n 1 | cut -c 1-300)"
+	mayhem_log "dnsmasq does not take Mayhem's new file, the old one stays: $out" err
+	# shellcheck disable=SC2016 # ucode code, not shell
+	ucode -e '
+		const fs = require("fs");
+		let st;
+		try { st = json(fs.readfile(ARGV[0]) ?? ""); } catch (e) { st = null; }
+		if (type(st) != "object") st = {};
+		if (type(st.errors) != "array") st.errors = [];
+		push(st.errors, `dnsmasq does not take the new file: ${ARGV[1]}`);
+		fs.writefile(`${ARGV[0]}.tmp`, sprintf("%.J\n", st));
+		fs.rename(`${ARGV[0]}.tmp`, ARGV[0]);
+	' "$MAYHEM_RUN_DIR/status.json" "$out" >/dev/null 2>&1
+	return 1
+}
+
 mayhem_dns_up() {
 	local d changed=0
 
-	# xray-run switches dnsmasq to xray once xray listens.
+	# xray-run switches dnsmasq to xray once xray listens. Until then the
+	# provider's servers; with the kill switch the names xray resolves get
+	# no answer instead (from the provider they would go direct).
 	mkdir -p "$(dirname "$MAYHEM_DNS_SERVERS")"
 
 	if [ ! -f "$MAYHEM_DNS_SERVERS" ] || [ ! -f "$MAYHEM_RUN_DIR/active" ]; then
-		mayhem_isp_dns > "$MAYHEM_DNS_SERVERS.tmp" && chmod 644 "$MAYHEM_DNS_SERVERS.tmp" &&
-			mv -f "$MAYHEM_DNS_SERVERS.tmp" "$MAYHEM_DNS_SERVERS"
+		if { [ "${1:-}" = hold ] || mayhem_killswitch; } && [ -s "$MAYHEM_RUN_DIR/dns.xray" ]; then
+			mayhem_dns_servers xray
+		else
+			mayhem_isp_dns > "$MAYHEM_DNS_SERVERS.tmp" && chmod 644 "$MAYHEM_DNS_SERVERS.tmp" &&
+				mv -f "$MAYHEM_DNS_SERVERS.tmp" "$MAYHEM_DNS_SERVERS"
+		fi
 	fi
+
+	# A file dnsmasq would not load (it would not start: no DNS, no DHCP)
+	# stays out of its conf-dir; the one there keeps working.
+	for d in $(mayhem_dnsmasq_dirs); do
+		cmp -s "$MAYHEM_RUN_DIR/dnsmasq.conf" "$d/$MAYHEM_DNSMASQ_FILE" && continue
+		mayhem_dnsmasq_test || return 1
+		break
+	done
 
 	for d in $(mayhem_dnsmasq_dirs); do
 		mkdir -p "$d" || continue
@@ -827,7 +1338,8 @@ mayhem_dns_up() {
 mayhem_dns_down() {
 	local d changed=0
 
-	for d in $(mayhem_dnsmasq_dirs) /tmp/dnsmasq.d; do
+	for d in $(mayhem_dnsmasq_dirs) /tmp/dnsmasq.d /tmp/dnsmasq.*.d; do
+		[ -d "$d" ] || continue
 		if [ -f "$d/$MAYHEM_DNSMASQ_FILE" ]; then
 			rm -f "$d/$MAYHEM_DNSMASQ_FILE"
 			changed=1
@@ -845,30 +1357,54 @@ mayhem_dns_down() {
 # One holder of the lock $1 at a time ($MAYHEM_RUN_DIR/$1.lock with its pid).
 # A lock left by a process that is gone is taken over; after $2 seconds (300)
 # it is taken anyway.
+# The descriptor a lock is held on (flock on RUN_DIR/<name>.lock, like
+# procd_lock): one per name, so a process may hold several. The kernel lets
+# go of it with the process: a lock is never left behind, nor taken from a
+# live owner. Background processes started under a lock close these
+# descriptors (6-9) so they do not keep it.
+mayhem_lock_fd() {
+	case "$1" in
+		start) echo 7 ;;
+		net_warm) echo 8 ;;
+		conn) echo 6 ;;
+		*) echo 9 ;;
+	esac
+}
+
+# $1 name, $2 seconds to wait (300). After that: an error in the log and 1,
+# the caller gives up what it was about to do.
 mayhem_lock() {
-	local d="$MAYHEM_RUN_DIR/$1.lock" i=0 pid
+	local fd i=0
 
-	mkdir -p "$MAYHEM_RUN_DIR"
+	fd="$(mayhem_lock_fd "$1")"
+	mayhem_run_dir
+	# A lock directory of an older Mayhem (updated without a reboot). With
+	# the "/": only a directory goes - once another process has put the lock
+	# file in its place, rm leaves that file alone (removing it would let both
+	# take a lock, each on a file of its own).
+	[ -d "$MAYHEM_RUN_DIR/$1.lock" ] && rm -rf "${MAYHEM_RUN_DIR:?}/$1.lock/" 2>/dev/null
+	eval "exec $fd>\"\$MAYHEM_RUN_DIR/\$1.lock\"" || return 1
 
-	while ! mkdir "$d" 2>/dev/null; do
-		pid="$(cat "$d/pid" 2>/dev/null)"
-
-		if { [ -n "$pid" ] && ! kill -0 "$pid" 2>/dev/null; } || [ "$i" -ge "${2:-300}" ]; then
-			rm -rf "$d"
-			continue
+	while ! flock -n "$fd" 2>/dev/null; do
+		if [ "$i" -ge "${2:-300}" ]; then
+			eval "exec $fd>&-"
+			mayhem_log "lock $1 is still taken after ${2:-300} s, giving up" err
+			return 1
 		fi
 
 		sleep 1
 		i=$((i + 1))
 	done
 
-	echo "$$" > "$d/pid"
+	return 0
 }
 
 mayhem_unlock() {
-	local d="$MAYHEM_RUN_DIR/$1.lock"
+	local fd
 
-	[ "$(cat "$d/pid" 2>/dev/null)" = "$$" ] && rm -rf "$d"
+	fd="$(mayhem_lock_fd "$1")"
+	flock -u "$fd" 2>/dev/null
+	eval "exec $fd>&-"
 	return 0
 }
 
@@ -881,20 +1417,25 @@ mayhem_subs_new() {
 	[ -s "$MAYHEM_RUN_DIR/subs.new" ] || return 0
 
 	(
+		local def_sec="" conf_nodes="${MAYHEM_CONF_DIR:-$MAYHEM_RUN_DIR}/nodes.json" i=0 f rc
+		if [ -f "$conf_nodes" ]; then
+			def_sec="$(jsonfilter -i "$conf_nodes" -e '@.default_section' 2>/dev/null)"
+			[ -z "$def_sec" ] && def_sec="$(grep -o '"default_section": *"[A-Za-z0-9_]*"' "$conf_nodes" 2>/dev/null | head -n 1 | sed 's/.*"\([A-Za-z0-9_]*\)"$/\1/')"
+		fi
+		if [ -n "$def_sec" ] && [ -x "$MAYHEM_XRAY_BIN" ]; then
+			while [ ! -f "$MAYHEM_RUN_DIR/active" ] && [ "$i" -lt 15 ]; do
+				sleep 1
+				i=$((i + 1))
+			done
+		fi
+
 		f="$MAYHEM_RUN_DIR/applying.sub"
 		: > "$f"
-		# procd restarts xray after the reload, when it has to.
-		sleep 3
-		i=0
-		while [ ! -f "$MAYHEM_RUN_DIR/active" ] && [ "$i" -lt 60 ]; do
-			sleep 1
-			i=$((i + 1))
-		done
 		ucode "$MAYHEM_SUB" update --new >/dev/null 2>&1
 		rc=$?
 		rm -f "$f"
 		[ "$rc" = 3 ] && /etc/init.d/mayhem reload
-	) >/dev/null 2>&1 </dev/null &
+	) >/dev/null 2>&1 </dev/null 6>&- 7>&- 8>&- 9>&- &
 }
 
 # --- state -------------------------------------------------------------------
@@ -966,14 +1507,24 @@ mayhem_live_update() {
 	# A restart asked for (mayhem_dns_catchup): the new key makes procd do it.
 	if [ -f "$MAYHEM_RUN_DIR/restart.pending" ]; then
 		rm -f "$MAYHEM_RUN_DIR/restart.pending"
-		echo "restart $(date +%s)" >> "$MAYHEM_RUN_DIR/xray.key"
+		mayhem_mark_restart
 		return 0
 	fi
 
-	ucode "$MAYHEM_LIB_DIR/live.uc" && return 0
+	local rc
+
+	ucode "$MAYHEM_LIB_DIR/live.uc"
+	rc=$?
+	[ "$rc" = 0 ] && return 0
+
+	# Some new servers refused by xray (refused.json): once more, built
+	# without them.
+	if [ "$rc" = 2 ] && ucode "$MAYHEM_GEN" && ucode "$MAYHEM_LIB_DIR/live.uc"; then
+		return 0
+	fi
 
 	mayhem_log "could not change the servers in running xray, restarting it" warn
-	echo "restart $(date +%s)" >> "$MAYHEM_RUN_DIR/xray.key"
+	mayhem_mark_restart
 }
 
 # nft.conf and dnsmasq.conf for the other choices of a server list with
@@ -984,13 +1535,17 @@ mayhem_net_warm() {
 	grep -q '"iface": "' "$MAYHEM_RUN_DIR/nodes.json" 2>/dev/null || return 0
 
 	(
+		mayhem_lock net_warm 60 || exit 0
 		i=0
 		while [ ! -f "$MAYHEM_RUN_DIR/active" ] && [ "$i" -lt 60 ]; do
 			sleep 1
 			i=$((i + 1))
 		done
-		ucode "$MAYHEM_GEN" --warm
-	) >/dev/null 2>&1 </dev/null &
+		if [ -f "$MAYHEM_RUN_DIR/active" ]; then
+			ucode "$MAYHEM_GEN" --warm
+		fi
+		mayhem_unlock net_warm
+	) >/dev/null 2>&1 </dev/null 6>&- 7>&- 8>&- 9>&- &
 }
 
 # Pin a balancer to a server; an empty tag returns it to automatic choice.

@@ -45,7 +45,7 @@ try {
 	if (opts.model)
 		model = json(fs.readfile(opts.model) ?? '');
 	else
-		model = require('mayhem.model').load_model(opts.warm);
+		model = require('mayhem.model').load_model(opts.warm, true);
 }
 catch (e) {
 	warn(`cannot load configuration: ${e.message}\n`);
@@ -84,6 +84,9 @@ function net_base(model) {
 
 		return c;
 	});
+	const S = { ...model.settings };
+	delete S.reconnect_epoch;
+
 	const R = { ...model.runtime };
 
 	// Which server a chain uses now: the build adds the tunnel it means.
@@ -95,8 +98,8 @@ function net_base(model) {
 		delete R.leases;
 
 	return sprintf('%J', {
-		settings: model.settings, dns: model.dns, sections: sections, tunnel_labels: model.tunnel_labels,
-		lists: model.lists, runtime: R, code: code_stamp(),
+		settings: S, dns: model.dns, sections: sections, tunnel_labels: model.tunnel_labels,
+		lists: model.lists_stamps ?? model.lists, runtime: R, code: code_stamp(),
 		geo: { sources: model.geo?.sources, files: model.geo?.files }
 	});
 }
@@ -142,6 +145,13 @@ if (opts.warm) {
 	if (!pool || model.settings?.mode != 'global' || pool.select == 'fallback' || !length(pool.iface_node ?? []) ||
 	    model.runtime?.dnsmasq_nftset === false)
 		exit(0);
+
+	// The model is lazy: the geo and the lists are read here, before the
+	// copies below, which would not get what ensure_geo writes.
+	if (model.ensure_geo)
+		model.ensure_geo(true);
+	if (model.ensure_lists)
+		model.ensure_lists();
 
 	// A tunnel by its interface; a proxy as no pinned server at all.
 	for (let v in [ ...pool.iface_node, null ]) {

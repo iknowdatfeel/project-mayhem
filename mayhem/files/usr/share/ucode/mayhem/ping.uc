@@ -51,6 +51,7 @@ export function tcp_ping(targets, timeout, v6, budget) {
 
 	const res = {};
 	const addr = {};
+	const until = ms_now() + (budget ?? 15000);
 
 	// One lookup per name; an IPv4 address first unless only IPv6 is there.
 	for (let t in targets) {
@@ -58,6 +59,11 @@ export function tcp_ping(targets, timeout, v6, budget) {
 
 		if (addr[h] != null)
 			continue;
+
+		if (ms_now() >= until) {
+			addr[h] = 'timeout';
+			continue;
+		}
 
 		if (is_ip4(h) || index(h, ':') >= 0) {
 			addr[h] = { family: index(h, ':') >= 0 ? socket.AF_INET6 : socket.AF_INET, address: h };
@@ -79,7 +85,9 @@ export function tcp_ping(targets, timeout, v6, budget) {
 	for (let t in targets) {
 		const a = addr[t.host];
 
-		if (!a || (a.family == socket.AF_INET6 && !v6))
+		if (a === 'timeout')
+			res[t.key] = { error: 'timeout' };
+		else if (!a || (a.family == socket.AF_INET6 && !v6))
 			res[t.key] = { error: 'no address' };
 		else if (!(t.port > 0 && t.port < 65536))
 			res[t.key] = { error: 'no port' };
@@ -97,9 +105,10 @@ export function tcp_ping(targets, timeout, v6, budget) {
 
 	const open = [];
 	const busy = {};
-	// hosts that let a handshake time out
+	// hosts that let handshakes time out
 	const silent = {};
-	const until = ms_now() + (budget ?? 15000);
+	const ip_timeouts = {};
+	const ip_success = {};
 
 	const put = (c, r) => {
 		for (let key in same[c.key])
@@ -113,8 +122,15 @@ export function tcp_ping(targets, timeout, v6, budget) {
 		c.sock = null;
 		delete busy[c.ip];
 
-		if (c.err == 'timeout' && c.best == null)
-			silent[c.ip] = true;
+		if (c.best != null) {
+			ip_success[c.ip] = true;
+			ip_timeouts[c.ip] = 0;
+		}
+		else if (c.err == 'timeout') {
+			ip_timeouts[c.ip] = (ip_timeouts[c.ip] ?? 0) + 1;
+			if (!ip_success[c.ip] && ip_timeouts[c.ip] >= 2)
+				silent[c.ip] = true;
+		}
 
 		if (++c.tries < TRIES && c.err == null)
 			push(queue, c);

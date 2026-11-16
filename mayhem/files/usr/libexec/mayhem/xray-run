@@ -37,12 +37,10 @@ if [ ! -x "$MAYHEM_XRAY_BIN" ]; then
 	exit 1
 fi
 
-# What this xray runs with: reloads compare the new config with it. Hard
-# links, not copies: the generator replaces its files (rename), so the links
-# keep the old content, and /var/run is RAM.
+# What this xray runs with: reloads compare the new config with it.
+# Copies, not hard links: working and running files never share an inode in tmpfs.
 for f in xray.json xray.key overrides nft.conf tunnels geo.stamp; do
-	ln -f "$MAYHEM_RUN_DIR/$f" "$MAYHEM_RUN_DIR/running.$f" 2>/dev/null ||
-		cp "$MAYHEM_RUN_DIR/$f" "$MAYHEM_RUN_DIR/running.$f" 2>/dev/null || : > "$MAYHEM_RUN_DIR/running.$f"
+	cp "$MAYHEM_RUN_DIR/$f" "$MAYHEM_RUN_DIR/running.$f" 2>/dev/null || : > "$MAYHEM_RUN_DIR/running.$f"
 done
 
 start_xray() {
@@ -102,6 +100,8 @@ if [ "$ready" = 1 ]; then
 	# dnsmasq asks xray from now on (a SIGHUP, not a restart).
 	if mayhem_net_up && mayhem_tunnels_up && mayhem_dns_servers xray; then
 		touch "$MAYHEM_RUN_DIR/active"
+		# A hold of the kill switch (Mayhem was off) ends here.
+		rm -f "$MAYHEM_RUN_DIR/held"
 		mayhem_log "started, traffic is redirected to xray (pid $xray_pid)"
 		mayhem_xray_started
 	else
@@ -114,7 +114,41 @@ elif [ "$stopping" = 0 ]; then
 	# Its own words for the dashboard (a config xray does not take: a regexp
 	# Go cannot read, an outbound of a subscription it refuses).
 	mayhem_xray_error
+	# A server it refused by name ("failed to build outbound config with tag
+	# n-..."): noted in refused.json and the config built again without it,
+	# once - a server noted already is not the reason.
+	refused_tag="$(grep -o 'tag n-[A-Za-z0-9_.@-]*' "$MAYHEM_RUN_DIR/xray.error" 2>/dev/null | head -n 1 | cut -c 5-)"
+	if [ -n "$refused_tag" ] && mayhem_refused_add "$refused_tag" "$(tail -n 1 "$MAYHEM_RUN_DIR/xray.error")"; then
+		mayhem_log "xray refused server $refused_tag, building the config without it" warn
+		( "${MAYHEM_INIT:-/etc/init.d/mayhem}" reload ) >/dev/null 2>&1 </dev/null &
+	fi
 fi
+
+# Failed starts in a row (xray.fails): each waits longer before procd starts
+# xray again, 5 s doubled each time up to 5 minutes, instead of a new xray
+# every 5 seconds for a config it never takes. A start that listens resets it.
+[ "$ready" = 1 ] && rm -f "$MAYHEM_RUN_DIR/xray.fails"
+
+backoff() {
+	local n k delay=5
+
+	if [ "$ready" = 1 ] || [ "$stopping" = 1 ]; then
+		return 0
+	fi
+
+	n="$(cat "$MAYHEM_RUN_DIR/xray.fails" 2>/dev/null)"
+	case "$n" in ''|*[!0-9]*) n=0 ;; esac
+	k="$n"
+	while [ "$k" -gt 0 ] && [ "$delay" -lt 300 ]; do
+		delay=$((delay * 2))
+		k=$((k - 1))
+	done
+	[ "$delay" -gt 300 ] && delay=300
+	echo $((n + 1)) > "$MAYHEM_RUN_DIR/xray.fails"
+	# In the background: a stop (TERM) does not wait for it.
+	sleep "$delay" &
+	wait $!
+}
 
 # `wait` returns early when a trapped signal arrives, so loop until xray is
 # gone. Wait at least once: xray that failed at start is already gone here.
@@ -149,7 +183,9 @@ done
 # How it ended, for the reason of the next start.
 [ "$stopping" = 0 ] && [ "$ready" = 1 ] && echo "$(date +%s) $rc" > "$MAYHEM_RUN_DIR/xray.exit"
 
-rm -f "$MAYHEM_RUN_DIR/active" "$MAYHEM_RUN_DIR/xray.pid" "$MAYHEM_RUN_DIR/xray-run.pid" "$MAYHEM_RUN_DIR/watchdog.mem" "$MAYHEM_RUN_DIR/watchdog.hang"
+rm -f "$MAYHEM_RUN_DIR/active" "$MAYHEM_RUN_DIR/xray.pid" "$MAYHEM_RUN_DIR/xray-run.pid" \
+      "$MAYHEM_RUN_DIR/xray.started" "$MAYHEM_RUN_DIR/mem.trim" \
+      "$MAYHEM_RUN_DIR/watchdog.mem" "$MAYHEM_RUN_DIR/watchdog.hang"
 
 # Kill switch: the interception stays and the traffic waits for the next
 # xray (procd starts it again), also when this one never listened while the
@@ -163,6 +199,7 @@ if mayhem_killswitch && { [ "$ready" = 1 ] || nft -t list table inet "$MAYHEM_NF
 	fi
 
 	mayhem_log "xray exited (code $rc); the kill switch keeps the traffic waiting until it is restarted" err
+	backoff
 	exit 1
 fi
 
@@ -176,4 +213,5 @@ if [ "$stopping" = 1 ]; then
 fi
 
 mayhem_log "xray exited (code $rc), traffic goes direct until it is restarted" err
+backoff
 exit 1

@@ -1,7 +1,7 @@
 include $(TOPDIR)/rules.mk
 
 PKG_NAME:=mayhem
-PKG_VERSION:=$(if $(MAYHEM_VERSION),$(MAYHEM_VERSION),0.1.0)
+PKG_VERSION:=$(if $(MAYHEM_VERSION),$(subst -,.,$(subst -exp.,_pre,$(MAYHEM_VERSION))),0.1.0)
 PKG_RELEASE:=1
 
 PKG_LICENSE:=MIT
@@ -37,7 +37,7 @@ define Package/mayhem/install
 	$(INSTALL_CONF) ./files/etc/config/mayhem $(1)/etc/config/mayhem
 	$(INSTALL_DATA) ./files/etc/config/mayhem $(1)/usr/share/mayhem/defaults.conf
 	$(INSTALL_BIN) ./files/etc/init.d/mayhem $(1)/etc/init.d/mayhem
-	$(INSTALL_BIN) ./files/etc/init.d/mayhem-obfs $(1)/etc/init.d/mayhem-obfs
+	$(INSTALL_BIN) ./files/etc/init.d/mayhem-hold $(1)/etc/init.d/mayhem-hold
 	$(INSTALL_BIN) ./files/usr/bin/mayhem $(1)/usr/bin/mayhem
 	$(INSTALL_BIN) ./files/etc/uci-defaults/90-mayhem $(1)/etc/uci-defaults/90-mayhem
 	$(INSTALL_BIN) ./files/usr/libexec/mayhem/xray-run $(1)/usr/libexec/mayhem/xray-run
@@ -52,17 +52,25 @@ endef
 define Package/mayhem/prerm
 #!/bin/sh
 [ -n "$${IPKG_INSTROOT}" ] && exit 0
+# opkg runs it for an update too (PKG_UPGRADE=1): default_prerm stops the
+# service then, the autostart and the kill switch's hold stay.
+[ "$${PKG_UPGRADE}" = 1 ] && exit 0
 /etc/init.d/mayhem stop >/dev/null 2>&1
 /etc/init.d/mayhem disable >/dev/null 2>&1
-/etc/init.d/mayhem-obfs stop >/dev/null 2>&1
-/etc/init.d/mayhem-obfs disable >/dev/null 2>&1
+# Removed, not upgraded: the kill switch no longer holds the traffic.
+if [ "$$1" != upgrade ]; then
+	/etc/init.d/mayhem-hold disable >/dev/null 2>&1
+	sh -c '. /usr/share/mayhem/lib.sh; mayhem_hold_release' >/dev/null 2>&1
+fi
 exit 0
 endef
 
 define Package/mayhem/postrm
 #!/bin/sh
 [ -n "$${IPKG_INSTROOT}" ] && exit 0
-rm -f /usr/libexec/mayhem/xray /usr/libexec/mayhem/wg-obfuscator /usr/libexec/mayhem/phantun_client
+# An update (opkg, PKG_UPGRADE=1) keeps xray, the run directory and BBR.
+[ "$${PKG_UPGRADE}" = 1 ] && exit 0
+rm -f /usr/libexec/mayhem/xray
 rm -rf /var/run/mayhem
 # TCP back to the firmware's default (BBR was Mayhem's)
 if [ -f /etc/sysctl.d/12-mayhem-bbr.conf ]; then

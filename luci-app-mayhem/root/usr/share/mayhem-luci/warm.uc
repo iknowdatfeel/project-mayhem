@@ -51,24 +51,71 @@ function read_json(path) {
 	}
 }
 
-// The servers kept warm: every server of nodes.json with a tag, in order, at
-// most MAX. The rpcd method "warm" takes the same ones.
+// The servers kept warm: the ones sections use first, then every other server
+// of nodes.json in order, at most MAX. The set stays the same while the
+// servers do (warm.json names it, the rpcd method "warm" passes it on): the
+// dashboard tests the other servers one by one. A window moving over them
+// closed and opened 16 connections every round - handshakes through servers
+// all the time - and the dashboard waited for numbers of servers outside it.
 function wanted(state) {
 	const out = [], seen = {};
+	const priority = [];
+	const rest = [];
 
-	for (let sn in sort(keys(state?.sections ?? {})))
-		for (let n in state.sections[sn].nodes ?? [])
-			if (n.tag && !seen[n.tag] && length(out) < MAX) {
+	for (let sn in sort(keys(state?.sections ?? {}))) {
+		const s = state.sections[sn];
+		const act = s.selected ?? s.override;
+
+		for (let n in s.nodes ?? []) {
+			if (!n.tag)
+				continue;
+
+			if (n.tag == act)
+				push(priority, n);
+			else
+				push(rest, n);
+		}
+	}
+
+	for (let n in priority) {
+		if (!seen[n.tag] && length(out) < MAX) {
+			seen[n.tag] = true;
+			push(out, { tag: n.tag, address: n.address ?? n.iface ?? n.tag });
+		}
+	}
+
+	const remaining_slots = MAX - length(out);
+	const unique_rest = filter(rest, (n) => !seen[n.tag]);
+
+	if (length(unique_rest) <= remaining_slots) {
+		for (let n in unique_rest) {
+			if (!seen[n.tag]) {
 				seen[n.tag] = true;
 				push(out, { tag: n.tag, address: n.address ?? n.iface ?? n.tag });
 			}
+		}
+	}
+	else {
+		for (let i = 0; i < remaining_slots; i++) {
+			const n = unique_rest[i];
+
+			if (!seen[n.tag]) {
+				seen[n.tag] = true;
+				push(out, { tag: n.tag, address: n.address ?? n.iface ?? n.tag });
+			}
+		}
+	}
 
 	return out;
 }
 
 // An https:// URL is asked over plain HTTP on port 80 of the same host: ucode
 // has no TLS, and the delay through the server to that host is the same.
+// If an https:// probe is configured to run over port 80, fall back to DEFAULT_PROBE_URL.
 function parse_url(u) {
+	if (match(u ?? '', /^https:\/\//))
+		u = C.DEFAULT_PROBE_URL;
+
 	const m = match(u ?? '', /^(https?):\/\/([A-Za-z0-9.-]+)(:([0-9]+))?(\/[^#]*)?$/);
 
 	if (!m)
@@ -138,10 +185,13 @@ function send(n, data) {
 	return true;
 }
 
-function sync_nodes() {
+function sync_nodes(force) {
 	const st = fs.stat(`${RUN}/nodes.json`);
 
-	if (!st || st.mtime == nodes_mtime)
+	if (!st)
+		return;
+
+	if (!force && st.mtime == nodes_mtime)
 		return;
 
 	nodes_mtime = st.mtime;
@@ -165,7 +215,6 @@ function sync_nodes() {
 		if (!keep[tag]) {
 			close_conn(nodes[tag]);
 			delete nodes[tag];
-			delete results[tag];
 			dirty = true;
 		}
 
@@ -295,6 +344,7 @@ function finish_request(n) {
 	}
 
 	n.phase = 'ready';
+	n.ready_at = ms_now();
 	n.buf = '';
 
 	if (ok && n.fresh)
@@ -378,8 +428,14 @@ function write_out() {
 
 function xray_running() {
 	const pid = trim(fs.readfile(`${RUN}/xray.pid`) ?? '');
+	if (!match(pid, /^[0-9]+$/))
+		return false;
 
-	return pid != '' && fs.access(`/proc/${pid}`);
+	const cmd = fs.readfile(`/proc/${pid}/cmdline`);
+	if (cmd)
+		return index(cmd, 'xray') >= 0 || index(cmd, 'fake_socks') >= 0;
+
+	return fs.access(`/proc/${pid}`);
 }
 
 let last_check = 0;
@@ -396,7 +452,7 @@ while (true) {
 		if (!alive || time() - alive.mtime > IDLE || !xray_running())
 			break;
 
-		sync_nodes();
+		sync_nodes(false);
 	}
 
 	// The button on the dashboard: everything at once (a quarter of a
@@ -444,10 +500,14 @@ while (true) {
 
 		if (data == '') {
 			// The other side closed: a connection that was waiting is
-			// opened again; one in the middle of something failed.
+			// opened again; one in the middle of something failed. Closed
+			// within 2 s of the answer (a server that closes after every
+			// one): the next one after PERIOD, not handshakes back to back.
 			if (n.phase == 'ready') {
+				const soon = ms_now() - (n.ready_at ?? 0) < 2000;
+
 				close_conn(n);
-				n.next = ms_now();
+				n.next = soon ? ms_now() + PERIOD : ms_now();
 			}
 			else if (n.phase == 'request' && n.status != null && n.left == null && !n.chunked) {
 				finish_request(n);

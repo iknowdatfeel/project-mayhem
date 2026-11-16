@@ -1,7 +1,7 @@
 #!/bin/sh
 # Project Mayhem installer / updater for OpenWrt 24.10 (opkg) and 25.12+ (apk).
 #
-#   sh <(wget -O - https://raw.githubusercontent.com/iknowdatfeel/project-mayhem/main/install.sh)
+#   wget -qO /tmp/mayhem-install.sh https://raw.githubusercontent.com/iknowdatfeel/project-mayhem/main/install.sh && sh /tmp/mayhem-install.sh && rm -f /tmp/mayhem-install.sh
 #
 # Set MAYHEM_REPO=owner/repo to install from a fork, MAYHEM_TAG=v1.2.3 to
 # install that release instead of the latest (an update run by Mayhem passes
@@ -11,11 +11,31 @@ REPO="${MAYHEM_REPO:-iknowdatfeel/project-mayhem}"
 API="https://api.github.com/repos/$REPO/releases/latest"
 [ -n "${MAYHEM_TAG:-}" ] && API="https://api.github.com/repos/$REPO/releases/tags/$MAYHEM_TAG"
 TMP="/tmp/mayhem-install"
+# The service and the command line (other paths in off-device tests).
+INIT="${MAYHEM_INIT:-/etc/init.d/mayhem}"
+CLI="${MAYHEM_CLI:-/usr/bin/mayhem}"
+RC_D="${MAYHEM_RC_D:-/etc/rc.d}"
 TRIES=3
 
 msg()  { printf '\033[32;1m%s\033[0m\n' "$1"; }
 warn() { printf '\033[33;1m%s\033[0m\n' "$1"; }
-die()  { printf '\033[31;1m%s\033[0m\n' "$1" >&2; rm -rf "$TMP"; exit 1; }
+die()  { printf '\033[31;1m%s\033[0m\n' "$1" >&2; restore_service; rm -rf "$TMP"; exit 1; }
+
+# An update: the old package's removal script stopped and disabled the
+# service. Once the new packages are in (RESTORE=1), every way out - a
+# failure too - gives back the autostart and starts the service again if it
+# was so before the update.
+RESTORE=0
+AUTOSTART=1
+RUNNING=0
+
+restore_service() {
+	[ "$RESTORE" = 1 ] || return 0
+	RESTORE=0
+	[ "$AUTOSTART" = 1 ] && "$INIT" enable
+	[ "$RUNNING" = 1 ] && "$INIT" start
+	return 0
+}
 
 PKG=opkg
 command -v apk >/dev/null 2>&1 && PKG=apk
@@ -51,7 +71,7 @@ pkg_installable() {
 }
 
 # Everything Mayhem needs, checked before anything is installed.
-DEPS="ucode ucode-mod-fs ucode-mod-uci ucode-mod-socket kmod-nft-tproxy ca-bundle unzip curl rpcd-mod-ucode luci-base"
+DEPS="ucode ucode-mod-fs ucode-mod-uci ucode-mod-ubus ucode-mod-socket kmod-nft-tproxy ca-bundle unzip curl rpcd-mod-ucode luci-base"
 
 check_deps() {
 	local p missing=""
@@ -97,8 +117,9 @@ fetch() {
 		return 0
 	fi
 
+	# A hung connection must not hold the installer (or the nightly update).
 	if command -v curl >/dev/null 2>&1; then
-		curl -fsSL -o "$2" "$1"
+		curl -fsSL --connect-timeout 15 -m 600 -o "$2" "$1"
 	else
 		wget -q -O "$2" "$1"
 	fi
@@ -210,16 +231,16 @@ install_packages() {
 }
 
 main() {
-	local upgrade=0 autostart=1 running=0 conflicts
+	local upgrade=0 conflicts
 
 	check_system
 
 	# An update keeps the autostart and the running state as they were (the
 	# old package's removal script stops and disables the service).
-	if [ -x /etc/init.d/mayhem ]; then
+	if [ -x "$INIT" ]; then
 		upgrade=1
-		ls /etc/rc.d/S*mayhem >/dev/null 2>&1 || autostart=0
-		/etc/init.d/mayhem running >/dev/null 2>&1 && running=1
+		ls "$RC_D"/S*mayhem >/dev/null 2>&1 || AUTOSTART=0
+		"$INIT" running >/dev/null 2>&1 && RUNNING=1
 	fi
 
 	msg "Updating package lists..."
@@ -231,29 +252,34 @@ main() {
 	msg "Downloading Mayhem from $REPO..."
 	download_release
 	install_packages
+	[ "$upgrade" = 1 ] && RESTORE=1
 
 	if ! check_tproxy; then
-		/etc/init.d/mayhem disable >/dev/null 2>&1
+		if [ "$upgrade" = 1 ]; then
+			die "The kernel rejects TPROXY rules even with kmod-nft-tproxy installed: reboot the router and run the installer again."
+		fi
+		"$INIT" disable >/dev/null 2>&1
 		die "The kernel rejects TPROXY rules even with kmod-nft-tproxy installed. Mayhem is installed but disabled: reboot the router and run the installer again."
 	fi
 
 	msg "Installing xray..."
-	/usr/bin/mayhem xray-install || die "xray installation failed, run 'mayhem xray-install' later."
+	"$CLI" xray-install || die "xray installation failed, run 'mayhem xray-install' later."
 
 	# dnsmasq-full: the same dnsmasq with nftset, which tunnels in kernel mode
 	# need. Swapped with a rollback: if it does not install or start, the old
 	# dnsmasq comes back and everything works as before.
 	msg "Installing dnsmasq-full..."
-	/usr/bin/mayhem dnsmasq-full ||
+	"$CLI" dnsmasq-full ||
 		warn "dnsmasq-full is not installed, the old dnsmasq stays: tunnels in kernel mode go through xray. Install it later from Server list → Tunnels."
 
 	# TCP BBR for xray's connections to its servers, at every install and
 	# update; a firmware without the module keeps what it has.
 	msg "Switching TCP to BBR..."
-	/usr/bin/mayhem bbr >/dev/null 2>&1 ||
+	"$CLI" bbr >/dev/null 2>&1 ||
 		warn "TCP BBR is not available on this firmware, TCP stays as it was."
 
-	[ "$autostart" = 1 ] && /etc/init.d/mayhem enable
+	RESTORE=0
+	[ "$AUTOSTART" = 1 ] && "$INIT" enable
 	/etc/init.d/rpcd restart >/dev/null 2>&1
 	rm -rf /tmp/luci-indexcache* /tmp/luci-modulecache
 
@@ -261,7 +287,7 @@ main() {
 	conflicts="$(mayhem_conflicts)"
 
 	if [ "$upgrade" = 1 ]; then
-		[ "$running" = 1 ] && /etc/init.d/mayhem restart
+		[ "$RUNNING" = 1 ] && "$INIT" restart
 		msg "Mayhem is updated."
 	else
 		msg "Mayhem is installed and switched off."

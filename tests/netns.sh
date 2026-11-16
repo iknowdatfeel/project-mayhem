@@ -35,6 +35,9 @@ export MAYHEM_XRAY_BIN="$XRAY"
 export MAYHEM_GEO_DIR="$WORK/etc/geo"
 export MAYHEM_LISTS_DIR="$WORK/etc/lists"
 export MAYHEM_TMP_DIR="$WORK"
+# The rules the kill switch holds the traffic with while Mayhem is off (on
+# flash on a router).
+export MAYHEM_HOLD_DIR="$WORK/hold"
 
 SS_KEY='AAECAwQFBgcICQoLDA0ODw=='
 SS_LINK='ss://2022-blake3-aes-128-gcm:AAECAwQFBgcICQoLDA0ODw%3D%3D@45.0.0.3:8443#srv'
@@ -152,7 +155,9 @@ trap cleanup EXIT
 
 start_mayhem() {
 	# $1 model file, or "uci" to read $MAYHEM_UCI_DIR
-	mkdir -p "$MAYHEM_RUN_DIR"
+	# The run directory as the init script makes it (root's only).
+	# shellcheck disable=SC2016 # expanded by the inner shell
+	sh -c '. "$MAYHEM_LIB_DIR/lib.sh"; mayhem_run_dir'
 
 	if [ "$1" = uci ]; then
 		uc "$FILES/usr/share/mayhem/gen.uc" --out "$MAYHEM_RUN_DIR" 2>/dev/null || { bad "generator"; return 1; }
@@ -166,8 +171,10 @@ start_mayhem() {
 	ip netns exec router "$FILES/usr/libexec/mayhem/xray-run" > "$WORK/run.log" 2>&1 &
 
 	local i=0
+	# Ready once xray-run has put the interception up (the table alone may
+	# be a hold of the kill switch from before).
 	while [ "$i" -lt 20 ]; do
-		ip netns exec router nft list table inet mayhem >/dev/null 2>&1 && return 0
+		[ -f "$MAYHEM_RUN_DIR/active" ] && ip netns exec router nft list table inet mayhem >/dev/null 2>&1 && return 0
 		sleep 1
 		i=$((i + 1))
 	done
@@ -191,6 +198,13 @@ proc_in() {
 	for p in $(ip netns pids "$1"); do
 		[ "$(cat "/proc/$p/comm" 2>/dev/null)" = "$2" ] && { echo "$p"; return; }
 	done
+}
+
+hold() {
+	# The kill switch while Mayhem is off. $1: the kill switch (1/0), $2: what
+	# to run with lib.sh; procd does not run Mayhem (init-stub).
+	# shellcheck disable=SC2016 # expanded by the inner shell
+	ip netns exec router env MAYHEM_KS="$1" MAYHEM_KS_HOLD="${HOLD_OPT:-$1}" MAYHEM_INIT="$WORK/init-stub" sh -c '. "$MAYHEM_LIB_DIR/lib.sh"; '"$2"
 }
 
 # --- network ------------------------------------------------------------------
@@ -248,6 +262,8 @@ table ip nat {
 NFT
 
 mkdir -p "$MAYHEM_DNSMASQ_DIRS"
+printf '#!/bin/sh\n# Mayhem does not run for procd\nexit 1\n' > "$WORK/init-stub"
+chmod +x "$WORK/init-stub"
 echo 'nameserver 45.0.0.2' > "$MAYHEM_RESOLV_AUTO"
 cat > "$MAYHEM_DNSMASQ_INIT" <<EOF
 #!/bin/sh
@@ -375,6 +391,13 @@ EOF
 
 echo "== lists mode: only listed traffic reaches xray"
 if start_mayhem "$WORK/lists.json"; then
+	# Server keys stay root's; dnsmasq's files stay readable for dnsmasq.
+	perm="$(stat -c %a "$MAYHEM_RUN_DIR") $(stat -c %a "$MAYHEM_DNSMASQ_DIRS/mayhem.conf") $(stat -c %a "$MAYHEM_DNS_SERVERS")"
+	if [ "$perm" = "700 644 644" ]; then
+		ok "run directory 700, dnsmasq's files 644"
+	else
+		bad "permissions (run directory, dnsmasq file, servers file): $perm"
+	fi
 	expect "no rule -> kernel direct, past xray" 192.168.1.2 http://45.0.0.2:8080/
 	expect "domain -> proxy" 45.0.0.3 $(site youtube.test)
 	expect "subdomain -> proxy" 45.0.0.3 $(site www.youtube.test)
@@ -552,24 +575,19 @@ chmod +x "$WORK/bin/ucode"
 reload_live() {
 	# what /etc/init.d/mayhem reload does before procd looks at the files
 	uc "$FILES/usr/share/mayhem/gen.uc" --out "$MAYHEM_RUN_DIR" 2>/dev/null &&
-		ip netns exec router env PATH="$WORK/bin:$PATH" sh -c ". '$FILES/usr/share/mayhem/lib.sh'; mayhem_live_update"
+		ip netns exec router env PATH="$WORK/bin:$PATH" sh -c ". '$FILES/usr/share/mayhem/lib.sh'; mayhem_live_update; mayhem_net_refresh"
 }
 
 select_node() {
 	# The namespace harness has no procd. Run its reload/start lifecycle
 	# explicitly when the choice changes xray.key, as procd does on OpenWrt.
-	local out old
-	old="$(proc_in router xray)"
+	local out
 	out="$(rpc select_node "{\"section\":\"$1\",\"tag\":\"$2\"}")"
 	case "$out" in *'"ok": true'*) ;; *) printf '%s\n' "$out"; return 1 ;; esac
 	reload_live || return 1
 	if ! cmp -s "$MAYHEM_RUN_DIR/xray.key" "$MAYHEM_RUN_DIR/running.xray.key"; then
 		stop_mayhem
 		start_mayhem uci || return 1
-	fi
-	if [ -n "$old" ] && [ "$(proc_in router xray)" = "$old" ]; then
-		bad "an explicit server choice did not restart xray"
-		return 1
 	fi
 	printf '%s\n' "$out"
 }
@@ -754,6 +772,45 @@ if start_mayhem uci; then
 	expect "manual choice is applied at start" 45.0.0.8 $(site youtube.test)
 	expect "local SOCKS port of the section" 45.0.0.8 -x socks5h://192.168.1.1:1080 http://45.0.0.2:8080/
 	expect "local HTTP proxy port of the section" 45.0.0.8 -x http://192.168.1.1:1080 http://45.0.0.2:8080/
+	# Not from another interface (the WAN), only from Mayhem's network.
+	if ip netns exec wan curl -s -m 4 -x socks5h://45.0.0.1:1080 http://45.0.0.2:8080/ >/dev/null 2>&1; then
+		bad "local port of the section answers on the WAN"
+	else
+		ok "local port of the section is closed on the WAN"
+	fi
+
+	# xray's interception port is not a port of the router: TCP is refused,
+	# a datagram never reaches xray.
+	got="$(ip netns exec client python3 - <<'PY'
+import socket
+s = socket.socket(); s.settimeout(4)
+try:
+    s.connect(('192.168.1.1', 12701)); print('open')
+except ConnectionRefusedError:
+    print('refused')
+except Exception as e:
+    print(type(e).__name__)
+PY
+)"
+	if [ "$got" = refused ]; then ok "interception port refuses TCP to the router"; else bad "TCP to the interception port: $got"; fi
+	tp_hits() {
+		ip netns exec router nft list chain inet mayhem input 2>/dev/null |
+			awk '/th dport 12701/ { for (i = 1; i < NF; i++) if ($i == "packets") print $(i + 1) }'
+	}
+	logged() { grep -c '192\.168\.1\.1:12701' "$MAYHEM_RUN_DIR/conn.log" 2>/dev/null || true; }
+	before="$(tp_hits)" seen="$(logged)"
+	ip netns exec client python3 -c "
+import socket
+s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+for i in range(3): s.sendto(b'hi', ('192.168.1.1', 12701))
+"
+	sleep 1
+	after="$(tp_hits)"
+	if [ -n "$after" ] && [ "${after:-0}" -gt "${before:-0}" ] && [ "$(logged)" = "$seen" ]; then
+		ok "interception port drops UDP to the router before xray"
+	else
+		bad "UDP to the interception port: counter $before -> $after, xray log $seen -> $(logged)"
+	fi
 
 	write_uci "	option select 'manual'
 	option selected 'B'" section
@@ -770,6 +827,47 @@ if start_mayhem uci; then
 	fi
 fi
 stop_mayhem
+
+echo "== a server xray refuses"
+# A JSON subscription of two servers (an automatic choice already: a third
+# server changes nothing but the servers); a new server of a protocol xray
+# does not know comes in while xray runs. The others keep working, xray is
+# not restarted.
+sub_json() {
+	printf '[{"remarks":"Good","outbounds":[{"protocol":"shadowsocks","settings":{"servers":[{"address":"45.0.0.3","port":8443,"method":"2022-blake3-aes-128-gcm","password":"%s"}]}}]},{"remarks":"Good B","outbounds":[{"protocol":"shadowsocks","settings":{"servers":[{"address":"45.0.0.3","port":8444,"method":"2022-blake3-aes-128-gcm","password":"%s"}]}}]}%s]\n' \
+		"$SS_KEY" "$SS_KEY" "$1" > "$WORK/sub.txt"
+}
+rm -f "$MAYHEM_RUN_DIR/refused.json"
+write_uci "	option select 'auto'" direct
+sub_json ''
+sub_update >/dev/null
+if start_mayhem uci; then
+	pid="$(proc_in router xray)"
+	expect_one_of "JSON subscription: the servers work" "45.0.0.3 45.0.0.8" $(site youtube.test)
+	sub_json ',{"remarks":"Weird","outbounds":[{"protocol":"bogus","settings":{}}]}'
+	sub_update >/dev/null
+	reload_live
+	if cmp -s "$MAYHEM_RUN_DIR/xray.key" "$MAYHEM_RUN_DIR/running.xray.key"; then
+		ok "a new server of a JSON subscription needs no restart"
+	else
+		bad "a new server of a JSON subscription changed the restart key"
+	fi
+	if grep -q '"name": *"Weird"' "$MAYHEM_RUN_DIR/refused.json" 2>/dev/null; then
+		ok "the refused server is noted"
+	else
+		bad "refused server: $(cat "$MAYHEM_RUN_DIR/refused.json" 2>/dev/null)"
+	fi
+	if grep -q 'server \\"Weird\\": xray refused it' "$MAYHEM_RUN_DIR/status.json" 2>/dev/null; then
+		ok "the refused server is a warning on the dashboard"
+	else
+		bad "no warning: $(cat "$MAYHEM_RUN_DIR/status.json")"
+	fi
+	sleep 6
+	if [ "$(proc_in router xray)" = "$pid" ]; then ok "xray keeps running, not restarted"; else bad "xray was restarted"; fi
+	expect_one_of "the other servers still work" "45.0.0.3 45.0.0.8" $(site youtube.test)
+fi
+stop_mayhem
+rm -f "$MAYHEM_RUN_DIR/refused.json"
 
 # --- geo data and rule lists --------------------------------------------------------
 
@@ -928,6 +1026,21 @@ if start_mayhem uci; then
 	tunnels_check
 	expect "tunnel back: kernel section uses it again" 45.0.1.1 http://45.0.0.6:8080/
 	expect "tunnel back: xray mode uses it again" 45.0.1.1 $(site viaxray.test)
+
+	# The kill switch while Mayhem is off: the traffic of a kernel tunnel
+	# section waits too, although the tunnel works (it is Mayhem that sends
+	# traffic into it); with the kill switch off it goes direct.
+	echo 'MAYHEM_KILLSWITCH=1' >> "$MAYHEM_RUN_DIR/env"
+	hold 1 mayhem_service_stop
+	stop_mayhem
+	expect "hold: a kernel tunnel section waits, although the tunnel works" failed http://45.0.0.6:8080/
+	if ip netns exec router ip route show table 111 | grep -q '^blackhole default'; then
+		ok "hold: the tunnel section's table leads nowhere"
+	else
+		bad "hold: tunnel table: $(ip netns exec router ip route show table 111)"
+	fi
+	hold 0 mayhem_hold_sync
+	expect "hold: kill switch off, the tunnel section goes direct" 192.168.1.2 http://45.0.0.6:8080/
 fi
 stop_mayhem
 
@@ -1053,7 +1166,7 @@ if start_mayhem uci; then
 		else
 			expect "server A picked: the rest goes through it" 45.0.0.3 http://45.0.0.7:8080/
 
-			# Server B by hand: the old connection closes and new traffic uses B.
+			# Server B by hand: in-flight connection finishes on A, xray stays running, new traffic uses B.
 			xpid="$(proc_in router xray)"
 			ip netns exec client curl -s -m 20 -o /dev/null -w '%{size_download}' http://45.0.0.7:8080/slow > "$WORK/slow2.out" 2>/dev/null &
 			cpid=$!
@@ -1062,13 +1175,13 @@ if start_mayhem uci; then
 			select_node pool "$tag" >/dev/null
 			wait "$cpid"; crc=$?
 			bytes="$(cat "$WORK/slow2.out" 2>/dev/null)"
-			if [ "$crc" != 0 ] && [ "${bytes:-0}" -lt 10240 ]; then
-				ok "server B by hand: the open connection through A is closed"
+			if [ "$crc" = 0 ] && [ "${bytes:-0}" = 10240 ]; then
+				ok "server B by hand: in-flight connection finished"
 			else
-				bad "server B by hand: the old connection survived ($bytes bytes, curl $crc)"
+				bad "server B by hand: connection failed ($bytes bytes, curl $crc)"
 			fi
 			if [ -f "$MAYHEM_RUN_DIR/active" ]; then ok "server B by hand: interception is active again"; else bad "server B by hand: interception is inactive"; fi
-			if [ "$(proc_in router xray)" != "$xpid" ]; then ok "server B by hand: xray restarted"; else bad "server B by hand: xray did not restart"; fi
+			if [ "$(proc_in router xray)" = "$xpid" ]; then ok "server B by hand: xray stayed running (no restart)"; else bad "server B by hand: xray was restarted"; fi
 			expect "server B by hand: new connections go through it" 45.0.0.8 http://45.0.0.7:8080/
 		fi
 	fi
@@ -1172,6 +1285,94 @@ EOF
 	stop_mayhem
 done
 
+# The kill switch while Mayhem is off: stopped, turned off, after a boot. The
+# traffic of the proxy section waits (global mode: everything but the
+# exclusions), Direct works; a start of Mayhem ends the hold, and so does the
+# kill switch turned off.
+for mode in global lists; do
+	cat > "$WORK/hold.json" <<EOF
+{
+  "settings": { "mode": "$mode", "killswitch": "1", "default_section": "main", "interface": [ "br-lan" ], "ip_family": "ipv4_only" },
+  "dns": { "domestic": [ "45.0.0.2" ], "remote": [ "45.0.0.4" ], "hijack": "1" },
+  "sections": [
+    { ".name": "main", "type": "proxy", "link": "$SS_LINK", "domain": [ "shared-vpn.test" ], "ip": [ "45.0.0.9" ] },
+    { ".name": "direct", "type": "exclusion", "domain": [ "direct.test" ], "ip": [ "45.0.0.6" ] }
+  ],
+  "runtime": { "wan_dns": [ "45.0.0.2" ], "ipv6": false, "dnsmasq_nftset": true }
+}
+EOF
+	# An address of the proxy section's rules, and one outside every rule:
+	# through the proxy in global mode, direct in lists mode. (45.0.0.2 is
+	# the answer of the test DNS to every name: a Direct domain's address.)
+	vpn=http://45.0.0.9:8080/ other=http://45.0.0.8:8080/
+	if [ "$mode" = global ]; then other_on=45.0.0.3 other_held=failed; else other_on=192.168.1.2 other_held=192.168.1.2; fi
+
+	echo "== kill switch while Mayhem is off ($mode)"
+	hold 0 'mayhem_hold_save'
+	if start_mayhem "$WORK/hold.json"; then
+		expect "hold: Mayhem on, through the server" 45.0.0.3 "$vpn"
+		expect "hold: Mayhem on, outside the rules ($mode)" "$other_on" "$other"
+
+		# a stop, as the init script does it
+		hold 1 mayhem_service_stop
+		stop_mayhem
+		expect "hold: stopped, the proxy section's traffic waits" failed "$vpn"
+		expect "hold: stopped, outside the rules ($mode)" "$other_held" "$other"
+		expect "hold: stopped, Direct goes direct" 192.168.1.2 http://45.0.0.6:8080/
+		expect_dns "hold: stopped, Direct names are resolved" client 192.168.1.1 53 stop.direct.test 45.0.0.2
+		if [ "$mode" = lists ]; then
+			got="$(dns client 192.168.1.1 53 shared-vpn.test)"
+			case "$got" in
+				45.*) bad "hold: a name of the proxy section was resolved by the provider: $got" ;;
+				*) ok "hold: names of the proxy section get no real address ($got)" ;;
+			esac
+		fi
+		if [ -f "$MAYHEM_RUN_DIR/held" ] && [ -s "$MAYHEM_HOLD_DIR/nft" ]; then
+			ok "hold: marked as held, the rules kept for a boot"
+		else
+			bad "hold: no mark or no copy of the rules: $(find "$MAYHEM_RUN_DIR" "$MAYHEM_HOLD_DIR" -maxdepth 1 2>&1 | tr '\n' ' ')"
+		fi
+
+		# a boot with Mayhem off: nothing in the kernel, nothing in /var/run
+		hold 1 'mayhem_dns_down; mayhem_net_down'
+		find "$MAYHEM_RUN_DIR" -mindepth 1 -delete
+		expect "hold: before the boot's hold, nothing holds" 192.168.1.2 "$vpn"
+		hold 1 mayhem_hold_sync
+		expect "hold: after a boot, the proxy section's traffic waits" failed "$vpn"
+		expect "hold: after a boot, outside the rules ($mode)" "$other_held" "$other"
+		expect "hold: after a boot, Direct goes direct" 192.168.1.2 http://45.0.0.6:8080/
+		expect_dns "hold: after a boot, Direct names are resolved" client 192.168.1.1 53 boot.direct.test 45.0.0.2
+
+		# Mayhem starts: the hold ends
+		if start_mayhem "$WORK/hold.json"; then
+			expect "hold: Mayhem started again, through the server" 45.0.0.3 "$vpn"
+			if [ -f "$MAYHEM_RUN_DIR/held" ]; then bad "hold: still marked as held while Mayhem runs"; else ok "hold: no longer held while Mayhem runs"; fi
+		fi
+
+		# stopped again, then the kill switch turned off
+		hold 1 mayhem_service_stop
+		stop_mayhem
+		expect "hold: stopped again, waits" failed "$vpn"
+		hold 0 mayhem_hold_sync
+		expect "hold: kill switch off, the traffic goes direct" 192.168.1.2 "$vpn"
+
+		# The kill switch on, its hold option off: a stop is as before.
+		if start_mayhem "$WORK/hold.json"; then
+			HOLD_OPT=0 hold 1 mayhem_service_stop
+			echo 'MAYHEM_KILLSWITCH=0' >> "$MAYHEM_RUN_DIR/env"
+			stop_mayhem
+			expect "hold: option off, a stop sends the traffic direct" 192.168.1.2 "$vpn"
+		fi
+		if ip netns exec router nft list table inet mayhem >/dev/null 2>&1 || [ -d "$MAYHEM_HOLD_DIR" ] || [ -f "$MAYHEM_RUN_DIR/held" ]; then
+			bad "hold: kill switch off, but rules, the copy or the mark stayed"
+		else
+			ok "hold: kill switch off, rules, copy and mark gone"
+		fi
+	fi
+	stop_mayhem
+	hold 0 'mayhem_dns_down; mayhem_net_down'
+done
+
 # The fastest server stops answering (its packets are dropped, nothing is
 # refused) while xray's own checks, minutes apart, still pick it: the next
 # check moves the traffic to the other server at once.
@@ -1201,7 +1402,19 @@ if start_mayhem uci; then
 		ip netns exec router nft add chain inet mhtest out '{ type filter hook output priority 0; }'
 		ip netns exec router nft add rule inet mhtest out ip daddr 45.0.0.3 tcp dport "$port" drop
 		health
-		expect "a dead fastest server is left in one check, before xray's own checks notice" "$other" $(site youtube.test)
+		sleep 1
+		i=0
+		while [ "$i" -lt 5 ]; do
+			got="$(ip netns exec client curl -s -m 4 $(site youtube.test) 2>/dev/null)" || got="failed"
+			[ "$got" = "$other" ] && break
+			sleep 1
+			i=$((i + 1))
+		done
+		if [ "$got" = "$other" ]; then
+			ok "a dead fastest server is left in one check, before xray's own checks notice"
+		else
+			bad "a dead fastest server is left in one check, before xray's own checks notice: expected $other, got $got"
+		fi
 		server_up
 	else
 		bad "the fastest server stops answering: no server at first ($first)"

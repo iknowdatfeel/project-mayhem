@@ -19,6 +19,7 @@ return baseclass.extend({
 		this.connPaused = false;
 		this.connDev = '';
 		this.connBase = null;
+		this.connSearch = '';
 
 		const body = E('div', { 'id': 'mh-conns' }, E('p', { 'class': 'mh-muted' }, [ mh.icon('loader', true), ' ', _('Loading…') ]));
 
@@ -33,6 +34,19 @@ return baseclass.extend({
 			}
 		}, E('option', { 'value': '' }, _('All devices')));
 
+		const search = E('input', {
+			'id': 'mh-conns-search',
+			'type': 'search',
+			'class': 'cbi-input-text',
+			'placeholder': _('Filter…'),
+			'style': 'max-width: 150px; margin-right: 4px;',
+			'value': this.connSearch || '',
+			'input': (ev) => {
+				this.connSearch = (ev.target.value || '').toLowerCase().trim();
+				this.draw();
+			}
+		});
+
 		const pause = E('button', { 'id': 'mh-conns-pause', 'class': 'btn', 'click': () => this.pause() }, _('Pause'));
 		const clear = E('button', { 'class': 'btn', 'click': () => this.clear(),
 			'title': _('Shows only connections opened from now on, and the traffic from now on') }, _('Clear'));
@@ -40,7 +54,7 @@ return baseclass.extend({
 		return E('div', [
 			E('p', { 'class': 'mh-muted mh-small' },
 				_('Every connection of the network that is open now, grouped by device, address and route. A site name is known when its address came in a DNS answer through Xray; otherwise the address is shown.')),
-			E('div', { 'class': 'mh-conns-bar' }, [ devs, pause, clear,
+			E('div', { 'class': 'mh-conns-bar' }, [ devs, search, pause, clear,
 				E('span', { 'id': 'mh-conns-count', 'class': 'mh-small' }),
 				E('span', { 'id': 'mh-conns-note', 'class': 'mh-muted mh-small' }) ]),
 			body
@@ -178,9 +192,13 @@ return baseclass.extend({
 				this.connBase ? _('Since %s').format(this.connBaseTime.toLocaleTimeString()) : ''
 			].filter((x) => x).join(' · ');
 
+		const searchInput = document.getElementById('mh-conns-search');
+		if (searchInput && document.activeElement !== searchInput)
+			searchInput.value = this.connSearch || '';
+
 		// After "Clear": new connections, and old ones only with the traffic
 		// they carried since.
-		const rows = (r.rows || []).map((c) => {
+		const allRows = (r.rows || []).map((c) => {
 			const was = this.connBase ? this.connBase[this.key(c)] : null;
 
 			if (was == null)
@@ -189,8 +207,23 @@ return baseclass.extend({
 			return c.bytes > was ? Object.assign({}, c, { bytes: c.bytes - was }) : null;
 		}).filter((c) => c);
 
-		if (!rows.length) {
+		if (!allRows.length) {
 			box.replaceChildren(E('p', { 'class': 'mh-muted' }, _('No connections yet.')));
+			return;
+		}
+
+		const q = this.connSearch;
+		const rows = q ? allRows.filter((c) => {
+			const rt = this.route(c);
+			if (c.domain && c.domain.toLowerCase().indexOf(q) >= 0) return true;
+			if (c.host && c.host.toLowerCase().indexOf(q) >= 0) return true;
+			if (c.port != null && String(c.port).indexOf(q) >= 0) return true;
+			if (rt && rt[0] && String(rt[0]).toLowerCase().indexOf(q) >= 0) return true;
+			return false;
+		}) : allRows;
+
+		if (!rows.length) {
+			box.replaceChildren(E('p', { 'class': 'mh-muted' }, _('No matching connections.')));
 			return;
 		}
 

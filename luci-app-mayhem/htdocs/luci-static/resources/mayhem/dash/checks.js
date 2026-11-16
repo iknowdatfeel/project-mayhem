@@ -45,22 +45,24 @@ return baseclass.extend({
 		this.view = view;
 	},
 
-	load() {
-		return callWarm(false);
-	},
 
 	// A check of these servers is under way: "…" until it answers. since:
 	// the router's time of a kept-alive URL test asked for anew (older
 	// numbers of it do not count).
 	pending(nodes, method, since) {
-		for (const n of nodes)
+		for (const n of nodes) {
 			this.probes[n.tag] = { method: method, value: null, pending: true, since: since };
+			if (this.view && this.view.updateLatency)
+				this.view.updateLatency(n.tag);
+		}
 	},
 
 	// The answer of a check; none at all (the call failed or LuCI stopped
 	// waiting for it) is a timeout, not the number the server had before.
 	result(tag, method, r) {
 		this.probes[tag] = { method: method, value: (r && r.ms != null) ? r.ms : ((r && r.error) || 'timeout') };
+		if (this.view && this.view.updateLatency)
+			this.view.updateLatency(tag);
 	},
 
 	known(m) {
@@ -132,12 +134,25 @@ return baseclass.extend({
 	// sends a request over it every few seconds. The numbers are there at
 	// once and stay current. now: every server is asked at once.
 	pollWarm(now) {
-		return callWarm(now ? true : false).then((r) => {
-			if (this.applyWarm(r))
-				this.view.redraw();
+		return callWarm(now ? true : false).then((r) => this.takeWarm(r)).catch(() => null);
+	},
 
-			return this.warm;
-		}).catch(() => null);
+	// An answer of the URL test (its own call, or with the dashboard's
+	// data): the numbers into the badges of the servers in place.
+	takeWarm(r) {
+		if (this.applyWarm(r)) {
+			let updated = false;
+
+			if (this.view && this.view.updateLatency && r.tags)
+				for (const tag of r.tags)
+					if (this.view.updateLatency(tag))
+						updated = true;
+
+			if (!updated)
+				this.view.redraw();
+		}
+
+		return this.warm;
 	},
 
 	applyWarm(r) {
@@ -268,7 +283,8 @@ return baseclass.extend({
 				for (const n of c)
 					this.result(n.tag, method, (r.results || {})[n.tag] || (r.error ? { error: r.error } : null));
 
-				this.view.redraw();
+				if (!this.view.updateLatency)
+					this.view.redraw();
 			})).concat(rest.length ? [ this.probeSection(Object.assign({}, sec, { nodes: rest }), true) ] : [])).finally(() => {
 				delete this.view.busy[key];
 				this.view.redraw();
@@ -292,7 +308,8 @@ return baseclass.extend({
 
 			return callProbe(n.tag, method).catch(() => null).then((r) => {
 				this.result(n.tag, method, r);
-				this.view.redraw();
+				if (!this.view.updateLatency)
+					this.view.redraw();
 			}).finally(() => {
 				if (n.address)
 					delete busyHost[n.address];

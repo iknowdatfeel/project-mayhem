@@ -12,6 +12,7 @@ import { parse_conf, is_amnezia, uci_sections, to_conf } from 'mayhem.awg';
 import * as C from 'mayhem.const';
 import { tcp_ping } from 'mayhem.ping';
 import * as runstate from 'mayhem.runstate';
+import * as M from 'mayhem.metrics';
 
 const XRAY = getenv('MAYHEM_XRAY_BIN') ?? '/usr/libexec/mayhem/xray';
 const RUN = C.RUN_DIR;
@@ -108,7 +109,7 @@ const APPLY_STALE = 300;
 
 function apply_bg(cmd) {
 	fs.mkdir(RUN, 0700);
-	system(`(f=${RUN}/applying.$$; : > "$f"; ${cmd}; rm -f "$f") >/dev/null 2>&1 </dev/null &`);
+	system(`sh -c '(${cmd}) & pid=$!; f=${RUN}/applying.$pid; : > "$f"; wait $pid; rm -f "$f"' >/dev/null 2>&1 </dev/null &`);
 }
 
 // An explicit choice changes the restart key and capture generation. The
@@ -117,9 +118,18 @@ function reconnect_epoch(c) {
 	c.set('mayhem', 'settings', 'reconnect_epoch', `${(int(c.get('mayhem', 'settings', 'reconnect_epoch')) || 0) + 1}`);
 }
 
+const INIT = getenv('MAYHEM_INIT') ?? '/etc/init.d/mayhem';
+
+// Every reload of Mayhem from here, as a shell command. After "stop" on the
+// dashboard (RUN_DIR/stopped, until start, restart or enable; in RAM, so a
+// boot starts Mayhem as before) none: a reload would start it again.
+function reload_cmd(then) {
+	return `[ -f ${q(RUN + '/stopped')} ] || { ${INIT} reload${then ? ` && ${then}` : ''}; }`;
+}
+
 function reload_choice() {
 	const lib = getenv('MAYHEM_LIB_DIR') ?? '/usr/share/mayhem';
-	apply_bg(`/etc/init.d/mayhem reload && ucode ${q(lib + '/fallback.uc')}`);
+	apply_bg(reload_cmd(`ucode ${q(lib + '/fallback.uc')}`));
 }
 
 function applying() {
@@ -128,7 +138,19 @@ function applying() {
 	for (let f in fs.glob(`${RUN}/applying.*`) ?? []) {
 		const st = fs.stat(f);
 
-		if (st && now - st.mtime < APPLY_STALE)
+		if (!st)
+			continue;
+
+		const m = match(f, /applying\.([0-9]+)$/);
+		if (m) {
+			const pid = m[1];
+			if (!fs.stat(`/proc/${pid}`)) {
+				fs.unlink(f);
+				continue;
+			}
+		}
+
+		if (now - st.mtime < APPLY_STALE)
 			return true;
 
 		fs.unlink(f);
@@ -197,6 +219,23 @@ function uci_cursor() {
 	return c;
 }
 
+// The configuration as the dashboard reads it every poll: loaded again only
+// when the file or its uncommitted changes did (rpcd keeps this process),
+// with what the dashboard takes from all of it (has_connections) worked out
+// once. Read only: methods that change the configuration use uci_cursor().
+let uci_memo = null;
+
+function uci_cached() {
+	const save = getenv('MAYHEM_UCI_SAVE_DIR') ?? '/tmp/.uci';
+	const st = (f) => { const x = fs.stat(f); return x ? `${x.inode}.${x.mtime}.${x.size}` : '-'; };
+	const key = `${st(`${C.UCI_DIR ?? '/etc/config'}/mayhem`)}|${st(`${save}/mayhem`)}`;
+
+	if (uci_memo?.key != key)
+		uci_memo = { key: key, c: uci_cursor(), memo: {} };
+
+	return uci_memo;
+}
+
 // Commits the configs one after another; false when one could not be saved.
 function commit_all(c, ...configs) {
 	for (let cfg in configs)
@@ -226,15 +265,49 @@ function metrics_cmd() {
 	return `curl -s -m 2 http://127.0.0.1:${C.METRICS_PORT}/debug/vars`;
 }
 
+// The traffic counters and the observatory: from text curl printed (the
+// dashboard), or read here (2 s at most: rpcd and the whole web interface
+// wait meanwhile, and a hung xray must not hold them).
 function metrics(text) {
-	try {
-		const j = json(text ?? run(metrics_cmd()) ?? '');
+	const j = text != null ? M.parse(text) : M.vars(2000);
 
-		return { stats: j?.stats?.outbound ?? {}, observatory: j?.observatory ?? {} };
-	}
-	catch (e) {
-		return { stats: {}, observatory: {} };
-	}
+	return { stats: j?.stats?.outbound ?? {}, observatory: j?.observatory ?? {} };
+}
+
+// The servers of a section that an item of a fallback chain names: a
+// server by name (a tunnel also by its interface), "<subscription>\t<name>"
+// for a server of a subscription, "@<subscription>" for all of its servers.
+function chain_item_nodes(sinfo, item) {
+	const nodes = sinfo?.nodes ?? [];
+	const sub = match(item, /^@(.+)$/);
+	const tab = index(item, '\t');
+
+	if (sub)
+		return filter(nodes, (n) => n.source == sub[1]);
+
+	if (tab > 0)
+		return filter(nodes, (n) => n.source == substr(item, 0, tab) && (n.name == substr(item, tab + 1) || n.orig == substr(item, tab + 1)));
+
+	return filter(nodes, (n) => n.name == item || (n.iface != null && n.iface == item) || (n.orig != null && n.orig == item));
+}
+
+// The tag of the server a new chain starts with: the first that answered
+// the URL test of the dashboard or xray's own checks, in the chain's order;
+// else the first server of the chain. null when the chain names none.
+function chain_first(sinfo, chain) {
+	const warm = read_json(`${RUN}/warm.json`)?.results ?? {};
+	const obs = metrics()?.observatory ?? {};
+	let first = null;
+
+	for (let item in chain)
+		for (let n in chain_item_nodes(sinfo, item)) {
+			if (warm[n.tag]?.ms != null || obs[n.tag]?.alive == true)
+				return n.tag;
+
+			first ??= n.tag;
+		}
+
+	return first;
 }
 
 function os_release() {
@@ -276,6 +349,19 @@ function active_tag(s, obs) {
 	return best?.tag ?? s.nodes[0].tag;
 }
 
+// A server health.uc pinned in an automatic section in place of one that
+// stopped answering carries the traffic, while xray's own checks (minutes
+// apart) still count the dead one as the fastest. Only for the xray it was
+// pinned in, and while the section is not direct.
+function health_pin(health, pid, sn, s) {
+	const hs = health?.sections?.[sn];
+
+	if (s.mode != 'auto' || s.override || !hs?.pinned || hs.down || health.pid != pid)
+		return null;
+
+	return length(filter(s.nodes ?? [], (n) => n.tag == hs.pinned)) ? hs.pinned : null;
+}
+
 // The downloaded subscriptions as the dashboard needs them (number of
 // servers, info), kept while their file stays the same: the dashboard asks
 // every few seconds, and a subscription of 200 servers is a JSON file of
@@ -302,7 +388,7 @@ function sub_file(name) {
 function subscriptions() {
 	const out = [];
 	const state = read_json(`${RUN}/subs-state.json`) ?? {};
-	const c = uci_cursor();
+	const c = uci_cached().c;
 
 	c.foreach('mayhem', 'subscription', (s) => {
 		const cache = sub_file(s['.name']);
@@ -395,6 +481,7 @@ function install_running() {
 
 const NETIFD_PROTO = getenv('MAYHEM_NETIFD_PROTO_DIR') ?? '/lib/netifd/proto';
 const SYS_NET = getenv('MAYHEM_SYS_NET') ?? '/sys/class/net';
+const PROC = getenv('MAYHEM_PROC') ?? '/proc';
 
 function has_awg() {
 	return fs.access(`${NETIFD_PROTO}/amneziawg.sh`) == true && (NETIFD_PROTO != '/lib/netifd/proto' || fs.access('/usr/bin/awg') == true);
@@ -416,171 +503,8 @@ function proto_handlers() {
 	}
 }
 
-// --- WireGuard obfuscation ------------------------------------------------------
-// A tunnel's UDP goes to a local obfuscator, which carries it to the server:
-//   phobos   wg-obfuscator: the packets XORed with a key, optionally dressed as
-//            STUN; the server runs wg-obfuscator with the same key;
-//   faketcp  phantun: the packets as a TCP connection, for networks that cut
-//            or slow down UDP; the server runs phantun_server.
-// The peer's endpoint then is 127.0.0.1:<lport>. Mayhem keeps the real one in
-// "config obfs 'ob_<iface>'" (iface, kind, host, eport, port, lport, key,
-// masking, mtu) and shows it in the .conf. Fake TCP takes 12 bytes more than
-// UDP: the tunnel's MTU is 1428 at most then.
-const OBFS_BIN = {
-	phobos: getenv('MAYHEM_WG_OBFUSCATOR') ?? '/usr/libexec/mayhem/wg-obfuscator',
-	faketcp: getenv('MAYHEM_PHANTUN') ?? '/usr/libexec/mayhem/phantun_client'
-};
-const OBFS_MASKING = [ 'AUTO', 'STUN', 'NONE' ];
-const FT_MTU = 1428;
-// wg-obfuscator adds up to 28 bytes (STUN masking and padding) to each packet:
-// with WireGuard's usual 1420 a full packet no longer fits in 1500 and is cut
-// in two on the way, which networks with DPI often drop.
-const PH_MTU = 1380;
-const OBFS_PORT0 = 41820;
-
-function obfs_record(cm, iface) {
-	return cm.get('mayhem', `ob_${iface}`) == 'obfs' ? cm.get_all('mayhem', `ob_${iface}`) : null;
-}
-
-function obfs_first_peer(cn, proto, iface) {
-	let first = null;
-
-	cn.foreach('network', `${proto}_${iface}`, (p) => { first ??= p; });
-
-	return first;
-}
-
-// The firewall zone of the fake TCP devices (mhft*): out to the WAN, which
-// masquerades them like the LAN.
-function obfs_zone(cf) {
-	let found = false;
-
-	cf.foreach('firewall', 'zone', (z) => {
-		if (z.name == 'mayhem_ft')
-			found = true;
-	});
-
-	if (found)
-		return;
-
-	const zone = cf.add('firewall', 'zone');
-
-	cf.set('firewall', zone, 'name', 'mayhem_ft');
-	cf.set('firewall', zone, 'device', [ 'mhft+' ]);
-	cf.set('firewall', zone, 'input', 'REJECT');
-	cf.set('firewall', zone, 'output', 'ACCEPT');
-	cf.set('firewall', zone, 'forward', 'REJECT');
-
-	const fwd = cf.add('firewall', 'forwarding');
-
-	cf.set('firewall', fwd, 'src', 'mayhem_ft');
-	cf.set('firewall', fwd, 'dest', 'wan');
-}
-
-// A loopback address: the .conf of a tunnel made for a local obfuscator
-// (Phobos and others give "Endpoint = 127.0.0.1:13255") names it, not the
-// server.
 function loopback_host(h) {
 	return !!match(h ?? '', /^(127\.|::1$|\[::1\]$|localhost$)/);
-}
-
-// Sets the obfuscation of a tunnel: o = { kind: 'phobos'|'faketcp', port,
-// key, masking, host } or null for none. The obfuscator talks to o.host
-// (the server) when given, else to the peer's endpoint: the real one from the
-// .conf, or the record's while the endpoint is the local obfuscator. A
-// loopback address is never the server. Returns an error or null.
-function obfs_apply(cn, cm, cf, iface, proto, o) {
-	const rec = obfs_record(cm, iface);
-	const sid = `ob_${iface}`;
-	const peer = obfs_first_peer(cn, proto, iface);
-
-	if (!peer)
-		return 'the tunnel has no peer';
-
-	const local = loopback_host(peer.endpoint_host);
-	const given = o?.host ? trim(o.host) : null;
-	const host = given ?? ((local && rec && !loopback_host(rec.host)) ? rec.host : (local ? null : peer.endpoint_host));
-	// The WireGuard port of the server; a .conf for a local obfuscator has
-	// none, the obfuscator's port stands in.
-	const eport = !local ? (peer.endpoint_port ?? '51820') : (rec && !loopback_host(rec.host)) ? rec.eport : `${o?.port ?? rec?.eport ?? 51820}`;
-	const mtu_now = cn.get('network', iface, 'mtu');
-	// The tunnel's own MTU: from the record while fake TCP has set its own.
-	const mtu = (rec && rec.mtu != null) ? rec.mtu : (mtu_now ?? '-');
-
-	const restore = () => {
-		cn.set('network', peer['.name'], 'endpoint_host', host);
-		cn.set('network', peer['.name'], 'endpoint_port', `${eport}`);
-
-		if (mtu == '-')
-			cn.delete('network', iface, 'mtu');
-		else
-			cn.set('network', iface, 'mtu', mtu);
-	};
-
-	if (!o) {
-		if (rec) {
-			if (host)
-				restore();
-
-			cm.delete('mayhem', sid);
-		}
-
-		return null;
-	}
-
-	if (!OBFS_BIN[o.kind])
-		return 'unknown obfuscator';
-
-	if (!host || loopback_host(host))
-		return 'enter the address of the obfuscator server: the endpoint of this config is the obfuscator on the router (127.0.0.1)';
-
-	if (!match(host, /^[A-Za-z0-9.:_-]+$/))
-		return 'invalid obfuscator server address';
-
-	if (o.port < 1 || o.port > 65535)
-		return 'invalid obfuscator port';
-
-	if (o.kind == 'phobos' && !match(o.key ?? '', /^[!-~]{1,255}$/))
-		return 'the obfuscation key must have 1 to 255 visible characters, no spaces';
-
-	let lport = int(rec?.lport ?? 0);
-
-	if (!lport) {
-		const used = {};
-
-		cm.foreach('mayhem', 'obfs', (r) => { used[r.lport] = true; });
-
-		for (lport = OBFS_PORT0; used[`${lport}`]; lport++)
-			;
-	}
-
-	if (!rec)
-		cm.set('mayhem', sid, 'obfs');
-
-	cm.set('mayhem', sid, 'iface', iface);
-	cm.set('mayhem', sid, 'kind', o.kind);
-	cm.set('mayhem', sid, 'host', host);
-	cm.set('mayhem', sid, 'eport', `${eport}`);
-	cm.set('mayhem', sid, 'port', `${o.port}`);
-	cm.set('mayhem', sid, 'lport', `${lport}`);
-	cm.set('mayhem', sid, 'mtu', mtu);
-
-	if (o.kind == 'phobos') {
-		cm.set('mayhem', sid, 'key', o.key);
-		cm.set('mayhem', sid, 'masking', index(OBFS_MASKING, o.masking) >= 0 ? o.masking : 'AUTO');
-		cn.set('network', iface, 'mtu', `${(mtu != '-' && int(mtu) < PH_MTU) ? int(mtu) : PH_MTU}`);
-	}
-	else {
-		cm.delete('mayhem', sid, 'key');
-		cm.delete('mayhem', sid, 'masking');
-		cn.set('network', iface, 'mtu', `${(mtu != '-' && int(mtu) < FT_MTU) ? int(mtu) : FT_MTU}`);
-		obfs_zone(cf);
-	}
-
-	cn.set('network', peer['.name'], 'endpoint_host', '127.0.0.1');
-	cn.set('network', peer['.name'], 'endpoint_port', `${lport}`);
-
-	return null;
 }
 
 function network_cursor() {
@@ -714,13 +638,8 @@ function tunnel_endpoint(iface) {
 			ep ??= p.endpoint_host;
 		});
 
-	// An obfuscated tunnel sends to its obfuscator on 127.0.0.1, which would
-	// answer at once: the server is the one the obfuscator talks to.
-	if (ep == '127.0.0.1') {
-		const rec = obfs_record(uci_cursor(), iface);
-
-		ep = (rec?.host && !loopback_host(rec.host)) ? rec.host : null;
-	}
+	if (ep && loopback_host(ep))
+		ep = null;
 
 	return (ep && match(ep, /^[A-Za-z0-9.:_-]+$/)) ? ep : null;
 }
@@ -736,16 +655,19 @@ function find_node(state, tag) {
 
 const ACTIONS = {
 	// starting turns routing on as well: there is no separate switch for it
-	start: 'uci set mayhem.settings.enabled=1 && uci commit mayhem && /etc/init.d/mayhem start',
-	stop: '/etc/init.d/mayhem stop',
+	// "stop" holds until Mayhem is started again (reload_cmd())
+	start: `rm -f ${RUN}/stopped; uci set mayhem.settings.enabled=1 && uci commit mayhem && /etc/init.d/mayhem start`,
+	stop: `mkdir -p ${RUN} && : > ${RUN}/stopped; /etc/init.d/mayhem stop`,
 	// noted for the log: the next xray says it was restarted by hand
-	restart: `echo "$(date +%s) manual" > ${RUN}/restart.why; /etc/init.d/mayhem restart`,
-	reload: '/etc/init.d/mayhem reload',
-	enable: '/usr/bin/mayhem enable',
+	restart: `rm -f ${RUN}/stopped; echo "$(date +%s) manual" > ${RUN}/restart.why; /etc/init.d/mayhem restart`,
+	reload: reload_cmd(),
+	enable: `rm -f ${RUN}/stopped; /usr/bin/mayhem enable`,
 	disable: '/usr/bin/mayhem disable',
 	// start on boot or not; the service keeps its current state
 	autostart_on: '/etc/init.d/mayhem enable',
-	autostart_off: '/etc/init.d/mayhem disable'
+	autostart_off: '/etc/init.d/mayhem disable',
+	// the kill switch off: a hold while Mayhem is off ends at once
+	ks_off: '/usr/bin/mayhem killswitch off'
 };
 
 const IP_CHECK_URL = 'https://api.ipify.org';
@@ -763,9 +685,39 @@ function lines_of(text) {
 }
 
 function listening(ports) {
-	const out = run(`sh -c '. ${LIB}/lib.sh; for p in ${join(' ', ports)}; do mayhem_port_listening $p && echo $p; done' 2>/dev/null`) ?? '';
+	const want = {};
 
-	return map(lines_of(out), (l) => int(l));
+	for (let p in ports)
+		want[int(p)] = sprintf('%04X', int(p));
+
+	const found = {};
+
+	for (let f in [ '/proc/net/tcp', '/proc/net/tcp6' ]) {
+		const content = fs.readfile(f);
+
+		if (!content)
+			continue;
+
+		for (let line in split(content, '\n')) {
+			const parts = split(trim(line), /[ \t]+/);
+
+			if (length(parts) < 4 || uc(parts[3]) != '0A')
+				continue;
+
+			const m = match(parts[1], /:([0-9A-Fa-f]{4})$/);
+
+			if (!m)
+				continue;
+
+			const hex_port = uc(m[1]);
+
+			for (let p, hex in want)
+				if (hex == hex_port)
+					found[p] = true;
+		}
+	}
+
+	return filter(ports, (p) => found[int(p)] == true);
 }
 
 function diag_local() {
@@ -821,11 +773,31 @@ function diag_local() {
 		ver != '' ? ver : (fs.access(XRAY) ? 'installed' : 'not installed: mayhem xray-install'));
 
 	if (pid) {
+		const started = trim(fs.readfile(`${RUN}/xray.started`) ?? '');
+		if (started != '') {
+			const parts = split(started, /[ \t]+/);
+			const stime = int(parts[0]) || 0;
+			const swhy = parts[1] ?? '';
+			const uptime = stime > 0 ? (time() - stime) : 0;
+			const upstr = uptime >= 3600 ? sprintf('%dh %dm', int(uptime / 3600), int((uptime % 3600) / 60))
+				: (uptime >= 60 ? sprintf('%dm %ds', int(uptime / 60), uptime % 60) : sprintf('%ds', uptime));
+			check(res, 'xray', 'Last start', 'ok', sprintf('uptime %s%s', upstr, swhy != '' ? ` (reason: ${swhy})` : ''));
+		}
+
 		const rss = rss_kb(pid);
 		const limit = (st.memlimit_mib ?? 0) * 1024;
 
 		check(res, 'xray', 'Memory', (limit && rss > limit) ? 'warn' : 'ok',
 			sprintf('%d MiB in use, soft limit %d MiB', int((rss ?? 0) / 1024), st.memlimit_mib ?? 0));
+
+		const memtrim = trim(fs.readfile(`${RUN}/mem.trim`) ?? '');
+		if (memtrim != '') {
+			const mparts = split(memtrim, /[ \t]+/);
+			const mtime = int(mparts[0]) || 0;
+			const freed = int(mparts[1]) || 0;
+			const ago = mtime > 0 ? (time() - mtime) : 0;
+			check(res, 'xray', 'Memory trim', 'ok', sprintf('freed %d KiB (%ds ago)', freed, ago));
+		}
 
 		const want = [ C.TPROXY_PORT, C.DNS_PORT, C.API_PORT ];
 		const got = listening(want);
@@ -858,6 +830,22 @@ function diag_local() {
 
 	check(res, 'kernel', 'Policy routing', index(rules, `lookup ${C.RT_TABLE}`) >= 0 ? 'ok' : (active ? 'fail' : 'info'),
 		index(rules, `lookup ${C.RT_TABLE}`) >= 0 ? `rule for table ${C.RT_TABLE} is in place` : 'no rule');
+
+	// Flows in the firewall's flowtable skip the chains after ingress: the
+	// reset of old connections on a server or tunnel change (prerouting)
+	// does not reach them.
+	const fw = uci_open();
+	let offload = false;
+
+	if (fw.load('firewall'))
+		fw.foreach('firewall', 'defaults', (d) => {
+			if (d.flow_offloading == '1' || d.flow_offloading_hw == '1')
+				offload = true;
+		});
+
+	if (offload)
+		check(res, 'kernel', 'Flow offloading', 'warn',
+			'flow offloading is on: connections opened before a server or tunnel change keep their old path until they close');
 
 	// DNS
 	const dnsmasq_pid = trim(run('pidof dnsmasq 2>/dev/null') ?? '');
@@ -1352,8 +1340,11 @@ function backup_import(b, no_reload) {
 		}
 	}
 
+	// Only what a backup carries is replaced: the router's other sections
+	// (a tunnel's name, "config tunnel") stay as they are.
 	for (let s in uci_sections_ordered(c))
-		c.delete('mayhem', s['.name']);
+		if (index(BACKUP_TYPES, s['.type']) >= 0)
+			c.delete('mayhem', s['.name']);
 
 	const put = (s) => {
 		let name = s['.name'];
@@ -1424,7 +1415,7 @@ function backup_import(b, no_reload) {
 	}
 
 	if (!no_reload)
-		apply_bg('/etc/init.d/mayhem reload');
+		apply_bg(reload_cmd());
 
 	return { ok: true, sections: length(b.sections), files: files, kept_connections: !b.connections };
 }
@@ -1465,6 +1456,7 @@ function reset_config(keep) {
 
 	// Server keys of every section go to the server list; subscriptions stay.
 	const links = [];
+	const prev_uhttpd = uci_cursor().get('mayhem', 'settings', 'uhttpd_tuned');
 
 	if (keep)
 		for (let x in uci_sections_ordered(uci_cursor()))
@@ -1478,6 +1470,12 @@ function reset_config(keep) {
 		return res;
 
 	const c = uci_cursor();
+
+	if (prev_uhttpd != null) {
+		if (!c.get('mayhem', 'settings'))
+			c.set('mayhem', 'settings', 'settings');
+		c.set('mayhem', 'settings', 'uhttpd_tuned', prev_uhttpd);
+	}
 
 	if (!c.get('mayhem', 'pool'))
 		c.set('mayhem', 'pool', 'pool');
@@ -1497,7 +1495,7 @@ function reset_config(keep) {
 		c.set('mayhem', 'device', 'model', trim(fs.readfile('/tmp/sysinfo/model') ?? '') || 'OpenWrt');
 
 	c.commit('mayhem');
-	apply_bg('/etc/init.d/mayhem reload');
+	apply_bg(reload_cmd());
 
 	return { ok: true, kept_connections: !!keep };
 }
@@ -1532,7 +1530,7 @@ function rename_section(from, to) {
 	});
 
 	c.commit('mayhem');
-	apply_bg('/etc/init.d/mayhem reload');
+	apply_bg(reload_cmd());
 
 	return { ok: true };
 }
@@ -1603,7 +1601,7 @@ function rename_subscription(from, to) {
 		write_json(`${RUN}/subs-state.json`, st);
 	}
 
-	apply_bg('/etc/init.d/mayhem reload');
+	apply_bg(reload_cmd());
 
 	return { ok: true, name: to };
 }
@@ -1633,7 +1631,7 @@ function subs_download(name, always) {
 	}
 
 	if (rc == 3 || always)
-		apply_bg('/etc/init.d/mayhem reload');
+		apply_bg(reload_cmd());
 
 	return results;
 }
@@ -1643,17 +1641,41 @@ function subs_download(name, always) {
 const REPO = getenv('MAYHEM_REPO') ?? 'iknowdatfeel/project-mayhem';
 
 // Latest release of a GitHub repository, through the default section first.
-// Numbers of a version: "v26.9.30" -> [ 26, 9, 30 ].
+// Numbers of a version: "v26.9.30" -> [ 26, 9, 30 ]. Prerelease suffixes
+// (-exp.N, _preN) are separated so stable releases have priority.
+function parse_version(v) {
+	let s = replace(v ?? '', /^v/, '');
+	let pre = null;
+	const m = match(s, /^(.*?)(?:-exp\.?([0-9]+)|_pre([0-9]+))$/);
+
+	if (m) {
+		s = m[1];
+		pre = int(m[2] || m[3]) || 0;
+	}
+
+	const parts = map(split(s, /[.-]/), (x) => int(x) || 0);
+
+	return { parts: parts, pre: pre };
+}
+
 function version_parts(v) {
-	return map(split(replace(v ?? '', /^v/, ''), /[.-]/), (x) => int(x) || 0);
+	return parse_version(v).parts;
 }
 
 function version_newer(a, b) {
-	const x = version_parts(a), y = version_parts(b);
+	const va = parse_version(a), vb = parse_version(b);
+	const x = va.parts, y = vb.parts;
 
 	for (let i = 0; i < max(length(x), length(y)); i++)
 		if ((x[i] ?? 0) != (y[i] ?? 0))
 			return (x[i] ?? 0) > (y[i] ?? 0);
+
+	if (va.pre == null && vb.pre != null)
+		return true;
+	if (va.pre != null && vb.pre == null)
+		return false;
+	if (va.pre != null && vb.pre != null)
+		return va.pre > vb.pre;
 
 	return false;
 }
@@ -2029,6 +2051,8 @@ function connections(stop, device) {
 	if (stop)
 		return { ok: true };
 
+	fs.writefile(`${RUN}/conn.watch`, `${time()}\n`);
+
 	const log = C.CONN_LOG;
 	let st = fs.lstat(log);
 
@@ -2236,10 +2260,93 @@ function connections(stop, device) {
 		devices: sort(values(devs), (a, b) => b.count - a.count) };
 }
 
+// The URL test over kept-alive connections (warm.uc), as the dashboard asks
+// for it every poll (with its data) or at once (now: every server asked
+// anew): it keeps warm.uc running while the dashboard is open.
+function warm_state(now_all) {
+	try {
+		require('socket');
+	}
+	catch (e) {
+		return { error: 'no socket module' };
+	}
+
+	if (!xray_pid())
+		return { error: 'xray is not running' };
+
+	const state = read_json(`${RUN}/nodes.json`);
+
+	if (!match(state?.probe_url ?? C.DEFAULT_PROBE_URL, /^https?:\/\/[A-Za-z0-9.-]+(:[0-9]+)?(\/|$)/))
+		return { error: 'not an http(s):// URL' };
+
+	fs.mkdir(RUN, 0700);
+	fs.writefile(`${RUN}/warm.alive`, `${time()}\n`);
+
+	if (now_all)
+		fs.writefile(`${RUN}/warm.now`, '');
+
+	const pid = trim(fs.readfile(`${RUN}/warm.pid`) ?? '');
+	const fresh = !match(pid, /^[0-9]+$/) || index(fs.readfile(`/proc/${pid}/cmdline`) ?? '', 'warm.uc') < 0;
+
+	if (fresh)
+		system(`(ucode ${q(WARM)} >/dev/null 2>&1 </dev/null & echo $! > ${q(RUN + '/warm.pid')}) >/dev/null 2>&1 </dev/null`);
+
+	const all = {};
+
+	for (let sn in keys(state?.sections ?? {}))
+		for (let n in state.sections[sn].nodes ?? [])
+			if (n.tag)
+				all[n.tag] = true;
+
+	const j = read_json(`${RUN}/warm.json`);
+	const now = time();
+	const period = j?.period ?? 10;
+	const results = {};
+
+	// The servers warm.uc keeps connections through (it puts the ones in use
+	// first): the dashboard tests the others one by one. Until it has said,
+	// the first ones of the list.
+	let tags = filter(j?.tags ?? [], (t) => all[t]);
+
+	if (!length(tags))
+		for (let sn in sort(keys(state?.sections ?? {})))
+			for (let n in state.sections[sn].nodes ?? [])
+				if (n.tag && index(tags, n.tag) < 0 && length(tags) < WARM_MAX)
+					push(tags, n.tag);
+
+	const seen = {};
+
+	for (let t in tags)
+		seen[t] = true;
+
+	// A result older than three rounds is from a connection that stalled, or
+	// from an earlier run. Except while the run is new: then the numbers of
+	// the last one (up to half an hour old) show until its own come, rather
+	// than nothing.
+	const young = fresh || j?.started >= now - 3 * period;
+
+	for (let tag, r in j?.results ?? {})
+		if (seen[tag] && (r?.at >= now - 3 * period || (young && r?.ms != null && r?.at >= now - WARM_LAST)))
+			results[tag] = r;
+
+	return { ok: true, now: now, period: period, tags: tags, results: results };
+}
+
 const MARK = '@@mayhem@@';
 
+// Does dnsmasq run? By the names of the processes, as pidof tells, without
+// running it. Not by its pid files: OpenWrt starts dnsmasq in ujail, in a pid
+// namespace of its own, and the pid it writes is the one inside it.
+function dnsmasq_running() {
+	for (let f in fs.glob(`${PROC}/[0-9]*/comm`) ?? [])
+		if (trim(fs.readfile(f) ?? '') == 'dnsmasq')
+			return true;
+
+	return false;
+}
+
 function dashboard_cmd(pid, state) {
-	const parts = [ pid ? metrics_cmd() : 'true', `echo; echo ${MARK}dnsmasq; pidof dnsmasq 2>/dev/null` ];
+	const parts = [ pid ? metrics_cmd() : 'true' ];
 
 	for (let sn in keys(state.sections ?? {})) {
 		const dev = state.sections[sn].device;
@@ -2253,16 +2360,14 @@ function dashboard_cmd(pid, state) {
 
 function dashboard_parts(text) {
 	const chunks = split(text ?? '', MARK);
-	const res = { metrics: trim(chunks[0] ?? ''), dnsmasq: false, hs: {} };
+	const res = { metrics: trim(chunks[0] ?? ''), hs: {} };
 
 	for (let i = 1; i < length(chunks); i++) {
 		const nl = index(chunks[i], '\n');
 		const head = nl < 0 ? chunks[i] : substr(chunks[i], 0, nl);
 		const rest = nl < 0 ? '' : substr(chunks[i], nl + 1);
 
-		if (head == 'dnsmasq')
-			res.dnsmasq = trim(rest) != '';
-		else if (substr(head, 0, 3) == 'hs ')
+		if (substr(head, 0, 3) == 'hs ')
 			res.hs[substr(head, 3)] = rest;
 	}
 
@@ -2271,7 +2376,8 @@ function dashboard_parts(text) {
 
 function dashboard(pid, state, out) {
 		const m = pid ? metrics(out.metrics) : { stats: {}, observatory: {} };
-		const c = uci_cursor();
+		const cfg = uci_cached();
+		const c = cfg.c;
 		const sections = [];
 		const totals = { proxy: { up: 0, down: 0 }, direct: { up: 0, down: 0 }, all: { up: 0, down: 0 } };
 		const kernel_tun = {};
@@ -2292,7 +2398,7 @@ function dashboard(pid, state, out) {
 
 				push(nodes, {
 					tag: n.tag, name: n.name, protocol: n.protocol, address: n.address,
-					port: n.port, udp: n.udp, source: n.source, iface: n.iface, tproto: n.tproto, link: n.link, usec: n.usec,
+					port: n.port, udp: n.udp, source: n.source, iface: n.iface, tproto: n.tproto, has_link: n.link != null, usec: n.usec,
 					delay: o ? o.delay : null, alive: o ? o.alive : null,
 					up: t.uplink ?? 0, down: t.downlink ?? 0
 				});
@@ -2302,10 +2408,18 @@ function dashboard(pid, state, out) {
 				name: sn, type: s.type, mode: s.mode, balancer: s.balancer, pool: s.pool == true,
 				// A server standing in for a pinned one that does not answer
 				// (health.uc) carries the traffic.
-				active: s.type == 'proxy' ? (health.sections?.[sn]?.stand_in?.tag ?? active_tag(s, m.observatory)) : null,
+				active: s.type == 'proxy' ? (health_pin(health, pid, sn, s) ?? active_tag(s, m.observatory)) : null,
 				pinned: s.override ?? null, nodes: nodes, traffic: traffic,
 				chain: s.chain ?? null, units: s.units ?? null, items: s.items ?? null, subs: s.subs ?? null,
 				down: health.sections?.[sn]?.down == true,
+				// health.uc's last word (every 20 s) on whether the section's
+				// traffic gets through, by the logic of its mode; null when it
+				// has none for this xray or it is older than a minute
+				reachable: (health.pid == pid && health.sections?.[sn]?.checked >= time() - 60) ? health.sections[sn].ok : null,
+				// With the kill switch: the servers failed as many checks in
+				// a row as would send the section direct, and its traffic
+				// waits for them (one failed check is not that).
+				waiting: health.pid == pid && health.sections?.[sn]?.checked >= time() - 60 && health.sections[sn].waiting == true,
 				down_since: health.sections?.[sn]?.since ?? null
 			};
 
@@ -2365,12 +2479,38 @@ function dashboard(pid, state, out) {
 		}
 
 		let has_connections = length(filter(sections, (s) => length(s.nodes ?? []) || s.type == 'interface')) > 0;
-		for (let kind in [ 'subscription', 'tunnel', 'pool', 'section' ])
-			c.foreach('mayhem', kind, (s) => {
-				if (kind == 'subscription' || kind == 'tunnel' || length(entries(s.link)) ||
-				    length(entries(s.iface_node)) || s.outbound_json || s.type == 'interface')
-					has_connections = true;
-			});
+
+		if (cfg.memo.has_connections == null) {
+			cfg.memo.has_connections = false;
+
+			for (let kind in [ 'subscription', 'tunnel', 'pool', 'section' ])
+				c.foreach('mayhem', kind, (s) => {
+					if (kind == 'subscription' || kind == 'tunnel' || length(entries(s.link)) ||
+					    length(entries(s.iface_node)) || s.outbound_json || s.type == 'interface')
+						cfg.memo.has_connections = true;
+				});
+		}
+
+		has_connections ||= cfg.memo.has_connections;
+
+		let xray_started = null;
+		let mem_trim = null;
+
+		if (pid) {
+			const xs = trim(fs.readfile(`${RUN}/xray.started`) ?? '');
+			if (xs != '') {
+				const p = split(xs, /[ \t]+/);
+				if (length(p))
+					xray_started = { time: int(p[0]) || 0, why: p[1] ?? '' };
+			}
+
+			const mt = trim(fs.readfile(`${RUN}/mem.trim`) ?? '');
+			if (mt != '') {
+				const p = split(mt, /[ \t]+/);
+				if (length(p))
+					mem_trim = { time: int(p[0]) || 0, freed_kb: int(p[1]) || 0 };
+			}
+		}
 
 		return {
 			has_connections: has_connections,
@@ -2379,9 +2519,15 @@ function dashboard(pid, state, out) {
 			enabled: c.get('mayhem', 'settings', 'enabled') == '1',
 			autostart: length(fs.glob('/etc/rc.d/S[0-9][0-9]mayhem') ?? []) > 0,
 			running: pid != null,
+			// the kill switch holds the traffic of proxies and tunnels while
+			// Mayhem is off (mayhem_hold_up)
+			killswitch: c.get('mayhem', 'settings', 'killswitch') == '1',
+			held: pid == null && fs.access(`${RUN}/held`) == true,
 			applying: applying(),
 			active: pid != null && fs.access(`${RUN}/active`) == true,
 			xray: trim(fs.readfile(`${RUN}/xray.version`) ?? '') || null,
+			xray_started: xray_started,
+			mem_trim: mem_trim,
 			rss_kb: pid ? rss_kb(pid) : null,
 			rss_total_kb: pid ? rss_kb(pid, true) : null,
 			// what xray said when it would not start
@@ -2416,12 +2562,41 @@ const methods = {
 	},
 
 	// rpcd does not wait for the processes: the answer goes when they are done.
+	// warm: the URL test of the servers in the same answer (one call per
+	// poll instead of two), when it is the check method and xray runs.
 	dashboard: {
+		args: { warm: false },
 		call: function(req) {
 			const pid = xray_pid();
 			const state = read_json(`${RUN}/nodes.json`) ?? { sections: {} };
 
-			return deferred_sh(req, dashboard_cmd(pid, state), (out) => dashboard(pid, state, dashboard_parts(out)));
+			const dm = dnsmasq_running();
+
+			return deferred_sh(req, dashboard_cmd(pid, state), (out) => {
+				const parts = dashboard_parts(out);
+
+				parts.dnsmasq = dm;
+
+				const d = dashboard(pid, state, parts);
+
+				if (req.args?.warm == true && pid && d.ping_method == 'url')
+					d.warm = warm_state(false);
+
+				return d;
+			});
+		}
+	},
+
+	// The key of a server, for its editor: the dashboard's data does not
+	// carry the keys of all servers at every poll.
+	server_link: {
+		args: { section: '', tag: '' },
+		call: function(req) {
+			const state = read_json(`${RUN}/nodes.json`);
+			const n = filter(state?.sections?.[req.args?.section ?? '']?.nodes ?? [], (x) => x.tag == req.args?.tag)[0];
+
+			// usec: the subscription the server comes from, where its edit goes
+			return n ? { link: n.link, usec: n.usec } : { error: 'unknown server' };
 		}
 	},
 
@@ -2536,10 +2711,21 @@ const methods = {
 				else
 					c.delete('mayhem', ut, 'override');
 
-				reconnect_epoch(c);
+				const active = xray_pid() && fs.access(`${RUN}/active`);
+				const cur_tag = s.override ?? s.selected;
+				const cur_node = filter(s.nodes ?? [], (n) => n.tag == cur_tag)[0];
+				const is_cur_kernel = cur_node?.iface != null || cur_node?.protocol == 'interface';
+				const is_new_kernel = node?.iface != null || node?.protocol == 'interface';
+				const fast_path = active && !is_cur_kernel && !is_new_kernel;
+
+				if (!fast_path)
+					reconnect_epoch(c);
+
 				if (!c.commit('mayhem'))
 					return { error: 'the configuration could not be saved' };
+
 				apply(s);
+				let next_gen = null;
 				runstate.update(RUN, (st) => {
 					const x = st.sections?.[sn];
 
@@ -2547,10 +2733,40 @@ const methods = {
 						return false;
 
 					apply(x);
+					if (st.flow_path) {
+						const prev_gen = int(st.flow_path.generation ?? '1') || 1;
+						next_gen = (prev_gen % 3) + 1;
+						st.flow_path.generation = next_gen;
+					}
 				});
 
 				// The choice for the next start of xray as well.
 				runstate.set_overrides(RUN, { [s.balancer]: tag });
+
+				if (fast_path) {
+					const h = read_json(`${RUN}/health.json`) ?? {};
+					h.sections ??= {};
+					h.sections[sn] = { down: false, fails: 0, picked: time() };
+					let dns_changed = false;
+					if (h.dns?.down) {
+						fs.unlink(`${RUN}/dns.degraded`);
+						h.dns = {};
+						dns_changed = true;
+					}
+					write_json(`${RUN}/health.json`, h);
+					if (dns_changed)
+						system(`sh -c ${q(`. ${LIB}/lib.sh; mayhem_dns_servers xray`)} >/dev/null 2>&1`);
+
+					// The new generation into the running rules, apart (it waits
+					// for a reload that runs): connections through the old
+					// server are reset and reconnect through the new one. If
+					// the rules cannot be swapped in place, a reload does it.
+					if (next_gen != null)
+						system(`sh -c ${q(`. ${LIB}/lib.sh; mayhem_lock start || exit 0; if mayhem_net_generation; then mayhem_unlock start; ` +
+							`else mayhem_unlock start; ${reload_cmd()}; fi`)} >/dev/null 2>&1 </dev/null &`);
+
+					return { ok: true, fast: true };
+				}
 
 				health_now(sn);
 
@@ -2883,59 +3099,7 @@ const methods = {
 	warm: {
 		args: { now: false },
 		call: function(req) {
-			try {
-				require('socket');
-			}
-			catch (e) {
-				return { error: 'no socket module' };
-			}
-
-			if (!xray_pid())
-				return { error: 'xray is not running' };
-
-			const state = read_json(`${RUN}/nodes.json`);
-
-			if (!match(state?.probe_url ?? C.DEFAULT_PROBE_URL, /^https?:\/\/[A-Za-z0-9.-]+(:[0-9]+)?(\/|$)/))
-				return { error: 'not an http(s):// URL' };
-
-			fs.mkdir(RUN, 0700);
-			fs.writefile(`${RUN}/warm.alive`, `${time()}\n`);
-
-			if (req.args?.now)
-				fs.writefile(`${RUN}/warm.now`, '');
-
-			const pid = trim(fs.readfile(`${RUN}/warm.pid`) ?? '');
-
-			const fresh = !match(pid, /^[0-9]+$/) || index(fs.readfile(`/proc/${pid}/cmdline`) ?? '', 'warm.uc') < 0;
-
-			if (fresh)
-				system(`(ucode ${q(WARM)} >/dev/null 2>&1 </dev/null & echo $! > ${q(RUN + '/warm.pid')}) >/dev/null 2>&1 </dev/null`);
-
-			const tags = [], seen = {};
-
-			for (let sn in sort(keys(state?.sections ?? {})))
-				for (let n in state.sections[sn].nodes ?? [])
-					if (n.tag && !seen[n.tag] && length(tags) < WARM_MAX) {
-						seen[n.tag] = true;
-						push(tags, n.tag);
-					}
-
-			const j = read_json(`${RUN}/warm.json`);
-			const now = time();
-			const period = j?.period ?? 10;
-			const results = {};
-
-			// A result older than three rounds is from a connection that
-			// stalled, or from an earlier run. Except while the run is new: then
-			// the numbers of the last one (up to half an hour old) show until
-			// its own come, rather than nothing.
-			const young = fresh || j?.started >= now - 3 * period;
-
-			for (let tag, r in j?.results ?? {})
-				if (seen[tag] && (r?.at >= now - 3 * period || (young && r?.ms != null && r?.at >= now - WARM_LAST)))
-					results[tag] = r;
-
-			return { ok: true, now: now, period: period, tags: tags, results: results };
+			return warm_state(req.args?.now == true);
 		}
 	},
 
@@ -3083,8 +3247,7 @@ const methods = {
 		args: { what: '', version: '' },
 		call: function(req) {
 			const ver = match(req.args?.version ?? '', /^[0-9][0-9A-Za-z.-]*$/) ? req.args.version : '';
-			const cmds = { awg: 'awg-install', 'awg-remove': 'awg-remove', protos: 'tunnel-protos', dnsmasq: 'dnsmasq-full', xray: `xray-install ${ver}`, mayhem: 'self-update', wg: 'wg-install',
-				phobos: 'obfs-install phobos', faketcp: 'obfs-install faketcp' };
+			const cmds = { awg: 'awg-install', 'awg-remove': 'awg-remove', protos: 'tunnel-protos', dnsmasq: 'dnsmasq-full', xray: `xray-install ${ver}`, mayhem: 'self-update', wg: 'wg-install' };
 			const cmd = cmds[req.args?.what];
 
 			if (!cmd)
@@ -3234,7 +3397,7 @@ const methods = {
 			if (!commit_all(c, 'mayhem', 'network', 'firewall'))
 				return { error: 'the config could not be saved' };
 
-			apply_bg('/etc/init.d/network reload; /etc/init.d/firewall reload; /etc/init.d/mayhem reload');
+			apply_bg(`/etc/init.d/network reload; /etc/init.d/firewall reload; ${reload_cmd()}`);
 
 			// A config made for a local obfuscator: the dialog asks for the
 			// obfuscation and its server next.
@@ -3343,7 +3506,7 @@ const methods = {
 				swap_list(usec, 'chain', old, name);
 
 			c.commit('mayhem');
-			apply_bg('/etc/init.d/mayhem reload');
+			apply_bg(reload_cmd());
 
 			return { ok: true, name: name };
 		}
@@ -3441,18 +3604,10 @@ const methods = {
 				c.delete('mayhem', from);
 			}
 
-			// The obfuscation of the tunnel goes along.
-			if (c.get('mayhem', `ob_${from}`) == 'obfs') {
-				c.set('mayhem', `ob_${to}`, 'obfs');
-				copy_opts('mayhem', `ob_${from}`, `ob_${to}`);
-				c.set('mayhem', `ob_${to}`, 'iface', to);
-				c.delete('mayhem', `ob_${from}`);
-			}
-
 			if (!commit_all(c, 'network', 'firewall', 'mayhem'))
 				return { error: 'the config could not be saved' };
 
-			apply_bg('/etc/init.d/mayhem-obfs restart; /etc/init.d/network reload; /etc/init.d/firewall reload; /etc/init.d/mayhem reload');
+			apply_bg(`/etc/init.d/network reload; /etc/init.d/firewall reload; ${reload_cmd()}`);
 
 			return { ok: true, interface: to };
 		}
@@ -3495,6 +3650,7 @@ const methods = {
 		args: { component: 'all', lines: 300, level: 'all' },
 		call: function(req) {
 			const n = int(req.args?.lines ?? 300);
+			const limit = (n > 0 && n <= 2000) ? n : 300;
 			const level = req.args?.level ?? 'all';
 			const priorities = { emerg: 0, alert: 1, crit: 2, err: 3, error: 3, warn: 4, warning: 4, notice: 5, info: 6, debug: 7 };
 			if (index([ 'all', 'debug', 'info', 'warning', 'error' ], level) < 0)
@@ -3508,27 +3664,41 @@ const methods = {
 			const re = pats[req.args?.component] ?? pats.all;
 			const p = fs.popen('logread 2>&1', 'r');
 			if (!p) return { error: 'cannot read the system log' };
-			const text = p.read('all');
-			const rc = p.close();
-			if (rc !== 0 || text == null) return { error: trim(text ?? '') || 'cannot read the system log' };
-			// logread: ctime (five fields), facility.priority, then tag[pid]:.
-			// Match only the emitting process, never names inside its message.
-			const out = filter(lines_of(text), (l) => {
-				const fields = split(trim(l), /[[:space:]]+/);
-				const tag = replace(fields[6] ?? '', /(\[[0-9]+\])?:$/, '');
-				if (!match(tag, re)) return false;
-				if (level == 'all') return true;
-				let priority = priorities[split(fields[5] ?? '', '.')[1]];
-				if (match(tag, /^(xray|xray-run)$/i)) {
-					// Xray's own severity follows its Go logger timestamp.
-					// procd's stdout priority alone loses warning/error levels.
-					const own = match(join(' ', slice(fields, 7)), /^[0-9]{4}\/[0-9]{2}\/[0-9]{2} [0-9]{2}:[0-9]{2}:[0-9]{2}(\.[0-9]+)? \[(Debug|Info|Warning|Error)\]/i);
-					if (own) priority = priorities[lc(own[2])];
+			const out = [];
+			let l;
+			let raw_err = '';
+			while ((l = p.read('line')) != null && l != '') {
+				l = trim(l);
+				if (!l) continue;
+				if (!match(l, /(mayhem|xray|dnsmasq)/i)) {
+					if (length(raw_err) < 500)
+						raw_err = (raw_err ? raw_err + '\n' : '') + l;
+					continue;
 				}
-				return priority != null && priority <= priorities[level];
-			});
+				// logread: ctime (five fields), facility.priority, then tag[pid]:.
+				// Match only the emitting process, never names inside its message.
+				const fields = split(l, /[[:space:]]+/);
+				const tag = replace(fields[6] ?? '', /(\[[0-9]+\])?:$/, '');
+				if (!match(tag, re)) continue;
+				if (level != 'all') {
+					let priority = priorities[split(fields[5] ?? '', '.')[1]];
+					if (match(tag, /^(xray|xray-run)$/i)) {
+						// Xray's own severity follows its Go logger timestamp.
+						// procd's stdout priority alone loses warning/error levels.
+						const own = match(join(' ', slice(fields, 7)), /^[0-9]{4}\/[0-9]{2}\/[0-9]{2} [0-9]{2}:[0-9]{2}:[0-9]{2}(\.[0-9]+)? \[(Debug|Info|Warning|Error)\]/i);
+						if (own) priority = priorities[lc(own[2])];
+					}
+					if (priority == null || priority > priorities[level]) continue;
+				}
 
-			return { lines: slice(out, -(n > 0 && n <= 2000 ? n : 300)) };
+				push(out, l);
+				if (length(out) > limit * 2)
+					splice(out, 0, length(out) - limit);
+			}
+			const rc = p.close();
+			if (rc !== 0) return { error: raw_err || 'cannot read the system log' };
+
+			return { lines: slice(out, -limit) };
 		}
 	},
 
@@ -3544,7 +3714,7 @@ const methods = {
 
 			c.set('mayhem', 'settings', 'log_level', level);
 			c.commit('mayhem');
-			apply_bg('/etc/init.d/mayhem reload');
+			apply_bg(reload_cmd());
 
 			return { ok: true };
 		}
@@ -3564,10 +3734,29 @@ const methods = {
 	action: {
 		args: { name: 'restart' },
 		call: function(req) {
-			const cmd = ACTIONS[req.args?.name];
+			const name = req.args?.name;
+			const cmd = ACTIONS[name];
 
 			if (!cmd)
 				return { error: 'unknown action' };
+
+			// The kill switch off: saved at once, so the next poll already
+			// shows it off; the reload that puts it in force (from seconds to
+			// half a minute while the servers do not answer) runs apart -
+			// waited for here, it outlived the browser's call and the button
+			// seemed to do nothing.
+			if (name == 'ks_off') {
+				const c = uci_cursor();
+
+				c.set('mayhem', 'settings', 'killswitch', '0');
+
+				if (!c.commit('mayhem'))
+					return { error: 'the configuration could not be saved' };
+
+				apply_bg(cmd);
+
+				return { result: true };
+			}
 
 			run(`${cmd} >/dev/null 2>&1`);
 
@@ -3661,6 +3850,9 @@ const methods = {
 	// nothing changed: servers that did not make it into xray get there.
 	refresh_servers: {
 		call: function() {
+			// New servers, another chance with xray for the refused ones.
+			fs.unlink(`${RUN}/refused.json`);
+
 			return { results: subs_download('', true) ?? [] };
 		}
 	},
@@ -3684,11 +3876,9 @@ const methods = {
 				xray: xray_installed(),
 				xray_pinned: match(fs.readfile(`${LIB}/const.sh`) ?? '', /MAYHEM_XRAY_VERSION="([^"]*)"/)?.[1],
 				install: install_running() ? 'running' : null,
-				// tunnel protocols and WireGuard obfuscators: installed or not
+				// tunnel protocols: installed or not
 				awg: has_awg(),
-				wireguard: has_wireguard(),
-				phobos: fs.access(OBFS_BIN.phobos, 'x') == true,
-				faketcp: fs.access(OBFS_BIN.faketcp, 'x') == true
+				wireguard: has_wireguard()
 			};
 
 			if (req.args?.check) {
@@ -3807,7 +3997,7 @@ const methods = {
 					}
 					if (!c.commit('mayhem'))
 						return { error: 'the configuration could not be saved' };
-					apply_bg('/etc/init.d/mayhem reload');
+					apply_bg(reload_cmd());
 					return { ok: true, name: parsed.name };
 				}
 			}
@@ -3843,7 +4033,7 @@ const methods = {
 			}
 
 			c.commit('mayhem');
-			apply_bg('/etc/init.d/mayhem reload');
+			apply_bg(reload_cmd());
 
 			return { ok: true, name: parsed.name };
 		}
@@ -3939,9 +4129,6 @@ const methods = {
 				if (c.get('mayhem', iface) == 'tunnel')
 					c.delete('mayhem', iface);
 
-				if (c.get('mayhem', `ob_${iface}`) == 'obfs')
-					c.delete('mayhem', `ob_${iface}`);
-
 				if (index(gone, c.get('mayhem', 'settings', 'default_section')) >= 0)
 					c.delete('mayhem', 'settings', 'default_section');
 			}
@@ -3950,8 +4137,8 @@ const methods = {
 				return { error: 'the config could not be saved' };
 
 			apply_bg(mode == 'full'
-				? `ifdown ${q(iface)}; /etc/init.d/mayhem-obfs restart; /etc/init.d/network reload; /etc/init.d/firewall reload; /etc/init.d/mayhem reload`
-				: '/etc/init.d/mayhem reload');
+				? `ifdown ${q(iface)}; /etc/init.d/network reload; /etc/init.d/firewall reload; ${reload_cmd()}`
+				: reload_cmd());
 
 			return { ok: true };
 		}
@@ -3984,7 +4171,7 @@ const methods = {
 				if (!c.commit('mayhem'))
 					return { error: 'the config could not be saved' };
 
-				apply_bg('/etc/init.d/mayhem reload');
+				apply_bg(reload_cmd());
 
 				return { ok: true };
 			}
@@ -4054,7 +4241,7 @@ const methods = {
 			if (!c.commit('mayhem'))
 				return { error: 'the config could not be saved' };
 
-			apply_bg('/etc/init.d/mayhem reload');
+			apply_bg(reload_cmd());
 
 			return { ok: true };
 		}
@@ -4089,7 +4276,7 @@ const methods = {
 			if (!c.commit('mayhem'))
 				return { error: 'the config could not be saved' };
 
-			apply_bg('/etc/init.d/mayhem reload');
+			apply_bg(reload_cmd());
 
 			return { ok: true, hidden: left };
 		}
@@ -4116,35 +4303,18 @@ const methods = {
 
 			c.foreach('network', `${proto}_${iface}`, (p) => push(peers, { ...p }));
 
-			// With an obfuscator the .conf shows the server and the MTU of the
-			// tunnel itself, not the local obfuscator.
-			const rec = obfs_record(uci_cursor(), iface);
-
-			if (rec && length(peers) && loopback_host(peers[0].endpoint_host) && !loopback_host(rec.host)) {
-				peers[0].endpoint_host = rec.host;
-				peers[0].endpoint_port = rec.eport;
-
-				if (rec.mtu == '-')
-					delete opts.mtu;
-				else if (rec.mtu)
-					opts.mtu = rec.mtu;
-			}
-
 			return {
 				ok: true, proto: proto, conf: to_conf(opts, peers),
-				obfs: rec ? { kind: rec.kind, port: int(rec.port), key: rec.key, masking: rec.masking, host: loopback_host(rec.host) ? null : rec.host } : null,
-				// the .conf points at a local obfuscator: the server's address is asked for
-				loopback: length(peers) > 0 && loopback_host(peers[0].endpoint_host),
-				installed: { phobos: fs.access(OBFS_BIN.phobos, 'x') == true, faketcp: fs.access(OBFS_BIN.faketcp, 'x') == true }
+				loopback: length(peers) > 0 && loopback_host(peers[0].endpoint_host)
 			};
 		}
 	},
 
 	// Saves an edited .conf over the tunnel: the interface keeps its name,
 	// protocol, firewall zone and Mayhem settings; its keys, addresses,
-	// obfuscation parameters and peers are replaced. The tunnel reconnects.
+	// parameters and peers are replaced. The tunnel reconnects.
 	tunnel_set: {
-		args: { iface: '', conf: '', obfs: '', obfs_port: 0, obfs_key: '', obfs_masking: '', obfs_host: '' },
+		args: { iface: '', conf: '' },
 		call: function(req) {
 			const iface = req.args?.iface ?? '';
 			const c = uci_open();
@@ -4198,37 +4368,10 @@ const methods = {
 					c.set('network', sid, k, p[k]);
 			}
 
-			// Obfuscation: no "obfs" keeps it as it was, "none" turns it off,
-			// "phobos" or "faketcp" turns it on with the port (and key).
-			const cm = uci_cursor();
-			const rec = obfs_record(cm, iface);
-			const kind = req.args?.obfs ?? '';
-			let o = null;
-
-			if (kind == '' && rec)
-				o = { kind: rec.kind, port: int(rec.port), key: rec.key, masking: rec.masking };
-			else if (kind != '' && kind != 'none')
-				o = { kind: kind, port: int(req.args?.obfs_port ?? 0), key: req.args?.obfs_key, masking: req.args?.obfs_masking,
-					host: length(req.args?.obfs_host ?? '') ? req.args.obfs_host : null };
-
-			if (o && OBFS_BIN[o.kind] && !fs.access(OBFS_BIN[o.kind], 'x'))
-				return { error: `${o.kind == 'phobos' ? 'wg-obfuscator' : 'phantun'} is not installed` };
-
-			// The .conf brings the tunnel's own MTU: the record learns it.
-			if (rec)
-				cm.set('mayhem', `ob_${iface}`, 'mtu', c.get('network', iface, 'mtu') ?? '-');
-
-			c.load('firewall');
-
-			const err = obfs_apply(c, cm, c, iface, proto, o);
-
-			if (err)
-				return { error: err };
-
-			if (!commit_all(c, 'network', 'firewall') || !cm.commit('mayhem'))
+			if (!commit_all(c, 'network'))
 				return { error: 'the config could not be saved' };
 
-			apply_bg(`/etc/init.d/mayhem-obfs restart; /etc/init.d/firewall reload; /etc/init.d/network reload; sleep 2; ifup ${iface}; /etc/init.d/mayhem reload`);
+			apply_bg(`/etc/init.d/network reload; sleep 2; ifup ${iface}; ${reload_cmd()}`);
 
 			return { ok: true };
 		}
@@ -4309,6 +4452,25 @@ const methods = {
 				return { error: 'the configuration could not be saved' };
 
 			fs.unlink(`${RUN}/fallback.fails`);
+
+			// The chain itself comes with the reload below (the generator
+			// builds it, fallback.uc moves it along). Meanwhile the balancer
+			// is pointed at once at the first item of the new chain that
+			// answers, so the choice shows at once.
+			if (mode == 'fallback' && xray_pid() && fs.access(`${RUN}/active`)) {
+				const sinfo = state?.sections?.[sn];
+				const first = chain_first(sinfo, chain);
+
+				if (sinfo?.balancer && first) {
+					system(`${XRAY} api bo --server=127.0.0.1:${C.API_PORT} -b ${q(sinfo.balancer)} ${q(first)} >/dev/null 2>&1 &`);
+
+					const h = read_json(`${RUN}/health.json`) ?? {};
+					h.sections ??= {};
+					h.sections[sn] = { down: false, fails: 0, picked: time() };
+					write_json(`${RUN}/health.json`, h);
+				}
+			}
+
 			reload_choice();
 
 			if (kind != 'subscription')
@@ -4332,10 +4494,28 @@ function run_apart(name, inplace, req) {
 	if (!fs.access(CALL) || ubus_link() == null || type(req?.reply) != 'function')
 		return inplace(req);
 
-	const cmd = `MAYHEM_RPC_CHILD=1 exec ucode ${q(CALL)} ${q(name)} ${q(sprintf('%J', req.args ?? {}))}`;
+	// The arguments go in a file of the run directory (0600), not on the
+	// command line: one argument is limited to 128 KB (a backup with its
+	// lists is more), and the process list would show server keys.
+	fs.mkdir(RUN, 0700);
+
+	const now = clock();
+	const file = `${RUN}/call.${name}.${now[0]}.${now[1]}.json`;
+	const fh = fs.open(file, 'w', 0600);
+
+	if (!fh)
+		return inplace(req);
+
+	fh.write(sprintf('%J', req.args ?? {}));
+	fh.close();
+
+	const cmd = `MAYHEM_RPC_CHILD=1 exec ucode ${q(CALL)} ${q(name)} ${q(`@${file}`)}`;
 
 	return deferred_sh(req, cmd, (text) => {
 		let res = null;
+
+		// call.uc took it already, unless it never ran.
+		fs.unlink(file);
 
 		try {
 			res = json(text);

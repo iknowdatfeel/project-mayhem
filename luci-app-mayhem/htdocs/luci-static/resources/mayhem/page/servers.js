@@ -184,8 +184,90 @@ return baseclass.extend({
 		]);
 	},
 
+	// A new subscription under the name typed in its window: the section,
+	// not saved yet, is put under the new name with all its options.
+	renameNewSub(from, to, v) {
+		const data = this.map.data;
+
+		v = v || data.get('mayhem', from);
+
+		if (!v || from === to)
+			return Promise.resolve();
+
+		data.add('mayhem', 'subscription', to);
+
+		for (const k in v)
+			if (k.charAt(0) !== '.')
+				data.set('mayhem', to, k, v[k]);
+
+		data.remove('mayhem', from);
+		delete this.newSubs[from];
+		this.newSubs[to] = true;
+
+		return data.save().then(() => this.map.load()).then(() => this.map.reset());
+	},
+
+	addSubscriptionLink(link) {
+		let raw = (link || '').trim();
+		if (!raw)
+			return null;
+
+		if (!/^[a-zA-Z0-9_]+$/.test(raw) && !/^https?:\/\//i.test(raw) && (raw.indexOf('.') >= 0 || raw.indexOf('/') >= 0))
+			raw = 'https://' + raw;
+
+		let base = 'sub';
+		if (/^[a-zA-Z_][a-zA-Z0-9_]*$/.test(raw)) {
+			base = raw;
+		} else {
+			let host = '';
+			const m = raw.match(/:\/\/([^/:]+)/);
+			if (m) {
+				host = m[1].replace(/[^a-zA-Z0-9_]/g, '_').replace(/^_+|_+$/g, '');
+			} else {
+				const m2 = raw.match(/^([^/:]+)/);
+				if (m2)
+					host = m2[1].replace(/[^a-zA-Z0-9_]/g, '_').replace(/^_+|_+$/g, '');
+			}
+			base = host ? ('sub_' + host) : 'sub';
+		}
+		base = base.substring(0, 24);
+
+		const reserved = { main: 1, settings: 1, dns: 1, pool: 1, routing: 1 };
+		let sid = base;
+		let idx = 1;
+		while (reserved[sid] || uci.get('mayhem', sid) || (this.map && this.map.data && this.map.data.get('mayhem', sid))) {
+			sid = `${base}_${idx++}`;
+		}
+
+		// New, not saved yet: its window offers to change the name.
+		this.newSubs = this.newSubs || {};
+		this.newSubs[sid] = true;
+
+		if (this.map && this.map.data) {
+			this.map.data.add('mayhem', 'subscription', sid);
+			this.map.data.set('mayhem', sid, 'enabled', '1');
+			if (/^https?:\/\//i.test(raw))
+				this.map.data.set('mayhem', sid, 'url', raw);
+		} else {
+			uci.add('mayhem', 'subscription', sid);
+			uci.set('mayhem', sid, 'enabled', '1');
+			if (/^https?:\/\//i.test(raw))
+				uci.set('mayhem', sid, 'url', raw);
+		}
+
+		return sid;
+	},
+
 	handleSaveApply(ev, mode) {
 		const text = this.addInput ? this.addInput.value.trim() : '';
+		const subInput = document.querySelector('.cbi-section-create-name');
+		const subText = subInput ? subInput.value.trim() : '';
+
+		if (subText) {
+			this.addSubscriptionLink(subText);
+			if (subInput) subInput.value = '';
+		}
+
 		return (text ? this.addKeys(text) : Promise.resolve()).then(() => {
 			return this.handleSave(ev).then(() => {
 				if (this.addInput) this.addInput.value = '';
@@ -395,6 +477,8 @@ return baseclass.extend({
 		const m = new form.Map('mayhem');
 		let s, o;
 
+		this.map = m;
+
 		m.tabbed = true;
 
 		// --- servers by key (the tab shows no options of its own) ---
@@ -414,14 +498,51 @@ return baseclass.extend({
 		s.nodescriptions = true;
 		s.addbtntitle = _('Add subscription');
 		s.modaltitle = (section_id) => _('Subscription') + ' » ' + section_id;
+		s.addSubscriptionLink = function(link) {
+			return self.addSubscriptionLink(link);
+		};
 		s.renderSectionAdd = function(extra_class) {
-			const el = form.GridSection.prototype.renderSectionAdd.call(this, extra_class);
-			const name = el.querySelector('.cbi-section-create-name');
-
-			if (name)
-				name.placeholder = _('Enter a name');
-
+			const el = E('div', { 'class': 'cbi-section-create ' + (extra_class || '') }, [
+				E('div', {}, [
+					E('input', {
+						'type': 'text',
+						'class': 'cbi-section-create-name',
+						'placeholder': _('Paste a link'),
+						'style': 'width:100%; max-width:400px',
+						'keydown': ui.createHandlerFn(this, function(ev) {
+							if (ev.key === 'Enter') {
+								ev.preventDefault();
+								const input = ev.currentTarget;
+								return this.handleAdd(ev, input.value);
+							}
+						})
+					})
+				]),
+				E('button', {
+					'class': 'cbi-button cbi-button-add',
+					'click': ui.createHandlerFn(this, function(ev) {
+						const input = ev.currentTarget.parentNode.querySelector('.cbi-section-create-name');
+						return this.handleAdd(ev, input ? input.value : '');
+					})
+				}, [ _('Add subscription') ])
+			]);
 			return el;
+		};
+		s.handleAdd = function(ev, name) {
+			name = (name || '').trim();
+			if (!name) {
+				const input = document.querySelector('.cbi-section-create-name');
+				name = input ? input.value.trim() : '';
+			}
+			if (!name) {
+				ui.addNotification(null, E('p', _('Paste a subscription link first.')), 'error');
+				return Promise.resolve();
+			}
+			const sid = self.addSubscriptionLink(name);
+			const input = document.querySelector('.cbi-section-create-name');
+			if (input)
+				input.value = '';
+			return this.renderMoreOptionsModal(sid);
 		};
 		// A rename button next to "Edit" (a subscription that is saved already).
 		s.renderRowActions = function(section_id) {
@@ -437,8 +558,52 @@ return baseclass.extend({
 			return td;
 		};
 
+		// The window of a new subscription saves the name typed in it.
+		s.handleModalSave = function(modalMap, ev) {
+			const active = L.dom.findClassInstance(this.getActiveModalMap());
+			let p = null, vals = null;
+
+			self.pendingName = null;
+
+			// The values of the window as typed, before they are saved
+			// under the old name; then saved, then moved to the new name.
+			return active.parse().then(() => {
+				p = self.pendingName;
+				vals = p ? Object.assign({}, this.map.data.get('mayhem', p[0])) : null;
+			}).then(() => form.GridSection.prototype.handleModalSave.apply(this, [ modalMap, ev ])).then(() => {
+				self.pendingName = null;
+				return p ? self.renameNewSub(p[0], p[1], vals) : null;
+			});
+		};
+
 		s.tab('main', _('Subscription'));
 		s.tab('device', _('Device data'));
+
+		// The name of a new subscription (a saved one is renamed with ✎).
+		o = s.taboption('main', form.Value, '_name', _('Name'), _('Latin letters, digits and _.'));
+		o.modalonly = true;
+		o.cfgvalue = (sid) => sid;
+		o.render = function(option_index, section_id) {
+			return (self.newSubs && self.newSubs[section_id]) ? form.Value.prototype.render.apply(this, arguments) : E([]);
+		};
+		o.validate = function(section_id, value) {
+			const v = (value || '').trim();
+
+			if (!/^[A-Za-z0-9_]+$/.test(v))
+				return _('The subscription name may only contain letters, digits and _');
+
+			if (v !== section_id && ({ main: 1, settings: 1, dns: 1, pool: 1, routing: 1 }[v] || this.map.data.get('mayhem', v)))
+				return _('This name is taken');
+
+			return true;
+		};
+		o.write = function(section_id, value) {
+			const v = (value || '').trim();
+
+			if (v && v !== section_id)
+				self.pendingName = [ section_id, v ];
+		};
+		o.remove = function() {};
 
 		o = s.taboption('main', form.Flag, 'enabled', _('Enabled'));
 		o.default = '1';

@@ -43,6 +43,10 @@ while [ $# -gt 0 ]; do
 	shift
 done
 echo "curl $user $url" >> "$STUB/curl.log"
+# A section's own path (sec-<section>) answers only while $STUB/sec_ok exists.
+case "$user" in
+	sec-*) case "$url" in *dns=*) ;; *) if [ -f "$STUB/sec_ok" ]; then printf 204; else printf 000; fi; exit 0 ;; esac ;;
+esac
 case "$url" in
 	*/debug/vars) printf '{"observatory":%s}' "$(cat "$STUB/obs.json" 2>/dev/null || echo '{}')"; exit 0 ;;
 	*dns=*) if [ -f "$STUB/dns_dead" ]; then printf 000; else printf 200; fi; exit 0 ;;
@@ -52,7 +56,7 @@ EOF
 # shellcheck disable=SC2016
 # xray: "api bi" (which server a balancer takes) answers from $STUB/bi, the
 # rest is logged.
-printf '#!/bin/sh\n[ "$1 $2" = "api bi" ] && { cat "$STUB/bi" 2>/dev/null; exit 0; }\necho "$*" >> "$STUB/xray.log"\n' > "$T/bin/xray"
+printf '#!/bin/sh\n[ "$1 $2" = "api bi" ] && { echo "$*" >> "$STUB/bi.log"; cat "$STUB/bi" 2>/dev/null; exit 0; }\necho "$*" >> "$STUB/xray.log"\n' > "$T/bin/xray"
 # shellcheck disable=SC2016
 printf '#!/bin/sh\nshift 4; echo "$*" >> "$STUB/syslog"\n' > "$T/bin/logger"
 printf '#!/bin/sh\nexit 1\n' > "$T/bin/pidof"
@@ -92,13 +96,19 @@ echo '{ "n-auto-2": { "alive": true, "delay": 100 }, "n-ch-2": { "alive": true, 
 # Everything answers: nothing changes.
 tick
 if [ -s "$T/xray.log" ]; then bad "all answer: xray was told $(cat "$T/xray.log")"; else ok "all servers answer: nothing goes direct"; fi
+if "$UCODE" -e "const h = json(require('fs').readfile('$T/run/health.json')); exit(h.sections.pool.ok === true && h.sections.auto.ok === true && h.sections.ch.ok === true ? 0 : 1)"; then
+	ok "every section is noted as getting through"
+else
+	bad "sections noted: $(cat "$T/run/health.json")"
+fi
 
 # Every server goes silent; xray still believes in n-auto-2 and n-ch-2.
 printf 'n-pool-a\nn-ch-1\nn-ch-2\nn-ch-3\nn-auto-1\nn-auto-2\nn-auto-3\n' > "$T/dead"
 tick
 if [ -s "$T/xray.log" ]; then bad "one failed check is enough to go direct"; else ok "one failed check: not direct yet"; fi
 tick
-if [ "$(bo bal-pool direct)" = 1 ] && [ "$(bo bal-ch direct)" = 1 ] && down pool && down ch; then
+if [ "$(bo bal-pool direct)" = 1 ] && [ "$(bo bal-ch direct)" = 1 ] && down pool && down ch &&
+   "$UCODE" -e "const h = json(require('fs').readfile('$T/run/health.json')); exit(h.sections.pool.ok === false && h.sections.pool.checked > 0 ? 0 : 1)"; then
 	ok "server list and fallback chain go direct after two failed checks"
 else
 	bad "direct after two checks: $(cat "$T/xray.log")"
@@ -186,6 +196,24 @@ if [ "$(bo bal-auto n-auto-2)" = 1 ] && ! grep -q direct "$T/xray.log" && ! down
 else
 	bad "kill switch failover: $(cat "$T/xray.log")"
 fi
+
+# Kill switch on: one failed check of the server in use is not waiting; as
+# many in a row as would send the section direct are - the dashboard warns
+# then; an answer ends it.
+rm -f "$T/run/health.json"
+echo 'n-pool-a' > "$T/dead"
+waiting() { "$UCODE" -e "exit(json(require('fs').readfile('$T/run/health.json')).sections?.['$1']?.waiting ? 0 : 1)"; }
+tick
+if waiting pool; then bad "kill switch: one failed check is already waiting"; else ok "kill switch: one failed check is not waiting"; fi
+tick
+if waiting pool && ! down pool && ! grep -q direct "$T/xray.log"; then
+	ok "kill switch: two failed checks in a row, the traffic waits"
+else
+	bad "kill switch waiting: $(cat "$T/run/health.json")"
+fi
+: > "$T/dead"
+tick
+if waiting pool; then bad "kill switch: still waiting after the server answered"; else ok "kill switch: an answer ends the wait"; fi
 
 # Tunnels: with the kill switch the route stays and the balancer keeps the tunnel.
 rm -rf "$T/net"; mkdir -p "$T/net"
@@ -300,6 +328,63 @@ printf 'n-auto-2\n' > "$T/dead"
 tick
 if [ "$(bo bal-auto n-auto-1)" = 1 ] && ! down auto; then ok "the server xray says it uses is the one checked"; else bad "xray's choice: $(cat "$T/xray.log")"; fi
 rm -f "$T/bi"
+: > "$T/dead"
+
+# A plain automatic section whose own path answers: one check of the path,
+# no xray process to learn which server it uses, no check of each server.
+nodes false
+rm -f "$T/run/health.json" "$T/bi.log"
+: > "$T/sec_ok"
+: > "$T/curl.log"
+tick
+if [ ! -s "$T/bi.log" ] && grep -q ' sec-auto ' "$T/curl.log" && ! grep -q ' n-auto-' "$T/curl.log" && ! grep -q 'bal-auto' "$T/xray.log"; then
+	ok "automatic: its own path answers, xray is not asked which server it uses"
+else
+	bad "automatic path: bi $(cat "$T/bi.log" 2>/dev/null) / $(cat "$T/curl.log")"
+fi
+# Ten runs with nothing changed: xray is asked at most once which server a
+# balancer takes (an xray process of its own every time).
+i=0
+while [ "$i" -lt 10 ]; do
+	tick
+	i=$((i + 1))
+done
+n="$(grep -c 'api bi' "$T/bi.log" 2>/dev/null)"
+if [ "${n:-0}" -le 1 ]; then ok "ten runs, nothing changed: api bi at most once ($n)"; else bad "ten runs: api bi $n times"; fi
+rm -f "$T/sec_ok"
+
+# Sections are checked at once: three silent sections cost one wave of
+# checks and one of retries, not one per section.
+nodes false
+rm -f "$T/run/health.json"
+printf 'n-pool-a\nn-ch-1\nn-ch-2\nn-ch-3\nn-auto-1\nn-auto-2\nn-auto-3\n' > "$T/dead"
+# curl that takes a second for every check
+mv "$T/bin/curl" "$T/bin/curl.real"
+# shellcheck disable=SC2016
+printf '#!/bin/sh\ncase "$*" in *debug/vars*) exec "$(dirname "$0")/curl.real" "$@" ;; esac\nsleep 1\nexec "$(dirname "$0")/curl.real" "$@"\n' > "$T/bin/curl"
+chmod +x "$T/bin/curl"
+s0="$(date +%s)"
+tick
+took=$(( $(date +%s) - s0 ))
+mv "$T/bin/curl.real" "$T/bin/curl"
+if [ "$took" -le 4 ]; then
+	ok "silent sections are checked at once (${took} s for 1 s checks)"
+else
+	bad "silent sections took ${took} s for 1 s checks"
+fi
+: > "$T/dead"
+
+# The dashboard's URL test a moment ago: n-auto-3 answered it, n-auto-2 (the
+# observatory's next fastest) did not - n-auto-3 takes over.
+nodes false
+rm -f "$T/run/health.json"
+echo '{ "n-auto-1": { "alive": true, "delay": 50 }, "n-auto-2": { "alive": true, "delay": 100 }, "n-auto-3": { "alive": true, "delay": 300 } }' > "$T/obs.json"
+printf 'n-auto-1\n' > "$T/dead"
+: > "$T/run/warm.alive"
+printf '{ "results": { "n-auto-3": { "ms": 30, "at": %s }, "n-auto-2": { "error": "timeout", "at": %s } } }' "$(date +%s)" "$(date +%s)" > "$T/run/warm.json"
+tick
+if [ "$(bo bal-auto n-auto-3)" = 1 ]; then ok "the dashboard's URL test picks the server that takes over"; else bad "warm hint: $(cat "$T/xray.log")"; fi
+rm -f "$T/run/warm.alive" "$T/run/warm.json"
 : > "$T/dead"
 
 # One run of the scheduler (MAYHEM_TICK): a server that answered is not asked

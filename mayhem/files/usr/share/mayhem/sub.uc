@@ -128,7 +128,7 @@ function link_lines(text) {
 
 // Body -> { nodes: [{ name, link } | { name, outbound }], skipped }
 function parse_body(body, format) {
-	body = trim(body ?? '');
+	body = trim(replace(body ?? '', /^\xef\xbb\xbf/, ''));
 
 	const res = { nodes: [], skipped: 0, format: null };
 
@@ -172,7 +172,12 @@ function parse_body(body, format) {
 				}
 
 				delete ob.tag;
-				push(res.nodes, { name: cfg.remarks ?? cfg.name ?? `server ${n}`, outbound: ob });
+
+				// A name only from a string with something in it: a number,
+				// an object or "" in remarks would make a name of its own.
+				const named = (v) => type(v) == 'string' && trim(v) != '' ? v : null;
+
+				push(res.nodes, { name: named(cfg.remarks) ?? named(cfg.name) ?? `server ${n}`, outbound: ob });
 			}
 
 			return res;
@@ -186,8 +191,10 @@ function parse_body(body, format) {
 	// count: comments and other text around the keys are not servers.
 	let lines = link_lines(body);
 
-	if (!length(lines))
-		lines = link_lines(b64(body) ?? '');
+	if (!length(lines)) {
+		const decoded = trim(replace(b64(body) ?? '', /^\xef\xbb\xbf/, ''));
+		lines = link_lines(decoded);
+	}
 
 	if (!length(lines)) {
 		if (match(body, /^(<!doctype|<html|<\?xml|<head|<body)/i))
@@ -366,7 +373,9 @@ function route_section(sub, sections) {
 
 // One download at a time (the scheduler, a new subscription, the button on
 // the dashboard): a second one waits, and then finds fresh what the first
-// one downloaded. A lock left by a process that is gone is taken over.
+// one downloaded. A lock left by a process that is gone is taken over -
+// only while it still names that process (two waiters must not both take
+// it); a live owner keeps it, and after 5 minutes the waiter gives up.
 function lock(wait) {
 	const me = split(fs.readfile('/proc/self/stat') ?? '', ' ')[0];
 
@@ -379,13 +388,19 @@ function lock(wait) {
 		const pid = trim(fs.readfile(`${LOCK}/pid`) ?? '');
 		const st = fs.stat(LOCK);
 
-		if ((pid != '' && !fs.access(`/proc/${pid}`)) || (pid == '' && st && time() - st.mtime > 10) || i >= 300) {
-			fs.unlink(`${LOCK}/pid`);
-			fs.rmdir(LOCK);
+		if (!st)
+			continue;
+
+		if ((pid != '' && !fs.access(`/proc/${pid}`)) || (pid == '' && time() - st.mtime > 10)) {
+			if (trim(fs.readfile(`${LOCK}/pid`) ?? '') == pid) {
+				fs.unlink(`${LOCK}/pid`);
+				fs.rmdir(LOCK);
+			}
+
 			continue;
 		}
 
-		if (!wait)
+		if (!wait || i >= 300)
 			return false;
 
 		sleep(1000);

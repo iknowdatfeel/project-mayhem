@@ -48,6 +48,8 @@ function checkAgo(s) {
 
 function checkDetail(d) {
 	const details = {
+		'flow offloading is on: connections opened before a server or tunnel change keep their old path until they close':
+			_('Flow offloading is on: connections opened before a server or tunnel change keep their old path until they close.'),
 		'no generated configuration status': _('No generated configuration status'),
 		'remote DNS failed; queries may use the provider fallback': _('Remote DNS failed; queries may use the provider fallback'),
 		'VPN failed; traffic waits for it': _('VPN failed; traffic waits for it'),
@@ -61,6 +63,15 @@ function checkDetail(d) {
 	let m;
 	if ((m = /^VPN server answered, HTTP ([0-9]+)$/.exec(d || '')))
 		return _('VPN server answered, HTTP %s').format(m[1]);
+
+	if ((m = /^uptime (.+) \(reason: (.+)\)$/.exec(d || '')))
+		return _('uptime %s (reason: %s)').format(m[1], _(m[2]));
+
+	if ((m = /^uptime (.+)$/.exec(d || '')))
+		return _('uptime %s').format(m[1]);
+
+	if ((m = /^freed (\d+) KiB \((\d+)s ago\)$/.exec(d || '')))
+		return _('freed %s KiB (%ss ago)').format(m[1], m[2]);
 
 	if ((m = /^(\d+) (categories|servers)(, updated (.+))?$/.exec(d || '')))
 		return (m[2] === 'categories' ? _('Categories: %d') : _('%d servers')).format(+m[1]) +
@@ -85,10 +96,13 @@ const NAMES = {
 	'Warning': _('Warning'),
 	'Configuration': _('Configuration'),
 	'Version': _('Version'),
+	'Last start': _('Last start'),
 	'Memory': _('Memory'),
+	'Memory trim': _('Memory trim'),
 	'Ports': _('Ports'),
 	'nftables': 'Nftables',
 	'Policy routing': _('Policy routing'),
+	'Flow offloading': _('Flow offloading'),
 	'dnsmasq': 'Dnsmasq',
 	'Remote DNS': _('Remote DNS'),
 	'Clock': _('Clock'),

@@ -567,6 +567,11 @@ return baseclass.extend({
 				_('On: VPN traffic waits when its servers, DNS or Xray are unavailable. Direct sections bypass KillSwitch; their domain DNS uses domestic servers without Xray. Shared IPs and keyword/regexp rules may still need Xray. Off: a section none of whose servers answers sends its traffic direct (with a fallback chain - only when every server of the chain is down), and names of the remote DNS go to the provider\'s DNS while it does not answer; everything comes back by itself when they answer again.'));
 			o.rmempty = false;
 
+			o = s.option(form.Flag, 'killswitch_hold', _('Hold traffic while Mayhem is off'),
+				_('With KillSwitch on: traffic of proxy sections and tunnels (in global mode everything but exclusions and blocking) also waits while Mayhem is stopped or turned off, from the boot of the router on, until Mayhem starts or KillSwitch is turned off. Exclusions work.'));
+			o.depends('killswitch', '1');
+			o.rmempty = false;
+
 			o = s.option(form.DynamicList, 'bypass', _('Excluded source IP/MAC'),
 				_('Traffic and DNS of these devices are left alone, in any mode: for a work laptop with a VPN of its own, a game console and the like. An IP address, a subnet or a MAC address. Only addresses from 198.18.0.0/15 still go to Xray, which the router\'s DNS gives out for proxied sites.'));
 			o.datatype = 'or(macaddr,cidr,ipaddr)';
@@ -870,6 +875,12 @@ return baseclass.extend({
 			o = ss.option(form.DynamicList, 'list_url', _('Remote lists'),
 				_('Text lists with one domain, rule or subnet per line, "#" for comments. They are downloaded and updated automatically.'));
 			o.modalonly = true;
+			o.value('https://raw.githubusercontent.com/itdoginfo/allow-domains/main/Russia/inside-raw.lst', _('itdog: Domains (Russia/services)'));
+			o.value('https://community.antifilter.download/list/domains.lst', _('AntiFilter: Community domains'));
+			o.value('https://antifilter.download/list/allyouneed.lst', _('AntiFilter: All-you-need (IP)'));
+			o.value('https://antifilter.download/list/community.lst', _('AntiFilter: Community list (IP)'));
+			o.value('https://raw.githubusercontent.com/itdoginfo/allow-domains/main/dist/services/youtube.lst', _('itdog: YouTube'));
+			o.value('https://raw.githubusercontent.com/itdoginfo/allow-domains/main/dist/services/discord.lst', _('itdog: Discord'));
 			o.validate = function(section_id, value) {
 				return (!value || /^https?:\/\/\S+$/.test(value)) ? true : _('Expected an http(s):// address');
 			};

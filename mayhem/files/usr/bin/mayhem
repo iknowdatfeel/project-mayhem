@@ -12,6 +12,10 @@ Usage: mayhem <command>
   start | stop | restart     control the service
   enable | disable           turn routing on/off (saved in /etc/config/mayhem)
   status                     service state as JSON
+  killswitch on|off|status   the kill switch
+  killswitch hold on|off     with the kill switch on: the traffic of proxies and
+                             tunnels waits also while Mayhem is off (from the
+                             boot on), until Mayhem starts or it is turned off
   check                      validate the configuration without applying it
   show-config                print the generated xray config
   sub-update [NAME]          download subscriptions now (all or one)
@@ -31,9 +35,6 @@ Usage: mayhem <command>
                              sections in kernel mode); rolls back on failure
   bbr                        install the TCP BBR module and switch the router's TCP
                              to it (kept across reboots)
-  obfs-install phobos|faketcp
-                             install a WireGuard obfuscator: wg-obfuscator (Phobos)
-                             or phantun (fake TCP)
   version                    print versions
 EOF
 }
@@ -85,12 +86,37 @@ xray_asset() {
 }
 
 version_newer() {
-	# $1 newer than $2: numbers separated by dots, compared one by one
+	# $1 newer than $2: numbers compared one by one; prereleases (-exp.N, _preN)
+	# are older than the corresponding stable release
 	awk -v a="$1" -v b="$2" 'BEGIN {
+		sub(/^v/, "", a); sub(/^v/, "", b)
+
+		preA = -1; preB = -1
+		if (match(a, /(-exp\.?([0-9]+)|_pre([0-9]+))$/)) {
+			s = substr(a, RSTART, RLENGTH)
+			sub(/^(-exp\.?|_pre)/, "", s)
+			preA = s + 0
+			a = substr(a, 1, RSTART - 1)
+		}
+		if (match(b, /(-exp\.?([0-9]+)|_pre([0-9]+))$/)) {
+			s = substr(b, RSTART, RLENGTH)
+			sub(/^(-exp\.?|_pre)/, "", s)
+			preB = s + 0
+			b = substr(b, 1, RSTART - 1)
+		}
+
 		n = split(a, x, /[.-]/); m = split(b, y, /[.-]/)
-		for (i = 1; i <= (n > m ? n : m); i++)
-			if (x[i] + 0 != y[i] + 0)
-				exit !(x[i] + 0 > y[i] + 0)
+		len = (n > m ? n : m)
+		for (i = 1; i <= len; i++) {
+			xi = (i <= n ? x[i] + 0 : 0)
+			yi = (i <= m ? y[i] + 0 : 0)
+			if (xi != yi)
+				exit !(xi > yi)
+		}
+
+		if (preA == -1 && preB != -1) exit 0
+		if (preA != -1 && preB == -1) exit 1
+		if (preA != -1 && preB != -1) exit !(preA > preB)
 		exit 1
 	}'
 }
@@ -117,8 +143,9 @@ fetch() {
 		return 0
 	fi
 
+	# A hung connection must not hold the nightly update.
 	if command -v curl >/dev/null 2>&1; then
-		curl -fsSL --retry 2 -o "$2" "$1"
+		curl -fsSL --retry 2 --connect-timeout 15 -m 600 -o "$2" "$1"
 	else
 		wget -q -O "$2" "$1"
 	fi
@@ -162,6 +189,20 @@ cmd_xray_install() {
 
 	new="$MAYHEM_XRAY_BIN.new"
 	mkdir -p "$(dirname "$MAYHEM_XRAY_BIN")"
+
+	# The new binary is written next to the installed one: room for it and
+	# 1 MB more, or the installed xray stays untouched.
+	local size avail need
+	size="$(unzip -l "$tmp/xray.zip" "$bin" 2>/dev/null | awk -v b="$bin" '$NF == b { print $1; exit }')"
+	avail="$(df -k "$(dirname "$MAYHEM_XRAY_BIN")" 2>/dev/null | awk 'NR > 1 && $4 ~ /^[0-9]+$/ { a = $4 } END { print a }')"
+	if [ -n "$size" ] && [ -n "$avail" ]; then
+		need=$(( (size + 1048576 + 1023) / 1024 ))
+		if [ "$avail" -lt "$need" ]; then
+			echo "Not enough flash space: need $(( (need + 1023) / 1024 )) MB, have $(( avail / 1024 )) MB" >&2
+			rm -rf "$tmp"
+			return 1
+		fi
+	fi
 
 	# Extract only the binary; the bundled geo files are not used.
 	if ! unzip -p "$tmp/xray.zip" "$bin" > "$new" || [ ! -s "$new" ]; then
@@ -470,153 +511,6 @@ cmd_awg_install() {
 	echo "AmneziaWG is installed"
 }
 
-# --- WireGuard obfuscators ---------------------------------------------------------
-# Static builds from the GitHub releases of their projects, checked against the
-# SHA-256 GitHub lists for each file:
-#   phobos   wg-obfuscator (github.com/ClusterM/wg-obfuscator)
-#   faketcp  phantun client (github.com/dndx/phantun)
-WG_OBFUSCATOR_VERSION="${MAYHEM_WG_OBFUSCATOR_VERSION:-1.6}"
-PHANTUN_VERSION="${MAYHEM_PHANTUN_VERSION:-0.8.1}"
-OBFS_DIR="${MAYHEM_OBFS_DIR:-/usr/libexec/mayhem}"
-GH_API="${MAYHEM_GH_API:-https://api.github.com/repos}"
-
-# The build for this router: $1 phobos or faketcp. Prints the file names to
-# look for in the release, best first.
-obfs_assets() {
-	local arch
-
-	arch="$(. /etc/openwrt_release 2>/dev/null; echo "$DISTRIB_ARCH")"
-	[ -n "$arch" ] || arch="$(uname -m)"
-
-	if [ "$1" = phobos ]; then
-		local v="wg-obfuscator-v$WG_OBFUSCATOR_VERSION-linux"
-
-		# Static builds: a soft-float one runs on any FPU.
-		case "$arch" in
-			aarch64*)                 echo "$v-arm64.tar.gz" ;;
-			arm_cortex-a*)            echo "$v-armv7-softfp.tar.gz" ;;
-			arm_arm1176*|arm_mpcore*) echo "$v-armv6-softfp.tar.gz" ;;
-			arm_*)                    echo "$v-armv5-sf.tar.gz" ;;
-			mipsel_24kc*|mipsel_74kc*|mipsel_1004kc*) echo "$v-mipsel-mips32r2.tar.gz $v-mipsel-mips32-sf.tar.gz" ;;
-			mipsel_*|mipsle*)         echo "$v-mipsel-mips32-sf.tar.gz" ;;
-			mips64el_*)               echo "$v-mips64el.tar.gz" ;;
-			mips64_*)                 echo "$v-mips64.tar.gz" ;;
-			mips_24kc*|mips_74kc*)    echo "$v-mips-mips32r2.tar.gz $v-mips-mips32-sf.tar.gz" ;;
-			mips_*|mips)              echo "$v-mips-mips32-sf.tar.gz" ;;
-			x86_64)                   echo "$v-x64.tar.gz" ;;
-			i386_*|i686|i386)         echo "$v-x86.tar.gz" ;;
-			riscv64*)                 echo "$v-riscv64.tar.gz" ;;
-			*) return 1 ;;
-		esac
-	else
-		local t
-
-		case "$arch" in
-			aarch64*)                 t=aarch64-unknown-linux-musl ;;
-			arm_cortex-a*)            t=armv7-unknown-linux-musleabihf ;;
-			arm_*)                    t=arm-unknown-linux-musleabihf ;;
-			mipsel_*|mipsle*)         t=mipsel-unknown-linux-musl ;;
-			mips64_*)                 t=mips64-unknown-linux-muslabi64 ;;
-			mips_*|mips)              t=mips-unknown-linux-musl ;;
-			x86_64)                   t=x86_64-unknown-linux-musl ;;
-			i386_*|i686|i386)         t=i686-unknown-linux-musl ;;
-			*) return 1 ;;
-		esac
-
-		echo "phantun_$t.zip phantun_${t}_nightly.zip"
-	fi
-}
-
-cmd_obfs_install() {
-	local kind="$1" repo ver bin name dir="/tmp/mayhem-obfs" file="" f want sum
-
-	case "$kind" in
-		phobos)  repo=ClusterM/wg-obfuscator; ver="v$WG_OBFUSCATOR_VERSION"; name=wg-obfuscator; bin="$OBFS_DIR/wg-obfuscator" ;;
-		faketcp) repo=dndx/phantun; ver="v$PHANTUN_VERSION"; name=phantun_client; bin="$OBFS_DIR/phantun_client" ;;
-		*) echo "Usage: mayhem obfs-install phobos|faketcp" >&2; return 1 ;;
-	esac
-
-	if [ -x "$bin" ] && [ -z "${MAYHEM_FORCE:-}" ]; then
-		echo "$name is already installed"
-	else
-		set -- $(obfs_assets "$kind") || { echo "No $name build for this architecture" >&2; return 1; }
-		rm -rf "$dir"
-		mkdir -p "$dir/x" || return 1
-
-		if ! fetch "$GH_API/$repo/releases/tags/$ver" "$dir/release.json" || [ ! -s "$dir/release.json" ]; then
-			echo "Cannot read the $name $ver release: $GH_API/$repo/releases/tags/$ver" >&2
-			rm -rf "$dir"
-			return 1
-		fi
-
-		for f in "$@"; do
-			[ -n "$(awg_digest "$dir/release.json" "$f")" ] && { file="$f"; break; }
-		done
-
-		if [ -z "$file" ]; then
-			echo "No $name $ver build for this router ($*)" >&2
-			rm -rf "$dir"
-			return 1
-		fi
-
-		echo "Downloading $file..."
-
-		if ! fetch "https://github.com/$repo/releases/download/$ver/$file" "$dir/$file" || [ ! -s "$dir/$file" ]; then
-			echo "Download failed: $file" >&2
-			rm -rf "$dir"
-			return 1
-		fi
-
-		want="$(awg_digest "$dir/release.json" "$file")"
-		sum="$(sha256sum "$dir/$file" | awk '{ print $1 }')"
-
-		if [ "$sum" != "$want" ]; then
-			echo "Checksum mismatch for $file (got $sum, expected $want), refusing to install" >&2
-			rm -rf "$dir"
-			return 1
-		fi
-
-		case "$file" in
-			*.zip) unzip -o -q "$dir/$file" -d "$dir/x" ;;
-			*) tar -xzf "$dir/$file" -C "$dir/x" ;;
-		esac
-
-		f="$(find "$dir/x" -type f -name "$name" | head -n 1)"
-
-		if [ -z "$f" ] || [ ! -s "$f" ]; then
-			echo "No $name in $file" >&2
-			rm -rf "$dir"
-			return 1
-		fi
-
-		mkdir -p "$OBFS_DIR"
-
-		if ! cp "$f" "$bin.new" || ! chmod 755 "$bin.new" || ! mv -f "$bin.new" "$bin"; then
-			echo "Not enough flash space" >&2
-			rm -f "$bin.new"
-			rm -rf "$dir"
-			return 1
-		fi
-
-		rm -rf "$dir"
-		echo "$name ${ver#v} is installed"
-	fi
-
-	# phantun needs TUN devices from the kernel.
-	if [ "$kind" = faketcp ] && [ ! -e /dev/net/tun ] && ! pkg_has kmod-tun; then
-		pkg_update
-
-		if [ "$PM" = apk ]; then
-			apk add kmod-tun
-		else
-			opkg install kmod-tun
-		fi || { echo "Installing kmod-tun failed" >&2; return 1; }
-	fi
-
-	/etc/init.d/mayhem-obfs enable 2>/dev/null
-	echo "The obfuscator is ready"
-}
-
 first_file() {
 	local f
 
@@ -728,6 +622,49 @@ cmd_dnsmasq_full() {
 	return 1
 }
 
+# The kill switch from the command line: on Mayhem that runs a reload
+# applies it; on Mayhem that is off the hold goes up or ends at once (a
+# commit here does not reach the triggers of the services).
+cmd_killswitch() {
+	local opt=killswitch val
+
+	case "$1" in
+		hold) opt=killswitch_hold; shift ;;
+	esac
+
+	case "$1" in
+		on|off)
+			val="$([ "$1" = on ] && echo 1 || echo 0)"
+			uci set "mayhem.settings.$opt=$val"
+			uci commit mayhem
+
+			if mayhem_running; then
+				/etc/init.d/mayhem reload
+			else
+				mayhem_hold_sync
+			fi
+			cmd_killswitch status
+			;;
+		status|"")
+			if [ "$(uci -q get mayhem.settings.killswitch)" != 1 ]; then
+				echo "off"
+			elif ! mayhem_hold_on; then
+				echo "on; the traffic is not held while Mayhem is off (mayhem killswitch hold on)"
+			elif mayhem_running; then
+				echo "on, held while Mayhem is off: Mayhem runs"
+			elif [ -f "$MAYHEM_RUN_DIR/held" ]; then
+				echo "on, held while Mayhem is off: the traffic of proxies and tunnels is held"
+			else
+				echo "on, held while Mayhem is off: Mayhem has not run with it yet, nothing is held"
+			fi
+			;;
+		*)
+			echo "usage: mayhem killswitch [hold] on|off, mayhem killswitch status" >&2
+			return 1
+			;;
+	esac
+}
+
 case "$1" in
 	start|stop|restart|reload)
 		/etc/init.d/mayhem "$1"
@@ -740,6 +677,9 @@ case "$1" in
 		;;
 	status)
 		cmd_status
+		;;
+	killswitch)
+		cmd_killswitch "$2"
 		;;
 	check)
 		ucode "$MAYHEM_GEN" --check
@@ -790,14 +730,16 @@ case "$1" in
 	bbr)
 		cmd_bbr "$2"
 		;;
-	obfs-install)
-		cmd_obfs_install "$2"
-		;;
 	auto-update)
 		# Run by the scheduler once a day: installs a newer release when
 		# automatic updates are on.
 		[ "$(uci -q get mayhem.settings.auto_update)" = 1 ] || exit 0
+		[ -e "$MAYHEM_RUN_DIR/install.pid" ] && exit 0
+		# the scheduler starts no second one while this pid lives (it stays
+		# the same through the exec of self-update)
+		echo "$$" > "$MAYHEM_RUN_DIR/auto-update.pid"
 		tag="$(latest_tag)" || exit 1
+		date +%Y%m%d > "$MAYHEM_RUN_DIR/auto-update.day"
 		latest="${tag#v}"
 		version_newer "$latest" "$MAYHEM_VERSION" || { echo "Mayhem $MAYHEM_VERSION is up to date"; exit 0; }
 		mayhem_log "updating Mayhem $MAYHEM_VERSION to $latest"

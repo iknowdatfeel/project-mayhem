@@ -8,6 +8,8 @@ answers HTTP itself. What a server does depends on the user (the server tag):
   n-dead   SOCKS works, HTTP never answers
   n-503    answers 503
   n-close  answers with "Connection: close" (no keep-alive)
+  n-drop   keep-alive answers, but closes the connection when no request
+           comes within 0.5 s of an answer
   other    SOCKS refuses the user
 
 Writes a line per new connection and per request to the log given as argv[1].
@@ -47,7 +49,7 @@ def handle(c):
         recv_exact(c, 1)
         user = recv_exact(c, recv_exact(c, 1)[0]).decode()
         pw = recv_exact(c, recv_exact(c, 1)[0]).decode()
-        if pw != 'mayhem' or user not in ('n-fast', 'n-slow', 'n-dead', 'n-503', 'n-close'):
+        if pw != 'mayhem' or user not in ('n-fast', 'n-slow', 'n-dead', 'n-503', 'n-close', 'n-drop'):
             c.sendall(b'\x01\x01')
             return
         c.sendall(b'\x01\x00')
@@ -59,7 +61,10 @@ def handle(c):
         buf = b''
         while True:
             while b'\r\n\r\n' not in buf:
-                d = c.recv(4096)
+                try:
+                    d = c.recv(4096)
+                except socket.timeout:
+                    return
                 if not d:
                     return
                 buf += d
@@ -78,6 +83,8 @@ def handle(c):
                 return
             else:
                 c.sendall(b'HTTP/1.1 204 No Content\r\nContent-Length: 0\r\n\r\n')
+                if user == 'n-drop':
+                    c.settimeout(0.5)
     except (EOFError, OSError):
         pass
     finally:

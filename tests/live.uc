@@ -98,7 +98,7 @@ next_choice.runtime.flow_path = one.state.flow_path;
 next_choice.settings.reconnect_epoch = '1';
 const reset = build(next_choice);
 expect('an explicit choice invalidates old kernel and proxy flows', reset.state.flow_path.generation != one.state.flow_path.generation);
-expect('an explicit choice restarts Xray', key(reset) != key(one));
+expect('an explicit choice preserves Xray process key', key(reset) == key(one));
 next_choice.runtime.flow_path = reset.state.flow_path;
 expect('a routine reload keeps the flow generation', build(next_choice).state.flow_path.generation == reset.state.flow_path.generation);
 

@@ -84,7 +84,7 @@ const READ_ONLY = {
 	'system': [ 'board', 'info' ],
 	'file': [ 'read', 'list', 'stat' ],
 	'luci.mayhem': [ 'dashboard', 'status', 'geo', 'sysinfo', 'logs', 'tunnel_info', 'tunnel_get', 'parse_link',
-		'probe', 'exit_info', 'diagnose', 'components', 'backup_export' ]
+		'probe', 'probe_icmp', 'probe_tcp', 'warm', 'connections', 'exit_info', 'diagnose', 'components', 'backup_export' ]
 };
 
 function readOnly(data) {

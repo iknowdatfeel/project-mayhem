@@ -1,0 +1,27 @@
+#!/bin/sh /etc/rc.common
+# Mayhem's kill switch while Mayhem itself does not run: from the boot of the
+# router on (before the network comes up, also with Mayhem's autostart off),
+# the traffic Mayhem sends through proxies and tunnels waits until Mayhem
+# starts or the kill switch is turned off. Exclusions and blocking work.
+# No processes: the rules of the last start of Mayhem (on flash) go in, and
+# change with the configuration (the kill switch turned off ends the hold)
+# and with the provider's DNS servers when an interface comes up.
+# Mayhem that runs looks after itself (see mayhem_hold_sync in lib.sh).
+
+START=19
+USE_PROCD=1
+
+. /usr/share/mayhem/lib.sh
+
+start_service() {
+	mayhem_hold_sync
+}
+
+reload_service() {
+	mayhem_hold_sync
+}
+
+service_triggers() {
+	procd_add_reload_trigger mayhem
+	procd_add_raw_trigger "interface.*.up" 2000 /etc/init.d/mayhem-hold reload
+}
