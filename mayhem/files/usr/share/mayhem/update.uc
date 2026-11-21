@@ -206,14 +206,23 @@ function lock() {
 			return true;
 		}
 
-		// A lock left by a process that is gone is stale.
-		const pid = int(trim(fs.readfile(`${LOCK_DIR}/pid`) ?? '0'));
+		// A lock left by a process that is gone is stale. One without a
+		// pid may be a lock just taken (between mkdir and writefile): stale
+		// only after 10 s. It is taken over only while it still names that
+		// process: two waiters must not both take it.
+		const pid = trim(fs.readfile(`${LOCK_DIR}/pid`) ?? '');
+		const st = fs.stat(LOCK_DIR);
 
-		if (pid > 0 && fs.access(`/proc/${pid}`))
+		if (!st)
+			continue;
+
+		if (pid != '' ? fs.access(`/proc/${pid}`) : time() - st.mtime <= 10)
 			return false;
 
-		fs.unlink(`${LOCK_DIR}/pid`);
-		fs.rmdir(LOCK_DIR);
+		if (trim(fs.readfile(`${LOCK_DIR}/pid`) ?? '') == pid) {
+			fs.unlink(`${LOCK_DIR}/pid`);
+			fs.rmdir(LOCK_DIR);
+		}
 	}
 
 	return false;

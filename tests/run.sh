@@ -1307,7 +1307,7 @@ else
 fi
 
 # Locks: no two critical parts at once, no lock taken from a live owner.
-if out="$(sh "$ROOT/tests/locks.sh" 2>&1)"; then
+if out="$(UCODE="$UCODE" sh "$ROOT/tests/locks.sh" 2>&1)"; then
 	ok "locks: starts one at a time, folds of the connection log too"
 else
 	bad "locks: $(printf '%s' "$out" | grep -v '^ok')"
