@@ -27,7 +27,9 @@ cat > "$FIX/subs/mysub.json" <<'JSON'
   "info": { "title": "Test sub", "userinfo": { "upload": 1000, "download": 5000000, "total": 100000000000, "expire": 1798761600 },
             "hwid": { "active": true, "limit": false, "not_supported": false } },
   "nodes": [ { "name": "NL 1", "link": "ss://YWVzLTI1Ni1nY206cHc@1.2.3.4:8388#NL 1" },
-             { "name": "DE 2", "link": "ss://YWVzLTI1Ni1nY206cHc@1.2.3.5:8388#DE 2" } ] }
+             { "name": "DE 2", "link": "ss://YWVzLTI1Ni1nY206cHc@1.2.3.5:8388#DE 2" },
+             { "name": "<img src=x onerror=\"window.__mhxss=1\">",
+               "link": "ss://YWVzLTI1Ni1nY206cHc@<img src=x onerror=window.__mhxss=2>:8388#%3Cimg%20src%3Dx%20onerror%3D%22window.__mhxss%3D1%22%3E" } ] }
 JSON
 
 uc "$FILES/usr/share/mayhem/update.uc" geo --force >/dev/null

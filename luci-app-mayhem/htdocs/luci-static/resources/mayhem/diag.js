@@ -4,6 +4,9 @@
 'require ui';
 'require mayhem.common as mh';
 
+// text, never markup, from a string child (see mayhem.common)
+const E = mh.E;
+
 // Service controls of the dashboard: diagnostics, logs and the backup open in
 // dialogs; restart, stop or start, autostart on boot.
 

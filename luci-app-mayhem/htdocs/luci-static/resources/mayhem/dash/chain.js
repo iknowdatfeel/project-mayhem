@@ -1,6 +1,10 @@
 'use strict';
 'require baseclass';
 'require ui';
+'require mayhem.common as mh';
+
+// text, never markup, from a string child (see mayhem.common)
+const E = mh.E;
 
 // The fallback chains of the dashboard: the window that orders the servers
 // of a section, and the server list's chain, whose items may be servers of

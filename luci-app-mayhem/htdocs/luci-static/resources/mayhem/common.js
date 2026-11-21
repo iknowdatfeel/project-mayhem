@@ -2,6 +2,30 @@
 'require baseclass';
 'require dom';
 
+// LuCI's E() and dom.content() put a string child into innerHTML (an array of
+// strings becomes text nodes). Mayhem shows names, addresses and errors that
+// come from subscriptions, remote servers and LAN devices, so a server called
+// <img onerror=...> would run its script in the administrator's session. E()
+// of Mayhem makes text of every string child; each module of the package
+// takes it as `const E = mh.E;`. Markup is only ever built from elements.
+function text(v) {
+	return [ String(v == null ? '' : v) ];
+}
+
+function safeE() {
+	const a = Array.prototype.slice.call(arguments);
+	// E(tag, data) or E(tag, attrs, data), as dom.create() tells them apart
+	const i = (a.length > 1 && (!(a[1] instanceof Object) || Array.isArray(a[1]))) ? 1 : 2;
+	const t = typeof a[i];
+
+	if (t === 'string' || t === 'number' || t === 'boolean')
+		a[i] = text(a[i]);
+
+	return dom.create.apply(dom, a);
+}
+
+const E = safeE;
+
 // Shared look of the Mayhem pages: bordered boxes, status colors and small
 // line icons. Colors come from the theme where it defines them (bootstrap),
 // with plain fallbacks for other themes.
@@ -328,12 +352,15 @@ function ipEye() {
 
 // Text with IP addresses, hidden by default, and the eye next to it.
 function ipSpan(text, eye) {
-	const span = E('span', { 'data-mh-ip': String(text == null ? '' : text) }, ipText(text));
+	// a text node, like every later update by ipRefresh()
+	const span = E('span', { 'data-mh-ip': String(text == null ? '' : text) }, [ ipText(text) ]);
 
 	return eye === false ? span : E('span', { 'class': 'mh-ip' }, [ span, ipEye() ]);
 }
 
 return baseclass.extend({
+	E: safeE,
+	text: text,
 	icon: icon,
 	maskIps: maskIps,
 	ipText: ipText,
