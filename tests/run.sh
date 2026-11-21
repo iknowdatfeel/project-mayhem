@@ -169,6 +169,14 @@ else
 	bad "TCP ping: $out"
 fi
 
+# errno numbers differ between architectures (EINPROGRESS is 115 on x86 and
+# ARM, 150 on MIPS; ECONNREFUSED 111 and 146): no code compares with one.
+if out="$(grep -rnE 'error\(true\)|err(no)? *[!=]= *[1-9][0-9]' "$FILES" "$ROOT/luci-app-mayhem/root")"; then
+	bad "errno numbers in the code: $out"
+else
+	ok "no errno numbers in the code"
+fi
+
 # subscription responses
 sub_check() {
 	# $1 file, $2 jq-free expectation: substring that must appear in the output

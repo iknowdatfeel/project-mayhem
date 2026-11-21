@@ -45,6 +45,12 @@ expect('one address and port, one result', r.open2?.ms == r.open?.ms, r);
 expect('a closed port is refused', r.closed?.error == 'refused', r);
 expect('no port', r.noport?.error == 'no port', r);
 
+// connect() fails at once (no route to a broadcast address): an error, not a
+// time, though the socket is writable with no error left.
+r = tcp_ping([ { key: 'bcast', host: '255.255.255.255', port: 80 } ], 500, false);
+expect('a connect() that fails at once', r.bcast?.error == 'no connection', r);
+
+
 // A port of the silent host: a listener that never accepts, its queue
 // filled first.
 const keep = [];

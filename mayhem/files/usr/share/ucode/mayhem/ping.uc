@@ -49,6 +49,13 @@ export function tcp_ping(targets, timeout, v6, budget) {
 		return null;
 	}
 
+	// "refused" by the error's name, not its number: ECONNREFUSED is 111
+	// on x86 and ARM, 146 on MIPS. The socket module has no errno constants
+	// (in case a later one does, it is used); the libc's text is the same on
+	// every architecture.
+	const refused = (err) => socket.ECONNREFUSED != null ? err == socket.ECONNREFUSED
+		: socket.strerror?.(err) == 'Connection refused';
+
 	const res = {};
 	const addr = {};
 	const until = ms_now() + (budget ?? 15000);
@@ -169,13 +176,13 @@ export function tcp_ping(targets, timeout, v6, budget) {
 			c.start = ms_now();
 			busy[c.ip] = true;
 
-			// EINPROGRESS: the handshake is under way.
-			if (s.connect({ family: c.family, address: c.ip, port: c.port }) == null && socket.error(true) != 115) {
-				c.err = 'no connection';
-				finish(c);
-				continue;
-			}
-
+			// A non-blocking connect() returns null while the handshake is
+			// under way (EINPROGRESS) and on an error right away; errno
+			// numbers differ between architectures (115 on x86 and ARM, 150
+			// on MIPS), so the result is never told by them: the socket is
+			// waited for either way, SO_ERROR and peername() then say how
+			// it went.
+			s.connect({ family: c.family, address: c.ip, port: c.port });
 			push(open, c);
 		}
 
@@ -209,13 +216,15 @@ export function tcp_ping(targets, timeout, v6, budget) {
 			// Writable: connected, or refused (the error says which).
 			const err = c.sock.getopt(socket.SOL_SOCKET, socket.SO_ERROR);
 
-			if (err == 0) {
+			// A socket whose connect() failed at once is writable too, with
+			// no error left: only peername() tells it is not connected.
+			if (err == 0 && c.sock.peername()) {
 				const ms = t - c.start;
 
 				c.best = c.best == null ? ms : min(c.best, ms);
 			}
 			else if (c.best == null)
-				c.err = err == 111 ? 'refused' : 'no connection';
+				c.err = refused(err) ? 'refused' : 'no connection';
 
 			done[c.key] = true;
 			finish(c);
