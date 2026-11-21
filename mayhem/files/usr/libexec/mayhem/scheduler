@@ -66,7 +66,9 @@ minute_jobs() {
 dl_pid=""
 job_pid=""
 nap_pid=""
+hc_pid=""
 on_term() {
+	[ -n "$hc_pid" ] && kill "$hc_pid" 2>/dev/null
 	[ -n "$job_pid" ] && kill "$job_pid" 2>/dev/null
 	if [ -n "$dl_pid" ]; then
 		if command -v pgrep >/dev/null 2>&1; then
@@ -93,12 +95,14 @@ nap() {
 
 # A check that hangs (a stuck xray, a server that holds a connection) must
 # not hold the loop: the watchdog that restarts such an xray runs in it too.
+# Run in the background (`bounded ... &`): exec makes the command that
+# process, so killing its pid stops the command, not only a subshell.
 bounded() {
 	if command -v timeout >/dev/null 2>&1; then
-		timeout "$@"
+		exec timeout "$@"
 	else
 		shift
-		"$@"
+		exec "$@"
 	fi
 }
 
@@ -134,8 +138,15 @@ while :; do
 	# answering go direct and come back (kill switch off), or get back from
 	# direct (kill switch on): health.uc, one process for all of it.
 	# MAYHEM_TICK: a server that answered is not asked twice in one run.
-	[ -f "$MAYHEM_RUN_DIR/active" ] &&
-		bounded 120 env MAYHEM_TICK="$$.$tick" ucode "$MAYHEM_LIB_DIR/health.uc" >/dev/null 2>&1
+	# In the background and waited for, like nap: a run that waits for a
+	# dead server (9 s and more) held the TERM of a stop until procd killed
+	# the scheduler, and the run went on after the stop.
+	if [ -f "$MAYHEM_RUN_DIR/active" ]; then
+		bounded 120 env MAYHEM_TICK="$$.$tick" ucode "$MAYHEM_LIB_DIR/health.uc" >/dev/null 2>&1 &
+		hc_pid=$!
+		wait "$hc_pid"
+		hc_pid=""
+	fi
 
 	tick=$((tick + 1))
 	nap 20

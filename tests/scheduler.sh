@@ -220,6 +220,37 @@ wait "$pid" 2>/dev/null
 ms=$((($(date +%s%N) - t0) / 1000000))
 if [ "$ms" -lt 1000 ]; then ok "TERM stops the scheduler while it sleeps"; else bad "TERM took $ms ms"; fi
 
+# A stop while health.uc waits for a dead server: the scheduler goes at once
+# and the run with it, nothing of it is left.
+cat > "$T/bin/sleep" <<'EOF2'
+#!/bin/sh
+/bin/sleep "$(awk -v s="$1" 'BEGIN { print s / 100 }')"
+EOF2
+cat > "$T/bin/ucode" <<'EOF2'
+#!/bin/sh
+case "$*" in
+	*health.uc*) echo $$ > "$STUB/hc.pid"; exec /bin/sleep 30 ;;
+esac
+exit 0
+EOF2
+chmod +x "$T/bin/sleep" "$T/bin/ucode"
+rm -f "$T/hc.pid"
+PATH="$T/bin:$PATH" MAYHEM_SUB=sub MAYHEM_UPDATE=upd sh "$FILES/usr/libexec/mayhem/scheduler" &
+pid=$!
+for _ in 1 2 3 4 5 6 7 8 9 10; do [ -s "$T/hc.pid" ] && break; /bin/sleep 0.2; done
+t0="$(date +%s%N)"
+kill "$pid" 2>/dev/null
+wait "$pid" 2>/dev/null
+ms=$((($(date +%s%N) - t0) / 1000000))
+/bin/sleep 0.3
+hc="$(cat "$T/hc.pid" 2>/dev/null)"
+if [ -n "$hc" ] && [ "$ms" -lt 1000 ] && ! kill -0 "$hc" 2>/dev/null; then
+	ok "TERM stops the scheduler during a long check, the check with it"
+else
+	bad "TERM during a check: $ms ms, check ${hc:-not started} $(kill -0 "$hc" 2>/dev/null && echo still runs)"
+fi
+[ -n "$hc" ] && kill "$hc" 2>/dev/null
+
 rm -rf "$T"
 [ "$fail" = 0 ] && echo "scheduler tests passed"
 exit "$fail"
