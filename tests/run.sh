@@ -1232,6 +1232,34 @@ else
 	ok "many servers: 150 are checked every 5 minutes, a few as set"
 fi
 
+# More tunnel sections in kernel mode than marks: the one past the limit
+# works through xray as a whole, nothing of it half in kernel mode.
+python3 - "$ROOT/tests/models/tunnels.json" "$OUT/tunmax.json" <<'PY'
+import json, sys
+m = json.load(open(sys.argv[1]))
+m['sections'] = [{'.name': 't%d' % i, 'type': 'interface', 'enabled': '1', 'interface': 'wg%d' % i, 'domain': ['t%d.test' % i]} for i in range(33)]
+m['runtime']['ifaces'] = {'wg%d' % i: {'device': 'wg%d' % i, 'up': True, 'v6': False} for i in range(33)}
+json.dump(m, open(sys.argv[2], 'w'))
+PY
+mkdir -p "$OUT/tunmax"
+if ! uc "$FILES/usr/share/mayhem/gen.uc" --model "$OUT/tunmax.json" --out "$OUT/tunmax" 2>"$OUT/tunmax.log"; then
+	bad "33 tunnels: the generator failed: $(cat "$OUT/tunmax.log")"
+elif ! "$XRAY" run -test -c "$OUT/tunmax/xray.json" >"$OUT/tunmax.xray.log" 2>&1; then
+	bad "33 tunnels: xray rejects the config: $(tail -n 3 "$OUT/tunmax.xray.log")"
+elif ! uc -e "
+	const n = json(require('fs').readfile('$OUT/tunmax/nodes.json')).sections;
+	const x = json(require('fs').readfile('$OUT/tunmax/xray.json'));
+	const ruled = (t) => length(filter(x.routing.rules, (r) => r.balancerTag == 'bal-' + t)) > 0;
+	exit((n.t31?.mode == 'kernel' && n.t32?.mode == 'xray' && n.t32?.mark == null && ruled('t32') &&
+		index(require('fs').readfile('$OUT/tunmax/dnsmasq.conf') ?? '', 't32.test') < 0) ? 0 : 1);
+" 2>/dev/null; then
+	bad "33 tunnels: the 33rd is not wholly through xray"
+elif ! grep -q 'this one works through Xray' "$OUT/tunmax/status.json"; then
+	bad "33 tunnels: no warning for the 33rd"
+else
+	ok "33 tunnels: the one past the limit of kernel mode works through xray"
+fi
+
 # The SHA-256 of an AmneziaWG package from the release description of GitHub.
 mkdir -p "$OUT/awgd-bin"
 printf '#!/bin/sh\nexec %s -L "%s/usr/share/ucode/*.uc" "$@"\n' "$UCODE" "$FILES" > "$OUT/awgd-bin/ucode"

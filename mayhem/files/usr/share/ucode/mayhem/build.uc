@@ -2087,7 +2087,17 @@ export function build(model) {
 			}
 
 			const inf = iface_info(model, iface);
-			const kernel = (sec.route_mode ?? 'kernel') != 'xray';
+			let kernel = (sec.route_mode ?? 'kernel') != 'xray';
+
+			// Past the marks and tables of kernel mode the section works
+			// through xray, as a whole: decided before anything of it is
+			// added (the DNS, the domains of the tunnels, the outbound), or
+			// it was half in kernel mode with no rules.
+			if (kernel && tun_index >= C.TUN_MAX) {
+				kernel = false;
+				warn(`section "${name}": at most ${C.TUN_MAX} tunnel sections can work in kernel mode, this one works through Xray`);
+			}
+
 			const tag = `i-${name}-0`;
 			const bal = `bal-${name}`;
 			const tv6 = v6 && inf.v6;
@@ -2122,11 +2132,7 @@ export function build(model) {
 				(tv6 ? tun_domains : tun_domains4).add_all(domains);
 
 			if (kernel) {
-				if (++tun_index > C.TUN_MAX) {
-					info.error = 'too many tunnel sections';
-					warn(`section "${name}": at most ${C.TUN_MAX} tunnel sections can work in kernel mode, skipped`);
-					continue;
-				}
+				tun_index++;
 
 				const t = {
 					name: name, index: tun_index, device: inf.device, v6: tv6,
