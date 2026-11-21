@@ -32,10 +32,19 @@ function cursor() {
 const vless = 'vless://af4505da-4332-4ffd-99fd-50013e4e8f34@de.example:443?security=tls&sni=de.example#Old%20DE';
 const vmess = 'vmess://' + b64enc(sprintf('%J', { v: '2', ps: 'Old VM', add: 'vm.example', port: '443', id: 'af4505da-4332-4ffd-99fd-50013e4e8f34', net: 'tcp' }));
 
+// a vmess key whose base64 needs padding, written without it
+let pad = '';
+let bare_b64;
+
+while (substr(bare_b64 = b64enc(sprintf('%J', { v: '2', ps: 'Bare VM', add: 'vm2.example', port: '443', id: 'af4505da-4332-4ffd-99fd-50013e4e8f34', net: 'tcp', x: pad })), -1) != '=')
+	pad += 'a';
+
+const bare = 'vmess://' + replace(bare_b64, /=+$/, '');
+
 let c = cursor();
 
 c.set('mayhem', 'pool', 'pool');
-c.set('mayhem', 'pool', 'link', [ vless, vmess ]);
+c.set('mayhem', 'pool', 'link', [ vless, vmess, bare ]);
 c.set('mayhem', 'pool', 'override', 'Old DE');
 c.set('mayhem', 'mysub', 'subscription');
 c.set('mayhem', 'mysub', 'url', 'http://example.invalid/sub');
@@ -58,6 +67,12 @@ expect('key: the pinned server follows', c.get('mayhem', 'pool', 'override') == 
 r = call('rename_server', { link: vmess, name: 'Новый VM' });
 c = cursor();
 expect(`vmess key: ${r.error}`, r.ok === true && parse_link(c.get('mayhem', 'pool', 'link')[1]).name == 'Новый VM');
+
+// a vmess key without the = padding of its base64 (common in subscriptions)
+expect('the test key has no padding', substr(bare_b64, -1) == '=' && substr(bare, -1) != '=' && parse_link(bare).name == 'Bare VM');
+r = call('rename_server', { link: bare, name: 'Без добивки' });
+c = cursor();
+expect(`vmess key without padding: ${r.error}`, r.ok === true && parse_link(c.get('mayhem', 'pool', 'link')[2]).name == 'Без добивки');
 
 r = call('rename_server', { section: 'pool', tag: 'n-pool-2', name: 'Нидерланды' });
 c = cursor();

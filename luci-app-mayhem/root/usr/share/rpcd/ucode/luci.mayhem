@@ -6,7 +6,7 @@
 'use strict';
 
 import * as fs from 'fs';
-import { parse_link, outbound_host, outbound_port, refused_by_xray } from 'mayhem.links';
+import { parse_link, outbound_host, outbound_port, refused_by_xray, b64 } from 'mayhem.links';
 import { list_key, entries, as_list, dnsmasq_nftset } from 'mayhem.rules';
 import { parse_conf, is_amnezia, uci_sections, to_conf } from 'mayhem.awg';
 import * as C from 'mayhem.const';
@@ -579,7 +579,8 @@ function rename_link(link, name) {
 	}
 	else if (match(link, /^vmess:\/\/[A-Za-z0-9+\/=_-]+$/)) {
 		try {
-			const j = json(b64dec(replace(replace(substr(link, 8), '-', '+'), '_', '/')));
+			// tolerant base64: vmess keys often come without the = padding
+			const j = json(b64(substr(link, 8)));
 
 			j.ps = name;
 			out = 'vmess://' + b64enc(sprintf('%J', j));
