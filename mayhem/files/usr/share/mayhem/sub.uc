@@ -446,18 +446,27 @@ function update(name, force, only_new) {
 		if (!force && !only_new && st.url == sub.url && st.updated && now - st.updated < hours * 3600)
 			continue;
 
+		// A failed address is tried again a while later; a new one at once.
+		// Told by the state alone: the cache is not read for it.
+		if (!force && st.error && (st.url == null || st.url == sub.url) && now - (st.last_try ?? 0) < RETRY_S)
+			continue;
+
 		const cache = read_json(path);
 
 		if (!force) {
 			const last = max(cache?.updated ?? 0, st.updated ?? 0);
 			const is_fresh = cache?.url == sub.url && (only_new || now - last < hours * 3600);
 
-			if (is_fresh)
+			// Fresh by the cache: the state in RAM learns it (after a reboot
+			// it is empty), or the cache on flash would be read and parsed
+			// again every minute until the next update is due.
+			if (is_fresh) {
+				st.url = cache.url;
+				st.updated = last;
+				st.info ??= cache.info;
+				state[sn] = st;
 				continue;
-
-			// A failed address is tried again a while later; a new one at once.
-			if (st.error && (st.url == null || st.url == sub.url) && now - (st.last_try ?? 0) < RETRY_S)
-				continue;
+			}
 		}
 
 		tried++;
