@@ -2678,8 +2678,8 @@ const methods = {
 			if (s.mode == 'fallback' && !to_manual)
 				return { error: 'the fallback chain chooses the server' };
 
-			// The rest once xray took the choice.
-			const finish = () => {
+			// The rest once xray took the choice (took: it was told).
+			const finish = (took) => {
 				// Remember the choice by name: tags change when the server list does.
 				// A tunnel by its interface, which its name can change without.
 				const c = uci_cursor();
@@ -2724,8 +2724,26 @@ const methods = {
 				if (!fast_path)
 					reconnect_epoch(c);
 
-				if (!c.commit('mayhem'))
+				// Not saved: xray goes back to the choice it had, so that it,
+				// nodes.json and the overrides of its next start agree with
+				// the config. Apart: rpcd waits for no process.
+				if (!c.commit('mayhem')) {
+					if (took) {
+						// what the running xray had: running.overrides
+						let prev = null;
+
+						for (let l in split(fs.readfile(`${RUN}/running.overrides`) ?? '', '\n')) {
+							const p = split(l, ' ');
+
+							if (p[0] == s.balancer && p[1])
+								prev = p[1];
+						}
+
+						system(`${XRAY} api bo --server=127.0.0.1:${C.API_PORT} -b ${q(s.balancer)} ${prev != null ? q(prev) : '-r'} >/dev/null 2>&1 </dev/null &`);
+					}
+
 					return { error: 'the configuration could not be saved' };
+				}
 
 				apply(s);
 				let next_gen = null;
@@ -2786,7 +2804,7 @@ const methods = {
 			// rpcd answers when it is done, without a ucode child process.
 			const cmd = `${XRAY} api bo --server=127.0.0.1:${C.API_PORT} -b ${q(s.balancer)} ${tag != '' ? q(tag) : '-r'} >/dev/null 2>&1; echo $?`;
 
-			return deferred_sh(req, cmd, (out) => trim(out ?? '1') != '0' ? { error: 'xray did not accept the choice' } : finish());
+			return deferred_sh(req, cmd, (out) => trim(out ?? '1') != '0' ? { error: 'xray did not accept the choice' } : finish(true));
 		}
 	},
 
