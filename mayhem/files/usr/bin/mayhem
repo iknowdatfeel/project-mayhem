@@ -361,8 +361,21 @@ bbr_on() {
 	grep -qw bbr "$f" 2>/dev/null || modprobe tcp_bbr >/dev/null 2>&1 || insmod tcp_bbr >/dev/null 2>&1
 	grep -qw bbr "$f" 2>/dev/null || return 1
 
+	# The firmware's own choice, for the removal of the package (postrm):
+	# kept from the first switch, as BBR is the current one after it.
+	local was
+	was="$(sed -n 's/^# was: //p' "$BBR_SYSCTL" 2>/dev/null | head -n 1)"
+	[ -n "$was" ] || was="$(sysctl -n net.ipv4.tcp_congestion_control 2>/dev/null)"
+	case "$was" in
+		bbr | *[!a-z0-9_]*) was="" ;;
+	esac
+
 	mkdir -p "$(dirname "$BBR_SYSCTL")"
-	printf '# Mayhem: TCP BBR for the connections of the router (xray to its servers)\nnet.ipv4.tcp_congestion_control=bbr\n' > "$BBR_SYSCTL"
+	{
+		echo '# Mayhem: TCP BBR for the connections of the router (xray to its servers)'
+		[ -n "$was" ] && echo "# was: $was"
+		echo 'net.ipv4.tcp_congestion_control=bbr'
+	} > "$BBR_SYSCTL"
 	sysctl -w net.ipv4.tcp_congestion_control=bbr >/dev/null 2>&1
 }
 

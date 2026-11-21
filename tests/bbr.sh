@@ -35,7 +35,7 @@ cat > "$T/bin/modprobe" <<'S'
 S
 printf '#!/bin/sh\nexit 1\n' > "$T/bin/insmod"
 # shellcheck disable=SC2016
-printf '#!/bin/sh\necho "$*" >> "$STUB/sysctl.log"\n' > "$T/bin/sysctl"
+printf '#!/bin/sh\necho "$*" >> "$STUB/sysctl.log"\n[ "$1" = -n ] && cat "$STUB/current" 2>/dev/null\nexit 0\n' > "$T/bin/sysctl"
 chmod +x "$T/bin/"* "$T/mayhem"
 
 run() {
@@ -53,6 +53,23 @@ if run && grep -q 'apk add kmod-tcp-bbr' "$T/pm.log" && grep -q 'tcp_congestion_
 else
 	bad "bbr install: $(cat "$T/pm.log" "$T/sysctl.log" 2>/dev/null)"
 fi
+
+# The firmware's choice before BBR is kept for the removal of the package.
+reset
+echo westwood > "$T/current"
+if run && grep -q '^# was: westwood$' "$T/sysctl.d/12-mayhem-bbr.conf"; then
+	ok "bbr: the TCP congestion control before it is kept"
+else
+	bad "bbr: the one before is not kept: $(cat "$T/sysctl.d/12-mayhem-bbr.conf" 2>/dev/null)"
+fi
+# switched on again (BBR is the current one now): the first one stays
+echo bbr > "$T/current"
+if run && grep -q '^# was: westwood$' "$T/sysctl.d/12-mayhem-bbr.conf"; then
+	ok "bbr: switched on again, the firmware's choice stays"
+else
+	bad "bbr again: $(cat "$T/sysctl.d/12-mayhem-bbr.conf" 2>/dev/null)"
+fi
+: > "$T/current"
 
 # Already there (an update): nothing to install.
 : > "$T/pm.log"
