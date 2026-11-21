@@ -107,9 +107,11 @@ function deferred_sh(req, cmd, done) {
 // keeps asking and shows that the change is on its way.
 const APPLY_STALE = 300;
 
+// The script for sh -c is quoted as a whole (cmd has quotes of its own) and
+// so is the run directory in it.
 function apply_bg(cmd) {
 	fs.mkdir(RUN, 0700);
-	system(`sh -c '(${cmd}) & pid=$!; f=${RUN}/applying.$pid; : > "$f"; wait $pid; rm -f "$f"' >/dev/null 2>&1 </dev/null &`);
+	system(`sh -c ${q(`(${cmd}) & pid=$!; f=${q(RUN)}/applying.$pid; : > "$f"; wait $pid; rm -f "$f"`)} >/dev/null 2>&1 </dev/null &`);
 }
 
 // An explicit choice changes the restart key and capture generation. The
@@ -124,7 +126,7 @@ const INIT = getenv('MAYHEM_INIT') ?? '/etc/init.d/mayhem';
 // dashboard (RUN_DIR/stopped, until start, restart or enable; in RAM, so a
 // boot starts Mayhem as before) none: a reload would start it again.
 function reload_cmd(then) {
-	return `[ -f ${q(RUN + '/stopped')} ] || { ${INIT} reload${then ? ` && ${then}` : ''}; }`;
+	return `[ -f ${q(RUN + '/stopped')} ] || { ${q(INIT)} reload${then ? ` && ${then}` : ''}; }`;
 }
 
 function reload_choice() {

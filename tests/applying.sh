@@ -79,4 +79,27 @@ else
 	bad "applying.<pid> remained after process termination: file exists=$(test -f "$T/run/applying.$child_pid" && echo yes || echo no)"
 fi
 
+# 4. A change from the dashboard applied in the background (apply_bg) with
+# a run directory whose path has a space and a quote: applying.<pid> is
+# there while the reload runs and gone after it.
+R="$T/run dir'x"
+mkdir -p "$R" "$T/uci"
+printf "config settings 'settings'\n" > "$T/uci/mayhem"
+# shellcheck disable=SC2016 # expanded by the stand-in
+printf '#!/bin/sh\necho "$*" >> "$(dirname "$0")/init.log"\nsleep 1\n' > "$T/init d"
+chmod +x "$T/init d"
+MAYHEM_RUN_DIR="$R" MAYHEM_UCI_DIR="$T/uci" MAYHEM_INIT="$T/init d" "$UCODE" -L "$FILES/usr/share/ucode/*.uc" -e "
+	const p = loadfile('$ROOT/luci-app-mayhem/root/usr/share/rpcd/ucode/luci.mayhem')()['luci.mayhem'];
+	p.set_log_level.call({ args: { level: 'info' } });
+"
+sleep 0.5
+during="$(find "$R" -name 'applying.*' | wc -l | tr -d ' ')"
+sleep 1.5
+after="$(find "$R" -name 'applying.*' | wc -l | tr -d ' ')"
+if [ "$during" = 1 ] && [ "$after" = 0 ] && [ "$(cat "$T/init.log" 2>/dev/null)" = reload ]; then
+	ok "a reload in the background with a space and a quote in the run directory"
+else
+	bad "apply_bg with a space in the path: during $during, after $after, init $(cat "$T/init.log" 2>/dev/null)"
+fi
+
 exit "$fail"
