@@ -614,6 +614,18 @@ for m in "$ROOT"/tests/models/*.json; do
 	fi
 done
 
+# A regexp rule xray (RE2) refuses is skipped with a warning, the others stay:
+# one such rule kept xray from starting.
+if grep -q '(?!ads)' "$OUT/lists/xray.json" 2>/dev/null; then
+	bad "model lists: a lookahead regexp is in the xray config"
+elif ! grep -q 'lookaround' "$OUT/lists/status.json" 2>/dev/null; then
+	bad "model lists: no warning about the skipped regexp"
+elif ! grep -q '(?i)^ads' "$OUT/lists/xray.json"; then
+	bad "model lists: a good regexp is missing"
+else
+	ok "model lists: a regexp xray refuses is skipped with a warning"
+fi
+
 # The user's case: one such server in a subscription next to a working one.
 if grep -q '185.132.132.239\|tr.example.org' "$OUT/plaintext/xray.json" 2>/dev/null; then
 	bad "model plaintext: refused servers are still in the xray config"

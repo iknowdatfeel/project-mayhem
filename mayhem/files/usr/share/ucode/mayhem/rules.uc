@@ -243,6 +243,81 @@ function ascii_domain(d) {
 	return d;
 }
 
+// What makes xray refuse a regexp: it uses Go's RE2, which has no
+// lookarounds, backreferences or possessive quantifiers, and fails on
+// unbalanced groups. One such rule kept xray from starting and Mayhem
+// stopped working as a whole. The regexp is not compiled here: ucode's
+// POSIX expressions differ from RE2 ((?i), \d, lazy quantifiers are fine
+// there), so only the constructs known to fail are told. null when none is.
+export function re2_problem(re) {
+	let depth = 0, cls = -1, quant = false;
+
+	for (let i = 0; i < length(re); i++) {
+		const c = substr(re, i, 1);
+
+		if (c == '\\') {
+			if (cls < 0 && match(substr(re, i + 1, 1), /^[1-9]$/))
+				return 'a backreference';
+
+			i++;
+			quant = false;
+			continue;
+		}
+
+		if (cls >= 0) {
+			// ] right after [ or [^ is a character of the class
+			if (c == ']' && i > cls)
+				cls = -1;
+
+			continue;
+		}
+
+		if (c == '+' && quant)
+			return 'a possessive quantifier';
+
+		quant = false;
+
+		switch (c) {
+		case '[':
+			cls = i + 1;
+
+			if (substr(re, cls, 1) == '^')
+				cls++;
+
+			break;
+
+		case '(':
+			if (index([ '(?=', '(?!' ], substr(re, i, 3)) >= 0 || index([ '(?<=', '(?<!' ], substr(re, i, 4)) >= 0)
+				return 'a lookaround';
+
+			depth++;
+			break;
+
+		case ')':
+			if (--depth < 0)
+				return 'an unbalanced ")"';
+
+			break;
+
+		case '*':
+		case '+':
+		case '}':
+			quant = true;
+			break;
+
+		case '?':
+			// a quantifier, not the ? of "(?" or of a lazy "+?"
+			quant = i > 0 && index('(*+?}', substr(re, i - 1, 1)) < 0;
+			break;
+		}
+	}
+
+	if (cls >= 0)
+		return 'an unclosed "["';
+
+	return depth ? 'an unclosed "("' : null;
+};
+
 // Returns { value } | { geo: { kind, source, cat, attr } } | { error }.
 // Bare entries mean "domain and its subdomains" (xray "domain:").
 export function norm_domain(s) {
@@ -257,6 +332,11 @@ export function norm_domain(s) {
 		case 'regexp':
 			if (val == '')
 				return { error: `empty regexp in "${s}"` };
+
+			const why = re2_problem(val);
+
+			if (why)
+				return { error: `"${s}": ${why} is not supported by Xray` };
 
 			return { value: s };
 
