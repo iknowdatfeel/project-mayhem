@@ -138,3 +138,30 @@ export function is_applying(run_dir) {
 
 	return on;
 };
+
+// The TCP ports of `ports` something listens on (any address family), as
+// mayhem_ports_listening of lib.sh tells them. MAYHEM_PROC_NET: the
+// directory of tcp and tcp6 (the tests).
+export function listening(ports) {
+	const net = getenv('MAYHEM_PROC_NET') ?? '/proc/net';
+	const want = {}, found = {};
+
+	for (let p in ports)
+		want[sprintf('%04X', int(p))] = int(p);
+
+	for (let f in [ `${net}/tcp`, `${net}/tcp6` ]) {
+		for (let line in split(fs.readfile(f) ?? '', '\n')) {
+			const parts = split(trim(line), /[ \t]+/);
+
+			if (length(parts) < 4 || uc(parts[3]) != '0A')
+				continue;
+
+			const m = match(parts[1], /:([0-9A-Fa-f]{4})$/);
+
+			if (m && exists(want, uc(m[1])))
+				found[want[uc(m[1])]] = true;
+		}
+	}
+
+	return filter(ports, (p) => found[int(p)] == true);
+};

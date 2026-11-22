@@ -1445,7 +1445,7 @@ else
 fi
 
 # Ports xray listens on: one awk for all of them.
-if out="$(sh "$ROOT/tests/ports.sh" 2>&1)"; then
+if out="$(UCODE="$UCODE" sh "$ROOT/tests/ports.sh" 2>&1)"; then
 	ok "listening ports: every one in one awk, IPv4 and IPv6"
 else
 	bad "listening ports: $(printf '%s' "$out" | grep -v '^ok')"

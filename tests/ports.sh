@@ -64,5 +64,14 @@ if command -v busybox >/dev/null 2>&1; then
 	PATH="$T/bb:$PATH" label="busybox awk: " run_all
 fi
 
+# listening() of mayhem.util (the rpcd plugin) on the same files
+UCODE="${UCODE:-ucode}"
+got="$("$UCODE" -L "$ROOT/mayhem/files/usr/share/ucode/*.uc" -e "import { listening } from 'mayhem.util'; print(join(' ', listening([ 12345, 53, 10085, 8080, 9999 ])));")"
+if [ "$got" = "12345 53 10085" ]; then
+	ok "mayhem.util listening(): the same ports"
+else
+	bad "mayhem.util listening(): $got"
+fi
+
 rm -rf "$T"
 exit "$fail"

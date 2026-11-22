@@ -13,7 +13,7 @@ import * as C from 'mayhem.const';
 import { tcp_ping } from 'mayhem.ping';
 import * as runstate from 'mayhem.runstate';
 import * as M from 'mayhem.metrics';
-import { q, read_json, write_json, write_atomic, is_applying } from 'mayhem.util';
+import { q, read_json, write_json, write_atomic, is_applying, listening } from 'mayhem.util';
 import { balancer_info } from 'mayhem.check';
 import { parse_version, version_newer } from 'mayhem.version';
 
@@ -693,42 +693,6 @@ function check(list, group, name, status, detail) {
 
 function lines_of(text) {
 	return filter(split(text ?? '', '\n'), (l) => trim(l) != '');
-}
-
-function listening(ports) {
-	const want = {};
-
-	for (let p in ports)
-		want[int(p)] = sprintf('%04X', int(p));
-
-	const found = {};
-
-	for (let f in [ '/proc/net/tcp', '/proc/net/tcp6' ]) {
-		const content = fs.readfile(f);
-
-		if (!content)
-			continue;
-
-		for (let line in split(content, '\n')) {
-			const parts = split(trim(line), /[ \t]+/);
-
-			if (length(parts) < 4 || uc(parts[3]) != '0A')
-				continue;
-
-			const m = match(parts[1], /:([0-9A-Fa-f]{4})$/);
-
-			if (!m)
-				continue;
-
-			const hex_port = uc(m[1]);
-
-			for (let p, hex in want)
-				if (hex == hex_port)
-					found[p] = true;
-		}
-	}
-
-	return filter(ports, (p) => found[int(p)] == true);
 }
 
 function diag_local() {
