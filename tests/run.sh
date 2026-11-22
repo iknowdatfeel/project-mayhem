@@ -155,6 +155,25 @@ else
 	ok "rpcd calls: the plugin compiled once"
 fi
 
+# A module put back to an older version (an older time, another size): a
+# new compiled plugin, not the one of the newer modules.
+mkdir -p "$OUT/rpcmods/mayhem"
+cp "$FILES"/usr/share/ucode/mayhem/*.uc "$OUT/rpcmods/mayhem/"
+rpc_mods() {
+	MAYHEM_RPC_PLUGIN="$ROOT/luci-app-mayhem/root/usr/share/rpcd/ucode/luci.mayhem" MAYHEM_RPC_CACHE="$OUT/rpccache/m" \
+		MAYHEM_RPC_MODULES="$OUT/rpcmods/mayhem" uc "$ROOT/luci-app-mayhem/root/usr/share/mayhem-luci/call.uc" probe_tcp '{"tags":["x"]}' >/dev/null 2>&1
+	ls "$OUT/rpccache/m/"plugin.*.ucc 2>/dev/null
+}
+first="$(rpc_mods)"
+printf '\n// an older version\n' >> "$OUT/rpcmods/mayhem/const.uc"
+touch -d '2001-01-01' "$OUT/rpcmods/mayhem/const.uc"
+second="$(rpc_mods)"
+if [ -n "$first" ] && [ -n "$second" ] && [ "$first" != "$second" ]; then
+	ok "rpcd calls: a module with an older time compiles the plugin again"
+else
+	bad "rpcd calls: an older module kept the compiled plugin: $first / $second"
+fi
+
 # nodes.json and overrides changed by several processes at once.
 if out="$(uc "$ROOT/tests/runstate.uc" "$UCODE" "$FILES/usr/share/ucode/*.uc" 2>&1)"; then
 	ok "nodes.json: writers one at a time, no change lost"

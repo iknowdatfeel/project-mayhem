@@ -14,8 +14,10 @@ import * as fs from 'fs';
 
 const PLUGIN = getenv('MAYHEM_RPC_PLUGIN') ?? '/usr/share/rpcd/ucode/luci.mayhem';
 // The plugin compiled once (it is 4 000 lines with its modules: compiling
-// it took most of every such call on a small router), kept in RAM under
-// the times of its sources: a new plugin, module or ucode makes a new one.
+// it took most of every such call on a small router), kept in RAM under a
+// hash of its sources: name, size, time and inode of the plugin, of every
+// module and of ucode. Any of them replaced makes a new one, also by a file
+// with an older time (a package put back to an earlier version).
 const CACHE = getenv('MAYHEM_RPC_CACHE') ?? '/tmp/mayhem-luci';
 const MODULES = getenv('MAYHEM_RPC_MODULES') ?? '/usr/share/ucode/mayhem';
 
@@ -23,12 +25,27 @@ function q(s) {
 	return "'" + replace(`${s}`, /'/g, "'\\''") + "'";
 }
 
+// FNV-1a, 32 bits
+function fnv(s) {
+	let h = 0x811c9dc5;
+
+	for (let i = 0; i < length(s); i++)
+		h = ((h ^ ord(s, i)) * 0x01000193) & 0xffffffff;
+
+	return sprintf('%08x', h);
+}
+
 function compiled() {
 	const ucode = fs.readlink('/proc/self/exe') ?? 'ucode';
-	let sig = fs.stat(PLUGIN)?.mtime ?? 0;
+	let src = '';
 
-	for (let f in [ ...(fs.glob(`${MODULES}/*.uc`) ?? []), ucode ])
-		sig = max(sig, fs.stat(f)?.mtime ?? 0);
+	for (let f in [ PLUGIN, ...sort(fs.glob(`${MODULES}/*.uc`) ?? []), ucode ]) {
+		const st = fs.stat(f);
+
+		src += `${f}:${st?.size}:${st?.mtime}:${st?.inode}\n`;
+	}
+
+	const sig = fnv(src);
 
 	const file = `${CACHE}/plugin.${sig}.ucc`;
 
