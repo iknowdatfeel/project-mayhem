@@ -261,6 +261,8 @@ put('geo.stamp', stamp);
 if (!runstate.write(opts.out, {
 	'nodes.json': sprintf('%J\n', res.state),
 	'nodes.links.json': sprintf('%J\n', res.links ?? {}),
+	// what the next build needs of nodes.json: its own small file
+	'flow_path.json': sprintf('%J\n', res.state?.flow_path ?? null),
 	'overrides': length(res.overrides) ? join('\n', res.overrides) + '\n' : ''
 })) {
 	warn(`cannot write ${opts.out}/nodes.json: ${fs.error()}\n`);

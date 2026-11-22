@@ -79,6 +79,7 @@ expect('select: proxy to proxy answers fast', r?.ok && r?.fast, r);
 expect('select: xray is told the choice', index(read(`${stub}/xray.log`), 'api bo --server=127.0.0.1:12780 -b bal-pool n-pool-b') >= 0, read(`${stub}/xray.log`));
 expect('select: nodes.json has the pinned server', st?.sections?.pool?.override == 'n-pool-b', st?.sections?.pool);
 expect('select: the path generation advances', st?.flow_path?.generation == 2, st?.flow_path);
+expect('select: flow_path.json follows nodes.json', rjson(`${run}/flow_path.json`)?.generation == 2, read(`${run}/flow_path.json`));
 expect('select: the choice is kept for the next start of xray', index(read(`${run}/overrides`), 'bal-pool n-pool-b') >= 0, read(`${run}/overrides`));
 expect('select: the choice is saved by name', uci('pool.override') == 'B', uci('pool.override'));
 expect('select: no new reconnect epoch on the fast path', uci('settings.reconnect_epoch') == '5', uci('settings.reconnect_epoch'));

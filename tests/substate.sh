@@ -73,6 +73,21 @@ if command -v strace >/dev/null 2>&1 && strace -o /dev/null true 2>/dev/null; th
 	else
 		ok "the cache is not opened (strace)"
 	fi
+
+	# A reload: the cache of a subscription turned off that no section
+	# names is not read.
+	printf "\nconfig subscription 'offsub'\n\toption enabled '0'\n\toption url 'http://example.invalid/off'\n" >> "$T/uci/mayhem"
+	echo '{ "url": "http://example.invalid/off", "nodes": [] }' > "$T/subs/offsub.json"
+	env PATH="$T/bin:$PATH" MAYHEM_UCI_DIR="$T/uci" MAYHEM_RUN_DIR="$T/run" MAYHEM_SUBS_DIR="$T/subs" MAYHEM_TMP_DIR="$T" \
+		MAYHEM_GEO_DIR="$T/geo" MAYHEM_LISTS_DIR="$T/lists" strace -f -e trace=open,openat -o "$T/strace.log" \
+		"$UCODE" -L "$FILES/usr/share/ucode/*.uc" "$FILES/usr/share/mayhem/gen.uc" --out "$T/run" >/dev/null 2>&1
+	if grep -q 'subs/offsub.json' "$T/strace.log"; then
+		bad "a reload read the cache of a subscription turned off"
+	elif ! grep -q 'subs/mysub.json' "$T/strace.log"; then
+		bad "a reload did not read the cache of the subscription in use"
+	else
+		ok "a reload reads no cache of a subscription turned off"
+	fi
 fi
 
 rm -rf "$T"

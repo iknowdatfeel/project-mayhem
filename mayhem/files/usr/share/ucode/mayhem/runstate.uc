@@ -115,7 +115,14 @@ export function update(dir, fn) {
 		if (!state || fn(state) === false)
 			return null;
 
-		return put(`${dir}/nodes.json`, sprintf('%J\n', state)) ? state : null;
+		// flow_path.json follows, in the same lock (the generator reads it)
+		if (!put(`${dir}/nodes.json`, sprintf('%J\n', state)))
+			return null;
+
+		if (state.flow_path != null)
+			put(`${dir}/flow_path.json`, sprintf('%J\n', state.flow_path));
+
+		return state;
 	});
 };
 
