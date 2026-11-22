@@ -109,12 +109,15 @@ function is_applying() {
 
 // Moves the chains along once; { obs } (what the observatory said) when it
 // looked, null when there was nothing to do. opts.obs: the observatory as
-// the caller read it.
+// the caller read it, or a function that reads it: called only when there
+// are chains to move (most routers have none, and xray's /debug/vars is
+// not asked for them).
 export function run(opts) {
 	if (is_applying())
 		return null;
 
-	const state = read_json('nodes.json');
+	// opts.state: nodes.json as the caller just read it (health.uc)
+	const state = opts?.state ?? read_json('nodes.json');
 	const chains = filter(keys(state?.sections ?? {}), (sn) => state.sections[sn].mode == 'fallback' && length(state.sections[sn].chain ?? []));
 
 	if (!length(chains) || !fs.access(`${RUN_DIR}/active`))
@@ -154,7 +157,7 @@ export function run(opts) {
 
 	// What xray's own checks saw (2 s at most: a hung xray must not hold the
 	// scheduler); health.uc uses the same.
-	const obs = opts?.obs ?? metrics.observatory(2000);
+	const obs = (type(opts?.obs) == 'function' ? opts.obs() : opts?.obs) ?? metrics.observatory(2000);
 
 	// true / false when the observatory checked the server, null before that
 	const alive = (t) => obs[t] ? obs[t].alive == true : null;

@@ -36,19 +36,43 @@ function command(cmd) {
 const TICK = getenv('MAYHEM_TICK');
 const SEEN = `${RUN_DIR}/check.seen`;
 
+// nodes.json parsed once while it stays the same file (inode, time, size):
+// cache_key() asks it for every user of a section, twice a works_many().
+let nodes_cache = null;
+
+function nodes_state() {
+	const st = fs.stat(`${RUN_DIR}/nodes.json`);
+	const stamp = st ? `${st.inode}.${st.mtime}.${st.size}` : '';
+
+	if (nodes_cache?.stamp != stamp) {
+		let data = null;
+
+		try {
+			data = st ? json(fs.readfile(`${RUN_DIR}/nodes.json`) ?? '') : null;
+		}
+		catch (e) {
+			data = null;
+		}
+
+		nodes_cache = { stamp: stamp, data: data };
+	}
+
+	return nodes_cache.data;
+}
+
 function cache_key(u) {
 	const m = match(u, /^sec-(.+)$/);
 	if (!m)
 		return u;
 
-	try {
-		const st = json(fs.readfile(`${RUN_DIR}/nodes.json`) ?? '');
-		const tag = st?.sections?.[m[1]]?.selected ?? st?.sections?.[m[1]]?.override ?? '';
-		return `${u}#${tag}`;
-	}
-	catch (e) {
+	const st = nodes_state();
+
+	if (!st)
 		return u;
-	}
+
+	const tag = st.sections?.[m[1]]?.selected ?? st.sections?.[m[1]]?.override ?? '';
+
+	return `${u}#${tag}`;
 }
 
 function seen_read(url) {

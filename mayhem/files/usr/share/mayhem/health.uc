@@ -506,7 +506,7 @@ const first = check.works_many(asked, url, FIRST);
 // Fallback chains move along (mayhem.fallback), in the same process: with
 // the answers above for the servers they use now, and the observatory read
 // once. Their word on a chain counts below, nothing is asked twice.
-const fb = fallback.run({ obs: observatory(), asked: asked, first: first });
+const fb = fallback.run({ obs: observatory, state: state, asked: asked, first: first });
 
 for (let sn, p in plan) {
 	const s = state.sections[sn];
