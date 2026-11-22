@@ -367,13 +367,14 @@ function health_pin(health, pid, sn, s) {
 // The downloaded subscriptions as the dashboard needs them (number of
 // servers, info), kept while their file stays the same: the dashboard asks
 // every few seconds, and a subscription of 200 servers is a JSON file of
-// hundreds of kilobytes to read and parse each time.
+// hundreds of kilobytes to read and parse each time. Only the number of
+// its servers is kept, not the servers: rpcd runs for good.
 const sub_files = {};
 
 function sub_file(name) {
 	const path = `${C.SUBS_DIR}/${name}.json`;
 	const st = fs.stat(path);
-	const key = st ? `${st.mtime} ${st.size}` : null;
+	const key = st ? `${st.inode}.${st.mtime}.${st.size}` : null;
 
 	if (!key)
 		return null;
@@ -381,10 +382,25 @@ function sub_file(name) {
 	if (sub_files[name]?.key != key) {
 		const cache = read_json(path);
 
-		sub_files[name] = { key: key, data: cache ? { nodes: cache.nodes ?? [], skipped: cache.skipped, updated: cache.updated, info: cache.info } : null };
+		sub_files[name] = { key: key, data: cache ? { nodes_count: length(cache.nodes ?? []), skipped: cache.skipped, updated: cache.updated, info: cache.info } : null };
 	}
 
 	return sub_files[name].data;
+}
+
+// nodes.json parsed once while it stays the same file (it is replaced by a
+// rename: a new inode): the dashboard asks every 3 s. Only for calls that
+// read it and do not change the parsed state.
+let nodes_memo = null;
+
+function nodes_cached() {
+	const st = fs.stat(`${RUN}/nodes.json`);
+	const key = st ? `${st.inode}.${st.mtime}.${st.size}` : '-';
+
+	if (nodes_memo?.key != key)
+		nodes_memo = { key: key, data: st ? read_json(`${RUN}/nodes.json`) : null };
+
+	return nodes_memo.data;
 }
 
 function subscriptions() {
@@ -392,16 +408,20 @@ function subscriptions() {
 	const state = read_json(`${RUN}/subs-state.json`) ?? {};
 	const c = uci_cached().c;
 
+	const seen = {};
+
 	c.foreach('mayhem', 'subscription', (s) => {
 		const cache = sub_file(s['.name']);
 		const st = state[s['.name']] ?? {};
+
+		seen[s['.name']] = true;
 
 		// Fresh counters and check time are kept in RAM, the cache on flash
 		// only changes together with the servers.
 		push(out, {
 			name: s['.name'],
 			enabled: (s.enabled ?? '1') == '1',
-			nodes: length(cache?.nodes ?? []),
+			nodes: cache?.nodes_count ?? 0,
 			skipped: cache?.skipped ?? 0,
 			updated: max(st.updated ?? 0, cache?.updated ?? 0) || null,
 			info: st.info ?? cache?.info,
@@ -410,6 +430,11 @@ function subscriptions() {
 			via_why: st.via == 'direct' ? st.via_why : null
 		});
 	});
+
+	// subscriptions deleted meanwhile
+	for (let n in keys(sub_files))
+		if (!seen[n])
+			delete sub_files[n];
 
 	return out;
 }
@@ -2360,10 +2385,21 @@ const MARK = '@@mayhem@@';
 // Does dnsmasq run? By the names of the processes, as pidof tells, without
 // running it. Not by its pid files: OpenWrt starts dnsmasq in ujail, in a pid
 // namespace of its own, and the pid it writes is the one inside it.
+// The process found last time is looked at first: the dashboard asks every
+// 3 s, and every process of the router was read for it.
+let dnsmasq_pid = null;
+
 function dnsmasq_running() {
+	if (dnsmasq_pid && trim(fs.readfile(`${PROC}/${dnsmasq_pid}/comm`) ?? '') == 'dnsmasq')
+		return true;
+
+	dnsmasq_pid = null;
+
 	for (let f in fs.glob(`${PROC}/[0-9]*/comm`) ?? [])
-		if (trim(fs.readfile(f) ?? '') == 'dnsmasq')
+		if (trim(fs.readfile(f) ?? '') == 'dnsmasq') {
+			dnsmasq_pid = split(f, '/')[-2];
 			return true;
+		}
 
 	return false;
 }
@@ -2591,7 +2627,7 @@ const methods = {
 		args: { warm: false },
 		call: function(req) {
 			const pid = xray_pid();
-			const state = read_json(`${RUN}/nodes.json`) ?? { sections: {} };
+			const state = nodes_cached() ?? { sections: {} };
 
 			const dm = dnsmasq_running();
 
