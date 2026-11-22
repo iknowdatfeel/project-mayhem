@@ -97,6 +97,7 @@ sed -i 's|/b.com/|/b.com/c.com/|' "$T/run/dnsmasq.conf"
 net_up
 
 if nft list chain inet mayhem prerouting | grep -q 'meta l4proto udp'; then ok "the new rules are in"; else bad "new rules: $(nft list ruleset)"; fi
+if [ ! -e "$T/run/nft.apply" ]; then ok "nft.apply is gone after it was applied"; else bad "nft.apply stays in RAM"; fi
 if has tun_a_d4 1.1.1.1 && has tun_a_d4 2.2.2.2 && has tun_a_d6 2001:db8::1; then ok "addresses of unchanged domains stay"; else bad "kept: $(nft list set inet mayhem tun_a_d4)"; fi
 if has oth_d4 4.4.4.4 && has oth_d4 10.0.4.175; then ok "a set with timeouts keeps its addresses, many of them"; else bad "oth: $(nft list set inet mayhem oth_d4 | head -c 400)"; fi
 if ! has tun_b_d4 3.3.3.3 && grep -qx tun_b_d4 "$T/run/nft.emptied" && ! grep -q tun_a "$T/run/nft.emptied"; then

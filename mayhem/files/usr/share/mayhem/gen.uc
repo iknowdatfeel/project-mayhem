@@ -174,8 +174,21 @@ if (opts.warm) {
 
 const res = build(model);
 
-if (res.ok && !opts.check && !opts.print)
+if (res.ok && !opts.check && !opts.print) {
 	cache_put(res.net);
+
+	// Slots of tunnels that are gone (deleted, renamed): each holds whole
+	// nft and dnsmasq files, in RAM. Kept: "x" and the tunnels the sections
+	// name now.
+	const keep = { 'x.json': true };
+
+	for (let n, i in model.runtime?.ifaces ?? {})
+		keep[`k-${replace(i?.device ?? n, /[^A-Za-z0-9_.@-]/g, '_')}.json`] = true;
+
+	for (let f in fs.lsdir(CACHE) ?? [])
+		if (!keep[f])
+			fs.unlink(`${CACHE}/${f}`);
+}
 const status = {
 	ok: res.ok,
 	generated: time(),

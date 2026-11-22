@@ -44,11 +44,17 @@ mayhem_net_up() {
 		mayhem_nft_kept
 	} > "$run/nft.apply"
 
+	local rc
 	if [ "$v6" = 1 ]; then
 		nft -f "$run/nft.apply"
+		rc=$?
 	else
 		sed '/meta nfproto ipv6/d' "$run/nft.apply" | nft -f -
+		rc=$?
 	fi
+	# the rules and every kept address once more, in RAM
+	rm -f "$run/nft.apply"
+	return "$rc"
 }
 
 # The sets dnsmasq fills as it resolves (tun_<section>_d4, px_d6, oth_d4...):

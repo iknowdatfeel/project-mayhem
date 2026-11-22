@@ -1514,6 +1514,14 @@ if [ "$r5" = false ] && same_net "$c" "$OUT/fresh-nc-proxy-rule"; then
 else
 	bad "net cache: a changed rule was taken from the cache ($r5)"
 fi
+# A slot of a tunnel that is gone (deleted, renamed) goes at the next build.
+echo '{}' > "$c/net-cache/k-gone0.json"
+netcache "$OUT/nc-proxy-rule.json" "$c" >/dev/null
+if [ ! -e "$c/net-cache/k-gone0.json" ] && [ -e "$c/net-cache/x.json" ]; then
+	ok "net cache: slots of tunnels that are gone are removed"
+else
+	bad "net cache: $(ls "$c/net-cache" | tr '\n' ' ')"
+fi
 
 # The scheduler: downloads in the background, the checks keep their pace.
 if out="$(sh "$ROOT/tests/scheduler.sh" 2>&1)"; then

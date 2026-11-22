@@ -63,6 +63,20 @@ function ubus_link() {
 
 let apart_seq = 0;
 
+// Answers of commands and arguments of calls apart whose callback never
+// came (rpcd restarted meanwhile): gone after 10 minutes, at the load of
+// the plugin. They are in RAM.
+{
+	const now = time();
+
+	for (let f in [ ...(fs.glob(`${RUN}/rpc.*.out`) ?? []), ...(fs.glob(`${RUN}/call.*.json`) ?? []) ]) {
+		const st = fs.stat(f);
+
+		if (st && now - st.mtime > 600)
+			fs.unlink(f);
+	}
+}
+
 // Runs a shell command and answers with done(what it printed).
 function deferred_sh(req, cmd, done) {
 	const conn = type(req?.reply) == 'function' ? ubus_link() : null;
