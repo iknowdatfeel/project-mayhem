@@ -15,6 +15,7 @@ import * as runstate from 'mayhem.runstate';
 import * as M from 'mayhem.metrics';
 import { q, read_json, write_json, write_atomic, is_applying } from 'mayhem.util';
 import { balancer_info } from 'mayhem.check';
+import { parse_version, version_newer } from 'mayhem.version';
 
 const XRAY = getenv('MAYHEM_XRAY_BIN') ?? '/usr/libexec/mayhem/xray';
 const RUN = C.RUN_DIR;
@@ -1664,41 +1665,8 @@ const REPO = getenv('MAYHEM_REPO') ?? 'iknowdatfeel/project-mayhem';
 // Latest release of a GitHub repository, through the default section first.
 // Numbers of a version: "v26.9.30" -> [ 26, 9, 30 ]. Prerelease suffixes
 // (-exp.N, _preN) are separated so stable releases have priority.
-function parse_version(v) {
-	let s = replace(v ?? '', /^v/, '');
-	let pre = null;
-	const m = match(s, /^(.*?)(?:-exp\.?([0-9]+)|_pre([0-9]+))$/);
-
-	if (m) {
-		s = m[1];
-		pre = int(m[2] || m[3]) || 0;
-	}
-
-	const parts = map(split(s, /[.-]/), (x) => int(x) || 0);
-
-	return { parts: parts, pre: pre };
-}
-
 function version_parts(v) {
 	return parse_version(v).parts;
-}
-
-function version_newer(a, b) {
-	const va = parse_version(a), vb = parse_version(b);
-	const x = va.parts, y = vb.parts;
-
-	for (let i = 0; i < max(length(x), length(y)); i++)
-		if ((x[i] ?? 0) != (y[i] ?? 0))
-			return (x[i] ?? 0) > (y[i] ?? 0);
-
-	if (va.pre == null && vb.pre != null)
-		return true;
-	if (va.pre != null && vb.pre == null)
-		return false;
-	if (va.pre != null && vb.pre != null)
-		return va.pre > vb.pre;
-
-	return false;
 }
 
 // The latest release of a repository, or with tags the newest version among

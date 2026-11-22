@@ -1148,7 +1148,7 @@ else
 fi
 
 # Pre-release versions: -exp and _pre SemVer ordering
-if out="$(sh "$ROOT/tests/prerelease.sh" 2>&1)"; then
+if out="$(UCODE="$UCODE" sh "$ROOT/tests/prerelease.sh" 2>&1)"; then
 	ok "prerelease version comparison"
 else
 	bad "prerelease: $(printf '%s' "$out" | grep -v '^ok')"
