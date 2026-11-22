@@ -1242,8 +1242,13 @@ const BACKUP_TYPES = [ 'settings', 'dns', 'geo', 'geo_source', 'device', 'subscr
 const LINK_OPTIONS = [ 'link', 'subscription', 'outbound_json', 'proxy_type' ];
 const LIST_MAX = 262144;
 
+// A local list a backup may carry: under /etc/mayhem, but not in the
+// directories of Mayhem's own files (the rules held at boot, the caches of
+// subscriptions, geo data and downloaded lists), which nft or the generator
+// read as they are.
 function safe_list_path(p) {
-	return type(p) == 'string' && match(p, /^\/etc\/mayhem\/[A-Za-z0-9_.\/-]+$/) && index(p, '..') < 0;
+	return type(p) == 'string' && match(p, /^\/etc\/mayhem\/[A-Za-z0-9_.\/-]+$/) && index(p, '..') < 0 &&
+		!match(p, /^\/etc\/mayhem\/(hold|subs|geo|lists)(\/|$)/);
 }
 
 function uci_sections_ordered(c) {
@@ -1403,13 +1408,25 @@ function backup_import(b, no_reload) {
 	if (!c.get('mayhem', 'pool'))
 		system(`ucode ${LIB}/migrate.uc >/dev/null 2>&1`);
 
-	let files = 0;
+	// Files of a backup are written only where one of its sections names a
+	// local list: a backup from other hands cannot put any file it likes
+	// under /etc/mayhem.
+	const listed = {};
+
+	for (let s in b.sections)
+		if (s['.type'] == 'section')
+			for (let f in entries(s.list_file))
+				listed[f] = true;
+
+	let files = 0, skipped = 0;
 
 	for (let f in keys(b.files ?? {})) {
 		const data = b.files[f];
 
-		if (!safe_list_path(f) || type(data) != 'string' || length(data) > LIST_MAX)
+		if (!listed[f] || !safe_list_path(f) || type(data) != 'string' || length(data) > LIST_MAX) {
+			skipped++;
 			continue;
+		}
 
 		system(`mkdir -p ${q(fs.dirname(f))}`);
 
@@ -1420,7 +1437,7 @@ function backup_import(b, no_reload) {
 	if (!no_reload)
 		apply_bg(reload_cmd());
 
-	return { ok: true, sections: length(b.sections), files: files, kept_connections: !b.connections };
+	return { ok: true, sections: length(b.sections), files: files, skipped: skipped, kept_connections: !b.connections };
 }
 
 // --- reset ------------------------------------------------------------------------

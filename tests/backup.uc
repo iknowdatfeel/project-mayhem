@@ -35,6 +35,17 @@ expect('full backup gives the same config', sprintf('%J', lines(readfile(path)))
 expect('backup without connections restores', call('backup_import', { backup: bare }).kept_connections === true);
 expect('connections of the router are kept', sprintf('%J', lines(readfile(path))) == sprintf('%J', lines(before)));
 
+// Files of a backup only where its sections name a local list, never in
+// the directories of Mayhem's own files (hold/nft is loaded by nft at boot).
+const evil = { ...full, files: { '/etc/mayhem/hold/nft': 'flush ruleset\n', '/etc/mayhem/other.lst': 'x.com\n' } };
+let r = call('backup_import', { backup: evil });
+expect(`files nobody lists are not written: ${sprintf('%J', r)}`, r.ok === true && r.files == 0 && r.skipped == 2);
+const listed = { ...full, sections: [ ...full.sections, { '.type': 'section', '.name': 'evil', type: 'block', list_file: [ '/etc/mayhem/hold/nft' ] } ],
+	files: { '/etc/mayhem/hold/nft': 'flush ruleset\n' } };
+r = call('backup_import', { backup: listed });
+expect(`hold/ is never written: ${sprintf('%J', r)}`, r.ok === true && r.files == 0 && r.skipped == 1);
+expect('full backup restores again', call('backup_import', { backup: full }).ok === true);
+
 expect('not a backup is refused', call('backup_import', { backup: { sections: [] } }).error != null);
 expect('unknown section type is refused',
 	call('backup_import', { backup: { mayhem_backup: 1, sections: [ { '.type': 'network', '.name': 'x' } ] } }).error != null);
