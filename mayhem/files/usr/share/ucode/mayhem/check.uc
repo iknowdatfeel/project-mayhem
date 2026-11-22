@@ -171,3 +171,32 @@ export function warm_recent(fresh) {
 
 	return out;
 };
+
+// What `xray api bi` says of a balancer: { override: the server pinned in it
+// or null, selects: [ the servers it picks from, in its order ] }. Its text:
+//   "  - Selecting Override:" then "    1   <tag>" (blank when none),
+//   "  - Selects:" then one "    N   <tag>" a server
+// (tests/fixtures/xray-bi*.txt, of the xray Mayhem installs).
+export function parse_balancer_info(text) {
+	let part = null;
+	const res = { override: null, selects: [] };
+
+	for (let l in split(text ?? '', '\n')) {
+		const m = match(l, /^[ \t]+[0-9]+[ \t]+([^ \t]+)/);
+
+		if (index(l, 'Override') >= 0)
+			part = 'o';
+		else if (index(l, 'Selects') >= 0)
+			part = 's';
+		else if (m && part == 'o')
+			res.override ??= m[1];
+		else if (m && part == 's')
+			push(res.selects, m[1]);
+	}
+
+	return res;
+};
+
+export function balancer_info(xray, port, bal) {
+	return parse_balancer_info(command(`${q(xray)} api bi --server=127.0.0.1:${port} ${q(bal)} 2>/dev/null`));
+};

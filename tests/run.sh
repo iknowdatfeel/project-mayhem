@@ -181,6 +181,38 @@ else
 	bad "nodes.json writers: $out"
 fi
 
+# The text of `xray api bi` (fixtures of the pinned xray version).
+if out="$(uc "$ROOT/tests/balancer.uc" "$ROOT/tests/fixtures" 2>&1)"; then
+	ok "xray api bi: the pinned server and the choices read"
+else
+	bad "xray api bi: $out"
+fi
+
+# ... and of the xray these tests run: the fixtures are still what it prints.
+mkdir -p "$OUT/bi"
+printf '%s\n' '{ "log": { "loglevel": "none" }, "api": { "tag": "api", "services": [ "HandlerService", "RoutingService" ] },' \
+	'"inbounds": [ { "tag": "api-in", "listen": "127.0.0.1", "port": 12799, "protocol": "dokodemo-door", "settings": { "address": "127.0.0.1" } } ],' \
+	'"outbounds": [ { "tag": "n-pool-a", "protocol": "freedom" }, { "tag": "n-pool-b", "protocol": "freedom" } ],' \
+	'"routing": { "balancers": [ { "tag": "bal-pool", "selector": [ "n-pool-" ], "strategy": { "type": "random" } } ],' \
+	'"rules": [ { "inboundTag": [ "api-in" ], "outboundTag": "api" } ] } }' > "$OUT/bi/c.json"
+"$XRAY" run -c "$OUT/bi/c.json" >/dev/null 2>&1 &
+bi_pid=$!
+i=0
+while [ "$i" -lt 30 ] && ! "$XRAY" api bi --server=127.0.0.1:12799 bal-pool > "$OUT/bi/none.txt" 2>/dev/null; do
+	sleep 0.2
+	i=$((i + 1))
+done
+"$XRAY" api bo --server=127.0.0.1:12799 -b bal-pool n-pool-b >/dev/null 2>&1
+"$XRAY" api bi --server=127.0.0.1:12799 bal-pool > "$OUT/bi/xray-bi.txt" 2>/dev/null
+kill "$bi_pid" 2>/dev/null
+if [ ! -s "$OUT/bi/xray-bi.txt" ]; then
+	printf 'skip %s\n' "xray api bi of this xray: it did not answer"
+elif cmp -s "$OUT/bi/xray-bi.txt" "$ROOT/tests/fixtures/xray-bi.txt" && cmp -s "$OUT/bi/none.txt" "$ROOT/tests/fixtures/xray-bi-none.txt"; then
+	ok "xray api bi: this xray prints what the fixtures hold"
+else
+	bad "xray api bi: this xray prints otherwise: $(cat "$OUT/bi/xray-bi.txt")"
+fi
+
 # mayhem.util: locks (left behind, just taken, a live owner), atomic writes.
 if out="$(uc "$ROOT/tests/util.uc" "$OUT/util" 2>&1)"; then
 	ok "util: locks, writes through a temporary file, the applying flag"

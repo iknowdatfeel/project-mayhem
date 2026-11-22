@@ -14,6 +14,7 @@ import { tcp_ping } from 'mayhem.ping';
 import * as runstate from 'mayhem.runstate';
 import * as M from 'mayhem.metrics';
 import { q, read_json, write_json, is_applying } from 'mayhem.util';
+import { balancer_info } from 'mayhem.check';
 
 const XRAY = getenv('MAYHEM_XRAY_BIN') ?? '/usr/libexec/mayhem/xray';
 const RUN = C.RUN_DIR;
@@ -1194,15 +1195,9 @@ function diag_exit(target) {
 		if (!tag && length(section.nodes ?? []) == 1)
 			tag = section.nodes[0].tag;
 		if (!tag && section.balancer) {
-			let part = null, selected = null, override = null;
-			for (let l in lines_of(run(`${XRAY} api bi --server=127.0.0.1:${C.API_PORT} ${q(section.balancer)} 2>/dev/null`))) {
-				const m = match(l, /^[ \t]+[0-9]+[ \t]+([^ \t]+)/);
-				if (index(l, 'Override') >= 0) part = 'o';
-				else if (index(l, 'Selects') >= 0) part = 's';
-				else if (m && part == 'o') override ??= m[1];
-				else if (m && part == 's') selected ??= m[1];
-			}
-			tag = override ?? selected;
+			const b = balancer_info(XRAY, C.API_PORT, section.balancer);
+
+			tag = b.override ?? b.selects[0];
 		}
 		const node = filter(section.nodes ?? [], (n) => n.tag == tag)[0];
 		if (!node)
