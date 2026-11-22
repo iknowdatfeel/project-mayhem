@@ -85,13 +85,13 @@ function net_base(model) {
 		return c;
 	});
 	const S = { ...model.settings };
-	delete S.reconnect_epoch;
 
 	const R = { ...model.runtime };
 
 	// Which server a chain uses now: the build adds the tunnel it means.
 	delete R.fallback;
 	delete R.flow_path;
+	delete R.reconnect_epoch;
 
 	// Devices come and go; only sections limited to some use them.
 	if (!length(filter(sections, (s) => s.devices != null)))
@@ -174,8 +174,21 @@ if (opts.warm) {
 
 const res = build(model);
 
-if (res.ok && !opts.check && !opts.print)
+if (res.ok && !opts.check && !opts.print) {
 	cache_put(res.net);
+
+	// Slots of tunnels that are gone (deleted, renamed): each holds whole
+	// nft and dnsmasq files, in RAM. Kept: "x" and the tunnels the sections
+	// name now.
+	const keep = { 'x.json': true };
+
+	for (let n, i in model.runtime?.ifaces ?? {})
+		keep[`k-${replace(i?.device ?? n, /[^A-Za-z0-9_.@-]/g, '_')}.json`] = true;
+
+	for (let f in fs.lsdir(CACHE) ?? [])
+		if (!keep[f])
+			fs.unlink(`${CACHE}/${f}`);
+}
 const status = {
 	ok: res.ok,
 	generated: time(),
@@ -247,14 +260,22 @@ put('geo.stamp', stamp);
 // The dashboard and fallback.uc change these two as well (mayhem.runstate).
 if (!runstate.write(opts.out, {
 	'nodes.json': sprintf('%J\n', res.state),
+	'nodes.links.json': sprintf('%J\n', res.links ?? {}),
+	// what the next build needs of nodes.json: its own small file
+	'flow_path.json': sprintf('%J\n', res.state?.flow_path ?? null),
 	'overrides': length(res.overrides) ? join('\n', res.overrides) + '\n' : ''
 })) {
 	warn(`cannot write ${opts.out}/nodes.json: ${fs.error()}\n`);
 	exit(1);
 }
 put('tunnels', res.tunnels ?? '');
+// What an interface coming up may change, as this build saw it (ifacefp.uc).
+put('runtime.fp', require('mayhem.model').iface_fp(model.runtime) + '\n');
 // Subscriptions the service downloads right after this reload.
 put('subs.new', length(model.subs_new ?? []) ? join('\n', model.subs_new) + '\n' : '');
+// Geo categories or lists the config wants and the router does not have yet:
+// the scheduler starts update.uc at once for them, whatever data.next says.
+put('data.pending', (length(keys(res.state?.geo_pending ?? {})) || length(res.state?.lists_missing ?? [])) ? '1\n' : '');
 
 for (let w in res.status.warnings)
 	warn(`mayhem: warning: ${w}\n`);

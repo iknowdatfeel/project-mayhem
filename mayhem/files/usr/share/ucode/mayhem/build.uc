@@ -848,15 +848,16 @@ function dns_names(RLs, model, warn) {
 		}
 	};
 
+	// the geo data once, before the loops, when a section has categories
+	if (model.ensure_geo && length(filter(RLs, (x) => length(x.RL.sites ?? []))))
+		model.ensure_geo();
+
 	for (let x in RLs) {
 		for (let d in x.RL.domains)
 			if (substr(d, 0, 4) != 'ext:')
 				take(d, `section "${x.name}"`);
 
 		for (let g in x.RL.sites) {
-			if (model.ensure_geo)
-				model.ensure_geo();
-
 			const list = model.geo?.domains?.[g.key];
 
 			if (list == null) {
@@ -1291,10 +1292,10 @@ function kernel_domains(name, RL, model, warn, fallback) {
 		if (substr(d, 0, 4) != 'ext:')
 			take(d);
 
-	for (let g in RL.sites) {
-		if (model.ensure_geo)
-			model.ensure_geo();
+	if (model.ensure_geo && length(RL.sites ?? []))
+		model.ensure_geo();
 
+	for (let g in RL.sites) {
 		const list = model.geo?.domains?.[g.key];
 
 		if ((g.count ?? 0) > KERNEL_DOMAINS_MAX) {
@@ -1414,10 +1415,10 @@ function block_for_dnsmasq(RL, model, name, warn) {
 	// is in dnsmasq twice: it does not mind)
 	const lists = [];
 
-	for (let g in RL.sites) {
-		if (model.ensure_geo)
-			model.ensure_geo();
+	if (model.ensure_geo && length(RL.sites ?? []))
+		model.ensure_geo();
 
+	for (let g in RL.sites) {
 		const list = model.geo?.domains?.[g.key];
 
 		if (g.attr != '' || list == null || (g.count ?? 0) > KERNEL_DOMAINS_MAX) {
@@ -1734,6 +1735,9 @@ export function build(model) {
 	const observe = [];
 	let observed = 0;
 	const state = { sections: {} };
+	// The keys of the servers by tag (nodes.links.json): nodes.json, read
+	// every few seconds, holds only has_link.
+	const node_links = {};
 	let first_proxy = null;
 
 	// --- sections -----------------------------------------------------------
@@ -1913,10 +1917,14 @@ export function build(model) {
 					tproto: nodes[i].tproto,
 					device: nodes[i].device,
 					orig: nodes[i].orig,
-					// the key itself and its UCI section: LuCI edits it in place
-					link: nodes[i].link,
+					// the key itself (nodes.links.json) and its UCI section:
+					// LuCI edits it in place
+					has_link: nodes[i].link != null,
 					usec: nodes[i].usec
 				});
+
+				if (nodes[i].link != null)
+					node_links[ob.tag] = nodes[i].link;
 			}
 
 			// Even one server goes through a balancer: the routing does not
@@ -2087,7 +2095,17 @@ export function build(model) {
 			}
 
 			const inf = iface_info(model, iface);
-			const kernel = (sec.route_mode ?? 'kernel') != 'xray';
+			let kernel = (sec.route_mode ?? 'kernel') != 'xray';
+
+			// Past the marks and tables of kernel mode the section works
+			// through xray, as a whole: decided before anything of it is
+			// added (the DNS, the domains of the tunnels, the outbound), or
+			// it was half in kernel mode with no rules.
+			if (kernel && tun_index >= C.TUN_MAX) {
+				kernel = false;
+				warn(`section "${name}": at most ${C.TUN_MAX} tunnel sections can work in kernel mode, this one works through Xray`);
+			}
+
 			const tag = `i-${name}-0`;
 			const bal = `bal-${name}`;
 			const tv6 = v6 && inf.v6;
@@ -2122,11 +2140,7 @@ export function build(model) {
 				(tv6 ? tun_domains : tun_domains4).add_all(domains);
 
 			if (kernel) {
-				if (++tun_index > C.TUN_MAX) {
-					info.error = 'too many tunnel sections';
-					warn(`section "${name}": at most ${C.TUN_MAX} tunnel sections can work in kernel mode, skipped`);
-					continue;
-				}
+				tun_index++;
 
 				const t = {
 					name: name, index: tun_index, device: inf.device, v6: tv6,
@@ -2284,7 +2298,8 @@ export function build(model) {
 	if (length(endpoint_domains) && R.dnsmasq_nftset === false)
 		warn('bypassing VPN server domains in the kernel needs dnsmasq-full (nftset support)');
 
-	const path_key = sprintf('%J', [ default_name, kdef_tun?.device ?? null, S.reconnect_epoch ?? '0' ]);
+	// reconnect_epoch: a server chosen by hand (the dashboard), in RAM
+	const path_key = sprintf('%J', [ default_name, kdef_tun?.device ?? null, R.reconnect_epoch ?? '0' ]);
 	const previous_path = R.flow_path;
 	const previous_gen = int_opt(previous_path?.generation, 0, 1, 3);
 	const path_generation = previous_gen
@@ -2936,6 +2951,7 @@ export function build(model) {
 		killswitch: is_true(S.killswitch ?? '0'),
 		ipv6: v6,
 		state: state,
+		links: node_links,
 		overrides: overrides,
 		geo_files: geo_files,
 		status: st

@@ -6,20 +6,19 @@
 'use strict';
 
 import * as fs from 'fs';
-import { parse_link, outbound_host, outbound_port, refused_by_xray } from 'mayhem.links';
+import { parse_link, outbound_host, outbound_port, refused_by_xray, b64 } from 'mayhem.links';
 import { list_key, entries, as_list, dnsmasq_nftset } from 'mayhem.rules';
 import { parse_conf, is_amnezia, uci_sections, to_conf } from 'mayhem.awg';
 import * as C from 'mayhem.const';
 import { tcp_ping } from 'mayhem.ping';
 import * as runstate from 'mayhem.runstate';
 import * as M from 'mayhem.metrics';
+import { q, read_json, write_json, write_atomic, is_applying, listening } from 'mayhem.util';
+import { balancer_info } from 'mayhem.check';
+import { parse_version, version_newer } from 'mayhem.version';
 
 const XRAY = getenv('MAYHEM_XRAY_BIN') ?? '/usr/libexec/mayhem/xray';
 const RUN = C.RUN_DIR;
-
-function q(s) {
-	return "'" + replace(`${s}`, /'/g, "'\\''") + "'";
-}
 
 function run(cmd) {
 	const p = fs.popen(cmd, 'r');
@@ -63,6 +62,20 @@ function ubus_link() {
 
 let apart_seq = 0;
 
+// Answers of commands and arguments of calls apart whose callback never
+// came (rpcd restarted meanwhile): gone after 10 minutes, at the load of
+// the plugin. They are in RAM.
+{
+	const now = time();
+
+	for (let f in [ ...(fs.glob(`${RUN}/rpc.*.out`) ?? []), ...(fs.glob(`${RUN}/call.*.json`) ?? []) ]) {
+		const st = fs.stat(f);
+
+		if (st && now - st.mtime > 600)
+			fs.unlink(f);
+	}
+}
+
 // Runs a shell command and answers with done(what it printed).
 function deferred_sh(req, cmd, done) {
 	const conn = type(req?.reply) == 'function' ? ubus_link() : null;
@@ -104,18 +117,26 @@ function deferred_sh(req, cmd, done) {
 // A reload of Mayhem (and of the network for tunnels) takes from a second to
 // half a minute on a router. It runs apart; meanwhile a file applying.<pid>
 // tells the dashboard that the servers it shows are about to change, so it
-// keeps asking and shows that the change is on its way.
-const APPLY_STALE = 300;
+// keeps asking and shows that the change is on its way (is_applying of
+// mayhem.util; a file older than 5 minutes no longer counts).
 
+// The script for sh -c is quoted as a whole (cmd has quotes of its own) and
+// so is the run directory in it.
 function apply_bg(cmd) {
 	fs.mkdir(RUN, 0700);
-	system(`sh -c '(${cmd}) & pid=$!; f=${RUN}/applying.$pid; : > "$f"; wait $pid; rm -f "$f"' >/dev/null 2>&1 </dev/null &`);
+	system(`sh -c ${q(`(${cmd}) & pid=$!; f=${q(RUN)}/applying.$pid; : > "$f"; wait $pid; rm -f "$f"`)} >/dev/null 2>&1 </dev/null &`);
 }
 
 // An explicit choice changes the restart key and capture generation. The
 // generator rebuilds chains; fallback then applies their current choice.
-function reconnect_epoch(c) {
-	c.set('mayhem', 'settings', 'reconnect_epoch', `${(int(c.get('mayhem', 'settings', 'reconnect_epoch')) || 0) + 1}`);
+// A counter of the run directory (reconnect.epoch, in RAM), not of the
+// user's config: a choice on the dashboard writes nothing to flash. After a
+// reboot it starts again, like nodes.json, whose flow path it changes.
+function reconnect_epoch() {
+	const f = `${RUN}/reconnect.epoch`;
+
+	fs.mkdir(RUN, 0700);
+	write_atomic(f, `${(int(trim(fs.readfile(f) ?? '')) || 0) + 1}\n`);
 }
 
 const INIT = getenv('MAYHEM_INIT') ?? '/etc/init.d/mayhem';
@@ -124,54 +145,12 @@ const INIT = getenv('MAYHEM_INIT') ?? '/etc/init.d/mayhem';
 // dashboard (RUN_DIR/stopped, until start, restart or enable; in RAM, so a
 // boot starts Mayhem as before) none: a reload would start it again.
 function reload_cmd(then) {
-	return `[ -f ${q(RUN + '/stopped')} ] || { ${INIT} reload${then ? ` && ${then}` : ''}; }`;
+	return `[ -f ${q(RUN + '/stopped')} ] || { ${q(INIT)} reload${then ? ` && ${then}` : ''}; }`;
 }
 
 function reload_choice() {
 	const lib = getenv('MAYHEM_LIB_DIR') ?? '/usr/share/mayhem';
 	apply_bg(reload_cmd(`ucode ${q(lib + '/fallback.uc')}`));
-}
-
-function applying() {
-	const now = time();
-
-	for (let f in fs.glob(`${RUN}/applying.*`) ?? []) {
-		const st = fs.stat(f);
-
-		if (!st)
-			continue;
-
-		const m = match(f, /applying\.([0-9]+)$/);
-		if (m) {
-			const pid = m[1];
-			if (!fs.stat(`/proc/${pid}`)) {
-				fs.unlink(f);
-				continue;
-			}
-		}
-
-		if (now - st.mtime < APPLY_STALE)
-			return true;
-
-		fs.unlink(f);
-	}
-
-	return false;
-}
-
-function read_json(path) {
-	try {
-		return json(fs.readfile(path) ?? '');
-	}
-	catch (e) {
-		return null;
-	}
-}
-
-function write_json(path, v) {
-	const tmp = `${path}.tmp`;
-
-	return fs.writefile(tmp, sprintf('%J\n', v)) != null && fs.rename(tmp, path);
 }
 
 // Where the choice of a dashboard section is kept: a subscription's group
@@ -365,13 +344,14 @@ function health_pin(health, pid, sn, s) {
 // The downloaded subscriptions as the dashboard needs them (number of
 // servers, info), kept while their file stays the same: the dashboard asks
 // every few seconds, and a subscription of 200 servers is a JSON file of
-// hundreds of kilobytes to read and parse each time.
+// hundreds of kilobytes to read and parse each time. Only the number of
+// its servers is kept, not the servers: rpcd runs for good.
 const sub_files = {};
 
 function sub_file(name) {
 	const path = `${C.SUBS_DIR}/${name}.json`;
 	const st = fs.stat(path);
-	const key = st ? `${st.mtime} ${st.size}` : null;
+	const key = st ? `${st.inode}.${st.mtime}.${st.size}` : null;
 
 	if (!key)
 		return null;
@@ -379,10 +359,25 @@ function sub_file(name) {
 	if (sub_files[name]?.key != key) {
 		const cache = read_json(path);
 
-		sub_files[name] = { key: key, data: cache ? { nodes: cache.nodes ?? [], skipped: cache.skipped, updated: cache.updated, info: cache.info } : null };
+		sub_files[name] = { key: key, data: cache ? { nodes_count: length(cache.nodes ?? []), skipped: cache.skipped, updated: cache.updated, info: cache.info } : null };
 	}
 
 	return sub_files[name].data;
+}
+
+// nodes.json parsed once while it stays the same file (it is replaced by a
+// rename: a new inode): the dashboard asks every 3 s. Only for calls that
+// read it and do not change the parsed state.
+let nodes_memo = null;
+
+function nodes_cached() {
+	const st = fs.stat(`${RUN}/nodes.json`);
+	const key = st ? `${st.inode}.${st.mtime}.${st.size}` : '-';
+
+	if (nodes_memo?.key != key)
+		nodes_memo = { key: key, data: st ? read_json(`${RUN}/nodes.json`) : null };
+
+	return nodes_memo.data;
 }
 
 function subscriptions() {
@@ -390,16 +385,20 @@ function subscriptions() {
 	const state = read_json(`${RUN}/subs-state.json`) ?? {};
 	const c = uci_cached().c;
 
+	const seen = {};
+
 	c.foreach('mayhem', 'subscription', (s) => {
 		const cache = sub_file(s['.name']);
 		const st = state[s['.name']] ?? {};
+
+		seen[s['.name']] = true;
 
 		// Fresh counters and check time are kept in RAM, the cache on flash
 		// only changes together with the servers.
 		push(out, {
 			name: s['.name'],
 			enabled: (s.enabled ?? '1') == '1',
-			nodes: length(cache?.nodes ?? []),
+			nodes: cache?.nodes_count ?? 0,
 			skipped: cache?.skipped ?? 0,
 			updated: max(st.updated ?? 0, cache?.updated ?? 0) || null,
 			info: st.info ?? cache?.info,
@@ -408,6 +407,11 @@ function subscriptions() {
 			via_why: st.via == 'direct' ? st.via_why : null
 		});
 	});
+
+	// subscriptions deleted meanwhile
+	for (let n in keys(sub_files))
+		if (!seen[n])
+			delete sub_files[n];
 
 	return out;
 }
@@ -579,7 +583,8 @@ function rename_link(link, name) {
 	}
 	else if (match(link, /^vmess:\/\/[A-Za-z0-9+\/=_-]+$/)) {
 		try {
-			const j = json(b64dec(replace(replace(substr(link, 8), '-', '+'), '_', '/')));
+			// tolerant base64: vmess keys often come without the = padding
+			const j = json(b64(substr(link, 8)));
 
 			j.ps = name;
 			out = 'vmess://' + b64enc(sprintf('%J', j));
@@ -644,6 +649,12 @@ function tunnel_endpoint(iface) {
 	return (ep && match(ep, /^[A-Za-z0-9.:_-]+$/)) ? ep : null;
 }
 
+// The key of a server by its tag: nodes.links.json, next to nodes.json
+// (which the dashboard reads every 3 s and has only has_link).
+function node_link(tag) {
+	return tag != null ? read_json(`${RUN}/nodes.links.json`)?.[tag] : null;
+}
+
 function find_node(state, tag) {
 	for (let sn in keys(state?.sections ?? {}))
 		for (let n in state.sections[sn].nodes ?? [])
@@ -682,42 +693,6 @@ function check(list, group, name, status, detail) {
 
 function lines_of(text) {
 	return filter(split(text ?? '', '\n'), (l) => trim(l) != '');
-}
-
-function listening(ports) {
-	const want = {};
-
-	for (let p in ports)
-		want[int(p)] = sprintf('%04X', int(p));
-
-	const found = {};
-
-	for (let f in [ '/proc/net/tcp', '/proc/net/tcp6' ]) {
-		const content = fs.readfile(f);
-
-		if (!content)
-			continue;
-
-		for (let line in split(content, '\n')) {
-			const parts = split(trim(line), /[ \t]+/);
-
-			if (length(parts) < 4 || uc(parts[3]) != '0A')
-				continue;
-
-			const m = match(parts[1], /:([0-9A-Fa-f]{4})$/);
-
-			if (!m)
-				continue;
-
-			const hex_port = uc(m[1]);
-
-			for (let p, hex in want)
-				if (hex == hex_port)
-					found[p] = true;
-		}
-	}
-
-	return filter(ports, (p) => found[int(p)] == true);
 }
 
 function diag_local() {
@@ -971,10 +946,14 @@ function diag_local() {
 	}
 
 	// System
-	const year = localtime(time()).year;
+	// The clock is wrong when it is behind the package itself (its files
+	// were made before it was installed), a day of slack for time zones;
+	// no year written into the code.
+	const built = (fs.stat(`${LIB}/const.sh`)?.mtime ?? 0) - 86400;
+	const clock_ok = time() >= built;
 
-	check(res, 'system', 'Clock', year >= 2025 ? 'ok' : 'fail',
-		year >= 2025 ? 'set' : 'the clock is wrong: TLS connections will fail');
+	check(res, 'system', 'Clock', clock_ok ? 'ok' : 'fail',
+		clock_ok ? 'set' : 'the clock is wrong: TLS connections will fail');
 
 	for (let l in lines_of(fs.readfile(`${RUN}/watchdog.log`)))
 		check(res, 'system', 'Watchdog', 'warn', l);
@@ -1191,15 +1170,9 @@ function diag_exit(target) {
 		if (!tag && length(section.nodes ?? []) == 1)
 			tag = section.nodes[0].tag;
 		if (!tag && section.balancer) {
-			let part = null, selected = null, override = null;
-			for (let l in lines_of(run(`${XRAY} api bi --server=127.0.0.1:${C.API_PORT} ${q(section.balancer)} 2>/dev/null`))) {
-				const m = match(l, /^[ \t]+[0-9]+[ \t]+([^ \t]+)/);
-				if (index(l, 'Override') >= 0) part = 'o';
-				else if (index(l, 'Selects') >= 0) part = 's';
-				else if (m && part == 'o') override ??= m[1];
-				else if (m && part == 's') selected ??= m[1];
-			}
-			tag = override ?? selected;
+			const b = balancer_info(XRAY, C.API_PORT, section.balancer);
+
+			tag = b.override ?? b.selects[0];
 		}
 		const node = filter(section.nodes ?? [], (n) => n.tag == tag)[0];
 		if (!node)
@@ -1239,8 +1212,13 @@ const BACKUP_TYPES = [ 'settings', 'dns', 'geo', 'geo_source', 'device', 'subscr
 const LINK_OPTIONS = [ 'link', 'subscription', 'outbound_json', 'proxy_type' ];
 const LIST_MAX = 262144;
 
+// A local list a backup may carry: under /etc/mayhem, but not in the
+// directories of Mayhem's own files (the rules held at boot, the caches of
+// subscriptions, geo data and downloaded lists), which nft or the generator
+// read as they are.
 function safe_list_path(p) {
-	return type(p) == 'string' && match(p, /^\/etc\/mayhem\/[A-Za-z0-9_.\/-]+$/) && index(p, '..') < 0;
+	return type(p) == 'string' && match(p, /^\/etc\/mayhem\/[A-Za-z0-9_.\/-]+$/) && index(p, '..') < 0 &&
+		!match(p, /^\/etc\/mayhem\/(hold|subs|geo|lists)(\/|$)/);
 }
 
 function uci_sections_ordered(c) {
@@ -1400,13 +1378,25 @@ function backup_import(b, no_reload) {
 	if (!c.get('mayhem', 'pool'))
 		system(`ucode ${LIB}/migrate.uc >/dev/null 2>&1`);
 
-	let files = 0;
+	// Files of a backup are written only where one of its sections names a
+	// local list: a backup from other hands cannot put any file it likes
+	// under /etc/mayhem.
+	const listed = {};
+
+	for (let s in b.sections)
+		if (s['.type'] == 'section')
+			for (let f in entries(s.list_file))
+				listed[f] = true;
+
+	let files = 0, skipped = 0;
 
 	for (let f in keys(b.files ?? {})) {
 		const data = b.files[f];
 
-		if (!safe_list_path(f) || type(data) != 'string' || length(data) > LIST_MAX)
+		if (!listed[f] || !safe_list_path(f) || type(data) != 'string' || length(data) > LIST_MAX) {
+			skipped++;
 			continue;
+		}
 
 		system(`mkdir -p ${q(fs.dirname(f))}`);
 
@@ -1417,7 +1407,7 @@ function backup_import(b, no_reload) {
 	if (!no_reload)
 		apply_bg(reload_cmd());
 
-	return { ok: true, sections: length(b.sections), files: files, kept_connections: !b.connections };
+	return { ok: true, sections: length(b.sections), files: files, skipped: skipped, kept_connections: !b.connections };
 }
 
 // --- reset ------------------------------------------------------------------------
@@ -1643,41 +1633,8 @@ const REPO = getenv('MAYHEM_REPO') ?? 'iknowdatfeel/project-mayhem';
 // Latest release of a GitHub repository, through the default section first.
 // Numbers of a version: "v26.9.30" -> [ 26, 9, 30 ]. Prerelease suffixes
 // (-exp.N, _preN) are separated so stable releases have priority.
-function parse_version(v) {
-	let s = replace(v ?? '', /^v/, '');
-	let pre = null;
-	const m = match(s, /^(.*?)(?:-exp\.?([0-9]+)|_pre([0-9]+))$/);
-
-	if (m) {
-		s = m[1];
-		pre = int(m[2] || m[3]) || 0;
-	}
-
-	const parts = map(split(s, /[.-]/), (x) => int(x) || 0);
-
-	return { parts: parts, pre: pre };
-}
-
 function version_parts(v) {
 	return parse_version(v).parts;
-}
-
-function version_newer(a, b) {
-	const va = parse_version(a), vb = parse_version(b);
-	const x = va.parts, y = vb.parts;
-
-	for (let i = 0; i < max(length(x), length(y)); i++)
-		if ((x[i] ?? 0) != (y[i] ?? 0))
-			return (x[i] ?? 0) > (y[i] ?? 0);
-
-	if (va.pre == null && vb.pre != null)
-		return true;
-	if (va.pre != null && vb.pre == null)
-		return false;
-	if (va.pre != null && vb.pre != null)
-		return va.pre > vb.pre;
-
-	return false;
 }
 
 // The latest release of a repository, or with tags the newest version among
@@ -1882,8 +1839,9 @@ function device_names() {
 }
 
 // What the folded log says: { hosts: address -> name, tags: "tcp ip:port" ->
-// outbound tag }. Read again only when it changed (the dashboard asks every
-// 3 s, the scheduler folds once a minute).
+// outbound tag }. The scheduler folds it once a minute. The cache only helps
+// a call inside rpcd: "connections" itself runs in a process of its own
+// (APART), which reads the file once anyway.
 let conn_names_cache = null;
 
 function conn_names() {
@@ -1914,16 +1872,14 @@ function conn_names() {
 	return conn_names_cache = { stamp: stamp, hosts: hosts, tags: tags };
 }
 
-// What an outbound tag stands for: a server of a section, direct, blocked.
-function route_of(tag, state) {
-	if (tag == 'direct' || tag == 'direct-udp')
-		return { kind: 'direct' };
-
-	if (tag == 'block')
-		return { kind: 'block' };
-
-	if (tag == 'dns-out')
-		return { kind: 'dns' };
+// What every outbound tag stands for: a server of a section, direct,
+// blocked. Built once per call: looking a tag up in every section for every
+// connection cost connections x servers.
+function route_map(state) {
+	const map = {
+		direct: { kind: 'direct' }, 'direct-udp': { kind: 'direct' },
+		block: { kind: 'block' }, 'dns-out': { kind: 'dns' }
+	};
 
 	for (let sn in keys(state?.sections ?? {})) {
 		const s = state.sections[sn];
@@ -1931,15 +1887,18 @@ function route_of(tag, state) {
 		// takes its active server.
 		const pool = sn == 'pool' || s.pool == true;
 
-		if (tag == `f-${sn}`)
-			return { kind: 'proxy', section: sn, server: s.nodes?.[0]?.name, protocol: s.nodes?.[0]?.protocol, pool: pool };
-
 		for (let n in s.nodes ?? [])
-			if (n.tag == tag)
-				return { kind: n.iface ? 'tunnel' : 'proxy', section: sn, server: n.name, protocol: n.tproto ?? n.protocol, pool: pool };
+			if (n.tag && !map[n.tag])
+				map[n.tag] = { kind: n.iface ? 'tunnel' : 'proxy', section: sn, server: n.name, protocol: n.tproto ?? n.protocol, pool: pool };
+
+		map[`f-${sn}`] ??= { kind: 'proxy', section: sn, server: s.nodes?.[0]?.name, protocol: s.nodes?.[0]?.protocol, pool: pool };
 	}
 
-	return { kind: 'other', tag: tag };
+	return map;
+}
+
+function route_of(tag, map) {
+	return map[tag] ?? { kind: 'other', tag: tag };
 }
 
 // Every TCP and UDP connection the kernel tracks: { network, src, sport, dst,
@@ -2067,6 +2026,7 @@ function connections(stop, device) {
 		system(`sh -c '. ${LIB}/lib.sh; mayhem_conn_fold' >/dev/null 2>&1`);
 
 	const state = read_json(`${RUN}/nodes.json`) ?? { sections: {} };
+	const routes = route_map(state);
 	const devnames = device_names();
 	const names = devnames.names;
 	const local = devnames.local;
@@ -2161,7 +2121,7 @@ function connections(stop, device) {
 
 		const k = `${c.network} ${c.src}:${c.sport}`;
 		const tag = recent_tags[k] ?? (marked ? tag_of[k] : null);
-		let route = tag ? route_of(tag, state) : null;
+		let route = tag ? route_of(tag, routes) : null;
 
 		if (!route) {
 			const nat = mine[c.rdst];
@@ -2337,10 +2297,21 @@ const MARK = '@@mayhem@@';
 // Does dnsmasq run? By the names of the processes, as pidof tells, without
 // running it. Not by its pid files: OpenWrt starts dnsmasq in ujail, in a pid
 // namespace of its own, and the pid it writes is the one inside it.
+// The process found last time is looked at first: the dashboard asks every
+// 3 s, and every process of the router was read for it.
+let dnsmasq_pid = null;
+
 function dnsmasq_running() {
+	if (dnsmasq_pid && trim(fs.readfile(`${PROC}/${dnsmasq_pid}/comm`) ?? '') == 'dnsmasq')
+		return true;
+
+	dnsmasq_pid = null;
+
 	for (let f in fs.glob(`${PROC}/[0-9]*/comm`) ?? [])
-		if (trim(fs.readfile(f) ?? '') == 'dnsmasq')
+		if (trim(fs.readfile(f) ?? '') == 'dnsmasq') {
+			dnsmasq_pid = split(f, '/')[-2];
 			return true;
+		}
 
 	return false;
 }
@@ -2398,7 +2369,7 @@ function dashboard(pid, state, out) {
 
 				push(nodes, {
 					tag: n.tag, name: n.name, protocol: n.protocol, address: n.address,
-					port: n.port, udp: n.udp, source: n.source, iface: n.iface, tproto: n.tproto, has_link: n.link != null, usec: n.usec,
+					port: n.port, udp: n.udp, source: n.source, iface: n.iface, tproto: n.tproto, has_link: n.has_link == true || n.link != null, usec: n.usec,
 					delay: o ? o.delay : null, alive: o ? o.alive : null,
 					up: t.uplink ?? 0, down: t.downlink ?? 0
 				});
@@ -2523,7 +2494,7 @@ function dashboard(pid, state, out) {
 			// Mayhem is off (mayhem_hold_up)
 			killswitch: c.get('mayhem', 'settings', 'killswitch') == '1',
 			held: pid == null && fs.access(`${RUN}/held`) == true,
-			applying: applying(),
+			applying: is_applying(RUN),
 			active: pid != null && fs.access(`${RUN}/active`) == true,
 			xray: trim(fs.readfile(`${RUN}/xray.version`) ?? '') || null,
 			xray_started: xray_started,
@@ -2568,7 +2539,7 @@ const methods = {
 		args: { warm: false },
 		call: function(req) {
 			const pid = xray_pid();
-			const state = read_json(`${RUN}/nodes.json`) ?? { sections: {} };
+			const state = nodes_cached() ?? { sections: {} };
 
 			const dm = dnsmasq_running();
 
@@ -2596,7 +2567,7 @@ const methods = {
 			const n = filter(state?.sections?.[req.args?.section ?? '']?.nodes ?? [], (x) => x.tag == req.args?.tag)[0];
 
 			// usec: the subscription the server comes from, where its edit goes
-			return n ? { link: n.link, usec: n.usec } : { error: 'unknown server' };
+			return n ? { link: node_link(n.tag) ?? n.link, usec: n.usec } : { error: 'unknown server' };
 		}
 	},
 
@@ -2632,7 +2603,7 @@ const methods = {
 					return { error: 'unknown server' };
 
 				const used = pool?.mode == 'fallback' && length(filter(pool.items ?? [], (i) => i.sub == sn)) > 0;
-				if (used) reconnect_epoch(c);
+				if (used) reconnect_epoch();
 				c.set('mayhem', sn, 'select', 'manual');
 				c.set('mayhem', sn, 'selected', node.name);
 
@@ -2675,8 +2646,8 @@ const methods = {
 			if (s.mode == 'fallback' && !to_manual)
 				return { error: 'the fallback chain chooses the server' };
 
-			// The rest once xray took the choice.
-			const finish = () => {
+			// The rest once xray took the choice (took: it was told).
+			const finish = (took) => {
 				// Remember the choice by name: tags change when the server list does.
 				// A tunnel by its interface, which its name can change without.
 				const c = uci_cursor();
@@ -2719,10 +2690,28 @@ const methods = {
 				const fast_path = active && !is_cur_kernel && !is_new_kernel;
 
 				if (!fast_path)
-					reconnect_epoch(c);
+					reconnect_epoch();
 
-				if (!c.commit('mayhem'))
+				// Not saved: xray goes back to the choice it had, so that it,
+				// nodes.json and the overrides of its next start agree with
+				// the config. Apart: rpcd waits for no process.
+				if (!c.commit('mayhem')) {
+					if (took) {
+						// what the running xray had: running.overrides
+						let prev = null;
+
+						for (let l in split(fs.readfile(`${RUN}/running.overrides`) ?? '', '\n')) {
+							const p = split(l, ' ');
+
+							if (p[0] == s.balancer && p[1])
+								prev = p[1];
+						}
+
+						system(`${XRAY} api bo --server=127.0.0.1:${C.API_PORT} -b ${q(s.balancer)} ${prev != null ? q(prev) : '-r'} >/dev/null 2>&1 </dev/null &`);
+					}
+
 					return { error: 'the configuration could not be saved' };
+				}
 
 				apply(s);
 				let next_gen = null;
@@ -2783,7 +2772,7 @@ const methods = {
 			// rpcd answers when it is done, without a ucode child process.
 			const cmd = `${XRAY} api bo --server=127.0.0.1:${C.API_PORT} -b ${q(s.balancer)} ${tag != '' ? q(tag) : '-r'} >/dev/null 2>&1; echo $?`;
 
-			return deferred_sh(req, cmd, (out) => trim(out ?? '1') != '0' ? { error: 'xray did not accept the choice' } : finish());
+			return deferred_sh(req, cmd, (out) => trim(out ?? '1') != '0' ? { error: 'xray did not accept the choice' } : finish(true));
 		}
 	},
 
@@ -3966,7 +3955,7 @@ const methods = {
 
 				const n = found.node;
 				if (c.get('mayhem', n.source) == 'subscription') {
-					if (n.link != req.args.old)
+					if ((node_link(n.tag) ?? n.link) != req.args.old)
 						return { error: 'the server changed; open the editor again' };
 
 					const orig = n.orig ?? n.name;
@@ -4179,10 +4168,12 @@ const methods = {
 			const usec = n.usec ?? f.section;
 			let gone = n.name;
 
-			if (n.source == 'link' && n.link) {
+			const key = node_link(n.tag) ?? n.link;
+
+			if (n.source == 'link' && key) {
 				const links = c.get('mayhem', usec, 'link') ?? [];
 				const all = type(links) == 'array' ? links : [ links ];
-				const left = filter(all, (l) => l != n.link);
+				const left = filter(all, (l) => l != key);
 
 				if (length(left) == length(all))
 					return { error: 'the server key was not found' };
@@ -4447,7 +4438,7 @@ const methods = {
 			const state = read_json(`${RUN}/nodes.json`);
 			const used = kind != 'subscription' || (state?.sections?.pool?.mode == 'fallback' &&
 				length(filter(state.sections.pool.items ?? [], (i) => i.sub == sn)) > 0);
-			if (used) reconnect_epoch(c);
+			if (used) reconnect_epoch();
 			if (!c.commit('mayhem'))
 				return { error: 'the configuration could not be saved' };
 

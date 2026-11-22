@@ -10,42 +10,17 @@ jobs:
   test-unit:
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
       - name: Install test tools
         run: |
           sudo apt-get update
-          sudo apt-get install -y cmake libjson-c-dev nftables shellcheck unzip
-      - name: Cache ucode binaries
-        id: cache-ucode
-        uses: actions/cache@v4
+          sudo apt-get install -y cmake libjson-c-dev nftables shellcheck unzip busybox
+      - uses: ./.github/actions/ucode
         with:
-          path: |
-            /opt/ucode-24.10
-            /opt/ucode-25.12
-            /opt/ucode-master
-            /usr/local/lib/libubox.so*
-            /usr/local/lib/libuci.so*
-          key: ucode-build-${{ runner.os }}-${{ hashFiles('tests/build-ucode.sh') }}-v1
-      - name: Build ucode of OpenWrt 24.10, 25.12 and master
-        if: steps.cache-ucode.outputs.cache-hit != 'true'
-        run: |
-          git clone --depth 1 https://github.com/openwrt/libubox.git /tmp/libubox
-          cmake -S /tmp/libubox -B /tmp/libubox/build -DBUILD_LUA=OFF -DBUILD_EXAMPLES=OFF
-          sudo cmake --build /tmp/libubox/build --target install -j4
-          git clone --depth 1 https://github.com/openwrt/uci.git /tmp/uci
-          cmake -S /tmp/uci -B /tmp/uci/build -DBUILD_LUA=OFF
-          sudo cmake --build /tmp/uci/build --target install -j4
-          sudo ldconfig
-          for rel in 24.10 25.12 master; do
-            sudo sh tests/build-ucode.sh "$rel" "/opt/ucode-$rel"
-          done
-      - name: Setup ucode symlink
-        run: |
-          sudo ldconfig
-          sudo ln -sf /opt/ucode-24.10/ucode /usr/local/bin/ucode
+          releases: "24.10 25.12 master"
       - name: Cache xray
         id: cache-xray
-        uses: actions/cache@v4
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
         with:
           path: /tmp/xray
           key: xray-${{ runner.os }}-${{ hashFiles('mayhem/files/usr/share/mayhem/const.sh') }}
@@ -57,19 +32,19 @@ jobs:
           unzip -o /tmp/xray.zip xray -d /tmp/xray
       - name: Cache LuCI and jsmin
         id: cache-luci
-        uses: actions/cache@v4
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
         with:
           path: |
             /tmp/jsmin
             /tmp/acorn
-          key: luci-jsmin-${{ runner.os }}-v1
+          key: luci-jsmin-${{ runner.os }}-acorn-8.15.0-v2
       - name: Get LuCI and its jsmin
         if: steps.cache-luci.outputs.cache-hit != 'true'
         run: |
           git clone --depth 1 --filter=blob:none --sparse -b openwrt-24.10 https://github.com/openwrt/luci.git /tmp/luci
           git -C /tmp/luci sparse-checkout set modules/luci-base/src
           gcc -O2 -o /tmp/jsmin /tmp/luci/modules/luci-base/src/jsmin.c
-          npm install --prefix /tmp/acorn acorn@8
+          npm install --prefix /tmp/acorn acorn@8.15.0
       - name: Unit tests
         run: |
           for rel in 24.10 25.12 master; do
@@ -83,38 +58,17 @@ jobs:
   test-e2e:
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
       - name: Install test tools
         run: |
           sudo apt-get update
           sudo apt-get install -y cmake libjson-c-dev nftables unzip dnsmasq-base iproute2 wireguard-tools
-      - name: Cache ucode binaries
-        id: cache-ucode
-        uses: actions/cache@v4
+      - uses: ./.github/actions/ucode
         with:
-          path: |
-            /opt/ucode-24.10
-            /usr/local/lib/libubox.so*
-            /usr/local/lib/libuci.so*
-          key: ucode-build-${{ runner.os }}-${{ hashFiles('tests/build-ucode.sh') }}-v1
-      - name: Build ucode of OpenWrt 24.10
-        if: steps.cache-ucode.outputs.cache-hit != 'true'
-        run: |
-          git clone --depth 1 https://github.com/openwrt/libubox.git /tmp/libubox
-          cmake -S /tmp/libubox -B /tmp/libubox/build -DBUILD_LUA=OFF -DBUILD_EXAMPLES=OFF
-          sudo cmake --build /tmp/libubox/build --target install -j4
-          git clone --depth 1 https://github.com/openwrt/uci.git /tmp/uci
-          cmake -S /tmp/uci -B /tmp/uci/build -DBUILD_LUA=OFF
-          sudo cmake --build /tmp/uci/build --target install -j4
-          sudo ldconfig
-          sudo sh tests/build-ucode.sh 24.10 /opt/ucode-24.10
-      - name: Setup ucode symlink
-        run: |
-          sudo ldconfig
-          sudo ln -sf /opt/ucode-24.10/ucode /usr/local/bin/ucode
+          releases: "24.10"
       - name: Cache xray
         id: cache-xray
-        uses: actions/cache@v4
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
         with:
           path: /tmp/xray
           key: xray-${{ runner.os }}-${{ hashFiles('mayhem/files/usr/share/mayhem/const.sh') }}
@@ -127,41 +81,47 @@ jobs:
       - name: End-to-end test in network namespaces
         run: sudo env GITHUB_ACTIONS="$GITHUB_ACTIONS" UCODE=ucode XRAY=/tmp/xray/xray tests/netns.sh
 
+  # MIPS has other errno numbers (EINPROGRESS 150, not 115) and is big- or
+  # little-endian: the TCP ping and the link parser, with ucode built for
+  # it, in a Debian container under QEMU.
+  test-mips:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+      - name: QEMU for other architectures
+        run: sudo apt-get update && sudo apt-get install -y qemu-user-static binfmt-support
+      - name: ucode for mips64el, the tests
+        run: |
+          docker run --rm --platform linux/mips64le -v "$PWD:/src" -w /src debian:bookworm sh -c '
+            set -e
+            apt-get update -qq && apt-get install -y -qq cmake gcc g++ make git curl ca-certificates libjson-c-dev pkg-config >/dev/null
+            git clone -q --depth 1 https://github.com/openwrt/libubox.git /tmp/libubox
+            cmake -S /tmp/libubox -B /tmp/libubox/build -DBUILD_LUA=OFF -DBUILD_EXAMPLES=OFF >/dev/null
+            cmake --build /tmp/libubox/build --target install -j4 >/dev/null
+            git clone -q --depth 1 https://github.com/openwrt/uci.git /tmp/uci
+            cmake -S /tmp/uci -B /tmp/uci/build -DBUILD_LUA=OFF >/dev/null
+            cmake --build /tmp/uci/build --target install -j4 >/dev/null
+            ldconfig
+            sh tests/build-ucode.sh 24.10 /opt/ucode
+            u() { /opt/ucode/ucode -L "/src/mayhem/files/usr/share/ucode/*.uc" "$@"; }
+            out="$(u tests/ping.uc)" || { echo "ping: $out"; exit 1; }
+            u tests/links.uc
+          '
+
   test-luci:
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
       - name: Install test tools
         run: |
           sudo apt-get update
           sudo apt-get install -y cmake libjson-c-dev unzip
-      - name: Cache ucode binaries
-        id: cache-ucode
-        uses: actions/cache@v4
+      - uses: ./.github/actions/ucode
         with:
-          path: |
-            /opt/ucode-24.10
-            /usr/local/lib/libubox.so*
-            /usr/local/lib/libuci.so*
-          key: ucode-build-${{ runner.os }}-${{ hashFiles('tests/build-ucode.sh') }}-v1
-      - name: Build ucode of OpenWrt 24.10
-        if: steps.cache-ucode.outputs.cache-hit != 'true'
-        run: |
-          git clone --depth 1 https://github.com/openwrt/libubox.git /tmp/libubox
-          cmake -S /tmp/libubox -B /tmp/libubox/build -DBUILD_LUA=OFF -DBUILD_EXAMPLES=OFF
-          sudo cmake --build /tmp/libubox/build --target install -j4
-          git clone --depth 1 https://github.com/openwrt/uci.git /tmp/uci
-          cmake -S /tmp/uci -B /tmp/uci/build -DBUILD_LUA=OFF
-          sudo cmake --build /tmp/uci/build --target install -j4
-          sudo ldconfig
-          sudo sh tests/build-ucode.sh 24.10 /opt/ucode-24.10
-      - name: Setup ucode symlink
-        run: |
-          sudo ldconfig
-          sudo ln -sf /opt/ucode-24.10/ucode /usr/local/bin/ucode
+          releases: "24.10"
       - name: Cache LuCI source
         id: cache-luci-src
-        uses: actions/cache@v4
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
         with:
           path: /tmp/luci
           key: luci-src-${{ runner.os }}-openwrt-24.10
@@ -172,13 +132,13 @@ jobs:
           git -C /tmp/luci sparse-checkout set modules/luci-base/htdocs modules/luci-base/src themes/luci-theme-bootstrap/htdocs
       - name: Cache Playwright browsers
         id: cache-playwright
-        uses: actions/cache@v4
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
         with:
           path: ~/.cache/ms-playwright
-          key: playwright-${{ runner.os }}-chromium
+          key: playwright-${{ runner.os }}-1.55.0-chromium
       - name: LuCI pages in a browser
         run: |
-          pip install --break-system-packages playwright
+          pip install --break-system-packages playwright==1.55.0
           python3 -m playwright install --with-deps chromium
           UCODE=ucode sh tests/luci/run.sh /tmp/luci
 
@@ -189,7 +149,7 @@ jobs:
       matrix:
         release: ["24.10.4", "25.12.2"]
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
 
       - name: Version
         id: ver
@@ -224,7 +184,7 @@ jobs:
 
       - name: Cache SDK prep
         id: cache-sdk-prep
-        uses: actions/cache@v4
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
         with:
           path: |
             sdk/feeds
@@ -256,7 +216,7 @@ jobs:
           find bin/packages -type f \( -name '*mayhem*.ipk' -o -name '*mayhem*.apk' \) -exec cp {} ../dist/ \;
           ls -l ../dist
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: packages-${{ matrix.release }}
           path: dist/*
@@ -268,11 +228,11 @@ jobs:
     permissions:
       contents: write
     steps:
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         with:
           path: dist
           merge-multiple: true
-      - uses: softprops/action-gh-release@v2
+      - uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65 # v2
         with:
           prerelease: true
           files: dist/*

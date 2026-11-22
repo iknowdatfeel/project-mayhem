@@ -17,6 +17,13 @@ const c = cursor(UCI_DIR);
 
 c.load('mayhem');
 
+// 0.27: the counter of servers chosen by hand is in the run directory
+// (reconnect.epoch), not in the user's config.
+if (c.get('mayhem', 'settings', 'reconnect_epoch') != null) {
+	c.delete('mayhem', 'settings', 'reconnect_epoch');
+	c.commit('mayhem');
+}
+
 // 0.16: the old default check URL becomes the new one (plain HTTP, the
 // checks vary less). A URL the user chose stays.
 if (c.get('mayhem', 'settings', 'probe_url') == 'https://www.gstatic.com/generate_204') {

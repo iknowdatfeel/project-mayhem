@@ -8,6 +8,9 @@
 'require tools.widgets as widgets';
 'require mayhem.common as mh';
 
+// text, never markup, from a string child (see mayhem.common)
+const E = mh.E;
+
 // Routing: the sections with their rules and the switches that apply to all
 // traffic, DNS, geo files. A section opens in a dialog: type, servers, then
 // rules (ready categories, own domains and addresses as text or as a list,
@@ -411,7 +414,7 @@ function since(ts) {
 function renameSection(name) {
 	const input = E('input', { 'class': 'cbi-input-text', 'value': name });
 
-	ui.showModal(_('Rename section %s').format(name), [
+	ui.showModal(mh.text(_('Rename section %s').format(name)), [
 		E('p', _('Latin letters, digits and _. The settings that name the section change too. Xray restarts once, so connections break for a moment.')),
 		input,
 		E('div', { 'class': 'right' }, [
@@ -523,7 +526,8 @@ return baseclass.extend({
 		const m = new form.Map('mayhem');
 		let s, o;
 
-		const now = mh.mainServerText(dash);
+		// only in descriptions, which LuCI shows as markup: the name is escaped
+		const now = mh.mainServerText(dash) ? '%h'.format(mh.mainServerText(dash)) : null;
 
 		// --- sections and the switches for all traffic ---
 
@@ -626,7 +630,7 @@ return baseclass.extend({
 				const v = this.cfgvalue(section_id) || 'proxy';
 				const i = this.keylist.indexOf(v);
 
-				return i >= 0 ? this.vallist[i] : v;
+				return i >= 0 ? this.vallist[i] : '%h'.format(v);
 			};
 
 			// --- servers of a proxy section ---
@@ -1020,8 +1024,9 @@ return baseclass.extend({
 				const get = (k) => L.toArray(this.map.data.get('mayhem', section_id, k));
 				const type = this.map.data.get('mayhem', section_id, 'type') || 'proxy';
 
+				// a cell of the table is markup: the names in it are escaped
 				if (type === 'interface')
-					return '%s (%s)'.format(this.map.data.get('mayhem', section_id, 'interface') || '?',
+					return '%h (%h)'.format(this.map.data.get('mayhem', section_id, 'interface') || '?',
 						this.map.data.get('mayhem', section_id, 'route_mode') === 'xray' ? _('Through Xray') : _('Kernel'));
 
 				if (type !== 'proxy')
@@ -1042,7 +1047,7 @@ return baseclass.extend({
 				get('iface_node').forEach((n) => parts.push(n));
 				get('subscription').forEach((n) => parts.push(n));
 
-				return parts.join(', ') || _('No servers');
+				return '%h'.format(parts.join(', ') || _('No servers'));
 			};
 
 			o = ss.option(form.DummyValue, '_rules', _('Rules'));

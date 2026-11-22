@@ -10,6 +10,9 @@
 'require mayhem.linkedit as linkedit';
 'require mayhem.sheet as sheet';
 
+// text, never markup, from a string child (see mayhem.common)
+const E = mh.E;
+
 // Server list: servers added by key, subscriptions, tunnels and the options
 // of every server (Mux). Keys and subscriptions form one list, like in Happ:
 // the dashboard shows it and picks its active server. Keys go into the "link"
@@ -234,7 +237,7 @@ return baseclass.extend({
 			});
 		};
 
-		ui.showModal(_('Rename subscription %s').format(name), [
+		ui.showModal(mh.text(_('Rename subscription %s').format(name)), [
 			E('p', _('Latin letters, digits and _. Its servers, the chain of the server list and the chosen server go along.')),
 			input,
 			E('div', { 'class': 'right', 'style': 'margin-top:1em' }, [
@@ -530,7 +533,9 @@ return baseclass.extend({
 		const dash = data[2] || {};
 		const main = (dash.sections || []).find((x) => x.name === dash.default_section);
 		const current = main && (main.nodes || []).find((n) => n.tag === main.active);
-		const now = current ? current.name : (main && main.name !== 'pool' ? main.name : null);
+		// only in descriptions, which LuCI shows as markup: the name is escaped
+		const nowName = current ? current.name : (main && main.name !== 'pool' ? main.name : null);
+		const now = nowName ? '%h'.format(nowName) : null;
 		const dev = uci.get('mayhem', 'device') || {};
 		const self = this;
 
@@ -730,7 +735,7 @@ return baseclass.extend({
 		o.modalonly = true;
 
 		DEVICE_FIELDS.forEach((f) => {
-			o = s.taboption('device', form.Value, f[0], f[1], f[0] === 'hwid' ? _('Empty: the HWID of the router, %s.').format(dev.hwid || '—') : null);
+			o = s.taboption('device', form.Value, f[0], f[1], f[0] === 'hwid' ? _('Empty: the HWID of the router, %s.').format('%h'.format(dev.hwid || '—')) : null);
 			o.placeholder = dev[f[0]] || f[2];
 			o.modalonly = true;
 

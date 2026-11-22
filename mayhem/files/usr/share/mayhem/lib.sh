@@ -44,11 +44,17 @@ mayhem_net_up() {
 		mayhem_nft_kept
 	} > "$run/nft.apply"
 
+	local rc
 	if [ "$v6" = 1 ]; then
 		nft -f "$run/nft.apply"
+		rc=$?
 	else
 		sed '/meta nfproto ipv6/d' "$run/nft.apply" | nft -f -
+		rc=$?
 	fi
+	# the rules and every kept address once more, in RAM
+	rm -f "$run/nft.apply"
+	return "$rc"
 }
 
 # The sets dnsmasq fills as it resolves (tun_<section>_d4, px_d6, oth_d4...):
@@ -75,20 +81,35 @@ mayhem_nft_kept() {
 
 	# The sets whose nftset= lines changed between the old and the new file
 	# (or all of them without an old one): one pass of awk over each file.
+	# Only nftset= lines, and only the sets each one names (after its last
+	# "/": "4#inet#TABLE#SET,6#inet#TABLE#SET"); the lines of a set are
+	# compared one by one as they come. Gluing them into one string per set
+	# copied it again for every line (seconds for a tunnel with a big list
+	# in busybox awk), and every line was matched against every set.
 	[ -f "$new" ] || new=/dev/null
 	awk -v t="$MAYHEM_NFT_TABLE" -v have_old="$([ -n "$old" ] && echo 1)" '
-		FILENAME == ARGV[1] { if ($0 != "") { set[$0] = 1; order[++n] = $0 } next }
+		FILENAME == ARGV[1] { if ($0 != "") { want[$0] = 1; order[++n] = $0 } next }
+		substr($0, 1, 7) != "nftset=" { next }
 		{
-			for (s in set)
-				if (index($0, "#" t "#" s) > 0) {
-					if (FILENAME == ARGV[2]) a[s] = a[s] "\n" $0
-					else b[s] = b[s] "\n" $0
-				}
+			spec = $0
+			sub(/.*\//, "", spec)
+			k = split(spec, e, ",")
+			for (i = 1; i <= k; i++) {
+				if (split(e[i], f, "#") != 4 || f[3] != t || !(f[4] in want))
+					continue
+				s = f[4]
+				if (FILENAME == ARGV[2])
+					old[s, ++co[s]] = $0
+				else if (old[s, ++cn[s]] != $0)
+					diff[s] = 1
+			}
 		}
 		END {
-			for (i = 1; i <= n; i++)
-				if (have_old != 1 || a[order[i]] != b[order[i]])
-					print order[i]
+			for (i = 1; i <= n; i++) {
+				s = order[i]
+				if (have_old != 1 || diff[s] || co[s] + 0 != cn[s] + 0)
+					print s
+			}
 		}' "$MAYHEM_RUN_DIR/nft.dynsets" "${old:-/dev/null}" "$new" > "$MAYHEM_RUN_DIR/nft.changed"
 
 	while read -r set; do
@@ -175,6 +196,17 @@ mayhem_net_refresh() {
 	return 0
 }
 
+# The rules of FILE with the path generation GEN (1-3) in its two places:
+# the check of the connection's mark and the mark set on it. The same as
+# apply_generation() of mayhem.build (tests/run.sh compares them).
+mayhem_nft_set_gen() {
+	local hex
+
+	hex="$(printf '0x%x' $(($2 << 28)))"
+	sed -e "s/ct mark & 0x30000000 != 0x[0-9a-fA-F]*/ct mark \\& 0x30000000 != $hex/g" \
+		-e "s/ct mark set ct mark & 0xcfffffff | 0x[0-9a-fA-F]*/ct mark set ct mark \\& 0xcfffffff | $hex/g" "$1"
+}
+
 # A server chosen by hand without a restart: the path generation of
 # nodes.json goes into the running rules, so connections of the old one are
 # reset (chain stale) and devices reconnect through the new server at once.
@@ -182,18 +214,15 @@ mayhem_net_refresh() {
 # transaction, the sets keep what dnsmasq put in them. The files follow only
 # once the kernel has it. Run under mayhem_lock start (no reload meanwhile).
 mayhem_net_generation() {
-	local run="$MAYHEM_RUN_DIR" gen hex f tx="$MAYHEM_RUN_DIR/nft.gen.$$"
+	local run="$MAYHEM_RUN_DIR" gen f tx="$MAYHEM_RUN_DIR/nft.gen.$$"
 
 	[ -f "$run/active" ] && [ -f "$run/running.nft.conf" ] || return 1
 	gen="$(sed -n 's/.*"generation": *\([1-3]\).*/\1/p' "$run/nodes.json" 2>/dev/null | head -n 1)"
 	[ -n "$gen" ] || return 1
-	hex="$(printf '0x%x' $((gen << 28)))"
 
 	for f in running.nft.conf nft.conf; do
 		[ -f "$run/$f" ] || continue
-		sed -e "s/ct mark & 0x30000000 != 0x[0-9a-fA-F]*/ct mark \\& 0x30000000 != $hex/g" \
-			-e "s/ct mark set ct mark & 0xcfffffff | 0x[0-9a-fA-F]*/ct mark set ct mark \\& 0xcfffffff | $hex/g" \
-			"$run/$f" > "$tx.$f" || { rm -f "$tx".*; return 1; }
+		mayhem_nft_set_gen "$run/$f" "$gen" > "$tx.$f" || { rm -f "$tx".*; return 1; }
 	done
 
 	# Nothing to do: the kernel has it already.
@@ -298,9 +327,7 @@ mayhem_hold_save() {
 	[ -s "$run/nft.conf" ] || return 1
 	mkdir -p "$d" && chmod 0700 "$d" || return 1
 
-	sed -e 's/ct mark & 0x30000000 != 0x[0-9a-fA-F]*/ct mark \& 0x30000000 != 0x10000000/g' \
-		-e 's/ct mark set ct mark & 0xcfffffff | 0x[0-9a-fA-F]*/ct mark set ct mark \& 0xcfffffff | 0x10000000/g' \
-		"$run/nft.conf" > "$run/hold.nft" || return 1
+	mayhem_nft_set_gen "$run/nft.conf" 1 > "$run/hold.nft" || return 1
 	grep '^MAYHEM_IPV6=' "$run/env" > "$run/hold.env" 2>/dev/null
 
 	for f in nft dnsmasq.conf dns.xray tunnels env; do
@@ -1217,6 +1244,14 @@ mayhem_isp_dns_catchup() {
 	"${MAYHEM_INIT:-/etc/init.d/mayhem}" reload
 }
 
+# The reload of an interface that came up (iface_reload of the service):
+# only when ifacefp.uc finds that it changed what the configuration was
+# built from.
+mayhem_iface_reload() {
+	ucode "$MAYHEM_LIB_DIR/ifacefp.uc" >/dev/null 2>&1 && return 0
+	"${MAYHEM_INIT:-/etc/init.d/mayhem}" reload
+}
+
 mayhem_dnsmasq_hup() {
 	local pids
 
@@ -1440,19 +1475,33 @@ mayhem_subs_new() {
 
 # --- state -------------------------------------------------------------------
 
-# Is something listening on TCP port $1 (any address family)?
-mayhem_port_listening() {
-	local hex f
+# Is something listening on every TCP port given (any address family)? One
+# awk for all of them and both files: xray-run asks five times a second
+# while xray starts, when the CPU is busy anyway (an awk per port and file
+# made six processes a tick). MAYHEM_PROC_NET: the directory of tcp and
+# tcp6 (the tests).
+mayhem_ports_listening() {
+	local net="${MAYHEM_PROC_NET:-/proc/net}" ports="$*" f
 
-	hex="$(printf '%04X' "$1")"
+	[ -n "$ports" ] || return 1
+	set --
 
 	# tcp6 is missing on kernels without IPv6; awk would fail on it.
-	for f in /proc/net/tcp /proc/net/tcp6; do
-		[ -r "$f" ] || continue
-		awk -v p=":$hex" 'toupper($2) ~ (p "$") && $4 == "0A" { f = 1 } END { exit !f }' "$f" && return 0
+	for f in "$net/tcp" "$net/tcp6"; do
+		[ -r "$f" ] && set -- "$@" "$f"
 	done
 
-	return 1
+	[ $# -gt 0 ] || return 1
+
+	awk -v ports="$ports" '
+		BEGIN { n = split(ports, p, " "); for (i = 1; i <= n; i++) { h = sprintf("%04X", p[i]); if (!(h in want)) { want[h] = 1; m++ } } }
+		$4 == "0A" { k = toupper($2); sub(/.*:/, "", k); if ((k in want) && !(k in got)) { got[k] = 1; c++ } }
+		END { exit !(c == m) }' "$@"
+}
+
+# Is something listening on TCP port $1 (any address family)?
+mayhem_port_listening() {
+	mayhem_ports_listening "$1"
 }
 
 # Prints the names of running services that also intercept traffic.

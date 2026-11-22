@@ -4,6 +4,9 @@
 'require ui';
 'require mayhem.common as mh';
 
+// text, never markup, from a string child (see mayhem.common)
+const E = mh.E;
+
 // The "Active connections" window of the dashboard: what each device connects
 // to, over which protocol, and which way it goes: a server through xray, a
 // tunnel in the kernel, or direct. From the kernel's connection table; servers
@@ -80,6 +83,14 @@ return baseclass.extend({
 
 		if (!this.connsOpen)
 			return;
+
+		// A hidden tab asks the router nothing: the next try in 3 s.
+		if (document.hidden) {
+			if (!this.connPaused)
+				this.connsTimer = window.setTimeout(() => this.fetch(), 3000);
+
+			return;
+		}
 
 		const seq = this.connSeq = (this.connSeq || 0) + 1;
 

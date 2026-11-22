@@ -19,6 +19,7 @@ import * as fs from 'fs';
 import { is_true, entries, list_key } from 'mayhem.rules';
 import { scan, wanted } from 'mayhem.geo';
 import * as C from 'mayhem.const';
+import { q, log, read_json, write_atomic, lock, unlock } from 'mayhem.util';
 
 const STATE_FILE = `${C.RUN_DIR}/data-state.json`;
 const LOCK_DIR = `${C.RUN_DIR}/update.lock`;
@@ -28,31 +29,13 @@ const NIGHTLY_MIN_AGE_S = 20 * 3600;
 const MAX_AGE_S = 48 * 3600;
 const LIST_MAX_BYTES = 20 * 1024 * 1024;
 
-function q(s) {
-	return "'" + replace(`${s}`, /'/g, "'\\''") + "'";
-}
-
-function log(msg, level) {
-	system(sprintf('logger -t mayhem -p daemon.%s -- %s', level ?? 'info', q(msg)));
-}
-
-function read_json(path) {
-	try {
-		return json(fs.readfile(path) ?? '');
-	}
-	catch (e) {
-		return null;
-	}
-}
-
+// A write that must not fail: the run stops with the error.
 function write_file(path, data) {
-	const tmp = `${path}.tmp`;
-
-	if (fs.writefile(tmp, data) == null || !fs.rename(tmp, path))
+	if (!write_atomic(path, data))
 		die(`cannot write ${path}: ${fs.error()}`);
 }
 
-function write_json(path, v) {
+function save_json(path, v) {
 	write_file(path, sprintf('%J\n', v));
 }
 
@@ -84,7 +67,7 @@ function same_file(a, b) {
 	return same;
 }
 
-// Copies src to dst (through dst.tmp, like write_file).
+// Copies src to dst (through dst.tmp).
 function copy_file(src, dst) {
 	const tmp = `${dst}.tmp`;
 	const i = fs.open(src, 'r'), o = fs.open(tmp, 'w');
@@ -193,35 +176,6 @@ function curl_cmd(url, proxy, extra) {
 		cmd += ` -x ${q(proxy)}`;
 
 	return cmd + ` ${q(url)}`;
-}
-
-// --- lock ------------------------------------------------------------------------
-
-function lock() {
-	fs.mkdir(C.RUN_DIR, 0700);
-
-	for (let i = 0; i < 2; i++) {
-		if (fs.mkdir(LOCK_DIR, 0700)) {
-			fs.writefile(`${LOCK_DIR}/pid`, `${fs.readlink('/proc/self')}\n`);
-			return true;
-		}
-
-		// A lock left by a process that is gone is stale.
-		const pid = int(trim(fs.readfile(`${LOCK_DIR}/pid`) ?? '0'));
-
-		if (pid > 0 && fs.access(`/proc/${pid}`))
-			return false;
-
-		fs.unlink(`${LOCK_DIR}/pid`);
-		fs.rmdir(LOCK_DIR);
-	}
-
-	return false;
-}
-
-function unlock() {
-	fs.unlink(`${LOCK_DIR}/pid`);
-	fs.rmdir(LOCK_DIR);
 }
 
 // --- geo -------------------------------------------------------------------------
@@ -421,7 +375,7 @@ function update_source(cfg, src, cats, state, now, force) {
 	if (!old || old.url != src.url || old.size != res.bytes || changed_copied ||
 	    sprintf('%J', old.categories) != sprintf('%J', res.categories) ||
 	    sprintf('%J', old.validator) != sprintf('%J', validator))
-		write_json(`${C.GEO_DIR}/${src.name}.json`, index);
+		save_json(`${C.GEO_DIR}/${src.name}.json`, index);
 
 	st.last_ok = now;
 	st.via = via;
@@ -500,7 +454,7 @@ function run_geo(cfg, state, name, force, again) {
 
 		r.name = src.name;
 		push(results, r);
-		write_json(STATE_FILE, state);
+		save_json(STATE_FILE, state);
 	}
 
 	// Once more for what the fixed type moved to other sources (only what is
@@ -642,6 +596,74 @@ function run_lists(cfg, state, force) {
 	return results;
 }
 
+// --- when the next download is due ------------------------------------------------
+// The scheduler starts this script every minute only when something may be
+// due (data.next: "<time> <written at>"): a ucode process that parsed the
+// index of every geo source on flash, minute after minute, to find nothing.
+
+// The first time from `now` on at which the nightly update is due: the hour
+// of update_hour, and the data at least NIGHTLY_MIN_AGE_S old. Quarter hours
+// are tried (time zones with half hours), from the earliest such time.
+function nightly_at(last, hour, now) {
+	let t = max(now, last + NIGHTLY_MIN_AGE_S);
+
+	for (let i = 0; i < 400; i++) {
+		if (localtime(t).hour == hour)
+			return t;
+
+		t = (int(t / 900) + 1) * 900;
+	}
+
+	return t;
+}
+
+function next_due(cfg, state, now) {
+	const want = wanted(cfg.sections, cfg.sources);
+	const hour = int(cfg.geo.update_hour ?? 4);
+	let next = now + 86400;
+
+	for (let src in cfg.sources) {
+		const cats = want[src.name] ?? [];
+		const st = state.geo[src.name] ?? {};
+
+		if (!src.enabled || !length(cats) || src.url == '')
+			continue;
+
+		let t;
+
+		// downloaded in this run: its index (read before) is the old one
+		if (st.last_ok == now)
+			t = min(now + MAX_AGE_S, nightly_at(now, hour, now));
+		else if (geo_due(cfg, src, cats, st, now))
+			t = now;
+		else {
+			const last = max(st.last_ok ?? 0, src.index?.updated ?? 0);
+
+			t = min(last + MAX_AGE_S, nightly_at(last, hour, now));
+		}
+
+		if (st.error)
+			t = max(t, (st.last_try ?? 0) + RETRY_S);
+
+		next = min(next, t);
+	}
+
+	const hours = int(cfg.geo.lists_interval ?? 24) || 24;
+
+	for (let url in list_urls(cfg)) {
+		const st = state.lists[url] ?? {};
+		const mtime = fs.stat(`${C.LISTS_DIR}/${list_key(url)}.lst`)?.mtime;
+		let t = mtime == null ? now : max(st.last_ok ?? 0, mtime) + hours * 3600;
+
+		if (st.error)
+			t = max(t, (st.last_try ?? 0) + RETRY_S);
+
+		next = min(next, t);
+	}
+
+	return next;
+}
+
 // --- main ------------------------------------------------------------------------
 
 const cmd = ARGV[0];
@@ -653,7 +675,12 @@ if (index([ 'due', 'geo', 'lists' ], cmd) < 0) {
 	exit(2);
 }
 
-if (!lock()) {
+// One run at a time: a second one is busy at once. A lock left by a
+// process that is gone is taken over; one without a pid yet only after 10 s
+// (a lock just taken, see mayhem.util).
+fs.mkdir(C.RUN_DIR, 0700);
+
+if (!lock(LOCK_DIR)) {
 	print('{ "busy": true }\n');
 	exit(4);
 }
@@ -673,7 +700,11 @@ try {
 	if (cmd == 'lists' || cmd == 'due')
 		results = [ ...results, ...run_lists(cfg, state, force) ];
 
-	write_json(STATE_FILE, state);
+	save_json(STATE_FILE, state);
+
+	const now = time();
+
+	fs.writefile(`${C.RUN_DIR}/data.next`, `${next_due(cfg, state, now)} ${now}\n`);
 
 	const failed = filter(results, (r) => !r.ok);
 
@@ -683,11 +714,11 @@ try {
 		rc = 1;
 }
 catch (e) {
-	unlock();
+	unlock(LOCK_DIR);
 	warn(`mayhem: ${e.message}\n`);
 	exit(1);
 }
 
-unlock();
+unlock(LOCK_DIR);
 print(sprintf('%J\n', results));
 exit(rc);

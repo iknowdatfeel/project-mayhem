@@ -94,5 +94,42 @@ else
 	bad "two folds at once: $lines lines, $good good, $left temporary files"
 fi
 
+# The lock of update.uc (a directory with the pid of its owner): one without
+# a pid yet, just taken, is not taken from its owner; one without a pid for
+# more than 10 s was left behind and is.
+UCODE="${UCODE:-ucode}"
+FILES="$ROOT/mayhem/files"
+mkdir -p "$T/uci" && : > "$T/uci/mayhem"
+update() {
+	MAYHEM_UCI_DIR="$T/uci" MAYHEM_GEO_DIR="$T/geo" MAYHEM_LISTS_DIR="$T/lists" \
+		"$UCODE" -L "$FILES/usr/share/ucode/*.uc" "$FILES/usr/share/mayhem/update.uc" geo >/dev/null 2>&1
+}
+mkdir "$T/run/update.lock"
+update
+rc=$?
+if [ "$rc" = 4 ] && [ -d "$T/run/update.lock" ]; then
+	ok "update.uc: a lock just taken (no pid yet) stays with its owner"
+else
+	bad "update.uc: a fresh lock without a pid: rc $rc, lock $(ls -d "$T/run/update.lock" 2>/dev/null)"
+fi
+touch -d '-20 sec' "$T/run/update.lock"
+update
+rc=$?
+if [ "$rc" = 0 ] && [ ! -d "$T/run/update.lock" ]; then
+	ok "update.uc: a lock without a pid for 20 s is taken over"
+else
+	bad "update.uc: an old lock without a pid: rc $rc"
+fi
+# two at once: never both
+for i in 1 2 3 4 5 6; do
+	( update; echo $? >> "$T/rcs" ) &
+done
+wait
+if [ "$(grep -c '^0$' "$T/rcs")" -ge 1 ] && [ "$(grep -c -v '^[04]$' "$T/rcs")" = 0 ]; then
+	ok "update.uc: runs at once wait as busy"
+else
+	bad "update.uc: runs at once: $(tr '\n' ' ' < "$T/rcs")"
+fi
+
 rm -rf "$T"
 exit "$fail"

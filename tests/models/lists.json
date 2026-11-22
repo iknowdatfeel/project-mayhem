@@ -10,7 +10,7 @@
       "outbound_json": "{\"protocol\":\"vless\",\"settings\":{\"address\":\"1.2.3.4\",\"port\":443,\"id\":\"11111111-2222-3333-4444-555555555555\",\"encryption\":\"none\"},\"streamSettings\":{\"network\":\"xhttp\",\"security\":\"tls\",\"tlsSettings\":{\"serverName\":\"g.example\"},\"xhttpSettings\":{\"path\":\"/x\"}}}",
       "domain": "epicgames.com fortnite.com" },
     { ".name": "hy", "type": "proxy", "enabled": "1",
-      "link": "hy2://pass@hy.example:443?sni=hy.example&obfs=salamander&obfs-password=xyz#hy", "domain": ["x.com"] },
+      "link": "hy2://pass@hy.example:443?sni=hy.example&obfs=salamander&obfs-password=xyz#hy", "domain": ["x.com", "regexp:^(?!ads).*$", "regexp:(?i)^ads[0-9]+\\.x\\.com$"] },
     { ".name": "ru", "type": "exclusion", "enabled": "1", "domain": ["gosuslugi.ru"], "ip": ["5.255.255.0/24"] },
     { ".name": "ads", "type": "block", "enabled": "1", "domain": ["doubleclick.net"], "ip": ["203.0.114.7"] },
     { ".name": "broken", "type": "proxy", "enabled": "1", "link": "vless://id@h:443?type=h2" },

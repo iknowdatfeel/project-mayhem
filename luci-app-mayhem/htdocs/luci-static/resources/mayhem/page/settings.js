@@ -12,6 +12,9 @@
 "require mayhem.page.components as components";
 "require mayhem.dash.conns as conns";
 
+// text, never markup, from a string child (see mayhem.common)
+const E = mh.E;
+
 // Settings: logging, memory, watchdog, server checks and the reset to defaults.
 
 const callReset = rpc.declare({

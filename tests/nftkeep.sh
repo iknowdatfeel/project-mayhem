@@ -97,12 +97,35 @@ sed -i 's|/b.com/|/b.com/c.com/|' "$T/run/dnsmasq.conf"
 net_up
 
 if nft list chain inet mayhem prerouting | grep -q 'meta l4proto udp'; then ok "the new rules are in"; else bad "new rules: $(nft list ruleset)"; fi
+if [ ! -e "$T/run/nft.apply" ]; then ok "nft.apply is gone after it was applied"; else bad "nft.apply stays in RAM"; fi
 if has tun_a_d4 1.1.1.1 && has tun_a_d4 2.2.2.2 && has tun_a_d6 2001:db8::1; then ok "addresses of unchanged domains stay"; else bad "kept: $(nft list set inet mayhem tun_a_d4)"; fi
 if has oth_d4 4.4.4.4 && has oth_d4 10.0.4.175; then ok "a set with timeouts keeps its addresses, many of them"; else bad "oth: $(nft list set inet mayhem oth_d4 | head -c 400)"; fi
 if ! has tun_b_d4 3.3.3.3 && grep -qx tun_b_d4 "$T/run/nft.emptied" && ! grep -q tun_a "$T/run/nft.emptied"; then
 	ok "a set whose domains changed starts empty"
 else
 	bad "changed: $(nft list set inet mayhem tun_b_d4) / $(cat "$T/run/nft.emptied")"
+fi
+
+# A tunnel with a big list: 5000 nftset= lines a set. Unchanged sets are
+# told apart from a changed one in time that grows with the lines, not with
+# their square.
+awk 'BEGIN {
+	for (i = 0; i < 5000; i++) {
+		printf "nftset=/d%d.a.example/4#inet#mayhem#tun_a_d4,6#inet#mayhem#tun_a_d6\n", i
+		printf "nftset=/d%d.b.example/4#inet#mayhem#tun_b_d4,6#inet#mayhem#tun_b_d6\n", i
+		printf "server=/d%d.a.example/127.0.0.1#5353\n", i
+	}
+}' > "$T/run/dnsmasq.conf"
+cp "$T/run/dnsmasq.conf" "$T/dnsmasq.d/mayhem.conf"
+sed -i 's|/d2500.b.example/|/d2500.c.example/|' "$T/run/dnsmasq.conf"
+t0="$(date +%s%N)"
+sh -c ". '$MAYHEM_LIB_DIR/lib.sh'; mayhem_nft_kept" > /dev/null 2>"$T/err"
+ms=$((($(date +%s%N) - t0) / 1000000))
+changed="$(tr '\n' ' ' < "$T/run/nft.changed")"
+if [ "$changed" = "tun_b_d4 " ] && [ "$ms" -lt 2000 ]; then
+	ok "5000 lines a set: the changed set told in $ms ms"
+else
+	bad "5000 lines a set: changed \"$changed\" in $ms ms $(cat "$T/err")"
 fi
 
 # The first start: no table, nothing kept, nothing fails.

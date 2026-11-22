@@ -7,6 +7,9 @@
 'require mayhem.common as mh';
 'require mayhem.tunnels as tunnels';
 
+// text, never markup, from a string child (see mayhem.common)
+const E = mh.E;
+
 // Component updates: what is installed and what is out for Xray, Mayhem, geo
 // data and rule lists, with buttons to update them and the nightly update of
 // Mayhem itself.

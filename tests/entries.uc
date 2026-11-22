@@ -32,6 +32,14 @@ expect('a DoH port too big', dns_server('https://dns.example:70000/dns-query').e
 expect('a good DNS port', dns_server('1.1.1.1:5353').port == 5353, dns_server('1.1.1.1:5353'));
 expect('a good DoH server', dns_server('https://1.1.1.1/dns-query').address == 'https://1.1.1.1/dns-query', dns_server('https://1.1.1.1/dns-query'));
 
+// Regexp rules go to xray (Go RE2): what it refuses is refused here, what
+// it takes is kept as it is.
+for (let r in [ '^(?!ads).*$', '(?=x)a', 'a(?<=b)', '(?<!x)y', '(a)\\1', 'a*+', 'a++b', 'a?+', 'a{2}+', '(ab', 'ab)', '[ab' ])
+	expect(`regexp refused: ${r}`, norm_domain(`regexp:${r}`).error != null, norm_domain(`regexp:${r}`));
+
+for (let r in [ '^r[0-9]+\\.googlevideo\\.com$', '(?i)^ads\\.', '^a+?b*?$', '(?:x|y)z', '[(]a', '[]a]', '[^]a]+', '\\(a', '\\d{1,3}\\.ex\\.com$', 'a\\+\\+', '[*+]+', '(?P<n>a)' ])
+	expect(`regexp kept: ${r}`, norm_domain(`regexp:${r}`).value == `regexp:${r}`, norm_domain(`regexp:${r}`));
+
 // Domains are checked without a regexp now: the same answers as
 // /^[a-z0-9_*-]+(\.[a-z0-9_-]+)*\.?$/ gave.
 for (let d in [ 'example.com', 'a.b.c', 'xn--d1acufc.xn--p1ai', 'a_b-c.d', 'example.com.', 'a', '*.example.com', 'domain:*.x.com', 'full:a.b' ])

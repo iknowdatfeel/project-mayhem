@@ -70,8 +70,7 @@ xray_ready() {
 	while [ "$i" -lt "$ticks" ] && [ "$stopping" = 0 ]; do
 		kill -0 "$xray_pid" 2>/dev/null || return 1
 
-		if mayhem_port_listening "$MAYHEM_TPROXY_PORT" && mayhem_port_listening "$MAYHEM_DNS_PORT" &&
-		   mayhem_port_listening "$MAYHEM_API_PORT"; then
+		if mayhem_ports_listening "$MAYHEM_TPROXY_PORT" "$MAYHEM_DNS_PORT" "$MAYHEM_API_PORT"; then
 			return 0
 		fi
 

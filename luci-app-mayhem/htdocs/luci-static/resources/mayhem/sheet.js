@@ -5,6 +5,9 @@
 'require uci';
 'require mayhem.common as mh';
 
+// text, never markup, from a string child (see mayhem.common)
+const E = mh.E;
+
 // Everything but the dashboard opens in a window over it: the server list,
 // routing, settings and component updates are pages of their own
 // (mayhem/page/*.js) with the usual LuCI forms and the usual Save & Apply.

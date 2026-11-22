@@ -394,17 +394,38 @@ function parse_ss(link, warn) {
 		u = null;
 	}
 
-	// Legacy form: ss://BASE64(method:password@host:port)#name
+	// Legacy form: ss://BASE64(method:password@host:port)#name. The decoded
+	// password is as it is, not percent-encoded, and may hold ? # / @ %:
+	// it is not given to parse_url (which cut it at ? or #) nor decoded
+	// again. The method ends at the first ':', the host starts after the
+	// last '@'.
 	if (!u || u.user == null) {
 		const body = substr(link, length('ss://'));
 		const hi = index(body, '#');
-		const dec = b64(hi >= 0 ? substr(body, 0, hi) : body);
+		let main = hi >= 0 ? substr(body, 0, hi) : body;
+		const qi = index(main, '?');
+		const query = qi >= 0 ? parse_query(substr(main, qi + 1)) : {};
+
+		if (qi >= 0)
+			main = substr(main, 0, qi);
+
+		const dec = b64(main);
 
 		if (!dec)
 			die('Shadowsocks link is neither SIP002 nor legacy base64');
 
-		u = parse_url(`ss://${dec}${hi >= 0 ? substr(body, hi) : ''}`);
-		u.user = urldecode(u.user);
+		const m = match(dec, /^([^:]+):(.*)@(\[[^\]]+\]|[^:@]+):([0-9]+)$/s);
+
+		if (!m)
+			die('Shadowsocks link has malformed credentials');
+
+		u = {
+			name: hi >= 0 ? (urldecode(replace(substr(body, hi + 1), /\+/g, ' ')) ?? '') : '',
+			host: replace(m[3], /^\[(.*)\]$/, '$1'),
+			port: m[4],
+			query: query,
+			legacy: `${m[1]}:${m[2]}`
+		};
 	}
 
 	need_host(u);
@@ -412,7 +433,7 @@ function parse_ss(link, warn) {
 	if (nonempty(u.query.plugin))
 		die('Shadowsocks plugins (SIP003) are not supported by Xray');
 
-	let ui = urldecode(u.user);
+	let ui = u.legacy ?? urldecode(u.user);
 
 	// SIP002: userinfo is base64(method:password) for stream ciphers,
 	// plain percent-encoded "method:password" for 2022 ciphers.

@@ -388,6 +388,10 @@ def main():
                         break
             if os.environ.get('SHOTS'):
                 pg.screenshot(path=os.path.join(os.environ['SHOTS'], view.replace('/', '_').replace('#', '_') + '.png'), full_page=True)
+            # A server named like markup (from the subscription of the
+            # fixture) must stay text on every page.
+            if pg.evaluate('window.__mhxss') is not None:
+                errors.append('the markup in a server name ran as HTML: window.__mhxss = %s' % pg.evaluate('window.__mhxss'))
             body = pg.inner_text('body')
             for marker in ('TypeError', 'ReferenceError', 'SyntaxError', 'is not defined', 'Unable to'):
                 if marker in body:
@@ -1041,6 +1045,19 @@ def main():
             if not count.startswith('TCP: ') or 'UDP: ' not in count or not count.rstrip().endswith('1'):
                 raise RuntimeError('no TCP and UDP counts: %r' % count)
             shot(pg, 'connections')
+            # A hidden tab does not ask the router every 3 s.
+            pg.evaluate("""() => { Object.defineProperty(document, 'hidden', { configurable: true, get: () => true });
+                document.dispatchEvent(new Event('visibilitychange')); }""")
+            pg.wait_for_timeout(3500)
+            n = calls.count('luci.mayhem.connections')
+            pg.wait_for_timeout(6500)
+            hidden_calls = calls.count('luci.mayhem.connections') - n
+            pg.evaluate("() => { delete document.hidden; }")
+            if hidden_calls:
+                raise RuntimeError('a hidden tab asked for the connections %d times' % hidden_calls)
+            pg.wait_for_timeout(3500)
+            if calls.count('luci.mayhem.connections') == n:
+                raise RuntimeError('the connections are not asked again once the tab is visible')
             pg.click('.mh-sheet-close')
             pg.wait_for_selector('.mh-sheet-overlay', state='detached', timeout=5000)
 
@@ -1199,6 +1216,27 @@ def main():
             if pg.locator('#mayhem-body .mh-tile', has_text='awg0').count():
                 raise RuntimeError('the tunnel is still on the dashboard')
 
+        def markup_name(pg):
+            # A subscription may name a server <img onerror=...>: the
+            # dashboard, the chain window, its lists and the notifications
+            # show it as text.
+            name = '<img src=x onerror="window.__mhxss=1">'
+            if name not in pg.inner_text('#mayhem-body'):
+                raise RuntimeError('the server with a markup name is not shown as text')
+            pg.select_option('#mayhem-body .mh-list > .mh-ghead > .mh-sel > select', 'fallback')
+            pg.wait_for_selector('.modal .mh-chain-list', timeout=5000)
+            pg.wait_for_timeout(300)
+            if name not in pg.eval_on_selector('.modal', 'e => e.innerText + Array.from(e.querySelectorAll("option")).map((o) => o.text).join(" ")'):
+                raise RuntimeError('the chain window does not show the markup name as text')
+            close_modal(pg)
+            pg.evaluate("""() => L.require('mayhem.common').then((mh) =>
+                L.require('ui').then((ui) => ui.addNotification(null, mh.E('p', '<img src=x onerror="window.__mhxss=3">'), 'error')))""")
+            pg.wait_for_timeout(300)
+            if '<img src=x onerror="window.__mhxss=3">' not in pg.inner_text('body'):
+                raise RuntimeError('an error with markup is not shown as text')
+            if pg.evaluate('window.__mhxss') is not None:
+                raise RuntimeError('markup ran: window.__mhxss = %s' % pg.evaluate('window.__mhxss'))
+
         def services_badge(pg):
             # the badge at the top opens the state of each service
             pg.click('#mayhem-body .mh-pill')
@@ -1240,7 +1278,7 @@ def main():
                 raise RuntimeError('the address keeps a page after closing: %s' % pg.url)
 
         pages = [
-            ('mayhem/dashboard', [('buttons', dashboard_buttons), ('one server in the list', one_server), ('several subscriptions', two_subs), ('kill switch line', ks_banner), ('active connections', conns_modal), ('logs dialog', logs_dialog), ('run diagnostics', run_diag),
+            ('mayhem/dashboard', [('buttons', dashboard_buttons), ('a server named like markup', markup_name), ('one server in the list', one_server), ('several subscriptions', two_subs), ('kill switch line', ks_banner), ('active connections', conns_modal), ('logs dialog', logs_dialog), ('run diagnostics', run_diag),
                                   ('edit a server', edit_server), ('delete a server', delete_server), ('choose how', choose_mode), ('chain of the list', list_chain),
                                   ('delete a tunnel', delete_tunnel), ('services', services_badge), ('pages in a window', nav_pages)]),
             ('mayhem/dashboard#settings', [('sections tab', lambda pg: shot(pg, 'routing_sections')), ('main section', main_section),

@@ -71,6 +71,32 @@ for (let c in refused) {
 	}
 }
 
+// Legacy ss://BASE64(method:password@host:port): the password as it is,
+// with characters that mean something in a URL, not percent-decoded.
+const legacy_cases = [
+	[ 'ss://' + b64enc('aes-256-gcm:p%41ss?x#y@1.2.3.4:8388') + '#name', 'aes-256-gcm', 'p%41ss?x#y', '1.2.3.4', 8388, 'name' ],
+	[ 'ss://' + b64enc('chacha20-ietf-poly1305:a@b/c:d@[2001:db8::1]:443') + '#v6%20srv', 'chacha20-ietf-poly1305', 'a@b/c:d', '2001:db8::1', 443, 'v6 srv' ],
+	[ 'ss://' + replace(b64enc('aes-128-gcm:pw@h.example:8000'), /=+$/, ''), 'aes-128-gcm', 'pw', 'h.example', 8000, '' ]
+];
+
+for (let c in legacy_cases) {
+	let r;
+
+	try {
+		r = parse_link(c[0]);
+	}
+	catch (e) {
+		r = { error: e.message };
+	}
+
+	const st = r.outbound?.settings ?? {};
+
+	if (st.method != c[1] || st.password != c[2] || st.address != c[3] || st.port != c[4] || r.name != c[5]) {
+		failed++;
+		print(`FAIL legacy ss ${c[0]}: ${sprintf('%J', r)}\n`);
+	}
+}
+
 const plus_link = `vless://${UUID}@example.com:443?type=tcp&security=reality&sni=www.microsoft.com&fp=chrome&pbk=SbVKOEMjK0sIlbwg4akyBg5mL5KZwwB-ed4eEE7YnRc&sid=6ba85179e30d4fc2&flow=xtls-rprx-vision#NL+Server+Name%20Test`;
 const parsed_name = parse_link(plus_link).name;
 if (parsed_name != 'NL Server Name Test') {

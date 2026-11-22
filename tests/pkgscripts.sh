@@ -78,6 +78,21 @@ if grep -q '^rm -f /usr/libexec/mayhem/xray$' "$T/calls" && grep -q '^rm -rf /va
 else
 	bad "postrm on removal: $(tr '\n' '|' < "$T/calls")"
 fi
+if grep -q '^sysctl -w net.ipv4.tcp_congestion_control=cubic$' "$T/calls"; then
+	ok "postrm on removal: TCP back to cubic without a saved choice"
+else
+	bad "postrm on removal without a saved choice: $(tr '\n' '|' < "$T/calls")"
+fi
+
+# The firmware had another one before mayhem bbr: that one comes back.
+: > "$T/calls"
+printf '# Mayhem: TCP BBR\n# was: reno\nnet.ipv4.tcp_congestion_control=bbr\n' > "$T/sysctl.d/12-mayhem-bbr.conf"
+env -u PKG_UPGRADE PATH="$T/bin:$PATH" sh "$T/postrm" remove >/dev/null 2>&1
+if grep -q '^sysctl -w net.ipv4.tcp_congestion_control=reno$' "$T/calls"; then
+	ok "postrm on removal: the saved TCP congestion control comes back"
+else
+	bad "postrm on removal with a saved choice: $(tr '\n' '|' < "$T/calls")"
+fi
 
 /bin/rm -rf "$T"
 exit "$fail"

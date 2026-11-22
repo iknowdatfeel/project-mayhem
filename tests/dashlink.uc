@@ -12,8 +12,9 @@ const KEY = 'ss://2022-blake3-aes-128-gcm:c2VjcmV0@1.2.3.4:8443#Secret';
 fs.writefile(`${run}/nodes.json`, sprintf('%J', {
 	generated: 1, default_section: 'pool',
 	sections: { pool: { type: 'proxy', mode: 'single', selected: 'n-pool-a',
-		nodes: [ { tag: 'n-pool-a', name: 'Secret', protocol: 'shadowsocks', address: '1.2.3.4', port: 8443, link: KEY, usec: 'mysub' } ] } }
+		nodes: [ { tag: 'n-pool-a', name: 'Secret', protocol: 'shadowsocks', address: '1.2.3.4', port: 8443, has_link: true, usec: 'mysub' } ] } }
 }));
+fs.writefile(`${run}/nodes.links.json`, sprintf('%J', { 'n-pool-a': KEY }));
 
 const plugin = loadfile(ARGV[0])()['luci.mayhem'];
 const call = (m, args) => plugin[m].call({ args: args });
@@ -35,5 +36,16 @@ const k = call('server_link', { section: 'pool', tag: 'n-pool-a' });
 
 expect(`server_link gives the key and its subscription: ${sprintf('%J', k)}`, k.link == KEY && k.usec == 'mysub');
 expect('server_link of an unknown server', call('server_link', { section: 'pool', tag: 'n-x' }).error != null);
+
+// Asked again with nothing changed (nodes.json kept parsed in rpcd): the
+// same answer; a new nodes.json (a rename, as runstate writes it) is read.
+const strip = (x) => { delete x.now; return sprintf('%J', x); };
+const d1 = strip(call('dashboard', {}));
+const d2 = strip(call('dashboard', {}));
+
+expect('the dashboard answers the same when asked again', d1 == d2);
+fs.writefile(`${run}/nodes.json.tmp`, replace(fs.readfile(`${run}/nodes.json`), '"Secret"', '"Renamed"'));
+fs.rename(`${run}/nodes.json.tmp`, `${run}/nodes.json`);
+expect('a new nodes.json is read at once', index(sprintf('%J', call('dashboard', {})), 'Renamed') >= 0);
 
 exit(fails ? 1 : 0);

@@ -20,6 +20,7 @@ import * as fs from 'fs';
 import { parse_link, b64 } from 'mayhem.links';
 import { is_true, entries } from 'mayhem.rules';
 import * as C from 'mayhem.const';
+import { q, read_json, write_json, lock, unlock } from 'mayhem.util';
 
 const SERVICE_PROTOCOLS = [ 'freedom', 'direct', 'blackhole', 'block', 'dns', 'loopback' ];
 const DEFAULT_INTERVAL_H = 12;
@@ -27,10 +28,6 @@ const RETRY_S = 15 * 60;
 const STATE_FILE = `${C.RUN_DIR}/subs-state.json`;
 const LOCK = `${C.RUN_DIR}/sub.lock`;
 const MAX_BYTES = 10 * 1024 * 1024;
-
-function q(s) {
-	return "'" + replace(`${s}`, /'/g, "'\\''") + "'";
-}
 
 function nonempty(v) {
 	return v != null && v != '';
@@ -221,21 +218,6 @@ function parse_body(body, format) {
 
 // --- downloading ------------------------------------------------------------------
 
-function read_json(path) {
-	try {
-		return json(fs.readfile(path) ?? '');
-	}
-	catch (e) {
-		return null;
-	}
-}
-
-function write_json(path, v) {
-	const tmp = `${path}.tmp`;
-
-	return fs.writefile(tmp, sprintf('%J\n', v)) != null && fs.rename(tmp, path);
-}
-
 function request_headers(sub, dev) {
 	const pick = (k, def) => nonempty(sub[k]) ? sub[k] : (nonempty(dev[k]) ? dev[k] : def);
 	const h = [];
@@ -371,45 +353,27 @@ function route_section(sub, sections) {
 	return filter(sections, (s) => (s.type ?? 'proxy') == 'proxy' && is_true(s.enabled ?? '1'))[0]?.['.name'];
 }
 
-// One download at a time (the scheduler, a new subscription, the button on
-// the dashboard): a second one waits, and then finds fresh what the first
-// one downloaded. A lock left by a process that is gone is taken over -
-// only while it still names that process (two waiters must not both take
-// it); a live owner keeps it, and after 5 minutes the waiter gives up.
-function lock(wait) {
-	const me = split(fs.readfile('/proc/self/stat') ?? '', ' ')[0];
+// When the next download of a subscription is due, by the state in RAM:
+// the scheduler starts this script only then (sub.next: "<time> <written
+// at>"), or when the config or a new subscription asks for it.
+function next_due(cfg, state, now) {
+	let next = now + 86400;
 
-	for (let i = 0; ; i++) {
-		if (fs.mkdir(LOCK)) {
-			fs.writefile(`${LOCK}/pid`, `${me}\n`);
-			return true;
-		}
-
-		const pid = trim(fs.readfile(`${LOCK}/pid`) ?? '');
-		const st = fs.stat(LOCK);
-
-		if (!st)
+	for (let sub in cfg.subs) {
+		if (!is_true(sub.enabled ?? '1') || !nonempty(sub.url))
 			continue;
 
-		if ((pid != '' && !fs.access(`/proc/${pid}`)) || (pid == '' && time() - st.mtime > 10)) {
-			if (trim(fs.readfile(`${LOCK}/pid`) ?? '') == pid) {
-				fs.unlink(`${LOCK}/pid`);
-				fs.rmdir(LOCK);
-			}
+		const st = state[sub['.name']] ?? {};
+		const hours = int(sub.update_interval ?? 0) || DEFAULT_INTERVAL_H;
+		let t = (st.url == sub.url && st.updated) ? st.updated + hours * 3600 : now;
 
-			continue;
-		}
+		if (st.error && (st.url == null || st.url == sub.url))
+			t = max(t, (st.last_try ?? 0) + RETRY_S);
 
-		if (!wait || i >= 300)
-			return false;
-
-		sleep(1000);
+		next = min(next, t);
 	}
-}
 
-function unlock() {
-	fs.unlink(`${LOCK}/pid`);
-	fs.rmdir(LOCK);
+	return next;
 }
 
 function update(name, force, only_new) {
@@ -446,18 +410,27 @@ function update(name, force, only_new) {
 		if (!force && !only_new && st.url == sub.url && st.updated && now - st.updated < hours * 3600)
 			continue;
 
+		// A failed address is tried again a while later; a new one at once.
+		// Told by the state alone: the cache is not read for it.
+		if (!force && st.error && (st.url == null || st.url == sub.url) && now - (st.last_try ?? 0) < RETRY_S)
+			continue;
+
 		const cache = read_json(path);
 
 		if (!force) {
 			const last = max(cache?.updated ?? 0, st.updated ?? 0);
 			const is_fresh = cache?.url == sub.url && (only_new || now - last < hours * 3600);
 
-			if (is_fresh)
+			// Fresh by the cache: the state in RAM learns it (after a reboot
+			// it is empty), or the cache on flash would be read and parsed
+			// again every minute until the next update is due.
+			if (is_fresh) {
+				st.url = cache.url;
+				st.updated = last;
+				st.info ??= cache.info;
+				state[sn] = st;
 				continue;
-
-			// A failed address is tried again a while later; a new one at once.
-			if (st.error && (st.url == null || st.url == sub.url) && now - (st.last_try ?? 0) < RETRY_S)
-				continue;
+			}
 		}
 
 		tried++;
@@ -522,6 +495,7 @@ function update(name, force, only_new) {
 	}
 
 	write_json(STATE_FILE, state);
+	fs.writefile(`${C.RUN_DIR}/sub.next`, `${next_due(cfg, state, time())} ${time()}\n`);
 	print(sprintf('%J\n', results));
 
 	if (changed)
@@ -537,12 +511,16 @@ case 'update':
 	const force = index(ARGV, '--force') >= 0;
 	const name = filter(slice(ARGV, 1), (a) => substr(a, 0, 2) != '--')[0];
 
-	if (!lock(index(ARGV, '--no-wait') < 0))
+	// One download at a time (the scheduler, a new subscription, the button
+	// on the dashboard): a second one waits, and then finds fresh what the
+	// first one downloaded. A live owner keeps the lock, and after 5 minutes
+	// the waiter gives up (at once with --no-wait).
+	if (!lock(LOCK, { wait_ms: index(ARGV, '--no-wait') < 0 ? 300000 : 0, poll_ms: 1000 }))
 		exit(0);
 
 	const rc = update(name, force, index(ARGV, '--new') >= 0);
 
-	unlock();
+	unlock(LOCK);
 	exit(rc);
 
 case 'parse':

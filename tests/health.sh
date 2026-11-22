@@ -413,6 +413,34 @@ case "$(ls -l "$MAYHEM_DNS_SERVERS" 2>/dev/null)" in
 	*) bad "servers file: $(ls -l "$MAYHEM_DNS_SERVERS" 2>&1)" ;;
 esac
 
+# No fallback chain and every server answers: xray's /debug/vars is not
+# asked, and nodes.json is parsed no more than twice in a run.
+cat > "$T/run/nodes.json" <<'EOF'
+{ "generated": 9, "killswitch": false, "probe_url": "http://www.gstatic.com/generate_204", "default_section": "pool",
+  "sections": {
+    "pool": { "type": "proxy", "mode": "single", "nodes": [ { "tag": "n-pool-a", "name": "A" } ] },
+    "auto": { "type": "proxy", "mode": "auto", "balancer": "bal-auto", "nodes": [ { "tag": "n-auto-1", "name": "1" }, { "tag": "n-auto-2", "name": "2" } ] }
+  } }
+EOF
+rm -f "$T/run/health.json" "$T/run/check.seen"
+: > "$T/sec_ok"
+: > "$T/dead"
+: > "$T/curl.log"
+reads=""
+if command -v strace >/dev/null 2>&1 && strace -o /dev/null true 2>/dev/null; then
+	strace -f -e trace=open,openat -o "$T/strace.log" "$UCODE" -L "$FILES/usr/share/ucode/*.uc" "$FILES/usr/share/mayhem/health.uc" 2>"$T/err"
+	reads="$(grep -c 'nodes.json", O_RDONLY' "$T/strace.log")"
+else
+	tick
+fi
+if grep -q '/debug/vars' "$T/curl.log"; then
+	bad "no chains: /debug/vars asked: $(cat "$T/curl.log")"
+elif [ -n "$reads" ] && [ "$reads" -gt 2 ]; then
+	bad "no chains: nodes.json read $reads times"
+else
+	ok "no chains, all answer: the observatory is not asked${reads:+, nodes.json read $reads times}"
+fi
+
 rm -rf "$T"
 [ "$fail" = 0 ] && echo "health tests passed"
 exit "$fail"

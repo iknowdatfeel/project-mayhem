@@ -86,39 +86,9 @@ xray_asset() {
 }
 
 version_newer() {
-	# $1 newer than $2: numbers compared one by one; prereleases (-exp.N, _preN)
-	# are older than the corresponding stable release
-	awk -v a="$1" -v b="$2" 'BEGIN {
-		sub(/^v/, "", a); sub(/^v/, "", b)
-
-		preA = -1; preB = -1
-		if (match(a, /(-exp\.?([0-9]+)|_pre([0-9]+))$/)) {
-			s = substr(a, RSTART, RLENGTH)
-			sub(/^(-exp\.?|_pre)/, "", s)
-			preA = s + 0
-			a = substr(a, 1, RSTART - 1)
-		}
-		if (match(b, /(-exp\.?([0-9]+)|_pre([0-9]+))$/)) {
-			s = substr(b, RSTART, RLENGTH)
-			sub(/^(-exp\.?|_pre)/, "", s)
-			preB = s + 0
-			b = substr(b, 1, RSTART - 1)
-		}
-
-		n = split(a, x, /[.-]/); m = split(b, y, /[.-]/)
-		len = (n > m ? n : m)
-		for (i = 1; i <= len; i++) {
-			xi = (i <= n ? x[i] + 0 : 0)
-			yi = (i <= m ? y[i] + 0 : 0)
-			if (xi != yi)
-				exit !(xi > yi)
-		}
-
-		if (preA == -1 && preB != -1) exit 0
-		if (preA != -1 && preB == -1) exit 1
-		if (preA != -1 && preB != -1) exit !(preA > preB)
-		exit 1
-	}'
+	# $1 newer than $2: mayhem.version, as the dashboard compares them
+	# (prereleases, -exp.N or _preN, are older than their release)
+	ucode -e "import { version_newer } from 'mayhem.version'; exit(version_newer(ARGV[0], ARGV[1]) ? 0 : 1);" "$1" "$2"
 }
 
 # The tag of the latest Mayhem release (v1.2.3).
@@ -361,8 +331,21 @@ bbr_on() {
 	grep -qw bbr "$f" 2>/dev/null || modprobe tcp_bbr >/dev/null 2>&1 || insmod tcp_bbr >/dev/null 2>&1
 	grep -qw bbr "$f" 2>/dev/null || return 1
 
+	# The firmware's own choice, for the removal of the package (postrm):
+	# kept from the first switch, as BBR is the current one after it.
+	local was
+	was="$(sed -n 's/^# was: //p' "$BBR_SYSCTL" 2>/dev/null | head -n 1)"
+	[ -n "$was" ] || was="$(sysctl -n net.ipv4.tcp_congestion_control 2>/dev/null)"
+	case "$was" in
+		bbr | *[!a-z0-9_]*) was="" ;;
+	esac
+
 	mkdir -p "$(dirname "$BBR_SYSCTL")"
-	printf '# Mayhem: TCP BBR for the connections of the router (xray to its servers)\nnet.ipv4.tcp_congestion_control=bbr\n' > "$BBR_SYSCTL"
+	{
+		echo '# Mayhem: TCP BBR for the connections of the router (xray to its servers)'
+		[ -n "$was" ] && echo "# was: $was"
+		echo 'net.ipv4.tcp_congestion_control=bbr'
+	} > "$BBR_SYSCTL"
 	sysctl -w net.ipv4.tcp_congestion_control=bbr >/dev/null 2>&1
 }
 

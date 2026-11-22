@@ -32,6 +32,7 @@ import { RUN_DIR, API_PORT, DEFAULT_PROBE_URL } from 'mayhem.const';
 import * as check from 'mayhem.check';
 import * as metrics from 'mayhem.metrics';
 import * as runstate from 'mayhem.runstate';
+import { q, read_json, write_atomic, log, is_applying, lock, unlock } from 'mayhem.util';
 
 const XRAY = getenv('MAYHEM_XRAY_BIN') ?? '/usr/libexec/mayhem/xray';
 // servers of the chain checked at once when it moves on
@@ -41,26 +42,13 @@ const TRIES = 4;
 // seconds (as in health.uc).
 const FIRST = 5, AGAIN = 4;
 
-function q(s) {
-	return "'" + replace(`${s}`, /'/g, "'\\''") + "'";
-}
-
-const my_pid = fs.readlink('/proc/self') || split(fs.readfile('/proc/self/stat') ?? '', ' ')[0] || '';
-
-function read_json(name) {
-	try {
-		return json(fs.readfile(`${RUN_DIR}/${name}`) ?? '');
-	}
-	catch (e) {
-		return null;
-	}
+// A file of the run directory, parsed.
+function rd(name) {
+	return read_json(`${RUN_DIR}/${name}`);
 }
 
 function write(name, data) {
-	const tmp = `${RUN_DIR}/${name}.${my_pid}.tmp`;
-
-	if (fs.writefile(tmp, data) != null)
-		fs.rename(tmp, `${RUN_DIR}/${name}`);
+	write_atomic(`${RUN_DIR}/${name}`, data);
 }
 
 function command(cmd) {
@@ -76,45 +64,17 @@ function command(cmd) {
 	return out;
 }
 
-function log(msg, level) {
-	system(`logger -t mayhem -p daemon.${level ?? 'info'} -- ${q(msg)}`);
-}
-
-function is_applying() {
-	const now = time();
-
-	for (let f in fs.glob(`${RUN_DIR}/applying.*`) ?? []) {
-		const st = fs.stat(f);
-
-		if (!st)
-			continue;
-
-		const m = match(f, /applying\.([0-9]+)$/);
-		if (m) {
-			const apid = m[1];
-			if (!fs.stat(`/proc/${apid}`)) {
-				fs.unlink(f);
-				continue;
-			}
-		}
-
-		if (now - st.mtime < 300)
-			return true;
-
-		fs.unlink(f);
-	}
-
-	return false;
-}
-
 // Moves the chains along once; { obs } (what the observatory said) when it
 // looked, null when there was nothing to do. opts.obs: the observatory as
-// the caller read it.
+// the caller read it, or a function that reads it: called only when there
+// are chains to move (most routers have none, and xray's /debug/vars is
+// not asked for them).
 export function run(opts) {
-	if (is_applying())
+	if (is_applying(RUN_DIR))
 		return null;
 
-	const state = read_json('nodes.json');
+	// opts.state: nodes.json as the caller just read it (health.uc)
+	const state = opts?.state ?? rd('nodes.json');
 	const chains = filter(keys(state?.sections ?? {}), (sn) => state.sections[sn].mode == 'fallback' && length(state.sections[sn].chain ?? []));
 
 	if (!length(chains) || !fs.access(`${RUN_DIR}/active`))
@@ -122,47 +82,24 @@ export function run(opts) {
 
 	const LOCK = `${RUN_DIR}/fallback.lock`;
 
-	function unlock() {
-		fs.unlink(`${LOCK}/pid`);
-		fs.rmdir(LOCK);
-	}
-
-	for (let i = 0; ; i++) {
-		if (fs.mkdir(LOCK)) {
-			fs.writefile(`${LOCK}/pid`, `${my_pid}\n`);
-			break;
-		}
-
-		const lock_pid = int(trim(fs.readfile(`${LOCK}/pid`) ?? '0'));
-		const st = fs.stat(LOCK);
-
-		if ((lock_pid > 0 && !fs.access(`/proc/${lock_pid}`)) || (lock_pid <= 0 && st && time() - st.mtime > 60)) {
-			// only while it still names that process: another one may have
-			// taken it meanwhile
-			if (int(trim(fs.readfile(`${LOCK}/pid`) ?? '0')) == lock_pid)
-				unlock();
-			continue;
-		}
-
-		if (i >= 30)
-			return null;
-
-		sleep(500);
-	}
+	// One run at a time: a live owner is waited for 15 s; a lock without a
+	// pid is left behind after a minute.
+	if (!lock(LOCK, { wait_ms: 15000, poll_ms: 500, stale_s: 60 }))
+		return null;
 
 	const started = time();
 
 	// What xray's own checks saw (2 s at most: a hung xray must not hold the
 	// scheduler); health.uc uses the same.
-	const obs = opts?.obs ?? metrics.observatory(2000);
+	const obs = (type(opts?.obs) == 'function' ? opts.obs() : opts?.obs) ?? metrics.observatory(2000);
 
 	// true / false when the observatory checked the server, null before that
 	const alive = (t) => obs[t] ? obs[t].alive == true : null;
 	const url = match(state.probe_url ?? '', /^https?:\/\//) ? state.probe_url : DEFAULT_PROBE_URL;
 
-	const now = read_json('fallback.json') ?? {};
+	const now = rd('fallback.json') ?? {};
 	// section -> { tag: xray's number of checks of it when the chain left it }
-	const left = read_json('fallback.left') ?? {};
+	const left = rd('fallback.left') ?? {};
 	const checks = (t) => obs[t]?.health_ping?.all ?? 0;
 	const moved = {};
 	// health.uc checked the servers chains use now already in this run
@@ -307,13 +244,13 @@ export function run(opts) {
 		if (want == s.selected)
 			continue;
 
-		if (is_applying()) {
+		if (is_applying(RUN_DIR)) {
 			now[sn] = s.selected;
 			delete verdict[sn];
 			continue;
 		}
 
-		const cur_h = read_json('health.json');
+		const cur_h = rd('health.json');
 		if ((cur_h?.sections?.[sn]?.picked ?? 0) >= started) {
 			now[sn] = s.selected;
 			delete verdict[sn];
@@ -355,7 +292,7 @@ export function run(opts) {
 		runstate.set_overrides(RUN_DIR, moved);
 	}
 
-	unlock();
+	unlock(LOCK);
 
 	return { obs: obs, verdict: verdict };
 };

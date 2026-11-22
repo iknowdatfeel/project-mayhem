@@ -11,6 +11,9 @@
 'require mayhem.dash.checks as checks';
 'require mayhem.dash.chain as chain';
 
+// text, never markup, from a string child (see mayhem.common)
+const E = mh.E;
+
 // The dashboard, the only page of Mayhem: three small widgets and the servers
 // in boxes by where they come from (keys, every subscription with its traffic
 // and expiry, tunnels). The buttons at the top open the rest in a window over
@@ -500,7 +503,7 @@ return view.extend({
 		const what = (n.source === 'link' || n.source === 'json') ? _('The server key is deleted.')
 			: _('The server is hidden from this subscription and does not come back with its updates.');
 
-		ui.showModal(_('Delete server %s?').format(n.name), [
+		ui.showModal(mh.text(_('Delete server %s?').format(n.name)), [
 			E('p', _('Are you sure you want to delete server %s?').format(n.name)),
 			E('p', { 'class': 'mh-muted mh-small' }, what),
 			E('div', { 'class': 'right', 'style': 'margin-top:1em' }, [

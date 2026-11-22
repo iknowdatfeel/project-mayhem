@@ -155,6 +155,25 @@ else
 	ok "rpcd calls: the plugin compiled once"
 fi
 
+# A module put back to an older version (an older time, another size): a
+# new compiled plugin, not the one of the newer modules.
+mkdir -p "$OUT/rpcmods/mayhem"
+cp "$FILES"/usr/share/ucode/mayhem/*.uc "$OUT/rpcmods/mayhem/"
+rpc_mods() {
+	MAYHEM_RPC_PLUGIN="$ROOT/luci-app-mayhem/root/usr/share/rpcd/ucode/luci.mayhem" MAYHEM_RPC_CACHE="$OUT/rpccache/m" \
+		MAYHEM_RPC_MODULES="$OUT/rpcmods/mayhem" uc "$ROOT/luci-app-mayhem/root/usr/share/mayhem-luci/call.uc" probe_tcp '{"tags":["x"]}' >/dev/null 2>&1
+	ls "$OUT/rpccache/m/"plugin.*.ucc 2>/dev/null
+}
+first="$(rpc_mods)"
+printf '\n// an older version\n' >> "$OUT/rpcmods/mayhem/const.uc"
+touch -d '2001-01-01' "$OUT/rpcmods/mayhem/const.uc"
+second="$(rpc_mods)"
+if [ -n "$first" ] && [ -n "$second" ] && [ "$first" != "$second" ]; then
+	ok "rpcd calls: a module with an older time compiles the plugin again"
+else
+	bad "rpcd calls: an older module kept the compiled plugin: $first / $second"
+fi
+
 # nodes.json and overrides changed by several processes at once.
 if out="$(uc "$ROOT/tests/runstate.uc" "$UCODE" "$FILES/usr/share/ucode/*.uc" 2>&1)"; then
 	ok "nodes.json: writers one at a time, no change lost"
@@ -162,11 +181,65 @@ else
 	bad "nodes.json writers: $out"
 fi
 
+# The text of `xray api bi` (fixtures of the pinned xray version).
+if out="$(uc "$ROOT/tests/balancer.uc" "$ROOT/tests/fixtures" 2>&1)"; then
+	ok "xray api bi: the pinned server and the choices read"
+else
+	bad "xray api bi: $out"
+fi
+
+# ... and of the xray these tests run: the fixtures are still what it prints.
+mkdir -p "$OUT/bi"
+printf '%s\n' '{ "log": { "loglevel": "none" }, "api": { "tag": "api", "services": [ "HandlerService", "RoutingService" ] },' \
+	'"inbounds": [ { "tag": "api-in", "listen": "127.0.0.1", "port": 12799, "protocol": "dokodemo-door", "settings": { "address": "127.0.0.1" } } ],' \
+	'"outbounds": [ { "tag": "n-pool-a", "protocol": "freedom" }, { "tag": "n-pool-b", "protocol": "freedom" } ],' \
+	'"routing": { "balancers": [ { "tag": "bal-pool", "selector": [ "n-pool-" ], "strategy": { "type": "random" } } ],' \
+	'"rules": [ { "inboundTag": [ "api-in" ], "outboundTag": "api" } ] } }' > "$OUT/bi/c.json"
+"$XRAY" run -c "$OUT/bi/c.json" >/dev/null 2>&1 &
+bi_pid=$!
+i=0
+while [ "$i" -lt 30 ] && ! "$XRAY" api bi --server=127.0.0.1:12799 bal-pool > "$OUT/bi/none.txt" 2>/dev/null; do
+	sleep 0.2
+	i=$((i + 1))
+done
+"$XRAY" api bo --server=127.0.0.1:12799 -b bal-pool n-pool-b >/dev/null 2>&1
+"$XRAY" api bi --server=127.0.0.1:12799 bal-pool > "$OUT/bi/xray-bi.txt" 2>/dev/null
+kill "$bi_pid" 2>/dev/null
+if [ ! -s "$OUT/bi/xray-bi.txt" ]; then
+	printf 'skip %s\n' "xray api bi of this xray: it did not answer"
+elif cmp -s "$OUT/bi/xray-bi.txt" "$ROOT/tests/fixtures/xray-bi.txt" && cmp -s "$OUT/bi/none.txt" "$ROOT/tests/fixtures/xray-bi-none.txt"; then
+	ok "xray api bi: this xray prints what the fixtures hold"
+else
+	bad "xray api bi: this xray prints otherwise: $(cat "$OUT/bi/xray-bi.txt")"
+fi
+
+# mayhem.util: locks (left behind, just taken, a live owner), atomic writes.
+if out="$(uc "$ROOT/tests/util.uc" "$OUT/util" 2>&1)"; then
+	ok "util: locks, writes through a temporary file, the applying flag"
+else
+	bad "util: $out"
+fi
+
+# The helpers live in mayhem.util only: no copy of them elsewhere.
+if out="$(grep -rnE '^function (read_json|q|is_applying|applying|write_json|log|my_pid)\(|fs\.mkdir\(LOCK' "$FILES" "$ROOT/luci-app-mayhem/root")"; then
+	bad "copies of the helpers of mayhem.util: $out"
+else
+	ok "util: no copies of its helpers"
+fi
+
 # TCP ping on the dashboard: one timeout per silent host, a budget per call.
 if out="$(uc "$ROOT/tests/ping.uc" 2>&1)"; then
 	ok "TCP ping: shared checks, a silent host waited for once"
 else
 	bad "TCP ping: $out"
+fi
+
+# errno numbers differ between architectures (EINPROGRESS is 115 on x86 and
+# ARM, 150 on MIPS; ECONNREFUSED 111 and 146): no code compares with one.
+if out="$(grep -rnE 'error\(true\)|err(no)? *[!=]= *[1-9][0-9]' "$FILES" "$ROOT/luci-app-mayhem/root")"; then
+	bad "errno numbers in the code: $out"
+else
+	ok "no errno numbers in the code"
 fi
 
 # subscription responses
@@ -606,6 +679,44 @@ for m in "$ROOT"/tests/models/*.json; do
 	fi
 done
 
+# The path generation put into the rules: the shell (a server chosen by
+# hand, the hold) and the generator give the same text.
+gen_same=1
+for g in 1 2 3; do
+	uc -e "import { apply_generation } from 'mayhem.build'; print(apply_generation(require('fs').readfile(ARGV[0]), int(ARGV[1])));" \
+		"$OUT/global/nft.conf" "$g" > "$OUT/gen-uc.$g" 2>&1
+	# shellcheck disable=SC2016 # expanded by the inner shell
+	MAYHEM_LIB_DIR="$FILES/usr/share/mayhem" sh -c '. "$MAYHEM_LIB_DIR/lib.sh"; mayhem_nft_set_gen "$1" "$2"' sh "$OUT/global/nft.conf" "$g" > "$OUT/gen-sh.$g"
+	grep -q "ct mark & 0x30000000 != $(printf '0x%x' $((g << 28)))" "$OUT/gen-sh.$g" && cmp -s "$OUT/gen-uc.$g" "$OUT/gen-sh.$g" || gen_same=0
+done
+if [ "$gen_same" = 1 ]; then
+	ok "path generation: the shell and the generator write the same rules"
+else
+	bad "path generation: the shell and the generator differ: $(diff "$OUT/gen-uc.2" "$OUT/gen-sh.2" | head -n 5)"
+fi
+
+# Server keys are in nodes.links.json, not in nodes.json (read every few
+# seconds by the dashboard, health.uc and the checks).
+if grep -q '"link": *"' "$OUT/lists/nodes.json" 2>/dev/null; then
+	bad "model lists: server keys in nodes.json"
+elif ! grep -q 'vless://' "$OUT/lists/nodes.links.json" 2>/dev/null || ! grep -q '"has_link": true' "$OUT/lists/nodes.json"; then
+	bad "model lists: no nodes.links.json or has_link"
+else
+	ok "model lists: server keys apart from nodes.json"
+fi
+
+# A regexp rule xray (RE2) refuses is skipped with a warning, the others stay:
+# one such rule kept xray from starting.
+if grep -q '(?!ads)' "$OUT/lists/xray.json" 2>/dev/null; then
+	bad "model lists: a lookahead regexp is in the xray config"
+elif ! grep -q 'lookaround' "$OUT/lists/status.json" 2>/dev/null; then
+	bad "model lists: no warning about the skipped regexp"
+elif ! grep -q '(?i)^ads' "$OUT/lists/xray.json"; then
+	bad "model lists: a good regexp is missing"
+else
+	ok "model lists: a regexp xray refuses is skipped with a warning"
+fi
+
 # The user's case: one such server in a subscription next to a working one.
 if grep -q '185.132.132.239\|tr.example.org' "$OUT/plaintext/xray.json" 2>/dev/null; then
 	bad "model plaintext: refused servers are still in the xray config"
@@ -844,7 +955,7 @@ if command -v shellcheck >/dev/null 2>&1; then
 	if out="$(shellcheck -s sh -f gcc -e SC1091,SC2034,SC3043,SC2086,SC2046,SC2317,SC2329 \
 		"$FILES/usr/bin/mayhem" "$FILES/usr/libexec/mayhem/xray-run" "$FILES/usr/libexec/mayhem/scheduler" \
 		"$FILES/etc/uci-defaults/90-mayhem" "$ROOT/tests/netns.sh" "$ROOT/tests/build-ucode.sh" "$ROOT/tests/health.sh" "$ROOT/tests/tunsync.sh" "$ROOT/tests/nftkeep.sh" "$ROOT/tests/scheduler.sh" "$ROOT/tests/serverlist.sh" "$ROOT/tests/conns.sh" "$ROOT/tests/bbr.sh" \
-		"$ROOT/tests/inodes.sh" "$ROOT/tests/applying.sh" "$ROOT/tests/prerelease.sh" "$ROOT/tests/select.sh" "$ROOT/tests/metrics.sh" "$ROOT/tests/netgen.sh" "$ROOT/tests/refused.sh" "$ROOT/tests/install.sh" "$ROOT/tests/pkgscripts.sh" "$ROOT/tests/ksrestart.sh" "$ROOT/tests/wake.sh" "$ROOT/tests/dnsup.sh" "$ROOT/tests/ispdns.sh" "$ROOT/tests/locks.sh" "$ROOT/tests/fetch.sh" "$ROOT/tests/stopped.sh" "$ROOT/tests/geohead.sh" \
+		"$ROOT/tests/inodes.sh" "$ROOT/tests/applying.sh" "$ROOT/tests/prerelease.sh" "$ROOT/tests/select.sh" "$ROOT/tests/metrics.sh" "$ROOT/tests/netgen.sh" "$ROOT/tests/refused.sh" "$ROOT/tests/install.sh" "$ROOT/tests/pkgscripts.sh" "$ROOT/tests/ksrestart.sh" "$ROOT/tests/wake.sh" "$ROOT/tests/dnsup.sh" "$ROOT/tests/ispdns.sh" "$ROOT/tests/locks.sh" "$ROOT/tests/fetch.sh" "$ROOT/tests/stopped.sh" "$ROOT/tests/geohead.sh" "$ROOT/tests/substate.sh" "$ROOT/tests/ports.sh" \
 		"$FILES/usr/share/mayhem/lib.sh" "$FILES/usr/share/mayhem/const.sh" "$ROOT/install.sh" 2>&1)"; then
 		ok "shellcheck"
 	else
@@ -1037,7 +1148,7 @@ else
 fi
 
 # Pre-release versions: -exp and _pre SemVer ordering
-if out="$(sh "$ROOT/tests/prerelease.sh" 2>&1)"; then
+if out="$(UCODE="$UCODE" sh "$ROOT/tests/prerelease.sh" 2>&1)"; then
 	ok "prerelease version comparison"
 else
 	bad "prerelease: $(printf '%s' "$out" | grep -v '^ok')"
@@ -1212,6 +1323,34 @@ else
 	ok "many servers: 150 are checked every 5 minutes, a few as set"
 fi
 
+# More tunnel sections in kernel mode than marks: the one past the limit
+# works through xray as a whole, nothing of it half in kernel mode.
+python3 - "$ROOT/tests/models/tunnels.json" "$OUT/tunmax.json" <<'PY'
+import json, sys
+m = json.load(open(sys.argv[1]))
+m['sections'] = [{'.name': 't%d' % i, 'type': 'interface', 'enabled': '1', 'interface': 'wg%d' % i, 'domain': ['t%d.test' % i]} for i in range(33)]
+m['runtime']['ifaces'] = {'wg%d' % i: {'device': 'wg%d' % i, 'up': True, 'v6': False} for i in range(33)}
+json.dump(m, open(sys.argv[2], 'w'))
+PY
+mkdir -p "$OUT/tunmax"
+if ! uc "$FILES/usr/share/mayhem/gen.uc" --model "$OUT/tunmax.json" --out "$OUT/tunmax" 2>"$OUT/tunmax.log"; then
+	bad "33 tunnels: the generator failed: $(cat "$OUT/tunmax.log")"
+elif ! "$XRAY" run -test -c "$OUT/tunmax/xray.json" >"$OUT/tunmax.xray.log" 2>&1; then
+	bad "33 tunnels: xray rejects the config: $(tail -n 3 "$OUT/tunmax.xray.log")"
+elif ! uc -e "
+	const n = json(require('fs').readfile('$OUT/tunmax/nodes.json')).sections;
+	const x = json(require('fs').readfile('$OUT/tunmax/xray.json'));
+	const ruled = (t) => length(filter(x.routing.rules, (r) => r.balancerTag == 'bal-' + t)) > 0;
+	exit((n.t31?.mode == 'kernel' && n.t32?.mode == 'xray' && n.t32?.mark == null && ruled('t32') &&
+		index(require('fs').readfile('$OUT/tunmax/dnsmasq.conf') ?? '', 't32.test') < 0) ? 0 : 1);
+" 2>/dev/null; then
+	bad "33 tunnels: the 33rd is not wholly through xray"
+elif ! grep -q 'this one works through Xray' "$OUT/tunmax/status.json"; then
+	bad "33 tunnels: no warning for the 33rd"
+else
+	ok "33 tunnels: the one past the limit of kernel mode works through xray"
+fi
+
 # The SHA-256 of an AmneziaWG package from the release description of GitHub.
 mkdir -p "$OUT/awgd-bin"
 printf '#!/bin/sh\nexec %s -L "%s/usr/share/ucode/*.uc" "$@"\n' "$UCODE" "$FILES" > "$OUT/awgd-bin/ucode"
@@ -1292,17 +1431,31 @@ if out="$(sh "$ROOT/tests/dnsup.sh" 2>&1)"; then
 else
 	bad "dnsmasq's file: $(printf '%s' "$out" | grep -v '^ok')"
 fi
-if out="$(sh "$ROOT/tests/ispdns.sh" 2>&1)"; then
+if out="$(UCODE="$UCODE" sh "$ROOT/tests/ispdns.sh" 2>&1)"; then
 	ok "the provider's DNS servers: waited for at boot, applied when they come later"
 else
 	bad "the provider's DNS servers: $(printf '%s' "$out" | grep -v '^ok')"
 fi
 
 # Locks: no two critical parts at once, no lock taken from a live owner.
-if out="$(sh "$ROOT/tests/locks.sh" 2>&1)"; then
+if out="$(UCODE="$UCODE" sh "$ROOT/tests/locks.sh" 2>&1)"; then
 	ok "locks: starts one at a time, folds of the connection log too"
 else
 	bad "locks: $(printf '%s' "$out" | grep -v '^ok')"
+fi
+
+# Ports xray listens on: one awk for all of them.
+if out="$(UCODE="$UCODE" sh "$ROOT/tests/ports.sh" 2>&1)"; then
+	ok "listening ports: every one in one awk, IPv4 and IPv6"
+else
+	bad "listening ports: $(printf '%s' "$out" | grep -v '^ok')"
+fi
+
+# After a reboot a fresh cache of a subscription is read once, not every minute.
+if out="$(UCODE="$UCODE" sh "$ROOT/tests/substate.sh" 2>&1)"; then
+	ok "subscriptions after a reboot: the cache on flash is read once"
+else
+	bad "subscriptions after a reboot: $(printf '%s' "$out" | grep -v '^ok')"
 fi
 
 # Downloads with time limits: a hung connection does not hold an update.
@@ -1432,6 +1585,14 @@ if [ "$r5" = false ] && same_net "$c" "$OUT/fresh-nc-proxy-rule"; then
 	ok "net cache: a changed rule builds again"
 else
 	bad "net cache: a changed rule was taken from the cache ($r5)"
+fi
+# A slot of a tunnel that is gone (deleted, renamed) goes at the next build.
+echo '{}' > "$c/net-cache/k-gone0.json"
+netcache "$OUT/nc-proxy-rule.json" "$c" >/dev/null
+if [ ! -e "$c/net-cache/k-gone0.json" ] && [ -e "$c/net-cache/x.json" ]; then
+	ok "net cache: slots of tunnels that are gone are removed"
+else
+	bad "net cache: $(find "$c/net-cache" -type f | tr '\n' ' ')"
 fi
 
 # The scheduler: downloads in the background, the checks keep their pace.

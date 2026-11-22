@@ -72,10 +72,12 @@ define Package/mayhem/postrm
 [ "$${PKG_UPGRADE}" = 1 ] && exit 0
 rm -f /usr/libexec/mayhem/xray
 rm -rf /var/run/mayhem
-# TCP back to the firmware's default (BBR was Mayhem's)
+# TCP back to what the firmware had before (BBR was Mayhem's): kept in the
+# file as "# was: NAME" by mayhem bbr; cubic when it is not there.
 if [ -f /etc/sysctl.d/12-mayhem-bbr.conf ]; then
+	was="$$(sed -n 's/^# was: \([a-z0-9_]*\)$$/\1/p' /etc/sysctl.d/12-mayhem-bbr.conf | head -n 1)"
 	rm -f /etc/sysctl.d/12-mayhem-bbr.conf
-	sysctl -w net.ipv4.tcp_congestion_control=cubic >/dev/null 2>&1
+	sysctl -w net.ipv4.tcp_congestion_control="$${was:-cubic}" >/dev/null 2>&1
 fi
 exit 0
 endef

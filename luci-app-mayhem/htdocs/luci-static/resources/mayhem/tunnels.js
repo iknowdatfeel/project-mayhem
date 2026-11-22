@@ -7,6 +7,10 @@
 'require uci';
 'require mayhem.vpnkey as vpnkey';
 'require mayhem.sheet as sheet';
+'require mayhem.common as mh';
+
+// text, never markup, from a string child (see mayhem.common)
+const E = mh.E;
 
 // Tunnels: network interfaces (AmneziaWG, WireGuard and others) that tunnel
 // sections and proxy sections use. Lists them, imports configs and keys,
@@ -187,7 +191,7 @@ return baseclass.extend({
 				'style': 'width:100%;font-family:monospace;font-size:90%;box-sizing:border-box'
 			}, r.conf);
 
-			ui.showModal(_('Edit tunnel %s').format(iface), [
+			ui.showModal(mh.text(_('Edit tunnel %s').format(iface)), [
 				E('p', { 'class': 'mh-muted mh-small' }, _('Saved over interface %s: its name, firewall zone and Mayhem settings stay. The tunnel reconnects.').format(iface)),
 				text,
 				msg,
@@ -242,7 +246,7 @@ return baseclass.extend({
 				sheet.reload();
 		});
 
-		ui.showModal(_('Tunnel %s').format(iface), [
+		ui.showModal(mh.text(_('Tunnel %s').format(iface)), [
 			E('p', _('Out of the server list: the tunnel stays a network interface, Mayhem no longer uses it as a server. Delete: the interface, its peers and the tunnel sections that use it go as well; the network restarts.')),
 			E('div', { 'class': 'right' }, [
 				E('button', { 'class': 'btn', 'click': ui.hideModal }, _('Cancel')), ' ',
@@ -279,7 +283,7 @@ return baseclass.extend({
 			});
 		};
 
-		ui.showModal(_('Rename the interface %s').format(iface), [
+		ui.showModal(mh.text(_('Rename the interface %s').format(iface)), [
 			E('p', _('The network interface, its firewall zone and every Mayhem setting that names it are renamed. The tunnel reconnects.')),
 			E('div', { 'class': 'cbi-value' }, [ E('label', { 'class': 'cbi-value-title' }, _('Interface name')), E('div', { 'class': 'cbi-value-field' }, input) ]),
 			E('div', { 'class': 'right' }, [

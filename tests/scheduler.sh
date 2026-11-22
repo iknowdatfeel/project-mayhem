@@ -220,6 +220,90 @@ wait "$pid" 2>/dev/null
 ms=$((($(date +%s%N) - t0) / 1000000))
 if [ "$ms" -lt 1000 ]; then ok "TERM stops the scheduler while it sleeps"; else bad "TERM took $ms ms"; fi
 
+# A stop while health.uc waits for a dead server: the scheduler goes at once
+# and the run with it, nothing of it is left.
+cat > "$T/bin/sleep" <<'EOF2'
+#!/bin/sh
+/bin/sleep "$(awk -v s="$1" 'BEGIN { print s / 100 }')"
+EOF2
+cat > "$T/bin/ucode" <<'EOF2'
+#!/bin/sh
+case "$*" in
+	*health.uc*) echo $$ > "$STUB/hc.pid"; exec /bin/sleep 30 ;;
+esac
+exit 0
+EOF2
+chmod +x "$T/bin/sleep" "$T/bin/ucode"
+rm -f "$T/hc.pid"
+PATH="$T/bin:$PATH" MAYHEM_SUB=sub MAYHEM_UPDATE=upd sh "$FILES/usr/libexec/mayhem/scheduler" &
+pid=$!
+for _ in 1 2 3 4 5 6 7 8 9 10; do [ -s "$T/hc.pid" ] && break; /bin/sleep 0.2; done
+t0="$(date +%s%N)"
+kill "$pid" 2>/dev/null
+wait "$pid" 2>/dev/null
+ms=$((($(date +%s%N) - t0) / 1000000))
+/bin/sleep 0.3
+hc="$(cat "$T/hc.pid" 2>/dev/null)"
+if [ -n "$hc" ] && [ "$ms" -lt 1000 ] && ! kill -0 "$hc" 2>/dev/null; then
+	ok "TERM stops the scheduler during a long check, the check with it"
+else
+	bad "TERM during a check: $ms ms, check ${hc:-not started} $(kill -0 "$hc" 2>/dev/null && echo still runs)"
+fi
+[ -n "$hc" ] && kill "$hc" 2>/dev/null
+
+# Nothing to download: sub.uc and update.uc write when they are next due
+# (an hour on), and the minutes after start no ucode for them. A saved
+# config, a new subscription after a reload, or the time come: a run.
+cat > "$T/bin/ucode" <<'EOF2'
+#!/bin/sh
+now="$(date +%s)"
+case "$*" in
+	*update\ --no-wait*) echo sub >> "$STUB/runs"; echo "$((now + 3600)) $now" > "$MAYHEM_RUN_DIR/sub.next" ;;
+	*update.uc\ due*) echo upd >> "$STUB/runs"; echo "$((now + ${DATA_IN:-3600})) $now" > "$MAYHEM_RUN_DIR/data.next" ;;
+esac
+exit 0
+EOF2
+chmod +x "$T/bin/ucode"
+printf "config settings 'settings'\n" > "$T/mayhem"
+touch -d '-1 hour' "$T/mayhem"
+rm -f "$T/runs" "$T/run/sub.next" "$T/run/data.next" "$T/run/subs.new" "$T/run/data.pending"
+runs() { n="$(grep -c "^$1\$" "$T/runs" 2>/dev/null)"; echo "${n:-0}"; }
+PATH="$T/bin:$PATH" MAYHEM_SUB=sub MAYHEM_UPDATE=upd MAYHEM_UCI_DIR="$T" sh "$FILES/usr/libexec/mayhem/scheduler" &
+pid=$!
+# a minute is 0.6 s here: four of them
+/bin/sleep 2.5
+if [ "$(runs sub)" = 1 ] && [ "$(runs upd)" = 1 ]; then
+	ok "nothing due: sub.uc and update.uc once in four minutes"
+else
+	bad "nothing due: sub.uc $(runs sub) times, update.uc $(runs upd) times"
+fi
+/bin/sleep 1.1
+touch "$T/mayhem"
+/bin/sleep 1.3
+if [ "$(runs sub)" = 2 ] && [ "$(runs upd)" = 2 ]; then
+	ok "a saved config: both run in the next minute"
+else
+	bad "after a saved config: sub.uc $(runs sub), update.uc $(runs upd)"
+fi
+/bin/sleep 1.1
+echo mysub > "$T/run/subs.new"
+/bin/sleep 1.3
+if [ "$(runs sub)" = 3 ] && [ "$(runs upd)" = 2 ]; then
+	ok "a new subscription: sub.uc runs, update.uc does not"
+else
+	bad "a new subscription: sub.uc $(runs sub), update.uc $(runs upd)"
+fi
+# due now: a run every minute
+echo "$(($(date +%s) - 1)) $(date +%s)" > "$T/run/data.next"
+/bin/sleep 1.3
+if [ "$(runs upd)" = 3 ]; then
+	ok "the time come: update.uc runs"
+else
+	bad "update.uc due now: $(runs upd) runs"
+fi
+kill "$pid" 2>/dev/null
+wait "$pid" 2>/dev/null
+
 rm -rf "$T"
 [ "$fail" = 0 ] && echo "scheduler tests passed"
 exit "$fail"

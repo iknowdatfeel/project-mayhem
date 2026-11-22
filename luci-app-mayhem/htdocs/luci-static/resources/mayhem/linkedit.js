@@ -1,6 +1,10 @@
 'use strict';
 'require baseclass';
 'require ui';
+'require mayhem.common as mh';
+
+// text, never markup, from a string child (see mayhem.common)
+const E = mh.E;
 
 // Editing a server as Xray JSON: one outbound, its "tag" is the name of the
 // server. A key edited here is kept as JSON (one line) from then on.
@@ -38,7 +42,7 @@ return baseclass.extend({
 			return JSON.stringify(o);
 		};
 
-		ui.showModal(_('Edit server: %s').format(name || ''), [
+		ui.showModal(mh.text(_('Edit server: %s').format(name || '')), [
 			E('p', { 'class': 'mh-muted mh-small' }, _('One Xray outbound; "tag" is the name of the server. Saving here keeps the server as JSON instead of a key.')),
 			text,
 			msg,

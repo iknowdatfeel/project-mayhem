@@ -170,4 +170,39 @@ else
 	bad "a reload with the provider's servers or Mayhem not working: $(reloads)"
 fi
 
+# --- an interface comes up ------------------------------------------------------
+
+# A reload only when it changed what the build used: the generator keeps
+# runtime.fp, ifacefp.uc compares (real ucode, the config of the tests).
+UCODE="${UCODE:-ucode}"
+printf '#!/bin/sh\nexec %s -L "%s/mayhem/files/usr/share/ucode/*.uc" "$@"\n' "$UCODE" "$ROOT" > "$T/bin/ucode"
+chmod +x "$T/bin/ucode"
+mkdir -p "$T/uci"
+cp "$ROOT/tests/uci/mayhem" "$T/uci/"
+export MAYHEM_UCI_DIR="$T/uci" MAYHEM_GEO_DIR="$T/geo" MAYHEM_LISTS_DIR="$T/lists" MAYHEM_SUBS_DIR="$T/subs" MAYHEM_TMP_DIR="$T"
+echo 'nameserver 10.1.1.1' > "$T/resolv.a"
+PATH="$T/bin:$PATH" MAYHEM_RUN_DIR="$T/run" MAYHEM_RESOLV_AUTO="$T/resolv.a $T/resolv.b" \
+	ucode "$ROOT/mayhem/files/usr/share/mayhem/gen.uc" --out "$T/run" >/dev/null 2>&1
+: > "$T/reloads"
+lib mayhem_iface_reload
+if [ -s "$T/run/runtime.fp" ] && [ "$(reloads)" = 0 ]; then
+	ok "an interface up that changes nothing: no reload"
+else
+	bad "an interface up that changes nothing: $(reloads) reloads, fp $(cat "$T/run/runtime.fp" 2>/dev/null)"
+fi
+echo 'nameserver 10.2.2.2' > "$T/resolv.a"
+lib mayhem_iface_reload
+if [ "$(reloads)" = 1 ]; then
+	ok "new provider DNS servers with an interface up: a reload"
+else
+	bad "new provider DNS servers with an interface up: $(reloads) reloads"
+fi
+rm -f "$T/run/runtime.fp"
+lib mayhem_iface_reload
+if [ "$(reloads)" = 2 ]; then
+	ok "no fingerprint of the last build: a reload"
+else
+	bad "no fingerprint: $(reloads) reloads"
+fi
+
 exit "$fail"

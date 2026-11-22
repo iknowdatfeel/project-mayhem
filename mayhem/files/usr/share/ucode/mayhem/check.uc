@@ -11,10 +11,7 @@
 
 import * as fs from 'fs';
 import { HELPER_PORT, HELPER_PASS, RUN_DIR } from 'mayhem.const';
-
-function q(s) {
-	return "'" + replace(`${s}`, /'/g, "'\\''") + "'";
-}
+import { q } from 'mayhem.util';
 
 function command(cmd) {
 	const p = fs.popen(cmd, 'r');
@@ -36,19 +33,43 @@ function command(cmd) {
 const TICK = getenv('MAYHEM_TICK');
 const SEEN = `${RUN_DIR}/check.seen`;
 
+// nodes.json parsed once while it stays the same file (inode, time, size):
+// cache_key() asks it for every user of a section, twice a works_many().
+let nodes_cache = null;
+
+function nodes_state() {
+	const st = fs.stat(`${RUN_DIR}/nodes.json`);
+	const stamp = st ? `${st.inode}.${st.mtime}.${st.size}` : '';
+
+	if (nodes_cache?.stamp != stamp) {
+		let data = null;
+
+		try {
+			data = st ? json(fs.readfile(`${RUN_DIR}/nodes.json`) ?? '') : null;
+		}
+		catch (e) {
+			data = null;
+		}
+
+		nodes_cache = { stamp: stamp, data: data };
+	}
+
+	return nodes_cache.data;
+}
+
 function cache_key(u) {
 	const m = match(u, /^sec-(.+)$/);
 	if (!m)
 		return u;
 
-	try {
-		const st = json(fs.readfile(`${RUN_DIR}/nodes.json`) ?? '');
-		const tag = st?.sections?.[m[1]]?.selected ?? st?.sections?.[m[1]]?.override ?? '';
-		return `${u}#${tag}`;
-	}
-	catch (e) {
+	const st = nodes_state();
+
+	if (!st)
 		return u;
-	}
+
+	const tag = st.sections?.[m[1]]?.selected ?? st.sections?.[m[1]]?.override ?? '';
+
+	return `${u}#${tag}`;
 }
 
 function seen_read(url) {
@@ -149,4 +170,33 @@ export function warm_recent(fresh) {
 			out[tag] = r.ms != null ? r.ms : false;
 
 	return out;
+};
+
+// What `xray api bi` says of a balancer: { override: the server pinned in it
+// or null, selects: [ the servers it picks from, in its order ] }. Its text:
+//   "  - Selecting Override:" then "    1   <tag>" (blank when none),
+//   "  - Selects:" then one "    N   <tag>" a server
+// (tests/fixtures/xray-bi*.txt, of the xray Mayhem installs).
+export function parse_balancer_info(text) {
+	let part = null;
+	const res = { override: null, selects: [] };
+
+	for (let l in split(text ?? '', '\n')) {
+		const m = match(l, /^[ \t]+[0-9]+[ \t]+([^ \t]+)/);
+
+		if (index(l, 'Override') >= 0)
+			part = 'o';
+		else if (index(l, 'Selects') >= 0)
+			part = 's';
+		else if (m && part == 'o')
+			res.override ??= m[1];
+		else if (m && part == 's')
+			push(res.selects, m[1]);
+	}
+
+	return res;
+};
+
+export function balancer_info(xray, port, bal) {
+	return parse_balancer_info(command(`${q(xray)} api bi --server=127.0.0.1:${port} ${q(bal)} 2>/dev/null`));
 };

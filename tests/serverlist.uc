@@ -40,9 +40,11 @@ c.commit('mayhem');
 mkdir(run);
 writefile(`${run}/nodes.json`, sprintf('%J', { sections: { pool: { type: 'proxy', mode: 'fallback', balancer: 'bal-pool',
 	chain: [ 'n-pool-1', 'n-pool-2' ], items: [ { sub: 'mysub', rule: 'auto' } ], nodes: [
-	{ tag: 'n-pool-1', name: 'A', orig: 'Provider A', source: 'mysub', link: 'ss://YWVzLTI1Ni1nY206cHc@1.2.3.4:8388#A' },
+	{ tag: 'n-pool-1', name: 'A', orig: 'Provider A', source: 'mysub', has_link: true },
 	{ tag: 'n-pool-2', name: 'B', source: 'mysub' },
 	{ tag: 'n-pool-3', name: 'K1', source: 'link' } ] } } }));
+// the keys of the servers, apart from nodes.json
+writefile(`${run}/nodes.links.json`, sprintf('%J', { 'n-pool-1': 'ss://YWVzLTI1Ni1nY206cHc@1.2.3.4:8388#A' }));
 
 // The chain's window: the chain and the rule of its subscription at once.
 let r = call('set_select', { section: 'pool', mode: 'fallback', chain: [ 'K1', '@mysub' ], rules: { mysub: { mode: 'manual', selected: 'B' } } });
@@ -70,7 +72,10 @@ expect('nodes.json: the list automatic with the server pinned',
 	st.sections.pool.mode == 'auto' && st.sections.pool.override == 'n-pool-3' && st.sections.pool.selected == null);
 expect('overrides: the choice for the next start', readfile(`${run}/overrides`) == 'bal-pool n-pool-3\n');
 
-const old = st.sections.pool.nodes[0].link;
+// the key the editor got (server_link): from nodes.links.json
+const old = call('server_link', { section: 'pool', tag: 'n-pool-1' }).link;
+
+expect('server_link: the key from nodes.links.json', old == 'ss://YWVzLTI1Ni1nY206cHc@1.2.3.4:8388#A');
 const custom = sprintf('%J', { tag: 'Edited A', protocol: 'shadowsocks', settings: { address: 'edited.example', port: 443, method: 'aes-128-gcm', password: 'fixture' } });
 r = call('server_edit', { section: 'pool', tag: 'n-pool-1', old: old, link: custom });
 c = cursor();
