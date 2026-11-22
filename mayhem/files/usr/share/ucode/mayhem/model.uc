@@ -242,6 +242,8 @@ function runtime(sections) {
 		// a small file of its own (mayhem.runstate), not the whole nodes.json;
 		// nodes.json once, after an update from a version without it
 		flow_path: read_json(`${RUN_DIR}/flow_path.json`) ?? read_json(`${RUN_DIR}/nodes.json`)?.flow_path,
+		// how often a server was chosen by hand (the dashboard, in RAM)
+		reconnect_epoch: trim(readfile(`${RUN_DIR}/reconnect.epoch`) ?? '') || '0',
 		ipv6: access('/proc/net/if_inet6') == true,
 		mem_total_kb: mem_total_kb(),
 		router_ips: router_ips(),

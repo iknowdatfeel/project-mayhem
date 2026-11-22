@@ -13,7 +13,7 @@ import * as C from 'mayhem.const';
 import { tcp_ping } from 'mayhem.ping';
 import * as runstate from 'mayhem.runstate';
 import * as M from 'mayhem.metrics';
-import { q, read_json, write_json, is_applying } from 'mayhem.util';
+import { q, read_json, write_json, write_atomic, is_applying } from 'mayhem.util';
 import { balancer_info } from 'mayhem.check';
 
 const XRAY = getenv('MAYHEM_XRAY_BIN') ?? '/usr/libexec/mayhem/xray';
@@ -128,8 +128,14 @@ function apply_bg(cmd) {
 
 // An explicit choice changes the restart key and capture generation. The
 // generator rebuilds chains; fallback then applies their current choice.
-function reconnect_epoch(c) {
-	c.set('mayhem', 'settings', 'reconnect_epoch', `${(int(c.get('mayhem', 'settings', 'reconnect_epoch')) || 0) + 1}`);
+// A counter of the run directory (reconnect.epoch, in RAM), not of the
+// user's config: a choice on the dashboard writes nothing to flash. After a
+// reboot it starts again, like nodes.json, whose flow path it changes.
+function reconnect_epoch() {
+	const f = `${RUN}/reconnect.epoch`;
+
+	fs.mkdir(RUN, 0700);
+	write_atomic(f, `${(int(trim(fs.readfile(f) ?? '')) || 0) + 1}\n`);
 }
 
 const INIT = getenv('MAYHEM_INIT') ?? '/etc/init.d/mayhem';
@@ -2661,7 +2667,7 @@ const methods = {
 					return { error: 'unknown server' };
 
 				const used = pool?.mode == 'fallback' && length(filter(pool.items ?? [], (i) => i.sub == sn)) > 0;
-				if (used) reconnect_epoch(c);
+				if (used) reconnect_epoch();
 				c.set('mayhem', sn, 'select', 'manual');
 				c.set('mayhem', sn, 'selected', node.name);
 
@@ -2748,7 +2754,7 @@ const methods = {
 				const fast_path = active && !is_cur_kernel && !is_new_kernel;
 
 				if (!fast_path)
-					reconnect_epoch(c);
+					reconnect_epoch();
 
 				// Not saved: xray goes back to the choice it had, so that it,
 				// nodes.json and the overrides of its next start agree with
@@ -4496,7 +4502,7 @@ const methods = {
 			const state = read_json(`${RUN}/nodes.json`);
 			const used = kind != 'subscription' || (state?.sections?.pool?.mode == 'fallback' &&
 				length(filter(state.sections.pool.items ?? [], (i) => i.sub == sn)) > 0);
-			if (used) reconnect_epoch(c);
+			if (used) reconnect_epoch();
 			if (!c.commit('mayhem'))
 				return { error: 'the configuration could not be saved' };
 

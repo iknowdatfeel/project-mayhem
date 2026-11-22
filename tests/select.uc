@@ -82,7 +82,8 @@ expect('select: the path generation advances', st?.flow_path?.generation == 2, s
 expect('select: flow_path.json follows nodes.json', rjson(`${run}/flow_path.json`)?.generation == 2, read(`${run}/flow_path.json`));
 expect('select: the choice is kept for the next start of xray', index(read(`${run}/overrides`), 'bal-pool n-pool-b') >= 0, read(`${run}/overrides`));
 expect('select: the choice is saved by name', uci('pool.override') == 'B', uci('pool.override'));
-expect('select: no new reconnect epoch on the fast path', uci('settings.reconnect_epoch') == '5', uci('settings.reconnect_epoch'));
+expect('select: no new reconnect epoch on the fast path', read(`${run}/reconnect.epoch`) == '', read(`${run}/reconnect.epoch`));
+expect('select: the config keeps no counter', uci('settings.reconnect_epoch') == '5', uci('settings.reconnect_epoch'));
 expect('select: the new generation goes into the running rules', waits(`${stub}/lib.log`, 'net_generation'), read(`${stub}/lib.log`));
 expect('select: no reload on the fast path', read(`${stub}/init.log`) == '', read(`${stub}/init.log`));
 expect('select: the section is marked as picked by hand', rjson(`${run}/health.json`)?.sections?.pool?.picked > 0);
@@ -92,7 +93,8 @@ reset();
 r = call('select_node', { section: 'pool', tag: 'n-pool-t' });
 
 expect('select: a tunnel is not the fast path', r?.ok && !r?.fast, r);
-expect('select: a tunnel gets a new reconnect epoch', uci('settings.reconnect_epoch') == '6', uci('settings.reconnect_epoch'));
+expect('select: a tunnel gets a new reconnect epoch', trim(read(`${run}/reconnect.epoch`)) == '1', read(`${run}/reconnect.epoch`));
+expect('select: the config is not changed for it', uci('settings.reconnect_epoch') == '5', uci('settings.reconnect_epoch'));
 expect('select: a tunnel reloads', waits(`${stub}/init.log`, 'init reload'), read(`${stub}/init.log`));
 
 // --- a fallback chain of the server list -----------------------------------------

@@ -95,7 +95,7 @@ expect('endpoint bypass follows the local-network option', !length(filter(build(
 
 const next_choice = model('global', [ `${A}#NL` ]);
 next_choice.runtime.flow_path = one.state.flow_path;
-next_choice.settings.reconnect_epoch = '1';
+next_choice.runtime.reconnect_epoch = '1';
 const reset = build(next_choice);
 expect('an explicit choice invalidates old kernel and proxy flows', reset.state.flow_path.generation != one.state.flow_path.generation);
 expect('an explicit choice preserves Xray process key', key(reset) == key(one));

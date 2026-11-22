@@ -85,13 +85,13 @@ function net_base(model) {
 		return c;
 	});
 	const S = { ...model.settings };
-	delete S.reconnect_epoch;
 
 	const R = { ...model.runtime };
 
 	// Which server a chain uses now: the build adds the tunnel it means.
 	delete R.fallback;
 	delete R.flow_path;
+	delete R.reconnect_epoch;
 
 	// Devices come and go; only sections limited to some use them.
 	if (!length(filter(sections, (s) => s.devices != null)))

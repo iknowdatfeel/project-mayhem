@@ -2298,7 +2298,8 @@ export function build(model) {
 	if (length(endpoint_domains) && R.dnsmasq_nftset === false)
 		warn('bypassing VPN server domains in the kernel needs dnsmasq-full (nftset support)');
 
-	const path_key = sprintf('%J', [ default_name, kdef_tun?.device ?? null, S.reconnect_epoch ?? '0' ]);
+	// reconnect_epoch: a server chosen by hand (the dashboard), in RAM
+	const path_key = sprintf('%J', [ default_name, kdef_tun?.device ?? null, R.reconnect_epoch ?? '0' ]);
 	const previous_path = R.flow_path;
 	const previous_gen = int_opt(previous_path?.generation, 0, 1, 3);
 	const path_generation = previous_gen
