@@ -1440,19 +1440,33 @@ mayhem_subs_new() {
 
 # --- state -------------------------------------------------------------------
 
-# Is something listening on TCP port $1 (any address family)?
-mayhem_port_listening() {
-	local hex f
+# Is something listening on every TCP port given (any address family)? One
+# awk for all of them and both files: xray-run asks five times a second
+# while xray starts, when the CPU is busy anyway (an awk per port and file
+# made six processes a tick). MAYHEM_PROC_NET: the directory of tcp and
+# tcp6 (the tests).
+mayhem_ports_listening() {
+	local net="${MAYHEM_PROC_NET:-/proc/net}" ports="$*" f
 
-	hex="$(printf '%04X' "$1")"
+	[ -n "$ports" ] || return 1
+	set --
 
 	# tcp6 is missing on kernels without IPv6; awk would fail on it.
-	for f in /proc/net/tcp /proc/net/tcp6; do
-		[ -r "$f" ] || continue
-		awk -v p=":$hex" 'toupper($2) ~ (p "$") && $4 == "0A" { f = 1 } END { exit !f }' "$f" && return 0
+	for f in "$net/tcp" "$net/tcp6"; do
+		[ -r "$f" ] && set -- "$@" "$f"
 	done
 
-	return 1
+	[ $# -gt 0 ] || return 1
+
+	awk -v ports="$ports" '
+		BEGIN { n = split(ports, p, " "); for (i = 1; i <= n; i++) { h = sprintf("%04X", p[i]); if (!(h in want)) { want[h] = 1; m++ } } }
+		$4 == "0A" { k = toupper($2); sub(/.*:/, "", k); if ((k in want) && !(k in got)) { got[k] = 1; c++ } }
+		END { exit !(c == m) }' "$@"
+}
+
+# Is something listening on TCP port $1 (any address family)?
+mayhem_port_listening() {
+	mayhem_ports_listening "$1"
 }
 
 # Prints the names of running services that also intercept traffic.
