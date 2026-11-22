@@ -651,6 +651,74 @@ function run_lists(cfg, state, force) {
 	return results;
 }
 
+// --- when the next download is due ------------------------------------------------
+// The scheduler starts this script every minute only when something may be
+// due (data.next: "<time> <written at>"): a ucode process that parsed the
+// index of every geo source on flash, minute after minute, to find nothing.
+
+// The first time from `now` on at which the nightly update is due: the hour
+// of update_hour, and the data at least NIGHTLY_MIN_AGE_S old. Quarter hours
+// are tried (time zones with half hours), from the earliest such time.
+function nightly_at(last, hour, now) {
+	let t = max(now, last + NIGHTLY_MIN_AGE_S);
+
+	for (let i = 0; i < 400; i++) {
+		if (localtime(t).hour == hour)
+			return t;
+
+		t = (int(t / 900) + 1) * 900;
+	}
+
+	return t;
+}
+
+function next_due(cfg, state, now) {
+	const want = wanted(cfg.sections, cfg.sources);
+	const hour = int(cfg.geo.update_hour ?? 4);
+	let next = now + 86400;
+
+	for (let src in cfg.sources) {
+		const cats = want[src.name] ?? [];
+		const st = state.geo[src.name] ?? {};
+
+		if (!src.enabled || !length(cats) || src.url == '')
+			continue;
+
+		let t;
+
+		// downloaded in this run: its index (read before) is the old one
+		if (st.last_ok == now)
+			t = min(now + MAX_AGE_S, nightly_at(now, hour, now));
+		else if (geo_due(cfg, src, cats, st, now))
+			t = now;
+		else {
+			const last = max(st.last_ok ?? 0, src.index?.updated ?? 0);
+
+			t = min(last + MAX_AGE_S, nightly_at(last, hour, now));
+		}
+
+		if (st.error)
+			t = max(t, (st.last_try ?? 0) + RETRY_S);
+
+		next = min(next, t);
+	}
+
+	const hours = int(cfg.geo.lists_interval ?? 24) || 24;
+
+	for (let url in list_urls(cfg)) {
+		const st = state.lists[url] ?? {};
+		const mtime = fs.stat(`${C.LISTS_DIR}/${list_key(url)}.lst`)?.mtime;
+		let t = mtime == null ? now : max(st.last_ok ?? 0, mtime) + hours * 3600;
+
+		if (st.error)
+			t = max(t, (st.last_try ?? 0) + RETRY_S);
+
+		next = min(next, t);
+	}
+
+	return next;
+}
+
 // --- main ------------------------------------------------------------------------
 
 const cmd = ARGV[0];
@@ -683,6 +751,10 @@ try {
 		results = [ ...results, ...run_lists(cfg, state, force) ];
 
 	write_json(STATE_FILE, state);
+
+	const now = time();
+
+	fs.writefile(`${C.RUN_DIR}/data.next`, `${next_due(cfg, state, now)} ${now}\n`);
 
 	const failed = filter(results, (r) => !r.ok);
 

@@ -47,6 +47,13 @@ if grep -q '"updated": *'"$((now - 600))" "$T/run/subs-state.json" 2>/dev/null &
 else
 	bad "a fresh cache after a reboot: state $(cat "$T/run/subs-state.json" 2>/dev/null), curl $(cat "$T/curl.log" 2>/dev/null)"
 fi
+# the scheduler's next run of sub.uc: when the 12 hours of the cache are over
+read -r next _ < "$T/run/sub.next"
+if [ "$next" = "$((now - 600 + 12 * 3600))" ]; then
+	ok "sub.next: the subscription is due when its interval is over"
+else
+	bad "sub.next: $(cat "$T/run/sub.next" 2>/dev/null), expected $((now - 600 + 12 * 3600))"
+fi
 
 # The cache is now broken: read again, it would look stale and be downloaded.
 cp "$T/subs/mysub.json" "$T/mysub.good"

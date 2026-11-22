@@ -255,6 +255,9 @@ if (!runstate.write(opts.out, {
 put('tunnels', res.tunnels ?? '');
 // Subscriptions the service downloads right after this reload.
 put('subs.new', length(model.subs_new ?? []) ? join('\n', model.subs_new) + '\n' : '');
+// Geo categories or lists the config wants and the router does not have yet:
+// the scheduler starts update.uc at once for them, whatever data.next says.
+put('data.pending', (length(keys(res.state?.geo_pending ?? {})) || length(res.state?.lists_missing ?? [])) ? '1\n' : '');
 
 for (let w in res.status.warnings)
 	warn(`mayhem: warning: ${w}\n`);

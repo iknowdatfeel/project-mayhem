@@ -412,6 +412,29 @@ function unlock() {
 	fs.rmdir(LOCK);
 }
 
+// When the next download of a subscription is due, by the state in RAM:
+// the scheduler starts this script only then (sub.next: "<time> <written
+// at>"), or when the config or a new subscription asks for it.
+function next_due(cfg, state, now) {
+	let next = now + 86400;
+
+	for (let sub in cfg.subs) {
+		if (!is_true(sub.enabled ?? '1') || !nonempty(sub.url))
+			continue;
+
+		const st = state[sub['.name']] ?? {};
+		const hours = int(sub.update_interval ?? 0) || DEFAULT_INTERVAL_H;
+		let t = (st.url == sub.url && st.updated) ? st.updated + hours * 3600 : now;
+
+		if (st.error && (st.url == null || st.url == sub.url))
+			t = max(t, (st.last_try ?? 0) + RETRY_S);
+
+		next = min(next, t);
+	}
+
+	return next;
+}
+
 function update(name, force, only_new) {
 	const cfg = load_uci();
 	const state = read_json(STATE_FILE) ?? {};
@@ -531,6 +554,7 @@ function update(name, force, only_new) {
 	}
 
 	write_json(STATE_FILE, state);
+	fs.writefile(`${C.RUN_DIR}/sub.next`, `${next_due(cfg, state, time())} ${time()}\n`);
 	print(sprintf('%J\n', results));
 
 	if (changed)

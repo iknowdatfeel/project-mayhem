@@ -13,33 +13,60 @@
 
 . "${MAYHEM_LIB_DIR:-/usr/share/mayhem}/lib.sh"
 
+MAYHEM_CONFIG="${MAYHEM_UCI_DIR:-/etc/config}/mayhem"
+
 # Downloads (subscriptions, geo data, rule lists) and the reload after them.
 # They take minutes on a slow link or a big geo file: in the background, one
 # run at a time, so the checks below keep their 20 s (a dead server waited
 # for the downloads before). No reload once the scheduler is gone: the
 # service was stopped meanwhile.
+# Is a run of sub.uc or update.uc due by its file $1 ("<time> <written at>",
+# written by the script at the end of a run)? Also when there is none yet,
+# the config changed since, or the clock went back since it was written.
+# $2: what the last reload found missing (new subscriptions; geo categories
+# and lists not downloaded yet): a run when written after the last one.
+download_due() {
+	local next written now
+
+	[ -s "$1" ] || return 0
+	# shellcheck disable=SC3013 # busybox ash has -nt
+	[ -s "$2" ] && [ "$2" -nt "$1" ] && return 0
+	# shellcheck disable=SC3013
+	[ "$MAYHEM_CONFIG" -nt "$1" ] && return 0
+	read -r next written < "$1"
+	now="$(date +%s)"
+	[ "$now" -ge "${next:-0}" ] || [ "$now" -lt "${written:-0}" ]
+}
+
 downloads() {
 	local reload=0 sub_pid="" upd_pid=""
 	trap '[ -n "$sub_pid" ] && kill "$sub_pid" 2>/dev/null; [ -n "$upd_pid" ] && kill "$upd_pid" 2>/dev/null; exit 0' TERM INT
 
-	ucode "$MAYHEM_SUB" update --no-wait >/dev/null 2>&1 &
-	sub_pid=$!
-	wait "$sub_pid"
-	local sub_rc=$?
-	sub_pid=""
-	if [ "$sub_rc" = 3 ]; then
-		mayhem_log "subscriptions changed, applying the new servers"
-		reload=1
+	# A ucode process each only when something may be due: most minutes
+	# nothing is, and each one cost a start of ucode and the reading of the
+	# caches on flash.
+	if download_due "$MAYHEM_RUN_DIR/sub.next" "$MAYHEM_RUN_DIR/subs.new"; then
+		ucode "$MAYHEM_SUB" update --no-wait >/dev/null 2>&1 &
+		sub_pid=$!
+		wait "$sub_pid"
+		local sub_rc=$?
+		sub_pid=""
+		if [ "$sub_rc" = 3 ]; then
+			mayhem_log "subscriptions changed, applying the new servers"
+			reload=1
+		fi
 	fi
 
-	ucode "$MAYHEM_UPDATE" due >/dev/null 2>&1 &
-	upd_pid=$!
-	wait "$upd_pid"
-	local upd_rc=$?
-	upd_pid=""
-	if [ "$upd_rc" = 3 ]; then
-		mayhem_log "geo data or rule lists changed, applying them"
-		reload=1
+	if download_due "$MAYHEM_RUN_DIR/data.next" "$MAYHEM_RUN_DIR/data.pending"; then
+		ucode "$MAYHEM_UPDATE" due >/dev/null 2>&1 &
+		upd_pid=$!
+		wait "$upd_pid"
+		local upd_rc=$?
+		upd_pid=""
+		if [ "$upd_rc" = 3 ]; then
+			mayhem_log "geo data or rule lists changed, applying them"
+			reload=1
+		fi
 	fi
 
 	[ "$reload" = 1 ] && kill -0 "$1" 2>/dev/null && /etc/init.d/mayhem reload
