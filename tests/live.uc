@@ -112,7 +112,8 @@ sub.server_overrides = { mysub: { 'Provider NL': sprintf('%J', { tag: 'My edited
 let edited = build(sub).state.sections.main.nodes[0];
 expect('subscription edit applies endpoint and keeps identity', edited.address == 'edited.example' && edited.orig == 'Provider NL' && edited.name == 'My edited server');
 sub.subscriptions.mysub.nodes[0].link = `${B}#Provider-update`;
-edited = build(sub).state.sections.main.nodes[0];
-expect('provider update keeps the local edit', edited.address == 'edited.example' && edited.link == sub.server_overrides.mysub['Provider NL']);
+const rebuilt = build(sub);
+edited = rebuilt.state.sections.main.nodes[0];
+expect('provider update keeps the local edit', edited.address == 'edited.example' && rebuilt.links[edited.tag] == sub.server_overrides.mysub['Provider NL']);
 
 exit(fails ? 1 : 0);
