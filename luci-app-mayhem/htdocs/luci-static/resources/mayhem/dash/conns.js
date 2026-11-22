@@ -84,6 +84,14 @@ return baseclass.extend({
 		if (!this.connsOpen)
 			return;
 
+		// A hidden tab asks the router nothing: the next try in 3 s.
+		if (document.hidden) {
+			if (!this.connPaused)
+				this.connsTimer = window.setTimeout(() => this.fetch(), 3000);
+
+			return;
+		}
+
 		const seq = this.connSeq = (this.connSeq || 0) + 1;
 
 		callConns(false, this.connDev).then((r) => {

@@ -1902,8 +1902,9 @@ function device_names() {
 }
 
 // What the folded log says: { hosts: address -> name, tags: "tcp ip:port" ->
-// outbound tag }. Read again only when it changed (the dashboard asks every
-// 3 s, the scheduler folds once a minute).
+// outbound tag }. The scheduler folds it once a minute. The cache only helps
+// a call inside rpcd: "connections" itself runs in a process of its own
+// (APART), which reads the file once anyway.
 let conn_names_cache = null;
 
 function conn_names() {
@@ -1934,16 +1935,14 @@ function conn_names() {
 	return conn_names_cache = { stamp: stamp, hosts: hosts, tags: tags };
 }
 
-// What an outbound tag stands for: a server of a section, direct, blocked.
-function route_of(tag, state) {
-	if (tag == 'direct' || tag == 'direct-udp')
-		return { kind: 'direct' };
-
-	if (tag == 'block')
-		return { kind: 'block' };
-
-	if (tag == 'dns-out')
-		return { kind: 'dns' };
+// What every outbound tag stands for: a server of a section, direct,
+// blocked. Built once per call: looking a tag up in every section for every
+// connection cost connections x servers.
+function route_map(state) {
+	const map = {
+		direct: { kind: 'direct' }, 'direct-udp': { kind: 'direct' },
+		block: { kind: 'block' }, 'dns-out': { kind: 'dns' }
+	};
 
 	for (let sn in keys(state?.sections ?? {})) {
 		const s = state.sections[sn];
@@ -1951,15 +1950,18 @@ function route_of(tag, state) {
 		// takes its active server.
 		const pool = sn == 'pool' || s.pool == true;
 
-		if (tag == `f-${sn}`)
-			return { kind: 'proxy', section: sn, server: s.nodes?.[0]?.name, protocol: s.nodes?.[0]?.protocol, pool: pool };
-
 		for (let n in s.nodes ?? [])
-			if (n.tag == tag)
-				return { kind: n.iface ? 'tunnel' : 'proxy', section: sn, server: n.name, protocol: n.tproto ?? n.protocol, pool: pool };
+			if (n.tag && !map[n.tag])
+				map[n.tag] = { kind: n.iface ? 'tunnel' : 'proxy', section: sn, server: n.name, protocol: n.tproto ?? n.protocol, pool: pool };
+
+		map[`f-${sn}`] ??= { kind: 'proxy', section: sn, server: s.nodes?.[0]?.name, protocol: s.nodes?.[0]?.protocol, pool: pool };
 	}
 
-	return { kind: 'other', tag: tag };
+	return map;
+}
+
+function route_of(tag, map) {
+	return map[tag] ?? { kind: 'other', tag: tag };
 }
 
 // Every TCP and UDP connection the kernel tracks: { network, src, sport, dst,
@@ -2087,6 +2089,7 @@ function connections(stop, device) {
 		system(`sh -c '. ${LIB}/lib.sh; mayhem_conn_fold' >/dev/null 2>&1`);
 
 	const state = read_json(`${RUN}/nodes.json`) ?? { sections: {} };
+	const routes = route_map(state);
 	const devnames = device_names();
 	const names = devnames.names;
 	const local = devnames.local;
@@ -2181,7 +2184,7 @@ function connections(stop, device) {
 
 		const k = `${c.network} ${c.src}:${c.sport}`;
 		const tag = recent_tags[k] ?? (marked ? tag_of[k] : null);
-		let route = tag ? route_of(tag, state) : null;
+		let route = tag ? route_of(tag, routes) : null;
 
 		if (!route) {
 			const nat = mine[c.rdst];

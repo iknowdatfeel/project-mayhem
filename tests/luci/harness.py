@@ -1045,6 +1045,19 @@ def main():
             if not count.startswith('TCP: ') or 'UDP: ' not in count or not count.rstrip().endswith('1'):
                 raise RuntimeError('no TCP and UDP counts: %r' % count)
             shot(pg, 'connections')
+            # A hidden tab does not ask the router every 3 s.
+            pg.evaluate("""() => { Object.defineProperty(document, 'hidden', { configurable: true, get: () => true });
+                document.dispatchEvent(new Event('visibilitychange')); }""")
+            pg.wait_for_timeout(3500)
+            n = calls.count('luci.mayhem.connections')
+            pg.wait_for_timeout(6500)
+            hidden_calls = calls.count('luci.mayhem.connections') - n
+            pg.evaluate("() => { delete document.hidden; }")
+            if hidden_calls:
+                raise RuntimeError('a hidden tab asked for the connections %d times' % hidden_calls)
+            pg.wait_for_timeout(3500)
+            if calls.count('luci.mayhem.connections') == n:
+                raise RuntimeError('the connections are not asked again once the tab is visible')
             pg.click('.mh-sheet-close')
             pg.wait_for_selector('.mh-sheet-overlay', state='detached', timeout=5000)
 
