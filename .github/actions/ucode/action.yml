@@ -1,0 +1,42 @@
+name: ucode of OpenWrt
+description: >
+  libubox, libuci and ucode at the versions OpenWrt releases ship, built once
+  and cached; /usr/local/bin/ucode is the first of them.
+inputs:
+  releases:
+    description: OpenWrt branches (24.10, 25.12, master), separated by spaces
+    default: "24.10"
+runs:
+  using: composite
+  steps:
+    - name: Cache ucode binaries
+      id: cache
+      uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+      with:
+        path: |
+          /opt/ucode-*
+          /usr/local/lib/libubox.so*
+          /usr/local/lib/libuci.so*
+        # the releases are in the key: one job's cache of 24.10 alone must
+        # not stand for another's 24.10, 25.12 and master
+        key: ucode-build-${{ runner.os }}-${{ hashFiles('tests/build-ucode.sh') }}-${{ inputs.releases }}-v2
+    - name: Build ucode
+      if: steps.cache.outputs.cache-hit != 'true'
+      shell: bash
+      run: |
+        git clone --depth 1 https://github.com/openwrt/libubox.git /tmp/libubox
+        cmake -S /tmp/libubox -B /tmp/libubox/build -DBUILD_LUA=OFF -DBUILD_EXAMPLES=OFF
+        sudo cmake --build /tmp/libubox/build --target install -j4
+        git clone --depth 1 https://github.com/openwrt/uci.git /tmp/uci
+        cmake -S /tmp/uci -B /tmp/uci/build -DBUILD_LUA=OFF
+        sudo cmake --build /tmp/uci/build --target install -j4
+        sudo ldconfig
+        for rel in ${{ inputs.releases }}; do
+          sudo sh tests/build-ucode.sh "$rel" "/opt/ucode-$rel"
+        done
+    - name: ucode on the path
+      shell: bash
+      run: |
+        sudo ldconfig
+        set -- ${{ inputs.releases }}
+        sudo ln -sf "/opt/ucode-$1/ucode" /usr/local/bin/ucode
