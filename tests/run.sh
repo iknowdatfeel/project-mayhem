@@ -181,6 +181,20 @@ else
 	bad "nodes.json writers: $out"
 fi
 
+# mayhem.util: locks (left behind, just taken, a live owner), atomic writes.
+if out="$(uc "$ROOT/tests/util.uc" "$OUT/util" 2>&1)"; then
+	ok "util: locks, writes through a temporary file, the applying flag"
+else
+	bad "util: $out"
+fi
+
+# The helpers live in mayhem.util only: no copy of them elsewhere.
+if out="$(grep -rnE '^function (read_json|q|is_applying|applying|write_json|log|my_pid)\(|fs\.mkdir\(LOCK' "$FILES" "$ROOT/luci-app-mayhem/root")"; then
+	bad "copies of the helpers of mayhem.util: $out"
+else
+	ok "util: no copies of its helpers"
+fi
+
 # TCP ping on the dashboard: one timeout per silent host, a budget per call.
 if out="$(uc "$ROOT/tests/ping.uc" 2>&1)"; then
 	ok "TCP ping: shared checks, a silent host waited for once"
@@ -635,7 +649,7 @@ done
 
 # Server keys are in nodes.links.json, not in nodes.json (read every few
 # seconds by the dashboard, health.uc and the checks).
-if grep -q '"link"' "$OUT/lists/nodes.json" 2>/dev/null; then
+if grep -q '"link": *"' "$OUT/lists/nodes.json" 2>/dev/null; then
 	bad "model lists: server keys in nodes.json"
 elif ! grep -q 'vless://' "$OUT/lists/nodes.links.json" 2>/dev/null || ! grep -q '"has_link": true' "$OUT/lists/nodes.json"; then
 	bad "model lists: no nodes.links.json or has_link"

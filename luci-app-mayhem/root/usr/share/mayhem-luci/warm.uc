@@ -23,6 +23,7 @@
 import * as fs from 'fs';
 import * as socket from 'socket';
 import * as C from 'mayhem.const';
+import { read_json } from 'mayhem.util';
 
 const RUN = C.RUN_DIR;
 const OUT = `${RUN}/warm.json`;
@@ -41,15 +42,6 @@ function ms_now() {
 	const t = clock(true);
 
 	return t[0] * 1000 + t[1] / 1000000;
-}
-
-function read_json(path) {
-	try {
-		return json(fs.readfile(path) ?? '');
-	}
-	catch (e) {
-		return null;
-	}
 }
 
 // The servers kept warm: the ones sections use first, then every other server

@@ -42,6 +42,7 @@ import { RUN_DIR, API_PORT, HELPER_PORT, HELPER_PASS, DEFAULT_PROBE_URL } from '
 import * as check from 'mayhem.check';
 import * as metrics from 'mayhem.metrics';
 import * as fallback from 'mayhem.fallback';
+import { q, read_json, write_atomic, log, is_applying, lock, unlock } from 'mayhem.util';
 
 const XRAY = getenv('MAYHEM_XRAY_BIN') ?? '/usr/libexec/mayhem/xray';
 const LIB = getenv('MAYHEM_LIB_DIR') ?? '/usr/share/mayhem';
@@ -49,24 +50,13 @@ const FAILS = 2;
 // servers checked at once for a section whose server stopped answering
 const TRIES = 4;
 
-function q(s) {
-	return "'" + replace(`${s}`, /'/g, "'\\''") + "'";
-}
-
-function read_json(name) {
-	try {
-		return json(fs.readfile(`${RUN_DIR}/${name}`) ?? '');
-	}
-	catch (e) {
-		return null;
-	}
+// A file of the run directory, parsed.
+function rd(name) {
+	return read_json(`${RUN_DIR}/${name}`);
 }
 
 function write(name, data) {
-	const tmp = `${RUN_DIR}/${name}.tmp`;
-
-	if (fs.writefile(tmp, data) != null)
-		fs.rename(tmp, `${RUN_DIR}/${name}`);
+	write_atomic(`${RUN_DIR}/${name}`, data);
 }
 
 function command(cmd) {
@@ -82,41 +72,10 @@ function command(cmd) {
 	return out;
 }
 
-function log(msg, level) {
-	system(`logger -t mayhem -p daemon.${level ?? 'info'} -- ${q(msg)}`);
-}
-
-function is_applying() {
-	const now = time();
-
-	for (let f in fs.glob(`${RUN_DIR}/applying.*`) ?? []) {
-		const st = fs.stat(f);
-
-		if (!st)
-			continue;
-
-		const m = match(f, /applying\.([0-9]+)$/);
-		if (m) {
-			const apid = m[1];
-			if (!fs.stat(`/proc/${apid}`)) {
-				fs.unlink(f);
-				continue;
-			}
-		}
-
-		if (now - st.mtime < 300)
-			return true;
-
-		fs.unlink(f);
-	}
-
-	return false;
-}
-
-if (is_applying())
+if (is_applying(RUN_DIR))
 	exit(0);
 
-const state = read_json('nodes.json');
+const state = rd('nodes.json');
 const pid = trim(fs.readfile(`${RUN_DIR}/xray.pid`) ?? '');
 
 if (!state || !fs.access(`${RUN_DIR}/active`) || pid == '')
@@ -128,47 +87,12 @@ if (!state || !fs.access(`${RUN_DIR}/active`) || pid == '')
 // both take it); one without a pid yet is being taken (10 s to write it).
 const LOCK = `${RUN_DIR}/health.lock`;
 
-function lock() {
-	const me = split(fs.readfile('/proc/self/stat') ?? '', ' ')[0];
-
-	for (let i = 0; i < 5; i++) {
-		if (fs.mkdir(LOCK)) {
-			fs.writefile(`${LOCK}/pid`, `${me}\n`);
-			return true;
-		}
-
-		const owner = trim(fs.readfile(`${LOCK}/pid`) ?? '');
-		const st = fs.stat(LOCK);
-
-		if (!st)
-			continue;
-
-		if ((owner != '' && !fs.access(`/proc/${owner}`)) || (owner == '' && time() - st.mtime > 10)) {
-			if (trim(fs.readfile(`${LOCK}/pid`) ?? '') == owner) {
-				fs.unlink(`${LOCK}/pid`);
-				fs.rmdir(LOCK);
-			}
-
-			continue;
-		}
-
-		return false;
-	}
-
-	return false;
-}
-
-if (!lock())
+if (!lock(LOCK))
 	exit(0);
-
-function unlock() {
-	fs.unlink(`${LOCK}/pid`);
-	fs.rmdir(LOCK);
-}
 
 const ks = state.killswitch == true;
 const started = time();
-let h = read_json('health.json') ?? {};
+let h = rd('health.json') ?? {};
 
 // Another xray: its balancers start from the saved choices, nothing in it
 // goes direct yet.
@@ -191,11 +115,11 @@ const url = match(state.probe_url ?? '', /^https?:\/\//) ? state.probe_url : DEF
 const FIRST = 5, AGAIN = 4;
 
 function bo(bal, tag, sn) {
-	if (is_applying())
+	if (is_applying(RUN_DIR))
 		return false;
 
 	if (sn) {
-		const cur_h = read_json('health.json');
+		const cur_h = rd('health.json');
 		if ((cur_h?.sections?.[sn]?.picked ?? 0) >= started)
 			return false;
 	}
@@ -248,7 +172,7 @@ function known_in_use(sn, s) {
 	const tags = map(s.nodes, (n) => n.tag);
 
 	if (s.mode == 'fallback') {
-		const now = read_json('fallback.json')?.[sn];
+		const now = rd('fallback.json')?.[sn];
 
 		return index(tags, now) >= 0 ? now : s.selected;
 	}
@@ -349,7 +273,7 @@ function restore(sn, s, tag, pin) {
 	const bal = s.balancer ?? `bal-${sn}`;
 
 	if (s.mode == 'fallback') {
-		const fb = read_json('fallback.json') ?? {};
+		const fb = rd('fallback.json') ?? {};
 
 		fb[sn] = tag;
 		write('fallback.json', sprintf('%J\n', fb));
@@ -725,12 +649,12 @@ if (dns_changed)
 
 // A server chosen on the dashboard while this check ran: that choice wins
 // over what this check saw for the section.
-const disk = read_json('health.json');
+const disk = rd('health.json');
 
 for (let sn in keys(disk?.sections ?? {}))
 	if ((disk.sections[sn]?.picked ?? 0) >= started)
 		h.sections[sn] = disk.sections[sn];
 
 write('health.json', sprintf('%J\n', h));
-unlock();
+unlock(LOCK);
 exit(0);

@@ -11,48 +11,21 @@
 'use strict';
 
 import * as fs from 'fs';
+import * as util from 'mayhem.util';
 
 // The lock is a directory; one left by a process that is gone, or held
 // longer than STALE seconds, is taken over. A writer waits WAIT ms at most.
 const STALE = 10;
 const WAIT = 5000;
 
-function me() {
-	return split(fs.readfile('/proc/self/stat') ?? '', ' ')[0] ?? '';
-}
-
 function locked(dir, fn) {
 	const lock = `${dir}/state.lock`;
-	const pid = me();
-	let waited = 0;
 
-	while (!fs.mkdir(lock)) {
-		const owner = trim(fs.readfile(`${lock}/pid`) ?? '');
-		const st = fs.stat(lock);
-
-		// Gone meanwhile: try again.
-		if (!st)
-			continue;
-
-		// The same process holds it (rpcd answers calls in one process): a
-		// call that died while holding it.
-		if (owner == pid || (owner != '' && !fs.access(`/proc/${owner}`)) || time() - st.mtime > STALE || waited >= WAIT) {
-			// Only from the owner seen above: its process is gone once it let
-			// the lock go, and another one that took it since keeps it (it
-			// was taken away from it, and a change was lost).
-			if (trim(fs.readfile(`${lock}/pid`) ?? '') == owner) {
-				fs.unlink(`${lock}/pid`);
-				fs.rmdir(lock);
-			}
-
-			continue;
-		}
-
-		sleep(20);
-		waited += 20;
-	}
-
-	fs.writefile(`${lock}/pid`, `${pid}\n`);
+	// Taken over also from this very process (rpcd answers calls in one
+	// process: a call that died while holding it), when held longer than
+	// STALE seconds, or once WAIT ms are over; always only from the owner
+	// seen (mayhem.util): another one that took it since keeps it.
+	util.lock(lock, { wait_ms: WAIT, poll_ms: 20, stale_s: STALE, hold_s: STALE, take_own: true, take_late: true });
 
 	let r;
 
@@ -64,33 +37,9 @@ function locked(dir, fn) {
 		warn(`${e}\n`);
 	}
 
-	fs.unlink(`${lock}/pid`);
-	fs.rmdir(lock);
+	util.unlock(lock);
 
 	return r;
-}
-
-function put(path, data) {
-	const tmp = `${path}.${me()}.tmp`;
-
-	if (fs.writefile(tmp, data) == null)
-		return false;
-
-	if (!fs.rename(tmp, path)) {
-		fs.unlink(tmp);
-		return false;
-	}
-
-	return true;
-}
-
-function read_json(path) {
-	try {
-		return json(fs.readfile(path) ?? '');
-	}
-	catch (e) {
-		return null;
-	}
 }
 
 // Writes files of `dir` ({ name: text }) as one change.
@@ -99,7 +48,7 @@ export function write(dir, files) {
 		let ok = true;
 
 		for (let name, data in files)
-			ok = put(`${dir}/${name}`, data) && ok;
+			ok = util.write_atomic(`${dir}/${name}`, data) && ok;
 
 		return ok;
 	});
@@ -110,17 +59,17 @@ export function write(dir, files) {
 // null when there is none or it was not written.
 export function update(dir, fn) {
 	return locked(dir, () => {
-		const state = read_json(`${dir}/nodes.json`);
+		const state = util.read_json(`${dir}/nodes.json`);
 
 		if (!state || fn(state) === false)
 			return null;
 
 		// flow_path.json follows, in the same lock (the generator reads it)
-		if (!put(`${dir}/nodes.json`, sprintf('%J\n', state)))
+		if (!util.write_atomic(`${dir}/nodes.json`, sprintf('%J\n', state)))
 			return null;
 
 		if (state.flow_path != null)
-			put(`${dir}/flow_path.json`, sprintf('%J\n', state.flow_path));
+			util.write_atomic(`${dir}/flow_path.json`, sprintf('%J\n', state.flow_path));
 
 		return state;
 	});
@@ -139,7 +88,7 @@ export function set_overrides(dir, set) {
 				if (t != '')
 					push(lines, `${b} ${t}`);
 
-			put(`${dir}/${f}`, length(lines) ? join('\n', lines) + '\n' : '');
+			util.write_atomic(`${dir}/${f}`, length(lines) ? join('\n', lines) + '\n' : '');
 		}
 
 		return true;

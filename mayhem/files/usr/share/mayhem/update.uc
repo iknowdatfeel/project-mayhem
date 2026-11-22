@@ -19,6 +19,7 @@ import * as fs from 'fs';
 import { is_true, entries, list_key } from 'mayhem.rules';
 import { scan, wanted } from 'mayhem.geo';
 import * as C from 'mayhem.const';
+import { q, log, read_json, write_atomic, lock, unlock } from 'mayhem.util';
 
 const STATE_FILE = `${C.RUN_DIR}/data-state.json`;
 const LOCK_DIR = `${C.RUN_DIR}/update.lock`;
@@ -28,31 +29,13 @@ const NIGHTLY_MIN_AGE_S = 20 * 3600;
 const MAX_AGE_S = 48 * 3600;
 const LIST_MAX_BYTES = 20 * 1024 * 1024;
 
-function q(s) {
-	return "'" + replace(`${s}`, /'/g, "'\\''") + "'";
-}
-
-function log(msg, level) {
-	system(sprintf('logger -t mayhem -p daemon.%s -- %s', level ?? 'info', q(msg)));
-}
-
-function read_json(path) {
-	try {
-		return json(fs.readfile(path) ?? '');
-	}
-	catch (e) {
-		return null;
-	}
-}
-
+// A write that must not fail: the run stops with the error.
 function write_file(path, data) {
-	const tmp = `${path}.tmp`;
-
-	if (fs.writefile(tmp, data) == null || !fs.rename(tmp, path))
+	if (!write_atomic(path, data))
 		die(`cannot write ${path}: ${fs.error()}`);
 }
 
-function write_json(path, v) {
+function save_json(path, v) {
 	write_file(path, sprintf('%J\n', v));
 }
 
@@ -84,7 +67,7 @@ function same_file(a, b) {
 	return same;
 }
 
-// Copies src to dst (through dst.tmp, like write_file).
+// Copies src to dst (through dst.tmp).
 function copy_file(src, dst) {
 	const tmp = `${dst}.tmp`;
 	const i = fs.open(src, 'r'), o = fs.open(tmp, 'w');
@@ -193,44 +176,6 @@ function curl_cmd(url, proxy, extra) {
 		cmd += ` -x ${q(proxy)}`;
 
 	return cmd + ` ${q(url)}`;
-}
-
-// --- lock ------------------------------------------------------------------------
-
-function lock() {
-	fs.mkdir(C.RUN_DIR, 0700);
-
-	for (let i = 0; i < 2; i++) {
-		if (fs.mkdir(LOCK_DIR, 0700)) {
-			fs.writefile(`${LOCK_DIR}/pid`, `${fs.readlink('/proc/self')}\n`);
-			return true;
-		}
-
-		// A lock left by a process that is gone is stale. One without a
-		// pid may be a lock just taken (between mkdir and writefile): stale
-		// only after 10 s. It is taken over only while it still names that
-		// process: two waiters must not both take it.
-		const pid = trim(fs.readfile(`${LOCK_DIR}/pid`) ?? '');
-		const st = fs.stat(LOCK_DIR);
-
-		if (!st)
-			continue;
-
-		if (pid != '' ? fs.access(`/proc/${pid}`) : time() - st.mtime <= 10)
-			return false;
-
-		if (trim(fs.readfile(`${LOCK_DIR}/pid`) ?? '') == pid) {
-			fs.unlink(`${LOCK_DIR}/pid`);
-			fs.rmdir(LOCK_DIR);
-		}
-	}
-
-	return false;
-}
-
-function unlock() {
-	fs.unlink(`${LOCK_DIR}/pid`);
-	fs.rmdir(LOCK_DIR);
 }
 
 // --- geo -------------------------------------------------------------------------
@@ -430,7 +375,7 @@ function update_source(cfg, src, cats, state, now, force) {
 	if (!old || old.url != src.url || old.size != res.bytes || changed_copied ||
 	    sprintf('%J', old.categories) != sprintf('%J', res.categories) ||
 	    sprintf('%J', old.validator) != sprintf('%J', validator))
-		write_json(`${C.GEO_DIR}/${src.name}.json`, index);
+		save_json(`${C.GEO_DIR}/${src.name}.json`, index);
 
 	st.last_ok = now;
 	st.via = via;
@@ -509,7 +454,7 @@ function run_geo(cfg, state, name, force, again) {
 
 		r.name = src.name;
 		push(results, r);
-		write_json(STATE_FILE, state);
+		save_json(STATE_FILE, state);
 	}
 
 	// Once more for what the fixed type moved to other sources (only what is
@@ -730,7 +675,12 @@ if (index([ 'due', 'geo', 'lists' ], cmd) < 0) {
 	exit(2);
 }
 
-if (!lock()) {
+// One run at a time: a second one is busy at once. A lock left by a
+// process that is gone is taken over; one without a pid yet only after 10 s
+// (a lock just taken, see mayhem.util).
+fs.mkdir(C.RUN_DIR, 0700);
+
+if (!lock(LOCK_DIR)) {
 	print('{ "busy": true }\n');
 	exit(4);
 }
@@ -750,7 +700,7 @@ try {
 	if (cmd == 'lists' || cmd == 'due')
 		results = [ ...results, ...run_lists(cfg, state, force) ];
 
-	write_json(STATE_FILE, state);
+	save_json(STATE_FILE, state);
 
 	const now = time();
 
@@ -764,11 +714,11 @@ try {
 		rc = 1;
 }
 catch (e) {
-	unlock();
+	unlock(LOCK_DIR);
 	warn(`mayhem: ${e.message}\n`);
 	exit(1);
 }
 
-unlock();
+unlock(LOCK_DIR);
 print(sprintf('%J\n', results));
 exit(rc);

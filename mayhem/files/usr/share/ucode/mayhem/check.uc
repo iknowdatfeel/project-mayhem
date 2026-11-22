@@ -11,10 +11,7 @@
 
 import * as fs from 'fs';
 import { HELPER_PORT, HELPER_PASS, RUN_DIR } from 'mayhem.const';
-
-function q(s) {
-	return "'" + replace(`${s}`, /'/g, "'\\''") + "'";
-}
+import { q } from 'mayhem.util';
 
 function command(cmd) {
 	const p = fs.popen(cmd, 'r');

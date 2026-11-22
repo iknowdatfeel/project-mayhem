@@ -11,6 +11,7 @@
 'use strict';
 
 import * as fs from 'fs';
+import { q } from 'mayhem.util';
 
 const PLUGIN = getenv('MAYHEM_RPC_PLUGIN') ?? '/usr/share/rpcd/ucode/luci.mayhem';
 // The plugin compiled once (it is 4 000 lines with its modules: compiling
@@ -20,10 +21,6 @@ const PLUGIN = getenv('MAYHEM_RPC_PLUGIN') ?? '/usr/share/rpcd/ucode/luci.mayhem
 // with an older time (a package put back to an earlier version).
 const CACHE = getenv('MAYHEM_RPC_CACHE') ?? '/tmp/mayhem-luci';
 const MODULES = getenv('MAYHEM_RPC_MODULES') ?? '/usr/share/ucode/mayhem';
-
-function q(s) {
-	return "'" + replace(`${s}`, /'/g, "'\\''") + "'";
-}
 
 // FNV-1a, 32 bits
 function fnv(s) {

@@ -9,6 +9,7 @@ import { readfile, writefile, access, stat, mkdir, lsdir, unlink, popen } from '
 import { SUBS_DIR, UCI_DIR, GEO_DIR, LISTS_DIR, RUN_DIR, DNS_SPLIT_MAX } from 'mayhem.const';
 import { is_true, as_list, entries, list_key, norm_ip, norm_domain, is_ip, dnsmasq_nftset } from 'mayhem.rules';
 import { resolve, geoip_cidrs, geosite_domains, KERNEL_DOMAINS_MAX } from 'mayhem.geo';
+import { read_json } from 'mayhem.util';
 
 // MAYHEM_RESOLV_AUTO: the files, as for lib.sh (the tests)
 const RESOLV_FILES = getenv('MAYHEM_RESOLV_AUTO') ? split(getenv('MAYHEM_RESOLV_AUTO'), ' ') :
@@ -54,15 +55,6 @@ function command(cmd) {
 	p.close();
 
 	return out;
-}
-
-function read_json(path) {
-	try {
-		return json(readfile(path) ?? '');
-	}
-	catch (e) {
-		return null;
-	}
 }
 
 // State of the network interfaces that tunnel sections use (netifd names).

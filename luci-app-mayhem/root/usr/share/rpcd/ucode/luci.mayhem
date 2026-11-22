@@ -13,13 +13,10 @@ import * as C from 'mayhem.const';
 import { tcp_ping } from 'mayhem.ping';
 import * as runstate from 'mayhem.runstate';
 import * as M from 'mayhem.metrics';
+import { q, read_json, write_json, is_applying } from 'mayhem.util';
 
 const XRAY = getenv('MAYHEM_XRAY_BIN') ?? '/usr/libexec/mayhem/xray';
 const RUN = C.RUN_DIR;
-
-function q(s) {
-	return "'" + replace(`${s}`, /'/g, "'\\''") + "'";
-}
 
 function run(cmd) {
 	const p = fs.popen(cmd, 'r');
@@ -118,8 +115,8 @@ function deferred_sh(req, cmd, done) {
 // A reload of Mayhem (and of the network for tunnels) takes from a second to
 // half a minute on a router. It runs apart; meanwhile a file applying.<pid>
 // tells the dashboard that the servers it shows are about to change, so it
-// keeps asking and shows that the change is on its way.
-const APPLY_STALE = 300;
+// keeps asking and shows that the change is on its way (is_applying of
+// mayhem.util; a file older than 5 minutes no longer counts).
 
 // The script for sh -c is quoted as a whole (cmd has quotes of its own) and
 // so is the run directory in it.
@@ -146,48 +143,6 @@ function reload_cmd(then) {
 function reload_choice() {
 	const lib = getenv('MAYHEM_LIB_DIR') ?? '/usr/share/mayhem';
 	apply_bg(reload_cmd(`ucode ${q(lib + '/fallback.uc')}`));
-}
-
-function applying() {
-	const now = time();
-
-	for (let f in fs.glob(`${RUN}/applying.*`) ?? []) {
-		const st = fs.stat(f);
-
-		if (!st)
-			continue;
-
-		const m = match(f, /applying\.([0-9]+)$/);
-		if (m) {
-			const pid = m[1];
-			if (!fs.stat(`/proc/${pid}`)) {
-				fs.unlink(f);
-				continue;
-			}
-		}
-
-		if (now - st.mtime < APPLY_STALE)
-			return true;
-
-		fs.unlink(f);
-	}
-
-	return false;
-}
-
-function read_json(path) {
-	try {
-		return json(fs.readfile(path) ?? '');
-	}
-	catch (e) {
-		return null;
-	}
-}
-
-function write_json(path, v) {
-	const tmp = `${path}.tmp`;
-
-	return fs.writefile(tmp, sprintf('%J\n', v)) != null && fs.rename(tmp, path);
 }
 
 // Where the choice of a dashboard section is kept: a subscription's group
@@ -2602,7 +2557,7 @@ function dashboard(pid, state, out) {
 			// Mayhem is off (mayhem_hold_up)
 			killswitch: c.get('mayhem', 'settings', 'killswitch') == '1',
 			held: pid == null && fs.access(`${RUN}/held`) == true,
-			applying: applying(),
+			applying: is_applying(RUN),
 			active: pid != null && fs.access(`${RUN}/active`) == true,
 			xray: trim(fs.readfile(`${RUN}/xray.version`) ?? '') || null,
 			xray_started: xray_started,

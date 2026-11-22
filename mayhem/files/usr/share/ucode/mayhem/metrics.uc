@@ -15,15 +15,12 @@
 
 import * as fs from 'fs';
 import { METRICS_PORT } from 'mayhem.const';
+import { q } from 'mayhem.util';
 
 function ms_now() {
 	const t = clock(true);
 
 	return t[0] * 1000 + t[1] / 1000000;
-}
-
-function q(s) {
-	return "'" + replace(`${s}`, /'/g, "'\\''") + "'";
 }
 
 // "<size>\r\n<data>\r\n...0\r\n\r\n" -> the data; null when cut short.

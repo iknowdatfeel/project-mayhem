@@ -20,6 +20,7 @@
 
 import * as fs from 'fs';
 import { RUN_DIR, API_PORT, GEO_DIR } from 'mayhem.const';
+import { q, read_json, log, lock, unlock } from 'mayhem.util';
 
 const XRAY = getenv('MAYHEM_XRAY_BIN') ?? '/usr/libexec/mayhem/xray';
 const LOCK = `${RUN_DIR}/live.lock`;
@@ -28,21 +29,9 @@ function read(name) {
 	return fs.readfile(`${RUN_DIR}/${name}`) ?? '';
 }
 
-function read_json(name) {
-	try {
-		return json(read(name));
-	}
-	catch (e) {
-		return null;
-	}
-}
-
-function log(msg, level) {
-	system(`logger -t mayhem -p daemon.${level ?? 'info'} -- '${replace(msg, /'/g, "'\\''")}'`);
-}
-
-function q(s) {
-	return "'" + replace(`${s}`, /'/g, "'\\''") + "'";
+// A file of the run directory, parsed.
+function rd(name) {
+	return read_json(`${RUN_DIR}/${name}`);
 }
 
 let failed = null;
@@ -134,45 +123,24 @@ function routing_body(cfg) {
 // what runs (the first one changes it). The lock names its process: one left
 // by a process that is gone is taken over, a live one is waited for (a
 // reload with 200 servers on a slow router takes a while).
-function unlock() {
-	fs.unlink(`${LOCK}/pid`);
-	fs.rmdir(LOCK);
-}
-
 function finish(code) {
-	unlock();
+	unlock(LOCK);
 	exit(code);
 }
 
-for (let i = 0; ; i++) {
-	if (fs.mkdir(LOCK)) {
-		fs.writefile(`${LOCK}/pid`, `${fs.readlink('/proc/self')}\n`);
-		break;
-	}
-
-	const pid = int(trim(fs.readfile(`${LOCK}/pid`) ?? '0'));
-	const st = fs.stat(LOCK);
-
-	// Gone, or (an old lock without a pid) older than a minute.
-	if ((pid > 0 && !fs.access(`/proc/${pid}`)) || (pid <= 0 && st && time() - st.mtime > 60)) {
-		unlock();
-		continue;
-	}
-
-	if (i >= 300) {
-		warn('live: another reload still runs after 5 minutes\n');
-		exit(1);
-	}
-
-	sleep(1000);
+// Gone, or (an old lock without a pid) older than a minute; a live owner
+// is waited for 5 minutes.
+if (!lock(LOCK, { wait_ms: 300000, poll_ms: 1000, stale_s: 60 })) {
+	warn('live: another reload still runs after 5 minutes\n');
+	exit(1);
 }
 
 // Anything but the servers changed: procd restarts xray with the new config.
 if (read('xray.key') != read('running.xray.key'))
 	finish(0);
 
-const cur = read_json('running.xray.json');
-const next = read_json('xray.json');
+const cur = rd('running.xray.json');
+const next = rd('xray.json');
 
 if (!cur || !next) {
 	warn('live: cannot read the configs\n');
@@ -226,7 +194,7 @@ const refused = {};
 if ((length(add) || length(replace_ob)) && !api_file('ado', { outbounds: [ ...add, ...replace_ob ] })) {
 	const names = {};
 
-	for (let sn, sec in read_json('nodes.json')?.sections ?? {})
+	for (let sn, sec in rd('nodes.json')?.sections ?? {})
 		for (let nd in sec?.nodes ?? [])
 			names[nd.tag] = nd.name;
 
@@ -252,7 +220,7 @@ if ((length(add) || length(replace_ob)) && !api_file('ado', { outbounds: [ ...ad
 }
 
 if (length(refused)) {
-	const all = read_json('refused.json');
+	const all = rd('refused.json');
 	const out = type(all) == 'object' ? all : {};
 
 	for (let tag, r in refused)
