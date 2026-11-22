@@ -848,15 +848,16 @@ function dns_names(RLs, model, warn) {
 		}
 	};
 
+	// the geo data once, before the loops, when a section has categories
+	if (model.ensure_geo && length(filter(RLs, (x) => length(x.RL.sites ?? []))))
+		model.ensure_geo();
+
 	for (let x in RLs) {
 		for (let d in x.RL.domains)
 			if (substr(d, 0, 4) != 'ext:')
 				take(d, `section "${x.name}"`);
 
 		for (let g in x.RL.sites) {
-			if (model.ensure_geo)
-				model.ensure_geo();
-
 			const list = model.geo?.domains?.[g.key];
 
 			if (list == null) {
@@ -1291,10 +1292,10 @@ function kernel_domains(name, RL, model, warn, fallback) {
 		if (substr(d, 0, 4) != 'ext:')
 			take(d);
 
-	for (let g in RL.sites) {
-		if (model.ensure_geo)
-			model.ensure_geo();
+	if (model.ensure_geo && length(RL.sites ?? []))
+		model.ensure_geo();
 
+	for (let g in RL.sites) {
 		const list = model.geo?.domains?.[g.key];
 
 		if ((g.count ?? 0) > KERNEL_DOMAINS_MAX) {
@@ -1414,10 +1415,10 @@ function block_for_dnsmasq(RL, model, name, warn) {
 	// is in dnsmasq twice: it does not mind)
 	const lists = [];
 
-	for (let g in RL.sites) {
-		if (model.ensure_geo)
-			model.ensure_geo();
+	if (model.ensure_geo && length(RL.sites ?? []))
+		model.ensure_geo();
 
+	for (let g in RL.sites) {
 		const list = model.geo?.domains?.[g.key];
 
 		if (g.attr != '' || list == null || (g.count ?? 0) > KERNEL_DOMAINS_MAX) {
