@@ -12,8 +12,9 @@ const KEY = 'ss://2022-blake3-aes-128-gcm:c2VjcmV0@1.2.3.4:8443#Secret';
 fs.writefile(`${run}/nodes.json`, sprintf('%J', {
 	generated: 1, default_section: 'pool',
 	sections: { pool: { type: 'proxy', mode: 'single', selected: 'n-pool-a',
-		nodes: [ { tag: 'n-pool-a', name: 'Secret', protocol: 'shadowsocks', address: '1.2.3.4', port: 8443, link: KEY, usec: 'mysub' } ] } }
+		nodes: [ { tag: 'n-pool-a', name: 'Secret', protocol: 'shadowsocks', address: '1.2.3.4', port: 8443, has_link: true, usec: 'mysub' } ] } }
 }));
+fs.writefile(`${run}/nodes.links.json`, sprintf('%J', { 'n-pool-a': KEY }));
 
 const plugin = loadfile(ARGV[0])()['luci.mayhem'];
 const call = (m, args) => plugin[m].call({ args: args });

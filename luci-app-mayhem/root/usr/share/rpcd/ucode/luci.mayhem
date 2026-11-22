@@ -686,6 +686,12 @@ function tunnel_endpoint(iface) {
 	return (ep && match(ep, /^[A-Za-z0-9.:_-]+$/)) ? ep : null;
 }
 
+// The key of a server by its tag: nodes.links.json, next to nodes.json
+// (which the dashboard reads every 3 s and has only has_link).
+function node_link(tag) {
+	return tag != null ? read_json(`${RUN}/nodes.links.json`)?.[tag] : null;
+}
+
 function find_node(state, tag) {
 	for (let sn in keys(state?.sections ?? {}))
 		for (let n in state.sections[sn].nodes ?? [])
@@ -2471,7 +2477,7 @@ function dashboard(pid, state, out) {
 
 				push(nodes, {
 					tag: n.tag, name: n.name, protocol: n.protocol, address: n.address,
-					port: n.port, udp: n.udp, source: n.source, iface: n.iface, tproto: n.tproto, has_link: n.link != null, usec: n.usec,
+					port: n.port, udp: n.udp, source: n.source, iface: n.iface, tproto: n.tproto, has_link: n.has_link == true || n.link != null, usec: n.usec,
 					delay: o ? o.delay : null, alive: o ? o.alive : null,
 					up: t.uplink ?? 0, down: t.downlink ?? 0
 				});
@@ -2669,7 +2675,7 @@ const methods = {
 			const n = filter(state?.sections?.[req.args?.section ?? '']?.nodes ?? [], (x) => x.tag == req.args?.tag)[0];
 
 			// usec: the subscription the server comes from, where its edit goes
-			return n ? { link: n.link, usec: n.usec } : { error: 'unknown server' };
+			return n ? { link: node_link(n.tag) ?? n.link, usec: n.usec } : { error: 'unknown server' };
 		}
 	},
 
@@ -4057,7 +4063,7 @@ const methods = {
 
 				const n = found.node;
 				if (c.get('mayhem', n.source) == 'subscription') {
-					if (n.link != req.args.old)
+					if ((node_link(n.tag) ?? n.link) != req.args.old)
 						return { error: 'the server changed; open the editor again' };
 
 					const orig = n.orig ?? n.name;
@@ -4270,10 +4276,12 @@ const methods = {
 			const usec = n.usec ?? f.section;
 			let gone = n.name;
 
-			if (n.source == 'link' && n.link) {
+			const key = node_link(n.tag) ?? n.link;
+
+			if (n.source == 'link' && key) {
 				const links = c.get('mayhem', usec, 'link') ?? [];
 				const all = type(links) == 'array' ? links : [ links ];
-				const left = filter(all, (l) => l != n.link);
+				const left = filter(all, (l) => l != key);
 
 				if (length(left) == length(all))
 					return { error: 'the server key was not found' };

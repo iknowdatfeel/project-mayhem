@@ -260,6 +260,7 @@ put('geo.stamp', stamp);
 // The dashboard and fallback.uc change these two as well (mayhem.runstate).
 if (!runstate.write(opts.out, {
 	'nodes.json': sprintf('%J\n', res.state),
+	'nodes.links.json': sprintf('%J\n', res.links ?? {}),
 	'overrides': length(res.overrides) ? join('\n', res.overrides) + '\n' : ''
 })) {
 	warn(`cannot write ${opts.out}/nodes.json: ${fs.error()}\n`);

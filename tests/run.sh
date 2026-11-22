@@ -633,6 +633,16 @@ for m in "$ROOT"/tests/models/*.json; do
 	fi
 done
 
+# Server keys are in nodes.links.json, not in nodes.json (read every few
+# seconds by the dashboard, health.uc and the checks).
+if grep -q '"link"' "$OUT/lists/nodes.json" 2>/dev/null; then
+	bad "model lists: server keys in nodes.json"
+elif ! grep -q 'vless://' "$OUT/lists/nodes.links.json" 2>/dev/null || ! grep -q '"has_link": true' "$OUT/lists/nodes.json"; then
+	bad "model lists: no nodes.links.json or has_link"
+else
+	ok "model lists: server keys apart from nodes.json"
+fi
+
 # A regexp rule xray (RE2) refuses is skipped with a warning, the others stay:
 # one such rule kept xray from starting.
 if grep -q '(?!ads)' "$OUT/lists/xray.json" 2>/dev/null; then

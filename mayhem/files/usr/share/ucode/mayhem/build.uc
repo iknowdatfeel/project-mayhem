@@ -1734,6 +1734,9 @@ export function build(model) {
 	const observe = [];
 	let observed = 0;
 	const state = { sections: {} };
+	// The keys of the servers by tag (nodes.links.json): nodes.json, read
+	// every few seconds, holds only has_link.
+	const node_links = {};
 	let first_proxy = null;
 
 	// --- sections -----------------------------------------------------------
@@ -1913,10 +1916,14 @@ export function build(model) {
 					tproto: nodes[i].tproto,
 					device: nodes[i].device,
 					orig: nodes[i].orig,
-					// the key itself and its UCI section: LuCI edits it in place
-					link: nodes[i].link,
+					// the key itself (nodes.links.json) and its UCI section:
+					// LuCI edits it in place
+					has_link: nodes[i].link != null,
 					usec: nodes[i].usec
 				});
+
+				if (nodes[i].link != null)
+					node_links[ob.tag] = nodes[i].link;
 			}
 
 			// Even one server goes through a balancer: the routing does not
@@ -2942,6 +2949,7 @@ export function build(model) {
 		killswitch: is_true(S.killswitch ?? '0'),
 		ipv6: v6,
 		state: state,
+		links: node_links,
 		overrides: overrides,
 		geo_files: geo_files,
 		status: st
