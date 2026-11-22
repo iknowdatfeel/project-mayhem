@@ -75,20 +75,35 @@ mayhem_nft_kept() {
 
 	# The sets whose nftset= lines changed between the old and the new file
 	# (or all of them without an old one): one pass of awk over each file.
+	# Only nftset= lines, and only the sets each one names (after its last
+	# "/": "4#inet#TABLE#SET,6#inet#TABLE#SET"); the lines of a set are
+	# compared one by one as they come. Gluing them into one string per set
+	# copied it again for every line (seconds for a tunnel with a big list
+	# in busybox awk), and every line was matched against every set.
 	[ -f "$new" ] || new=/dev/null
 	awk -v t="$MAYHEM_NFT_TABLE" -v have_old="$([ -n "$old" ] && echo 1)" '
-		FILENAME == ARGV[1] { if ($0 != "") { set[$0] = 1; order[++n] = $0 } next }
+		FILENAME == ARGV[1] { if ($0 != "") { want[$0] = 1; order[++n] = $0 } next }
+		substr($0, 1, 7) != "nftset=" { next }
 		{
-			for (s in set)
-				if (index($0, "#" t "#" s) > 0) {
-					if (FILENAME == ARGV[2]) a[s] = a[s] "\n" $0
-					else b[s] = b[s] "\n" $0
-				}
+			spec = $0
+			sub(/.*\//, "", spec)
+			k = split(spec, e, ",")
+			for (i = 1; i <= k; i++) {
+				if (split(e[i], f, "#") != 4 || f[3] != t || !(f[4] in want))
+					continue
+				s = f[4]
+				if (FILENAME == ARGV[2])
+					old[s, ++co[s]] = $0
+				else if (old[s, ++cn[s]] != $0)
+					diff[s] = 1
+			}
 		}
 		END {
-			for (i = 1; i <= n; i++)
-				if (have_old != 1 || a[order[i]] != b[order[i]])
-					print order[i]
+			for (i = 1; i <= n; i++) {
+				s = order[i]
+				if (have_old != 1 || diff[s] || co[s] + 0 != cn[s] + 0)
+					print s
+			}
 		}' "$MAYHEM_RUN_DIR/nft.dynsets" "${old:-/dev/null}" "$new" > "$MAYHEM_RUN_DIR/nft.changed"
 
 	while read -r set; do

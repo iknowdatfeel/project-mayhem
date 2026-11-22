@@ -105,6 +105,28 @@ else
 	bad "changed: $(nft list set inet mayhem tun_b_d4) / $(cat "$T/run/nft.emptied")"
 fi
 
+# A tunnel with a big list: 5000 nftset= lines a set. Unchanged sets are
+# told apart from a changed one in time that grows with the lines, not with
+# their square.
+awk 'BEGIN {
+	for (i = 0; i < 5000; i++) {
+		printf "nftset=/d%d.a.example/4#inet#mayhem#tun_a_d4,6#inet#mayhem#tun_a_d6\n", i
+		printf "nftset=/d%d.b.example/4#inet#mayhem#tun_b_d4,6#inet#mayhem#tun_b_d6\n", i
+		printf "server=/d%d.a.example/127.0.0.1#5353\n", i
+	}
+}' > "$T/run/dnsmasq.conf"
+cp "$T/run/dnsmasq.conf" "$T/dnsmasq.d/mayhem.conf"
+sed -i 's|/d2500.b.example/|/d2500.c.example/|' "$T/run/dnsmasq.conf"
+t0="$(date +%s%N)"
+sh -c ". '$MAYHEM_LIB_DIR/lib.sh'; mayhem_nft_kept" > /dev/null 2>"$T/err"
+ms=$((($(date +%s%N) - t0) / 1000000))
+changed="$(tr '\n' ' ' < "$T/run/nft.changed")"
+if [ "$changed" = "tun_b_d4 " ] && [ "$ms" -lt 2000 ]; then
+	ok "5000 lines a set: the changed set told in $ms ms"
+else
+	bad "5000 lines a set: changed \"$changed\" in $ms ms $(cat "$T/err")"
+fi
+
 # The first start: no table, nothing kept, nothing fails.
 nft delete table inet mayhem
 net_up
