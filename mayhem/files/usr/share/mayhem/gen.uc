@@ -253,6 +253,8 @@ if (!runstate.write(opts.out, {
 	exit(1);
 }
 put('tunnels', res.tunnels ?? '');
+// What an interface coming up may change, as this build saw it (ifacefp.uc).
+put('runtime.fp', require('mayhem.model').iface_fp(model.runtime) + '\n');
 // Subscriptions the service downloads right after this reload.
 put('subs.new', length(model.subs_new ?? []) ? join('\n', model.subs_new) + '\n' : '');
 // Geo categories or lists the config wants and the router does not have yet:

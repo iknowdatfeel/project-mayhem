@@ -1232,6 +1232,14 @@ mayhem_isp_dns_catchup() {
 	"${MAYHEM_INIT:-/etc/init.d/mayhem}" reload
 }
 
+# The reload of an interface that came up (iface_reload of the service):
+# only when ifacefp.uc finds that it changed what the configuration was
+# built from.
+mayhem_iface_reload() {
+	ucode "$MAYHEM_LIB_DIR/ifacefp.uc" >/dev/null 2>&1 && return 0
+	"${MAYHEM_INIT:-/etc/init.d/mayhem}" reload
+}
+
 mayhem_dnsmasq_hup() {
 	local pids
 

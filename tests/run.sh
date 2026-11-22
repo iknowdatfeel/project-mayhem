@@ -1359,7 +1359,7 @@ if out="$(sh "$ROOT/tests/dnsup.sh" 2>&1)"; then
 else
 	bad "dnsmasq's file: $(printf '%s' "$out" | grep -v '^ok')"
 fi
-if out="$(sh "$ROOT/tests/ispdns.sh" 2>&1)"; then
+if out="$(UCODE="$UCODE" sh "$ROOT/tests/ispdns.sh" 2>&1)"; then
 	ok "the provider's DNS servers: waited for at boot, applied when they come later"
 else
 	bad "the provider's DNS servers: $(printf '%s' "$out" | grep -v '^ok')"

@@ -10,7 +10,9 @@ import { SUBS_DIR, UCI_DIR, GEO_DIR, LISTS_DIR, RUN_DIR, DNS_SPLIT_MAX } from 'm
 import { is_true, as_list, entries, list_key, norm_ip, norm_domain, is_ip, dnsmasq_nftset } from 'mayhem.rules';
 import { resolve, geoip_cidrs, geosite_domains, KERNEL_DOMAINS_MAX } from 'mayhem.geo';
 
-const RESOLV_FILES = [ '/tmp/resolv.conf.d/resolv.conf.auto', '/tmp/resolv.conf.auto' ];
+// MAYHEM_RESOLV_AUTO: the files, as for lib.sh (the tests)
+const RESOLV_FILES = getenv('MAYHEM_RESOLV_AUTO') ? split(getenv('MAYHEM_RESOLV_AUTO'), ' ') :
+	[ '/tmp/resolv.conf.d/resolv.conf.auto', '/tmp/resolv.conf.auto' ];
 
 function wan_dns() {
 	const out = [];
@@ -204,7 +206,9 @@ function leases() {
 	return out;
 }
 
-function runtime(sections) {
+// The network interfaces the sections use: tunnel sections, tunnels of a
+// list of servers.
+function iface_names(sections) {
 	const names = [];
 
 	for (let s in sections ?? []) {
@@ -217,6 +221,29 @@ function runtime(sections) {
 		for (let n in entries(s.iface_node))
 			push(names, n);
 	}
+
+	return names;
+}
+
+// What of runtime() an interface that comes up may change: the provider's
+// DNS servers, the router's addresses, IPv6, the state of the tunnels' own
+// interfaces. gen.uc keeps it (runtime.fp); "iface_reload" of the service
+// reloads only when it is not the same (a LAN, a guest network coming up
+// rebuilt everything for nothing).
+function iface_fp(rt) {
+	const ifs = {};
+
+	for (let n in sort(keys(rt?.ifaces ?? {}))) {
+		const i = rt.ifaces[n];
+
+		ifs[n] = { device: i.device, up: i.up, v6: i.v6 };
+	}
+
+	return sprintf('%J', { wan_dns: rt?.wan_dns, router_ips: rt?.router_ips, ipv6: rt?.ipv6, ifaces: ifs });
+}
+
+function runtime(sections) {
+	const names = iface_names(sections);
 
 	return {
 		wan_dns: wan_dns(),
@@ -749,4 +776,28 @@ function load_model(both, lazy) {
 	return res;
 }
 
-return { load_model, runtime, own_servers };
+// The same, from the config and the system as they are now: only those
+// parts, not the whole model.
+function runtime_fp() {
+	const c = cursor(UCI_DIR);
+
+	c.load('mayhem');
+
+	const sections = [];
+	const pool = pool_section(c);
+
+	if (pool)
+		push(sections, pool);
+
+	c.foreach('mayhem', 'section', (s) => {
+		if (s['.name'] != 'pool')
+			push(sections, s);
+	});
+
+	return iface_fp({
+		wan_dns: wan_dns(), router_ips: router_ips(), ipv6: access('/proc/net/if_inet6') == true,
+		ifaces: ifaces(iface_names(sections))
+	});
+}
+
+return { load_model, runtime, own_servers, iface_fp, runtime_fp };
