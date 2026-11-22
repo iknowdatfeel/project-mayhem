@@ -155,8 +155,14 @@ check_system() {
 
 	nslookup github.com >/dev/null 2>&1 || die "DNS does not work on the router."
 
-	# TLS downloads fail with a wrong clock.
-	ntpd -q -n -p 194.190.168.1 -p 216.239.35.0 -p 162.159.200.1 >/dev/null 2>&1
+	# TLS downloads fail with a wrong clock. The router's own NTP servers
+	# first, then the pool by name (DNS works, checked above), and only then
+	# fixed addresses.
+	set --
+	for srv in $(uci -q get system.ntp.server) 0.openwrt.pool.ntp.org 1.openwrt.pool.ntp.org pool.ntp.org 216.239.35.0 162.159.200.1; do
+		set -- "$@" -p "$srv"
+	done
+	ntpd -q -n "$@" >/dev/null 2>&1
 }
 
 # The file as GitHub lists it in the release ("digest" of the asset): $1 the

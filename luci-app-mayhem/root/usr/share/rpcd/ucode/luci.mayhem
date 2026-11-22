@@ -982,10 +982,14 @@ function diag_local() {
 	}
 
 	// System
-	const year = localtime(time()).year;
+	// The clock is wrong when it is behind the package itself (its files
+	// were made before it was installed), a day of slack for time zones;
+	// no year written into the code.
+	const built = (fs.stat(`${LIB}/const.sh`)?.mtime ?? 0) - 86400;
+	const clock_ok = time() >= built;
 
-	check(res, 'system', 'Clock', year >= 2025 ? 'ok' : 'fail',
-		year >= 2025 ? 'set' : 'the clock is wrong: TLS connections will fail');
+	check(res, 'system', 'Clock', clock_ok ? 'ok' : 'fail',
+		clock_ok ? 'set' : 'the clock is wrong: TLS connections will fail');
 
 	for (let l in lines_of(fs.readfile(`${RUN}/watchdog.log`)))
 		check(res, 'system', 'Watchdog', 'warn', l);
