@@ -11,7 +11,8 @@
 //
 // Connections go through xray's local SOCKS inbound, as user <server tag>,
 // the way the single URL test does. ucode has no TLS: an https:// URL is
-// asked as http:// on the same host (parse_url).
+// replaced with the default plain HTTP one (parse_url), and warm.json names
+// the URL that is really asked.
 // The process ends when the dashboard has not asked for a while (the rpcd
 // method "warm" touches ALIVE on every call) or xray is gone.
 //
@@ -109,13 +110,16 @@ function wanted(state) {
 	return out;
 }
 
-// An https:// URL is asked over plain HTTP on port 80 of the same host: ucode
-// has no TLS, and the delay through the server to that host is the same.
-// If an https:// probe is configured to run over port 80, fall back to DEFAULT_PROBE_URL.
-function parse_url(u) {
-	if (match(u ?? '', /^https:\/\//))
-		u = C.DEFAULT_PROBE_URL;
+// The URL this process asks: ucode has no TLS, so an https:// one is
+// replaced with DEFAULT_PROBE_URL (plain HTTP; its host may not answer
+// plain HTTP on port 80 at all).
+function probe_url(u) {
+	u = u ?? C.DEFAULT_PROBE_URL;
 
+	return match(u, /^https:\/\//) ? C.DEFAULT_PROBE_URL : u;
+}
+
+function parse_url(u) {
 	const m = match(u ?? '', /^(https?):\/\/([A-Za-z0-9.-]+)(:([0-9]+))?(\/[^#]*)?$/);
 
 	if (!m)
@@ -125,7 +129,8 @@ function parse_url(u) {
 }
 
 const state0 = read_json(`${RUN}/nodes.json`);
-const target = parse_url(state0?.probe_url ?? C.DEFAULT_PROBE_URL);
+const URL = probe_url(state0?.probe_url);
+const target = parse_url(URL);
 
 if (!target)
 	exit(0);
@@ -145,7 +150,7 @@ const results = {};
 {
 	const last = read_json(OUT);
 
-	if (last?.url == (state0?.probe_url ?? C.DEFAULT_PROBE_URL))
+	if (last?.url == URL)
 		for (let tag, r in last?.results ?? {})
 			if (r?.ms != null)
 				results[tag] = r;
@@ -420,7 +425,7 @@ function write_out() {
 
 	const tmp = `${OUT}.tmp`;
 
-	fs.writefile(tmp, sprintf('%J\n', { started: started, url: state0?.probe_url ?? C.DEFAULT_PROBE_URL, period: PERIOD / 1000, tags: tags, results: results }));
+	fs.writefile(tmp, sprintf('%J\n', { started: started, url: URL, period: PERIOD / 1000, tags: tags, results: results }));
 	fs.rename(tmp, OUT);
 	dirty = false;
 	written = now;

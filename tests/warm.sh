@@ -142,13 +142,19 @@ case "$(field n-dead ms)$(field n-dead error)" in "") ok "warm: errors of the la
 kill "$DAEMON" 2>/dev/null
 DAEMON=""
 
-# An https:// check URL: asked as http:// on the same host (ucode has no TLS).
-sed -i 's#"probe_url": "http://#"probe_url": "https://#' "$T/run/nodes.json"
+# An https:// check URL: ucode has no TLS, the default plain HTTP URL is
+# asked instead, and warm.json names that one.
+sed -i 's#"probe_url": "http://www.gstatic.com/generate_204"#"probe_url": "https://example.com/"#' "$T/run/nodes.json"
 out="$(warm_call false)"
 case "$out" in *'"ok": true'*) ok "rpcd: warm with an https:// check URL" ;; *) bad "rpcd: warm with https: $out" ;; esac
 DAEMON="$(cat "$T/run/warm.pid" 2>/dev/null)"
 for i in 1 2 3 4; do : > "$T/run/warm.alive"; sleep 1; done
 [ -n "$(field n-fast ms)" ] && grep -q 'request n-fast' "$T/log" && ok "warm: https URL measured over http" || bad "warm: https: n-fast $(field n-fast error)"
+if grep -q '"url": "http://www.gstatic.com/generate_204"' "$T/run/warm.json"; then
+	ok "warm: warm.json names the URL it really asks"
+else
+	bad "warm: the URL in warm.json: $(grep -o '"url": "[^"]*"' "$T/run/warm.json")"
+fi
 kill "$DAEMON" 2>/dev/null
 DAEMON=""
 
