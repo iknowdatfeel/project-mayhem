@@ -196,6 +196,17 @@ mayhem_net_refresh() {
 	return 0
 }
 
+# The rules of FILE with the path generation GEN (1-3) in its two places:
+# the check of the connection's mark and the mark set on it. The same as
+# apply_generation() of mayhem.build (tests/run.sh compares them).
+mayhem_nft_set_gen() {
+	local hex
+
+	hex="$(printf '0x%x' $(($2 << 28)))"
+	sed -e "s/ct mark & 0x30000000 != 0x[0-9a-fA-F]*/ct mark \\& 0x30000000 != $hex/g" \
+		-e "s/ct mark set ct mark & 0xcfffffff | 0x[0-9a-fA-F]*/ct mark set ct mark \\& 0xcfffffff | $hex/g" "$1"
+}
+
 # A server chosen by hand without a restart: the path generation of
 # nodes.json goes into the running rules, so connections of the old one are
 # reset (chain stale) and devices reconnect through the new server at once.
@@ -203,18 +214,15 @@ mayhem_net_refresh() {
 # transaction, the sets keep what dnsmasq put in them. The files follow only
 # once the kernel has it. Run under mayhem_lock start (no reload meanwhile).
 mayhem_net_generation() {
-	local run="$MAYHEM_RUN_DIR" gen hex f tx="$MAYHEM_RUN_DIR/nft.gen.$$"
+	local run="$MAYHEM_RUN_DIR" gen f tx="$MAYHEM_RUN_DIR/nft.gen.$$"
 
 	[ -f "$run/active" ] && [ -f "$run/running.nft.conf" ] || return 1
 	gen="$(sed -n 's/.*"generation": *\([1-3]\).*/\1/p' "$run/nodes.json" 2>/dev/null | head -n 1)"
 	[ -n "$gen" ] || return 1
-	hex="$(printf '0x%x' $((gen << 28)))"
 
 	for f in running.nft.conf nft.conf; do
 		[ -f "$run/$f" ] || continue
-		sed -e "s/ct mark & 0x30000000 != 0x[0-9a-fA-F]*/ct mark \\& 0x30000000 != $hex/g" \
-			-e "s/ct mark set ct mark & 0xcfffffff | 0x[0-9a-fA-F]*/ct mark set ct mark \\& 0xcfffffff | $hex/g" \
-			"$run/$f" > "$tx.$f" || { rm -f "$tx".*; return 1; }
+		mayhem_nft_set_gen "$run/$f" "$gen" > "$tx.$f" || { rm -f "$tx".*; return 1; }
 	done
 
 	# Nothing to do: the kernel has it already.
@@ -319,9 +327,7 @@ mayhem_hold_save() {
 	[ -s "$run/nft.conf" ] || return 1
 	mkdir -p "$d" && chmod 0700 "$d" || return 1
 
-	sed -e 's/ct mark & 0x30000000 != 0x[0-9a-fA-F]*/ct mark \& 0x30000000 != 0x10000000/g' \
-		-e 's/ct mark set ct mark & 0xcfffffff | 0x[0-9a-fA-F]*/ct mark set ct mark \& 0xcfffffff | 0x10000000/g' \
-		"$run/nft.conf" > "$run/hold.nft" || return 1
+	mayhem_nft_set_gen "$run/nft.conf" 1 > "$run/hold.nft" || return 1
 	grep '^MAYHEM_IPV6=' "$run/env" > "$run/hold.env" 2>/dev/null
 
 	for f in nft dnsmasq.conf dns.xray tunnels env; do

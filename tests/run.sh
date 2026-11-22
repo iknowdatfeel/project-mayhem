@@ -647,6 +647,22 @@ for m in "$ROOT"/tests/models/*.json; do
 	fi
 done
 
+# The path generation put into the rules: the shell (a server chosen by
+# hand, the hold) and the generator give the same text.
+gen_same=1
+for g in 1 2 3; do
+	uc -e "import { apply_generation } from 'mayhem.build'; print(apply_generation(require('fs').readfile(ARGV[0]), int(ARGV[1])));" \
+		"$OUT/global/nft.conf" "$g" > "$OUT/gen-uc.$g" 2>&1
+	# shellcheck disable=SC2016 # expanded by the inner shell
+	MAYHEM_LIB_DIR="$FILES/usr/share/mayhem" sh -c '. "$MAYHEM_LIB_DIR/lib.sh"; mayhem_nft_set_gen "$1" "$2"' sh "$OUT/global/nft.conf" "$g" > "$OUT/gen-sh.$g"
+	grep -q "ct mark & 0x30000000 != $(printf '0x%x' $((g << 28)))" "$OUT/gen-sh.$g" && cmp -s "$OUT/gen-uc.$g" "$OUT/gen-sh.$g" || gen_same=0
+done
+if [ "$gen_same" = 1 ]; then
+	ok "path generation: the shell and the generator write the same rules"
+else
+	bad "path generation: the shell and the generator differ: $(diff "$OUT/gen-uc.2" "$OUT/gen-sh.2" | head -n 5)"
+fi
+
 # Server keys are in nodes.links.json, not in nodes.json (read every few
 # seconds by the dashboard, health.uc and the checks).
 if grep -q '"link": *"' "$OUT/lists/nodes.json" 2>/dev/null; then
@@ -1544,7 +1560,7 @@ netcache "$OUT/nc-proxy-rule.json" "$c" >/dev/null
 if [ ! -e "$c/net-cache/k-gone0.json" ] && [ -e "$c/net-cache/x.json" ]; then
 	ok "net cache: slots of tunnels that are gone are removed"
 else
-	bad "net cache: $(ls "$c/net-cache" | tr '\n' ' ')"
+	bad "net cache: $(find "$c/net-cache" -type f | tr '\n' ' ')"
 fi
 
 # The scheduler: downloads in the background, the checks keep their pace.
